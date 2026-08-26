@@ -30,6 +30,8 @@ jobs:
       - name: Set up MSVC compiler
         if: runner.os == 'Windows'
         uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
