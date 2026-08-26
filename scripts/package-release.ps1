@@ -23,8 +23,12 @@ $dist = Join-Path $workspace 'dist'
 
 function Invoke-Download {
     param([Parameter(Mandatory = $true)][string]$Uri, [Parameter(Mandatory = $true)][string]$OutFile)
-    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $curl) { $curl = Get-Command curl -CommandType Application -ErrorAction SilentlyContinue }
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $curl) {
+        $curl = Get-Command curl -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
     if ($curl) {
         & $curl.Source -fsSL --retry 3 --retry-delay 1 $Uri -o $OutFile
         if ($LASTEXITCODE -eq 0) { return }
