@@ -581,7 +581,7 @@ fn print_path_note(current_exe: &Path) {
     if path_contains(directory) {
         return;
     }
-    eprintln!(
+    println!(
         "note: {} is not currently on PATH; add this directory to PATH to run `alc` without its full path.",
         directory.display()
     );
