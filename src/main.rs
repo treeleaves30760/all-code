@@ -2,6 +2,8 @@ mod cli;
 mod config;
 mod doctor;
 mod launch;
+mod model_catalog;
+mod model_picker;
 mod tui;
 
 use std::process::ExitCode;

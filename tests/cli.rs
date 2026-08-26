@@ -78,3 +78,83 @@ fn incompatible_provider_has_actionable_error() {
             "Claude Code needs Anthropic Messages",
         ));
 }
+
+#[test]
+fn codex_to_claude_accepts_explicit_model_and_effort() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "--codex",
+            "--dry-run",
+            "claude",
+            "--model",
+            "gpt-5.6-sol",
+            "--effort",
+            "max",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ALC_CODEX_MODEL=gpt-5.6-sol"))
+        .stdout(predicate::str::contains("ALC_CODEX_EFFORT=max"))
+        .stdout(predicate::str::contains("claude-codex"));
+}
+
+#[test]
+fn generic_gpt_56_alias_uses_bridge_supported_sol() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "--codex",
+            "--dry-run",
+            "claude",
+            "--model",
+            "gpt-5.6",
+            "--effort",
+            "medium",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ALC_CODEX_MODEL=gpt-5.6-sol"));
+}
+
+#[test]
+fn codex_to_claude_can_save_defaults_without_picker() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "--codex",
+            "--dry-run",
+            "claude",
+            "--model",
+            "gpt-5.6-luna",
+            "--effort",
+            "low",
+            "--save",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Saved gpt-5.6-luna / low as the default",
+        ));
+
+    alc(&temp)
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("model = \"gpt-5.6-luna\""))
+        .stdout(predicate::str::contains("reasoning_effort = \"low\""));
+}
+
+#[test]
+fn bundled_model_catalog_is_available_offline() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("PATH", "")
+        .args(["models"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gpt-5.6-luna"))
+        .stdout(predicate::str::contains("gpt-5.6-terra"))
+        .stdout(predicate::str::contains("gpt-5.6-sol"))
+        .stdout(predicate::str::contains("low, medium, high, xhigh, max"));
+}

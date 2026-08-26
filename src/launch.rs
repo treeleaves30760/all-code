@@ -11,9 +11,16 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
-use crate::config::{Agent, AuthStyle, Protocol, Provider, ProviderKind, Store};
+use crate::config::{Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store};
 
 pub const CLAUDE_CODEX_HELPER_VERSION: &str = "0.3.1";
+
+#[derive(Debug, Clone, Default)]
+pub struct LaunchOverrides {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    pub context_window: Option<u64>,
+}
 
 #[derive(Debug, Clone)]
 pub struct LaunchSpec {
@@ -49,6 +56,7 @@ pub fn build(
     agent: Agent,
     requested_provider: Option<&str>,
     passthrough: &[OsString],
+    overrides: &LaunchOverrides,
 ) -> Result<LaunchSpec> {
     let (profile_name, provider) = store.config.resolve(agent, requested_provider)?;
     let mut spec = LaunchSpec {
@@ -67,23 +75,62 @@ pub fn build(
     }
 
     match agent {
-        Agent::Claude => build_claude(&mut spec, store, profile_name, provider, passthrough)?,
-        Agent::Codex => build_codex(&mut spec, store, profile_name, provider, passthrough)?,
-        Agent::Opencode => build_opencode(&mut spec, store, profile_name, provider, passthrough)?,
+        Agent::Claude => build_claude(
+            &mut spec,
+            store,
+            profile_name,
+            provider,
+            passthrough,
+            overrides,
+        )?,
+        Agent::Codex => build_codex(
+            &mut spec,
+            store,
+            profile_name,
+            provider,
+            passthrough,
+            overrides,
+        )?,
+        Agent::Opencode => build_opencode(
+            &mut spec,
+            store,
+            profile_name,
+            provider,
+            passthrough,
+            overrides,
+        )?,
     }
     Ok(spec)
 }
 
 pub fn execute(mut spec: LaunchSpec) -> Result<u8> {
     let _proxy = if spec.needs_codex_proxy {
-        let proxy = CodexProxy::start()?;
         let model = spec
             .env
             .get(OsStr::new("ALC_CODEX_MODEL"))
             .cloned()
             .context("internal error: Codex proxy model is missing")?;
+        let effort = spec
+            .env
+            .get(OsStr::new("ALC_CODEX_EFFORT"))
+            .and_then(|value| value.to_str())
+            .context("internal error: Codex proxy effort is missing")?
+            .parse::<ReasoningEffort>()?;
+        let context_window = spec
+            .env
+            .get(OsStr::new("ALC_CODEX_CONTEXT_WINDOW"))
+            .map(|value| {
+                value
+                    .to_string_lossy()
+                    .parse::<u64>()
+                    .context("internal error: Codex context window is invalid")
+            })
+            .transpose()?;
+        let proxy = CodexProxy::start(effort)?;
         spec.env.remove(OsStr::new("ALC_CODEX_MODEL"));
-        configure_claude_proxy_env(&mut spec, proxy.base_url(), &model);
+        spec.env.remove(OsStr::new("ALC_CODEX_EFFORT"));
+        spec.env.remove(OsStr::new("ALC_CODEX_CONTEXT_WINDOW"));
+        configure_claude_proxy_env(&mut spec, proxy.base_url(), &model, context_window);
         Some(proxy)
     } else {
         None
@@ -113,15 +160,34 @@ fn build_claude(
     profile_name: &str,
     provider: &Provider,
     passthrough: &[OsString],
+    overrides: &LaunchOverrides,
 ) -> Result<()> {
     spec.args.extend_from_slice(passthrough);
     clear_cloud_provider_env(spec);
 
     if provider.kind == ProviderKind::Codex {
         spec.needs_codex_proxy = true;
-        let model = resolve_codex_model(provider)?;
+        let model = overrides
+            .model
+            .clone()
+            .unwrap_or(resolve_codex_model(provider)?);
+        let effort = overrides
+            .reasoning_effort
+            .or(provider.reasoning_effort)
+            .or(resolve_codex_effort(provider)?)
+            .unwrap_or(ReasoningEffort::Medium);
         spec.env
             .insert(OsString::from("ALC_CODEX_MODEL"), OsString::from(model));
+        spec.env.insert(
+            OsString::from("ALC_CODEX_EFFORT"),
+            OsString::from(effort.as_str()),
+        );
+        if let Some(context_window) = overrides.context_window {
+            spec.env.insert(
+                OsString::from("ALC_CODEX_CONTEXT_WINDOW"),
+                OsString::from(context_window.to_string()),
+            );
+        }
         return Ok(());
     }
 
@@ -140,7 +206,7 @@ fn build_claude(
     );
     spec.env.insert(
         OsString::from("ANTHROPIC_MODEL"),
-        OsString::from(&provider.model),
+        OsString::from(overrides.model.as_deref().unwrap_or(&provider.model)),
     );
     if let Some(small_model) = provider
         .small_model
@@ -204,6 +270,7 @@ fn build_codex(
     profile_name: &str,
     provider: &Provider,
     passthrough: &[OsString],
+    overrides: &LaunchOverrides,
 ) -> Result<()> {
     if provider.kind == ProviderKind::Codex {
         if !has_option(passthrough, "--profile", "-p")
@@ -215,9 +282,19 @@ fn build_codex(
             spec.args
                 .extend([OsString::from("--profile"), OsString::from(profile)]);
         }
-        if !provider.model.is_empty() && !has_model_override(passthrough) {
+        let model = overrides.model.as_deref().unwrap_or(&provider.model);
+        if !model.is_empty() && !has_model_override(passthrough) {
             spec.args
-                .extend([OsString::from("--model"), OsString::from(&provider.model)]);
+                .extend([OsString::from("--model"), OsString::from(model)]);
+        }
+        if !has_effort_override(passthrough)
+            && let Some(effort) = overrides.reasoning_effort.or(provider.reasoning_effort)
+        {
+            push_codex_config(
+                &mut spec.args,
+                "model_reasoning_effort",
+                toml_string(effort.as_str()),
+            );
         }
         spec.args.extend_from_slice(passthrough);
         return Ok(());
@@ -232,8 +309,10 @@ fn build_codex(
                 .extend([OsString::from("--local-provider"), OsString::from("ollama")]);
         }
         if !has_model_override(passthrough) {
-            spec.args
-                .extend([OsString::from("--model"), OsString::from(&provider.model)]);
+            spec.args.extend([
+                OsString::from("--model"),
+                OsString::from(overrides.model.as_deref().unwrap_or(&provider.model)),
+            ]);
         }
         spec.args.extend_from_slice(passthrough);
         return Ok(());
@@ -251,8 +330,19 @@ fn build_codex(
     let provider_id = codex_provider_id(profile_name);
 
     if !has_model_override(passthrough) {
-        spec.args
-            .extend([OsString::from("--model"), OsString::from(&provider.model)]);
+        spec.args.extend([
+            OsString::from("--model"),
+            OsString::from(overrides.model.as_deref().unwrap_or(&provider.model)),
+        ]);
+    }
+    if !has_effort_override(passthrough)
+        && let Some(effort) = overrides.reasoning_effort.or(provider.reasoning_effort)
+    {
+        push_codex_config(
+            &mut spec.args,
+            "model_reasoning_effort",
+            toml_string(effort.as_str()),
+        );
     }
     push_codex_config(&mut spec.args, "model_provider", toml_string(&provider_id));
     push_codex_config(
@@ -301,6 +391,7 @@ fn build_opencode(
     profile_name: &str,
     provider: &Provider,
     passthrough: &[OsString],
+    overrides: &LaunchOverrides,
 ) -> Result<()> {
     if provider.kind == ProviderKind::Codex {
         bail!(
@@ -337,7 +428,8 @@ fn build_opencode(
             .insert(OsString::from("ALC_PROVIDER_API_KEY"), OsString::from(key));
     }
 
-    let model_reference = format!("{provider_id}/{}", provider.model);
+    let model = overrides.model.as_deref().unwrap_or(&provider.model);
+    let model_reference = format!("{provider_id}/{model}");
     let mut inline = json!({
         "$schema": "https://opencode.ai/config.json"
     });
@@ -371,7 +463,7 @@ fn build_opencode(
                     "name": format!("alc: {profile_name}"),
                     "options": options,
                     "models": {
-                        &provider.model: { "name": &provider.model }
+                        (model): { "name": model }
                     }
                 }
         });
@@ -385,7 +477,12 @@ fn build_opencode(
     Ok(())
 }
 
-fn configure_claude_proxy_env(spec: &mut LaunchSpec, base_url: String, model: &OsStr) {
+fn configure_claude_proxy_env(
+    spec: &mut LaunchSpec,
+    base_url: String,
+    model: &OsStr,
+    context_window: Option<u64>,
+) {
     for name in [
         "ANTHROPIC_MODEL",
         "ANTHROPIC_DEFAULT_OPUS_MODEL",
@@ -404,6 +501,26 @@ fn configure_claude_proxy_env(spec: &mut LaunchSpec, base_url: String, model: &O
         OsString::from("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"),
         OsString::from("1"),
     );
+    // Expose the gateway-specific GPT ID in Claude Code's model picker even
+    // when gateway discovery is unavailable in an older client.
+    spec.env.insert(
+        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION"),
+        model.to_os_string(),
+    );
+    spec.env.insert(
+        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
+        OsString::from(format!("{} via Codex", model.to_string_lossy())),
+    );
+    spec.env.insert(
+        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
+        OsString::from("Selected by all-code using your Codex login"),
+    );
+    if let Some(context_window) = context_window {
+        spec.env.insert(
+            OsString::from("CLAUDE_CODE_MAX_CONTEXT_TOKENS"),
+            OsString::from(context_window.to_string()),
+        );
+    }
     spec.env.insert(
         OsString::from("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
         OsString::from("1"),
@@ -422,9 +539,9 @@ fn clear_cloud_provider_env(spec: &mut LaunchSpec) {
     }
 }
 
-fn resolve_codex_model(provider: &Provider) -> Result<String> {
+pub(crate) fn resolve_codex_model(provider: &Provider) -> Result<String> {
     if !provider.model.trim().is_empty() {
-        return Ok(provider.model.clone());
+        return Ok(normalize_codex_model(&provider.model));
     }
 
     let codex_home = env::var_os("CODEX_HOME")
@@ -437,15 +554,61 @@ fn resolve_codex_model(provider: &Provider) -> Result<String> {
             .filter(|profile| !profile.is_empty())
             .map(|profile| home.join(format!("{profile}.config.toml")));
         for path in profile_path.into_iter().chain([home.join("config.toml")]) {
-            if let Some(model) = read_codex_model(&path)? {
-                return Ok(model);
+            if let Some(model) = read_codex_preference(&path, "model")? {
+                return Ok(normalize_codex_model(&model));
             }
         }
     }
-    Ok("gpt-5.6".to_owned())
+    Ok("gpt-5.6-terra".to_owned())
 }
 
-fn read_codex_model(path: &Path) -> Result<Option<String>> {
+pub(crate) fn normalize_codex_model(model: &str) -> String {
+    // The OpenAI API exposes gpt-5.6 as a Sol alias, while the pinned bridge
+    // accepts the explicit family member names.
+    if model == "gpt-5.6" {
+        "gpt-5.6-sol".to_owned()
+    } else {
+        model.to_owned()
+    }
+}
+
+pub(crate) fn resolve_codex_effort(provider: &Provider) -> Result<Option<ReasoningEffort>> {
+    if let Some(effort) = provider.reasoning_effort {
+        return Ok(Some(effort));
+    }
+
+    let codex_home = env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(".codex")));
+    if let Some(home) = codex_home {
+        let profile_path = provider
+            .codex_profile
+            .as_deref()
+            .filter(|profile| !profile.is_empty())
+            .map(|profile| home.join(format!("{profile}.config.toml")));
+        for path in profile_path.into_iter().chain([home.join("config.toml")]) {
+            if let Some(value) = read_codex_preference(&path, "model_reasoning_effort")? {
+                let effort = match value.as_str() {
+                    // The helper currently tops out at max, while newer Codex
+                    // builds may persist the additional ultra tier.
+                    "ultra" => ReasoningEffort::Max,
+                    // alc intentionally presents low as its simplest choice.
+                    "none" => ReasoningEffort::Low,
+                    _ => value.parse().with_context(|| {
+                        format!(
+                            "invalid model_reasoning_effort in {}; expected low, medium, high, xhigh, or max",
+                            path.display()
+                        )
+                    })?,
+                };
+                return Ok(Some(effort));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn read_codex_preference(path: &Path, key: &str) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -454,7 +617,7 @@ fn read_codex_model(path: &Path) -> Result<Option<String>> {
     let document: toml::Value = toml::from_str(&text)
         .with_context(|| format!("failed to parse Codex config {}", path.display()))?;
     Ok(document
-        .get("model")
+        .get(key)
         .and_then(toml::Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_owned))
@@ -540,6 +703,19 @@ fn has_model_override(args: &[OsString]) -> bool {
     })
 }
 
+fn has_effort_override(args: &[OsString]) -> bool {
+    args.iter().enumerate().any(|(index, arg)| {
+        let value = arg.to_string_lossy();
+        value.starts_with("--config=model_reasoning_effort=")
+            || value.starts_with("-c=model_reasoning_effort=")
+            || (matches!(value.as_ref(), "--config" | "-c")
+                && args.get(index + 1).is_some_and(|next| {
+                    next.to_string_lossy()
+                        .starts_with("model_reasoning_effort=")
+                }))
+    })
+}
+
 fn has_option(args: &[OsString], long: &str, short: &str) -> bool {
     args.iter().any(|arg| {
         let value = arg.to_string_lossy();
@@ -607,7 +783,7 @@ struct CodexProxy {
 }
 
 impl CodexProxy {
-    fn start() -> Result<Self> {
+    fn start(effort: ReasoningEffort) -> Result<Self> {
         let helper = find_helper()?;
         let auth_file = codex_auth_file()?;
         if !auth_file.is_file() {
@@ -625,6 +801,7 @@ impl CodexProxy {
             .arg("serve")
             .env("PORT", port.to_string())
             .env("CCP_LOG_STDERR", "0")
+            .env("CCP_CODEX_EFFORT", effort.as_str())
             // The helper's fallback does not use USERPROFILE on Windows, so
             // pass the same Codex home resolution used by the official CLI.
             .env("CCP_CODEX_AUTH_FILE", auth_file)
@@ -765,6 +942,7 @@ mod tests {
             Agent::Codex,
             Some("codex"),
             &[OsString::from("exec"), OsString::from("hello")],
+            &LaunchOverrides::default(),
         )
         .unwrap();
         assert_eq!(
@@ -774,6 +952,61 @@ mod tests {
                 .map(OsString::from)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn codex_to_claude_passes_selected_model_and_effort_to_helper() {
+        let overrides = LaunchOverrides {
+            model: Some("gpt-5.6-sol".into()),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            context_window: Some(272_000),
+        };
+        let spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Claude,
+            Some("codex"),
+            &[],
+            &overrides,
+        )
+        .unwrap();
+        assert!(spec.needs_codex_proxy);
+        assert_eq!(
+            spec.env[OsStr::new("ALC_CODEX_MODEL")],
+            OsString::from("gpt-5.6-sol")
+        );
+        assert_eq!(
+            spec.env[OsStr::new("ALC_CODEX_EFFORT")],
+            OsString::from("max")
+        );
+        assert_eq!(
+            spec.env[OsStr::new("ALC_CODEX_CONTEXT_WINDOW")],
+            OsString::from("272000")
+        );
+    }
+
+    #[test]
+    fn codex_passthrough_effort_takes_precedence() {
+        let spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Codex,
+            Some("codex"),
+            &[
+                OsString::from("--config"),
+                OsString::from("model_reasoning_effort=\"high\""),
+            ],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+        let occurrences = spec
+            .args
+            .iter()
+            .filter(|value| {
+                value
+                    .to_string_lossy()
+                    .starts_with("model_reasoning_effort=")
+            })
+            .count();
+        assert_eq!(occurrences, 1);
     }
 
     #[test]
@@ -787,6 +1020,7 @@ mod tests {
             Agent::Claude,
             Some("openrouter"),
             &[],
+            &LaunchOverrides::default(),
         )
         .unwrap();
         assert_eq!(
@@ -810,6 +1044,7 @@ mod tests {
             Agent::Codex,
             Some("openai"),
             &[OsString::from("--version")],
+            &LaunchOverrides::default(),
         )
         .unwrap();
         let joined = spec
@@ -834,6 +1069,7 @@ mod tests {
             Agent::Claude,
             Some("openai"),
             &[],
+            &LaunchOverrides::default(),
         )
         .unwrap_err();
         assert!(error.to_string().contains("Anthropic Messages"));
@@ -846,6 +1082,7 @@ mod tests {
             Agent::Opencode,
             Some("ollama"),
             &[],
+            &LaunchOverrides::default(),
         )
         .unwrap();
         let inline = spec
@@ -866,6 +1103,7 @@ mod tests {
             Agent::Opencode,
             Some("ollama"),
             &[OsString::from("models"), OsString::from("ollama")],
+            &LaunchOverrides::default(),
         )
         .unwrap();
         assert_eq!(spec.args, ["models", "ollama"].map(OsString::from));
@@ -883,5 +1121,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(explicit, PathBuf::from("selected-auth.json"));
+    }
+
+    #[test]
+    fn generic_gpt_56_alias_maps_to_bridge_supported_sol() {
+        assert_eq!(normalize_codex_model("gpt-5.6"), "gpt-5.6-sol");
+        assert_eq!(normalize_codex_model("gpt-5.6-terra"), "gpt-5.6-terra");
     }
 }

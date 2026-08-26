@@ -4,7 +4,8 @@ use std::process::{Command, Stdio};
 
 use anyhow::Result;
 
-use crate::config::{Agent, AuthStyle, ProviderKind, Store};
+use crate::config::{Agent, AuthStyle, ProviderKind, ReasoningEffort, Store};
+use crate::model_catalog::ModelCatalog;
 
 pub fn run(store: &Store) -> Result<bool> {
     println!("alc doctor\n");
@@ -92,6 +93,23 @@ pub fn run(store: &Store) -> Result<bool> {
     }
 
     if codex_for_claude {
+        let catalog = ModelCatalog::load(&store.dir);
+        println!("\nCodex -> Claude defaults");
+        for (name, provider) in &store.config.providers {
+            if !provider.enabled || provider.kind != ProviderKind::Codex {
+                continue;
+            }
+            let model = crate::launch::resolve_codex_model(provider)
+                .unwrap_or_else(|_| "<unresolved>".to_owned());
+            let effort = crate::launch::resolve_codex_effort(provider)
+                .ok()
+                .flatten()
+                .or_else(|| catalog.find(&model).map(|entry| entry.default_effort))
+                .unwrap_or(ReasoningEffort::Medium);
+            println!("  {name:<16} {model} / {effort}");
+        }
+        println!("  catalog          {}", catalog.source);
+
         match codex_login_status() {
             Some(true) => println!("\nCodex login  OK"),
             Some(false) => {

@@ -1,0 +1,45 @@
+name: Weekly compatibility
+
+on:
+  schedule:
+    - cron: '0 19 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest-codex-catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install latest Codex CLI
+        run: npm install --global @openai/codex@latest
+      - name: Verify live Luna, Terra, and Sol catalog
+        run: cargo run --locked -- models --refresh --json
+      - name: Run tests against current dependencies
+        run: cargo test --locked --all-targets --all-features
+
+  pinned-helper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify bundled helper is still current
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $source = Get-Content -Raw ./src/launch.rs
+          if ($source -notmatch 'CLAUDE_CODEX_HELPER_VERSION: &str = "([^"]+)"') {
+            throw 'Could not read the pinned helper version from src/launch.rs'
+          }
+          $pinned = $Matches[1]
+          $latest = (gh api repos/fcakyon/claude-code-with-codex/releases/latest --jq .tag_name).TrimStart('v')
+          if ($pinned -ne $latest) {
+            throw "claude-codex $latest is available; alc still pins $pinned"
+          }
+          Write-Host "claude-codex $pinned is current"

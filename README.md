@@ -9,6 +9,7 @@ alc claude
 alc codex
 alc opencode
 alc --codex claude
+alc --codex claude --model gpt-5.6-terra --effort medium
 alc --openrouter codex
 alc --provider work opencode
 ```
@@ -69,13 +70,20 @@ alc --openrouter codex
 alc -p local-vllm opencode
 ```
 
-Everything after the agent name is forwarded unchanged:
+`alc --codex claude` opens a guided picker for the GPT model and reasoning
+effort. Press Enter to run once, or `S` to save the selection and run.
+
+Apart from Claude's alc-specific `--model`, `--effort`, `--save`, and
+`--no-picker` options, arguments after the agent name are forwarded unchanged:
 
 ```sh
 alc --codex codex exec "review this repository"
 alc --openrouter claude --print "summarize the diff"
 alc --ollama opencode run "fix the failing test"
 ```
+
+To pass an option with one of those same names to Claude itself, place it after
+`--`, for example `alc claude -- --model sonnet`.
 
 Preview the exact adapter command without launching it. Secrets are redacted:
 
@@ -126,6 +134,51 @@ codex login
 alc --codex claude
 ```
 
+In an interactive terminal, `alc` lets you choose both settings before Claude
+Code starts:
+
+| Model | Beginner-friendly use case | Codex default effort |
+| --- | --- | --- |
+| `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
+| `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
+| `gpt-5.6-sol` | Frontier capability for the hardest professional work | `low` |
+
+See OpenAI's [model selection guide](https://developers.openai.com/api/docs/guides/latest-model),
+[Luna reference](https://developers.openai.com/api/docs/models/gpt-5.6-luna),
+and [Sol reference](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+for current upstream details.
+
+Every model can be paired with `low`, `medium`, `high`, `xhigh`, or `max`.
+Higher effort gives the model more room to reason, but can take longer and use
+more quota. For scripts, CI, or a specific one-off choice, skip the picker by
+providing both options:
+
+```sh
+alc --codex claude --model gpt-5.6-luna --effort low
+alc --codex claude --model gpt-5.6-terra --effort medium --save
+alc --codex claude --no-picker
+```
+
+`--save` stores the model and effort in the selected alc provider. `--no-picker`
+uses the saved provider values, the selected Codex profile, or the model's
+documented default. In non-interactive terminals, alc automatically uses those
+resolved defaults.
+
+The model catalog is synchronized from the installed Codex CLI at most once
+every 24 hours. A bundled catalog keeps the picker working offline:
+
+```sh
+alc models
+alc models --refresh
+alc models --json
+```
+
+The synchronized Codex context window is also passed to Claude Code through
+its documented
+[`CLAUDE_CODE_MAX_CONTEXT_TOKENS`](https://code.claude.com/docs/en/env-vars)
+gateway setting, so unknown GPT IDs compact at the correct Codex limit instead
+of Claude's generic fallback.
+
 The release archive bundles
 [`claude-codex` 0.3.1](https://github.com/fcakyon/claude-code-with-codex), an
 MIT-licensed helper. `alc` starts it on a random `127.0.0.1` port, points only
@@ -133,9 +186,10 @@ that Claude Code child process at it, and stops it when Claude exits. The helper
 reads and may refresh `~/.codex/auth.json`; credentials are never copied into
 the `alc` config.
 
-The model comes from the selected alc profile. If that field is empty, `alc`
-reads the selected `~/.codex/<profile>.config.toml`, then
-`~/.codex/config.toml`, and finally falls back to `gpt-5.6`.
+When no choice is made, the model and effort come from the selected alc profile.
+Empty values fall through to `~/.codex/<profile>.config.toml`, then
+`~/.codex/config.toml`; the picker recommends Terra when no family member is
+configured.
 
 This adapter is a third-party compatibility layer, not an official OpenAI or
 Anthropic integration. Review [THIRD_PARTY.md](THIRD_PARTY.md) and your provider
@@ -162,6 +216,7 @@ Override the directory with `ALC_CONFIG_DIR`. Useful scripting commands:
 alc config init
 alc config show
 alc config path
+alc config upsert codex --kind codex --model gpt-5.6-terra --effort medium
 alc config upsert work --kind openrouter --model anthropic/claude-sonnet-4.6
 printf '%s' "$OPENROUTER_API_KEY" | alc config key work --stdin
 alc config set-default claude work
@@ -172,7 +227,7 @@ The TUI keys are shown at the bottom of every screen. The primary controls are:
 
 - `a`, `e`/Enter, `d`: add, edit, or delete a provider.
 - `Tab`: switch between provider profiles and agent defaults.
-- Arrow keys: navigate fields and cycle choices.
+- Arrow keys: navigate fields and cycle choices, including reasoning effort.
 - `s`: save; `q`: save and quit; `Ctrl+C`: quit without saving.
 
 ## Build from source

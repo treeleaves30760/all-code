@@ -45,12 +45,16 @@ alc --openrouter codex
 alc --provider company-vllm opencode
 ```
 
-agent 名稱後的參數會原封不動傳入：
+除了 Claude 專用的 `--model`、`--effort`、`--save`、`--no-picker` 之外，agent
+名稱後的參數會原封不動傳入：
 
 ```sh
 alc --codex codex exec "review this repository"
 alc --openrouter claude --print "summarize the diff"
 ```
+
+如果要把同名參數交給 Claude Code 本身，請放在 `--` 後面，例如
+`alc claude -- --model sonnet`。
 
 用 `--dry-run` 預覽啟動方式；API key 會被遮蔽：
 
@@ -67,12 +71,62 @@ codex login
 alc --codex claude
 ```
 
+在互動式終端機裡，這個指令會先開啟兩步驟選單：
+
+1. 選擇模型：
+   - `gpt-5.6-luna`：速度快、費用低，適合簡單修改與大量例行工作。
+   - `gpt-5.6-terra`：速度、能力、成本均衡，建議新手從這個開始。
+   - `gpt-5.6-sol`：能力最完整，適合架構、困難除錯與大型重構。
+2. 選擇推理強度：`low`、`medium`、`high`、`xhigh`、`max`。
+
+推理強度越高，模型會花更多時間與額度思考。一般開發建議先用
+`terra + medium`；很簡單的工作可用 `luna + low`，真正困難的問題再提高到
+`sol + high/xhigh/max`。
+
+按 Enter 只執行這一次；按 `S` 會儲存成預設值後執行。也可以直接用參數，
+很適合腳本或 CI：
+
+```sh
+alc --codex claude --model gpt-5.6-luna --effort low
+alc --codex claude --model gpt-5.6-terra --effort medium --save
+alc --codex claude --no-picker
+```
+
+`--save` 會把模型與 effort 存入目前的 Codex provider；`--no-picker` 會直接使用
+已儲存的值。非互動環境也會自動使用預設值，不會卡在選單。
+
+模型清單每天最多自動向本機 Codex CLI 同步一次；離線時會使用內建清單：
+
+```sh
+alc models
+alc models --refresh
+alc models --json
+```
+
 發行包會附帶固定版本的 MIT 授權 `claude-codex` helper。`alc` 只把它綁在
 隨機的 `127.0.0.1` port，Claude Code 結束時就會關閉。Helper 會讀取並可能
 更新 `~/.codex/auth.json`；`alc` 不會把 Codex token 複製到自己的設定檔。
 
 這是第三方相容層，不是 OpenAI 或 Anthropic 官方整合。使用訂閱帳號前，請
 先檢閱專案的 `THIRD_PARTY.md` 與 provider 條款。
+
+## 完整設定
+
+`alc config` 的 provider 編輯畫面現在可設定 model、reasoning effort、small
+model、API URL、Anthropic 相容 URL、protocol、驗證方式、API key 環境變數、
+Codex profile 與啟用狀態。方向鍵左右切換選項，Enter 套用，`s` 儲存。
+
+不想開 TUI 時也可以用指令設定：
+
+```sh
+alc config upsert codex --kind codex --model gpt-5.6-terra --effort medium
+alc config upsert codex --clear-effort
+alc config show
+alc doctor
+```
+
+設定優先順序是「這次指令的 `--model/--effort`」→「alc provider」→「Codex
+profile」→「模型目錄預設值」。因此新手可以只用選單，進階使用者仍可完整控制。
 
 ## 重要相容性
 

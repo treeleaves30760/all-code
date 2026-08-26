@@ -10,6 +10,53 @@ use serde::{Deserialize, Serialize};
 pub const CONFIG_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl ReasoningEffort {
+    pub const ALL: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::Xhigh, Self::Max];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl std::fmt::Display for ReasoningEffort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ReasoningEffort {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" | "x-high" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
+            _ => bail!(
+                "unknown reasoning effort '{value}'; expected low, medium, high, xhigh, or max"
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Agent {
     Claude,
@@ -248,6 +295,7 @@ impl std::str::FromStr for AuthStyle {
 pub struct Provider {
     pub kind: ProviderKind,
     pub model: String,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub small_model: Option<String>,
     pub base_url: Option<String>,
     pub anthropic_base_url: Option<String>,
@@ -283,6 +331,7 @@ impl Provider {
         Self {
             kind,
             model: model.to_owned(),
+            reasoning_effort: (kind == ProviderKind::Openai).then_some(ReasoningEffort::Medium),
             small_model: None,
             base_url: kind.default_base_url().map(str::to_owned),
             anthropic_base_url: None,
@@ -735,5 +784,21 @@ mod tests {
         assert!(!config_text.contains("top-secret"));
         let loaded = Store::load(Some(temp.path().to_owned())).unwrap();
         assert_eq!(loaded.credentials.api_keys["openai"], "top-secret");
+    }
+
+    #[test]
+    fn provider_configs_from_v01_load_without_reasoning_effort() {
+        let provider: Provider = toml::from_str(
+            r#"
+kind = "codex"
+model = ""
+protocol = "codex-native"
+auth = "native"
+enabled = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(provider.kind, ProviderKind::Codex);
+        assert_eq!(provider.reasoning_effort, None);
     }
 }

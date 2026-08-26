@@ -17,7 +17,8 @@ use ratatui::widgets::{
 };
 
 use crate::config::{
-    Agent, AuthStyle, Config, Protocol, Provider, ProviderKind, Store, validate_profile_name,
+    Agent, AuthStyle, Config, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
+    validate_profile_name,
 };
 
 type Backend = CrosstermBackend<Stdout>;
@@ -384,7 +385,7 @@ struct EditForm {
 }
 
 impl EditForm {
-    const FIELD_COUNT: usize = 12;
+    const FIELD_COUNT: usize = 13;
 
     fn new(name: String) -> Self {
         Self {
@@ -425,7 +426,23 @@ impl EditForm {
                 let next = (index as isize + delta).rem_euclid(ProviderKind::ALL.len() as isize);
                 self.provider = Provider::for_kind(ProviderKind::ALL[next as usize]);
             }
-            6 => {
+            3 => {
+                let choices = [
+                    None,
+                    Some(ReasoningEffort::Low),
+                    Some(ReasoningEffort::Medium),
+                    Some(ReasoningEffort::High),
+                    Some(ReasoningEffort::Xhigh),
+                    Some(ReasoningEffort::Max),
+                ];
+                let index = choices
+                    .iter()
+                    .position(|effort| *effort == self.provider.reasoning_effort)
+                    .unwrap_or(0);
+                let next = (index as isize + delta).rem_euclid(choices.len() as isize);
+                self.provider.reasoning_effort = choices[next as usize];
+            }
+            7 => {
                 let index = Protocol::ALL
                     .iter()
                     .position(|protocol| *protocol == self.provider.protocol)
@@ -433,7 +450,7 @@ impl EditForm {
                 let next = (index as isize + delta).rem_euclid(Protocol::ALL.len() as isize);
                 self.provider.protocol = Protocol::ALL[next as usize];
             }
-            7 => {
+            8 => {
                 let index = AuthStyle::ALL
                     .iter()
                     .position(|auth| *auth == self.provider.auth)
@@ -441,7 +458,7 @@ impl EditForm {
                 let next = (index as isize + delta).rem_euclid(AuthStyle::ALL.len() as isize);
                 self.provider.auth = AuthStyle::ALL[next as usize];
             }
-            11 => self.provider.enabled = !self.provider.enabled,
+            12 => self.provider.enabled = !self.provider.enabled,
             _ => {}
         }
     }
@@ -468,18 +485,18 @@ impl EditForm {
         match self.selected {
             0 => Some(&mut self.name),
             2 => Some(&mut self.provider.model),
-            3 => Some(self.provider.small_model.get_or_insert_default()),
-            4 => Some(self.provider.base_url.get_or_insert_default()),
-            5 => Some(self.provider.anthropic_base_url.get_or_insert_default()),
-            8 => Some(self.provider.api_key_env.get_or_insert_default()),
-            9 => {
+            4 => Some(self.provider.small_model.get_or_insert_default()),
+            5 => Some(self.provider.base_url.get_or_insert_default()),
+            6 => Some(self.provider.anthropic_base_url.get_or_insert_default()),
+            9 => Some(self.provider.api_key_env.get_or_insert_default()),
+            10 => {
                 if !self.secret_touched {
                     self.secret.clear();
                     self.secret_touched = true;
                 }
                 Some(&mut self.secret)
             }
-            10 => Some(self.provider.codex_profile.get_or_insert_default()),
+            11 => Some(self.provider.codex_profile.get_or_insert_default()),
             _ => None,
         }
     }
@@ -507,6 +524,13 @@ impl EditForm {
             ("Profile name", self.name.clone(), "text"),
             ("Kind", self.provider.kind.to_string(), "←/→"),
             ("Model", self.provider.model.clone(), "text"),
+            (
+                "Reasoning effort",
+                self.provider
+                    .reasoning_effort
+                    .map_or_else(|| "auto".to_owned(), |effort| effort.to_string()),
+                "←/→",
+            ),
             (
                 "Small model",
                 self.provider.small_model.clone().unwrap_or_default(),
@@ -661,11 +685,17 @@ fn draw_providers(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
         Row::new([
             Cell::from(name.clone()),
             Cell::from(provider.kind.to_string()),
-            Cell::from(if provider.model.is_empty() {
-                "<Codex config>".to_owned()
-            } else {
-                provider.model.clone()
-            }),
+            Cell::from(format!(
+                "{} / {}",
+                if provider.model.is_empty() {
+                    "<Codex config>".to_owned()
+                } else {
+                    provider.model.clone()
+                },
+                provider
+                    .reasoning_effort
+                    .map_or_else(|| "auto".to_owned(), |effort| effort.to_string())
+            )),
             Cell::from(key),
             Cell::from(defaults),
         ])
@@ -837,6 +867,21 @@ mod tests {
             true,
         );
         assert!(form.secret.is_empty());
-        assert!(form.fields()[9].1.contains("saved"));
+        assert!(form.fields()[10].1.contains("saved"));
+    }
+
+    #[test]
+    fn reasoning_effort_cycles_from_auto_through_max() {
+        let mut form = EditForm::new("test".to_owned());
+        form.selected = 3;
+        assert_eq!(form.provider.reasoning_effort, None);
+        form.cycle(1);
+        assert_eq!(form.provider.reasoning_effort, Some(ReasoningEffort::Low));
+        for _ in 0..4 {
+            form.cycle(1);
+        }
+        assert_eq!(form.provider.reasoning_effort, Some(ReasoningEffort::Max));
+        form.cycle(1);
+        assert_eq!(form.provider.reasoning_effort, None);
     }
 }

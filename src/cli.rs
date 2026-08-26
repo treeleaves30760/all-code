@@ -6,8 +6,11 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 use crate::config::{
-    Agent, AuthStyle, Protocol, Provider, ProviderKind, Store, validate_profile_name,
+    Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
+    validate_profile_name,
 };
+use crate::model_catalog::ModelCatalog;
+use crate::model_picker::{self, PickerRequest};
 use crate::{doctor, launch, tui};
 
 #[derive(Debug, Parser)]
@@ -65,8 +68,10 @@ enum Command {
     Config(ConfigArgs),
     /// Check agent binaries, credentials, defaults, and compatibility.
     Doctor,
+    /// Show or refresh the GPT models available for Codex-to-Claude.
+    Models(ModelsArgs),
     /// Launch Claude Code.
-    Claude(Passthrough),
+    Claude(ClaudeArgs),
     /// Launch Codex CLI.
     Codex(Passthrough),
     /// Launch OpenCode.
@@ -82,6 +87,44 @@ struct Passthrough {
         trailing_var_arg = true
     )]
     args: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+struct ClaudeArgs {
+    /// GPT model for this run (for example gpt-5.6-terra).
+    #[arg(long, value_name = "MODEL")]
+    model: Option<String>,
+
+    /// Codex reasoning effort: low, medium, high, xhigh, or max.
+    #[arg(long, value_name = "LEVEL")]
+    effort: Option<ReasoningEffort>,
+
+    /// Use configured defaults without opening the model picker.
+    #[arg(long)]
+    no_picker: bool,
+
+    /// Save the selected model and effort as this provider's defaults.
+    #[arg(long)]
+    save: bool,
+
+    /// Arguments passed unchanged to Claude Code.
+    #[arg(
+        value_name = "ARGS",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    args: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+struct ModelsArgs {
+    /// Force an immediate sync from the installed Codex CLI.
+    #[arg(long)]
+    refresh: bool,
+
+    /// Print the catalog as JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -128,6 +171,14 @@ struct UpsertArgs {
     /// Default model ID.
     #[arg(long)]
     model: Option<String>,
+
+    /// Default Codex reasoning effort.
+    #[arg(long, conflicts_with = "clear_effort")]
+    effort: Option<ReasoningEffort>,
+
+    /// Follow the selected model or Codex config instead of forcing an effort.
+    #[arg(long)]
+    clear_effort: bool,
 
     /// Optional small/fast model ID.
     #[arg(long)]
@@ -188,13 +239,10 @@ pub fn run() -> Result<u8> {
     match cli.command {
         Command::Config(args) => run_config(&mut store, args),
         Command::Doctor => Ok(if doctor::run(&store)? { 0 } else { 1 }),
-        Command::Claude(args) => run_agent(
-            &store,
-            Agent::Claude,
-            requested_provider.as_deref(),
-            args.args,
-            cli.dry_run,
-        ),
+        Command::Models(args) => run_models(&store, args),
+        Command::Claude(args) => {
+            run_claude(&mut store, requested_provider.as_deref(), args, cli.dry_run)
+        }
         Command::Codex(args) => run_agent(
             &store,
             Agent::Codex,
@@ -244,7 +292,125 @@ fn run_agent(
     args: Vec<OsString>,
     dry_run: bool,
 ) -> Result<u8> {
-    let spec = launch::build(store, agent, requested_provider, &args)?;
+    let spec = launch::build(
+        store,
+        agent,
+        requested_provider,
+        &args,
+        &launch::LaunchOverrides::default(),
+    )?;
+    run_spec(spec, dry_run)
+}
+
+fn run_claude(
+    store: &mut Store,
+    requested_provider: Option<&str>,
+    args: ClaudeArgs,
+    dry_run: bool,
+) -> Result<u8> {
+    let (profile_name, provider) = {
+        let (name, provider) = store.config.resolve(Agent::Claude, requested_provider)?;
+        (name.to_owned(), provider.clone())
+    };
+
+    if provider.kind != ProviderKind::Codex {
+        if args.effort.is_some() || args.save {
+            bail!(
+                "--effort and --save are available with a Codex provider; use `alc --codex claude`"
+            );
+        }
+        let overrides = launch::LaunchOverrides {
+            model: args.model,
+            reasoning_effort: None,
+            context_window: None,
+        };
+        let spec = launch::build(
+            store,
+            Agent::Claude,
+            requested_provider,
+            &args.args,
+            &overrides,
+        )?;
+        return run_spec(spec, dry_run);
+    }
+
+    let catalog = if dry_run {
+        ModelCatalog::load(&store.dir)
+    } else {
+        ModelCatalog::load_and_refresh_if_due(&store.dir)
+    };
+    let mut model = args
+        .model
+        .as_deref()
+        .map(launch::normalize_codex_model)
+        .unwrap_or(launch::resolve_codex_model(&provider)?);
+    let mut effort = args
+        .effort
+        .or(provider.reasoning_effort)
+        .or(launch::resolve_codex_effort(&provider)?)
+        .or_else(|| catalog.find(&model).map(|entry| entry.default_effort))
+        .unwrap_or(ReasoningEffort::Medium);
+    let mut remember = args.save;
+
+    let interactive = !dry_run
+        && !args.no_picker
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+        && (args.model.is_none() || args.effort.is_none());
+    if interactive {
+        let selection = model_picker::run(
+            &catalog,
+            PickerRequest {
+                model,
+                effort,
+                choose_model: args.model.is_none(),
+                choose_effort: args.effort.is_none(),
+            },
+        )?;
+        let Some(selection) = selection else {
+            println!("Cancelled.");
+            return Ok(0);
+        };
+        model = selection.model;
+        effort = selection.effort;
+        remember |= selection.remember;
+    }
+
+    if let Some(entry) = catalog.find(&model)
+        && !entry.supported_efforts.contains(&effort)
+    {
+        bail!("model '{model}' does not support reasoning effort '{effort}'");
+    }
+
+    if remember {
+        let entry = store
+            .config
+            .providers
+            .get_mut(&profile_name)
+            .context("selected Codex provider disappeared from the config")?;
+        entry.model = model.clone();
+        entry.reasoning_effort = Some(effort);
+        store.save()?;
+        println!("Saved {model} / {effort} as the default for '{profile_name}'.");
+    }
+
+    let context_window = catalog.find(&model).map(|entry| entry.context_window);
+    let overrides = launch::LaunchOverrides {
+        model: Some(model),
+        reasoning_effort: Some(effort),
+        context_window,
+    };
+    let spec = launch::build(
+        store,
+        Agent::Claude,
+        requested_provider,
+        &args.args,
+        &overrides,
+    )?;
+    run_spec(spec, dry_run)
+}
+
+fn run_spec(spec: launch::LaunchSpec, dry_run: bool) -> Result<u8> {
     if dry_run {
         println!(
             "agent: {}\nprovider: {} ({})\ncommand: {}",
@@ -262,6 +428,39 @@ fn run_agent(
         return Ok(0);
     }
     launch::execute(spec)
+}
+
+fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {
+    let catalog = if args.refresh {
+        ModelCatalog::refresh(&store.dir)?
+    } else {
+        ModelCatalog::load_and_refresh_if_due(&store.dir)
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&catalog)?);
+        return Ok(0);
+    }
+
+    println!("Codex -> Claude model catalog");
+    println!("source: {}", catalog.source);
+    for model in &catalog.models {
+        let efforts = model
+            .supported_efforts
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!(
+            "- {}: {} (Codex context: {}K; default: {}; efforts: {})",
+            model.id,
+            model.description,
+            model.context_window / 1_000,
+            model.default_effort,
+            efforts
+        );
+    }
+    println!("Auto-sync: once every 24 hours; run `alc models --refresh` to sync now.");
+    Ok(0)
 }
 
 fn run_config(store: &mut Store, args: ConfigArgs) -> Result<u8> {
@@ -351,6 +550,11 @@ fn upsert(store: &mut Store, args: UpsertArgs) -> Result<()> {
     }
     if let Some(model) = args.model {
         provider.model = model;
+    }
+    if let Some(effort) = args.effort {
+        provider.reasoning_effort = Some(effort);
+    } else if args.clear_effort {
+        provider.reasoning_effort = None;
     }
     if let Some(model) = args.small_model {
         provider.small_model = non_empty(model);
