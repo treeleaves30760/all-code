@@ -17,7 +17,11 @@ Windows PowerShell：
 irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
 ```
 
-第一次安裝後請重開終端機，接著執行：
+安裝器預設會把安裝目錄加入 PATH。macOS、Linux 與 WSL 請依畫面提示重開
+終端機或 `source` 對應的 shell 設定檔；PowerShell 會同時更新目前工作階段與
+User PATH。如果系統不允許修改，安裝器會明確顯示需要手動加入的目錄。
+
+接著執行：
 
 ```sh
 alc config
@@ -26,6 +30,23 @@ alc config
 這會開啟全螢幕 TUI，可新增或編輯 Anthropic、OpenAI API、OpenRouter、
 Codex、Ollama、vLLM 與自訂 provider，並分別指定 Claude、Codex、OpenCode
 的預設 provider。
+
+## 更新 alc
+
+只檢查是否有新版本，或直接更新 `alc` 與隨附的 helper：
+
+```sh
+alc update --check
+alc update
+```
+
+更新時會自動選擇目前作業系統與 CPU 的發行包、核對 GitHub Release 公布的
+SHA-256、確認包內版本，再一起替換 `alc` 與 `claude-codex`。Windows 會先完成
+下載與驗證，等目前的 `alc.exe` 結束後立刻替換；稍候即可用 `alc --version`
+確認。`alc update --force` 可重新安裝目前最新版本。
+
+自訂 `ALC_INSTALL_DIR` 或設定 `ALC_NO_PATH_UPDATE=1` 時，如果目錄不在 PATH，
+安裝器會顯示手動設定提示，不會讓使用者安裝完卻找不到 `alc`。
 
 ## 啟動方式
 

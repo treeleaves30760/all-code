@@ -11,7 +11,7 @@ use crate::config::{
 };
 use crate::model_catalog::ModelCatalog;
 use crate::model_picker::{self, PickerRequest};
-use crate::{doctor, launch, tui};
+use crate::{doctor, launch, tui, update};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -70,6 +70,8 @@ enum Command {
     Doctor,
     /// Show or refresh the GPT models available for Codex-to-Claude.
     Models(ModelsArgs),
+    /// Check for and install the latest alc release.
+    Update(UpdateArgs),
     /// Launch Claude Code.
     Claude(ClaudeArgs),
     /// Launch Codex CLI.
@@ -125,6 +127,17 @@ struct ModelsArgs {
     /// Print the catalog as JSON.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct UpdateArgs {
+    /// Check whether an update is available without installing it.
+    #[arg(long, conflicts_with = "force")]
+    check: bool,
+
+    /// Reinstall the latest release even when this version is current.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -234,12 +247,16 @@ struct KeyArgs {
 pub fn run() -> Result<u8> {
     let cli = Cli::parse();
     let requested_provider = provider_selector(&cli)?;
+    if let Command::Update(args) = &cli.command {
+        return update::run(args.check, args.force);
+    }
     let mut store = Store::load(cli.config_dir.clone())?;
 
     match cli.command {
         Command::Config(args) => run_config(&mut store, args),
         Command::Doctor => Ok(if doctor::run(&store)? { 0 } else { 1 }),
         Command::Models(args) => run_models(&store, args),
+        Command::Update(_) => unreachable!("update is handled before config loading"),
         Command::Claude(args) => {
             run_claude(&mut store, requested_provider.as_deref(), args, cli.dry_run)
         }

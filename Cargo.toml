@@ -1,6 +1,6 @@
 [package]
 name = "all-code"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "One CLI to configure and launch Claude Code, Codex, and OpenCode with multiple LLM providers"
 license = "MIT"
@@ -17,17 +17,23 @@ path = "src/main.rs"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = "0.28"
+flate2 = "1.1"
 ratatui = "0.29"
 rpassword = "7.4"
+semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.11"
+tar = "0.4"
+tempfile = "3.14"
 toml = "0.8"
+ureq = "3.4"
 which = "7.0"
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
-tempfile = "3.14"
 
 [profile.release]
 lto = "thin"

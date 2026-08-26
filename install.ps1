@@ -30,6 +30,24 @@ function Invoke-Download {
     }
 }
 
+function Test-PathContains {
+    param(
+        [AllowNull()][string]$PathValue,
+        [Parameter(Mandatory = $true)][string]$Directory
+    )
+    foreach ($entry in @($PathValue -split ';' | Where-Object { $_ })) {
+        try {
+            $expandedEntry = [Environment]::ExpandEnvironmentVariables($entry)
+            if ([IO.Path]::GetFullPath($expandedEntry).TrimEnd('\') -ieq $Directory) {
+                return $true
+            }
+        } catch {
+            continue
+        }
+    }
+    return $false
+}
+
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 switch ($architecture) {
     'X64' { $arch = 'x86_64' }
@@ -84,24 +102,50 @@ try {
     Copy-Item -Force -LiteralPath $alcSource -Destination (Join-Path $installDir 'alc.exe')
     Copy-Item -Force -LiteralPath $helperSource -Destination (Join-Path $installDir 'claude-codex.exe')
 
-    $pathUpdated = $false
     $normalizedInstallDir = [IO.Path]::GetFullPath($installDir).TrimEnd('\')
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $entries = @($userPath -split ';' | Where-Object { $_ })
-    $alreadyPresent = $entries | Where-Object {
-        try { [IO.Path]::GetFullPath($_).TrimEnd('\') -ieq $normalizedInstallDir } catch { $false }
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $inUserPath = Test-PathContains -PathValue $userPath -Directory $normalizedInstallDir
+    $inMachinePath = Test-PathContains -PathValue $machinePath -Directory $normalizedInstallDir
+    $inCurrentPath = Test-PathContains -PathValue $env:Path -Directory $normalizedInstallDir
+    $pathUpdated = $false
+    $pathUpdateError = $null
+    if (-not $inUserPath -and -not $inMachinePath -and $env:ALC_NO_PATH_UPDATE -ne '1') {
+        try {
+            $entries = @($userPath -split ';' | Where-Object { $_ })
+            $newUserPath = (@($entries) + $normalizedInstallDir) -join ';'
+            [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+            $inUserPath = $true
+            $pathUpdated = $true
+        } catch {
+            $pathUpdateError = $_.Exception.Message
+        }
     }
-    if (-not $alreadyPresent -and $env:ALC_NO_PATH_UPDATE -ne '1') {
-        $newUserPath = (@($entries) + $normalizedInstallDir) -join ';'
-        [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
-        $pathUpdated = $true
+    if (($inUserPath -or $inMachinePath) -and -not $inCurrentPath -and $env:ALC_NO_PATH_UPDATE -ne '1') {
+        $env:Path = "$normalizedInstallDir;$env:Path"
+        $inCurrentPath = $true
     }
 
     Write-Host "`nInstalled alc to $(Join-Path $installDir 'alc.exe')"
     if ($pathUpdated) {
-        Write-Host 'Added the install directory to your user PATH. Restart PowerShell, then run: alc config'
-    } else {
+        Write-Host 'Added the install directory to your User PATH.'
+        Write-Host 'alc is ready in this PowerShell. New terminals will pick it up automatically.'
         Write-Host 'Run: alc config'
+    } elseif ($inCurrentPath) {
+        Write-Host 'alc is already available on PATH. Run: alc config'
+    } elseif ($inUserPath -or $inMachinePath) {
+        Write-Host 'The install directory is already in your persistent PATH.'
+        Write-Host 'Restart PowerShell, then run: alc config'
+    } else {
+        if ($pathUpdateError) {
+            Write-Warning "Could not update your User PATH automatically: $pathUpdateError"
+        } elseif ($env:ALC_NO_PATH_UPDATE -eq '1') {
+            Write-Host 'Automatic PATH updates were disabled by ALC_NO_PATH_UPDATE=1.'
+        }
+        Write-Host 'alc is installed, but its directory is not on PATH.'
+        Write-Host 'Add this directory to Settings > Environment Variables > User variables > Path:'
+        Write-Host "  $normalizedInstallDir"
+        Write-Host 'Then restart PowerShell and run: alc config'
     }
 } finally {
     $resolvedTemp = [IO.Path]::GetFullPath($tempDir)

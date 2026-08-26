@@ -5,6 +5,7 @@ mod launch;
 mod model_catalog;
 mod model_picker;
 mod tui;
+mod update;
 
 use std::process::ExitCode;
 

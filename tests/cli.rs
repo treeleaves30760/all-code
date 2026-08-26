@@ -1,10 +1,32 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::thread;
 
 fn alc(temp: &tempfile::TempDir) -> Command {
     let mut command = Command::cargo_bin("alc").expect("alc binary");
     command.env("ALC_CONFIG_DIR", temp.path());
     command
+}
+
+fn serve_once(body: String) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test HTTP server");
+    let address = listener.local_addr().expect("test server address");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept updater request");
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).expect("read updater request");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write updater response");
+    });
+    (format!("http://{address}/latest"), handle)
 }
 
 #[test]
@@ -157,4 +179,28 @@ fn bundled_model_catalog_is_available_offline() {
         .stdout(predicate::str::contains("gpt-5.6-terra"))
         .stdout(predicate::str::contains("gpt-5.6-sol"))
         .stdout(predicate::str::contains("low, medium, high, xhigh, max"));
+}
+
+#[test]
+fn update_check_does_not_require_a_valid_provider_config() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "this is not valid toml = [",
+    )
+    .unwrap();
+    let release = format!(
+        r#"{{"tag_name":"v{}","html_url":"https://example.test/release","assets":[]}}"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    let (url, server) = serve_once(release);
+
+    alc(&temp)
+        .env("ALC_UPDATE_API_URL", url)
+        .args(["update", "--check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("is up to date"));
+
+    server.join().expect("test HTTP server");
 }

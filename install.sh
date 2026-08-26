@@ -2,7 +2,13 @@
 set -eu
 
 repo="treeleaves30760/all-code"
-install_dir="${ALC_INSTALL_DIR:-$HOME/.local/bin}"
+if [ -n "${ALC_INSTALL_DIR:-}" ]; then
+  install_dir="$ALC_INSTALL_DIR"
+  default_install="no"
+else
+  install_dir="$HOME/.local/bin"
+  default_install="yes"
+fi
 version="${ALC_VERSION:-latest}"
 
 die() {
@@ -82,6 +88,7 @@ tar -xzf "$archive" -C "$extract_dir"
 [ -f "$extract_dir/claude-codex" ] || die "release archive does not contain claude-codex"
 
 mkdir -p "$install_dir"
+install_dir="$(cd "$install_dir" && pwd -P)"
 if command_exists install; then
   install -m 0755 "$extract_dir/alc" "$install_dir/alc"
   install -m 0755 "$extract_dir/claude-codex" "$install_dir/claude-codex"
@@ -91,31 +98,50 @@ else
   chmod 0755 "$install_dir/alc" "$install_dir/claude-codex"
 fi
 
-path_updated="no"
+path_status="present"
+profile=""
 case ":$PATH:" in
   *":$install_dir:"*) ;;
   *)
-    if [ "${ALC_NO_PATH_UPDATE:-0}" != "1" ] && [ "$install_dir" = "$HOME/.local/bin" ]; then
-      case "${SHELL:-}" in
-        */zsh) profile="$HOME/.zshrc" ;;
-        */bash) profile="$HOME/.bashrc" ;;
-        *) profile="$HOME/.profile" ;;
-      esac
+    path_status="missing"
+    case "${SHELL:-}" in
+      */zsh) profile="$HOME/.zshrc" ;;
+      */bash) profile="$HOME/.bashrc" ;;
+      *) profile="$HOME/.profile" ;;
+    esac
+    if [ "${ALC_NO_PATH_UPDATE:-0}" != "1" ] && [ "$default_install" = "yes" ]; then
       marker='# Added by the alc installer'
-      if ! grep -F "$marker" "$profile" >/dev/null 2>&1; then
-        {
+      if grep -F "$marker" "$profile" >/dev/null 2>&1; then
+        path_status="profile"
+      elif {
           printf '\n%s\n' "$marker"
           printf 'export PATH="$HOME/.local/bin:$PATH"\n'
-        } >> "$profile"
+        } >> "$profile"; then
+        path_status="profile"
+      else
+        path_status="failed"
       fi
-      path_updated="yes"
     fi
     ;;
 esac
 
 printf '\nInstalled alc to %s\n' "$install_dir/alc"
-if [ "$path_updated" = "yes" ]; then
-  printf 'Added ~/.local/bin to %s. Restart your terminal, then run: alc config\n' "$profile"
-elif [ -x "$install_dir/alc" ]; then
-  printf 'Run: %s config\n' "$install_dir/alc"
-fi
+case "$path_status" in
+  present)
+    printf 'alc is already available on PATH. Run: alc config\n'
+    ;;
+  profile)
+    printf 'Added ~/.local/bin to PATH in %s.\n' "$profile"
+    printf 'Restart your terminal (or run: source "%s"), then run: alc config\n' "$profile"
+    ;;
+  failed)
+    printf 'Could not update %s automatically.\n' "$profile" >&2
+    printf 'Add this line manually, then restart your terminal:\n' >&2
+    printf '  export PATH="%s:$PATH"\n' "$install_dir" >&2
+    ;;
+  missing)
+    printf 'alc is installed, but %s is not on PATH.\n' "$install_dir" >&2
+    printf 'Add this line to %s, then restart your terminal:\n' "$profile" >&2
+    printf '  export PATH="%s:$PATH"\n' "$install_dir" >&2
+    ;;
+esac

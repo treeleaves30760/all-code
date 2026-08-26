@@ -5,6 +5,7 @@ with the provider you want.
 
 ```text
 alc config
+alc update
 alc claude
 alc codex
 alc opencode
@@ -32,7 +33,30 @@ irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 
 
 The installer puts `alc` and its Codex-to-Claude loopback helper in
 `~/.local/bin` (Windows: `%USERPROFILE%\.local\bin`) and adds that directory to
-your user PATH when needed. Restart the terminal after the first installation.
+your user PATH when needed. On macOS/Linux, restart the terminal or source the
+profile named by the installer. PowerShell updates the current session and your
+User PATH. If PATH cannot be changed, the installer prints the exact directory
+to add manually.
+
+To install into a different directory, set `ALC_INSTALL_DIR`. Custom directories
+are not added silently; the installer tells you when a manual PATH change is
+needed. Set `ALC_NO_PATH_UPDATE=1` to disable automatic PATH changes explicitly.
+
+## Update
+
+Check for a new release or update both `alc` and its bundled helper:
+
+```sh
+alc update --check
+alc update
+```
+
+`alc update` selects the correct release for the current OS and CPU, verifies
+the archive against the release's published SHA-256 checksum, checks the
+packaged version, and then replaces both binaries. Linux and macOS update
+immediately. Windows stages the verified files and finishes replacement just
+after the running `alc.exe` exits; wait a moment before checking `alc --version`.
+Use `alc update --force` to reinstall the current latest release.
 
 `alc` launches existing coding-agent installations; install the agents you
 plan to use separately:
