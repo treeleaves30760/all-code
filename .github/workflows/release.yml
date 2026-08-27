@@ -109,3 +109,19 @@ jobs:
         with:
           generate_release_notes: true
           files: dist/*
+
+  smoke-install-windows:
+    needs: publish
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install published release with Windows PowerShell 5.1
+        shell: powershell
+        env:
+          ALC_VERSION: ${{ github.ref_name }}
+        run: ./tests/install-windows.ps1
+      - name: Install published release with PowerShell 7
+        shell: pwsh
+        env:
+          ALC_VERSION: ${{ github.ref_name }}
+        run: ./tests/install-windows.ps1

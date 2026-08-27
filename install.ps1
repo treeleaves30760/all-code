@@ -48,13 +48,31 @@ function Test-PathContains {
     return $false
 }
 
-$architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-switch ($architecture) {
-    'X64' { $arch = 'x86_64' }
-    'Arm64' { $arch = 'aarch64' }
-    default { throw "Unsupported CPU architecture: $architecture" }
+function Get-AlcWindowsArchitecture {
+    # PROCESSOR_ARCHITEW6432 reports the operating-system architecture when a
+    # 32-bit PowerShell process is running on 64-bit Windows. It must take
+    # precedence over PROCESSOR_ARCHITECTURE, which only describes the process.
+    $architecture = $env:PROCESSOR_ARCHITEW6432
+    if ([string]::IsNullOrWhiteSpace($architecture)) {
+        $architecture = $env:PROCESSOR_ARCHITECTURE
+    }
+    if ([string]::IsNullOrWhiteSpace($architecture)) {
+        throw 'Could not detect the Windows CPU architecture from PROCESSOR_ARCHITEW6432 or PROCESSOR_ARCHITECTURE.'
+    }
+
+    switch ($architecture.Trim().ToUpperInvariant()) {
+        'AMD64' { return 'x86_64' }
+        'X64' { return 'x86_64' }
+        'X86_64' { return 'x86_64' }
+        'ARM64' { return 'aarch64' }
+        'AARCH64' { return 'aarch64' }
+        default {
+            throw "Unsupported Windows CPU architecture: $architecture. alc supports x64 and ARM64 Windows."
+        }
+    }
 }
 
+$arch = Get-AlcWindowsArchitecture
 $asset = "alc-windows-$arch.zip"
 if ($version -eq 'latest') {
     $releaseUrl = "https://github.com/$repo/releases/latest/download"

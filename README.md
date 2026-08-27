@@ -38,6 +38,9 @@ profile named by the installer. PowerShell updates the current session and your
 User PATH. If PATH cannot be changed, the installer prints the exact directory
 to add manually.
 
+The Windows installer is tested with both Windows PowerShell 5.1 and PowerShell
+7, including 32-bit PowerShell running on 64-bit Windows.
+
 To install into a different directory, set `ALC_INSTALL_DIR`. Custom directories
 are not added silently; the installer tells you when a manual PATH change is
 needed. Set `ALC_NO_PATH_UPDATE=1` to disable automatic PATH changes explicitly.

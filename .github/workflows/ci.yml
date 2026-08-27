@@ -39,3 +39,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets --all-features
+
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test installer with Windows PowerShell 5.1
+        shell: powershell
+        run: ./tests/install-windows.ps1
+      - name: Test installer with PowerShell 7
+        shell: pwsh
+        run: ./tests/install-windows.ps1

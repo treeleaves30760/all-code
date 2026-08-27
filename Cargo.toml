@@ -1,6 +1,6 @@
 [package]
 name = "all-code"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "One CLI to configure and launch Claude Code, Codex, and OpenCode with multiple LLM providers"
 license = "MIT"
