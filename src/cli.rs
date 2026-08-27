@@ -10,7 +10,6 @@ use crate::config::{
     validate_profile_name,
 };
 use crate::model_catalog::ModelCatalog;
-use crate::model_picker::{self, PickerRequest};
 use crate::{doctor, launch, tui, update};
 
 #[derive(Debug, Parser)]
@@ -93,19 +92,19 @@ struct Passthrough {
 
 #[derive(Debug, Args)]
 struct ClaudeArgs {
-    /// GPT model for this run (for example gpt-5.6-terra).
+    /// GPT model this session starts on (for example gpt-5.6-terra).
     #[arg(long, value_name = "MODEL")]
     model: Option<String>,
 
-    /// Codex reasoning effort: low, medium, high, xhigh, or max.
+    /// Starting Codex reasoning effort: low, medium, high, xhigh, or max.
     #[arg(long, value_name = "LEVEL")]
     effort: Option<ReasoningEffort>,
 
-    /// Use configured defaults without opening the model picker.
-    #[arg(long)]
+    /// Deprecated and ignored; Claude Code now picks the model in-session.
+    #[arg(long, hide = true)]
     no_picker: bool,
 
-    /// Save the selected model and effort as this provider's defaults.
+    /// Save this run's model and effort as the provider's defaults.
     #[arg(long)]
     save: bool,
 
@@ -338,8 +337,7 @@ fn run_claude(
         }
         let overrides = launch::LaunchOverrides {
             model: args.model,
-            reasoning_effort: None,
-            context_window: None,
+            ..launch::LaunchOverrides::default()
         };
         let spec = launch::build(
             store,
@@ -356,50 +354,10 @@ fn run_claude(
     } else {
         ModelCatalog::load_and_refresh_if_due(&store.dir)
     };
-    let mut model = args
-        .model
-        .as_deref()
-        .map(launch::normalize_codex_model)
-        .unwrap_or(launch::resolve_codex_model(&provider)?);
-    let mut effort = args
-        .effort
-        .or(provider.reasoning_effort)
-        .or(launch::resolve_codex_effort(&provider)?)
-        .or_else(|| catalog.find(&model).map(|entry| entry.default_effort))
-        .unwrap_or(ReasoningEffort::Medium);
-    let mut remember = args.save;
+    let (model, effort) =
+        resolve_codex_defaults(&provider, &catalog, args.model.as_deref(), args.effort)?;
 
-    let interactive = !dry_run
-        && !args.no_picker
-        && io::stdin().is_terminal()
-        && io::stdout().is_terminal()
-        && (args.model.is_none() || args.effort.is_none());
-    if interactive {
-        let selection = model_picker::run(
-            &catalog,
-            PickerRequest {
-                model,
-                effort,
-                choose_model: args.model.is_none(),
-                choose_effort: args.effort.is_none(),
-            },
-        )?;
-        let Some(selection) = selection else {
-            println!("Cancelled.");
-            return Ok(0);
-        };
-        model = selection.model;
-        effort = selection.effort;
-        remember |= selection.remember;
-    }
-
-    if let Some(entry) = catalog.find(&model)
-        && !entry.supported_efforts.contains(&effort)
-    {
-        bail!("model '{model}' does not support reasoning effort '{effort}'");
-    }
-
-    if remember {
+    if args.save {
         let entry = store
             .config
             .providers
@@ -416,6 +374,7 @@ fn run_claude(
         model: Some(model),
         reasoning_effort: Some(effort),
         context_window,
+        model_options: catalog.models.clone(),
     };
     let spec = launch::build(
         store,
@@ -427,6 +386,32 @@ fn run_claude(
     run_spec(spec, dry_run)
 }
 
+/// The model and reasoning effort a Codex-backed Claude Code session starts
+/// on. Claude Code switches both during the session, so these are defaults,
+/// not a fixed choice.
+fn resolve_codex_defaults(
+    provider: &Provider,
+    catalog: &ModelCatalog,
+    model: Option<&str>,
+    effort: Option<ReasoningEffort>,
+) -> Result<(String, ReasoningEffort)> {
+    let model = model
+        .map(launch::normalize_codex_model)
+        .map_or_else(|| launch::resolve_codex_model(provider), Ok)?;
+    let effort = effort
+        .or(provider.reasoning_effort)
+        .or(launch::resolve_codex_effort(provider)?)
+        .or_else(|| catalog.find(&model).map(|entry| entry.default_effort))
+        .unwrap_or(ReasoningEffort::Medium);
+
+    if let Some(entry) = catalog.find(&model)
+        && !entry.supported_efforts.contains(&effort)
+    {
+        bail!("model '{model}' does not support reasoning effort '{effort}'");
+    }
+    Ok((model, effort))
+}
+
 fn run_spec(spec: launch::LaunchSpec, dry_run: bool) -> Result<u8> {
     if dry_run {
         println!(
@@ -436,7 +421,7 @@ fn run_spec(spec: launch::LaunchSpec, dry_run: bool) -> Result<u8> {
             spec.provider_kind,
             spec.redacted_command()
         );
-        if spec.needs_codex_proxy {
+        if spec.codex_plan.is_some() {
             println!(
                 "adapter: bundled claude-codex {} on an ephemeral loopback port",
                 launch::CLAUDE_CODEX_HELPER_VERSION
@@ -688,6 +673,52 @@ fn non_empty(value: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn codex_provider(model: &str, effort: Option<ReasoningEffort>) -> Provider {
+        let mut provider = Provider::for_kind(ProviderKind::Codex);
+        provider.model = model.to_owned();
+        provider.reasoning_effort = effort;
+        provider
+    }
+
+    #[test]
+    fn saved_provider_values_become_the_session_defaults() {
+        let provider = codex_provider("gpt-5.6-luna", Some(ReasoningEffort::Low));
+        let resolved =
+            resolve_codex_defaults(&provider, &ModelCatalog::built_in(), None, None).unwrap();
+        assert_eq!(resolved, ("gpt-5.6-luna".to_owned(), ReasoningEffort::Low));
+    }
+
+    #[test]
+    fn command_line_values_override_the_saved_provider() {
+        let provider = codex_provider("gpt-5.6-luna", Some(ReasoningEffort::Low));
+        let resolved = resolve_codex_defaults(
+            &provider,
+            &ModelCatalog::built_in(),
+            Some("gpt-5.6"),
+            Some(ReasoningEffort::Max),
+        )
+        .unwrap();
+        assert_eq!(resolved, ("gpt-5.6-sol".to_owned(), ReasoningEffort::Max));
+    }
+
+    #[test]
+    fn an_effort_the_model_rejects_is_reported() {
+        let mut catalog = ModelCatalog::built_in();
+        let limited = catalog
+            .models
+            .iter_mut()
+            .find(|model| model.id == "gpt-5.6-luna")
+            .expect("catalog entry");
+        limited.supported_efforts = vec![ReasoningEffort::Low];
+        let provider = codex_provider("gpt-5.6-luna", Some(ReasoningEffort::Max));
+
+        let error = resolve_codex_defaults(&provider, &catalog, None, None).unwrap_err();
+        assert!(
+            error.to_string().contains("does not support"),
+            "unexpected error: {error}"
+        );
+    }
 
     #[test]
     fn empty_values_become_none() {

@@ -1,14 +1,4 @@
-use std::io::{self, Stdout};
-use std::time::Duration;
-
-use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -16,8 +6,6 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 
 use crate::config::ReasoningEffort;
 use crate::model_catalog::{ModelCatalog, ModelInfo};
-
-type Backend = CrosstermBackend<Stdout>;
 
 #[derive(Debug, Clone)]
 pub struct PickerRequest {
@@ -31,7 +19,6 @@ pub struct PickerRequest {
 pub struct RuntimeSelection {
     pub model: String,
     pub effort: ReasoningEffort,
-    pub remember: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,60 +27,8 @@ enum Stage {
     Effort,
 }
 
-pub fn run(catalog: &ModelCatalog, request: PickerRequest) -> Result<Option<RuntimeSelection>> {
-    if !request.choose_model && !request.choose_effort {
-        return Ok(Some(RuntimeSelection {
-            model: request.model,
-            effort: request.effort,
-            remember: false,
-        }));
-    }
-
-    let mut terminal = setup_terminal()?;
-    let _cleanup = TerminalCleanup;
-    let mut app = PickerApp::new(catalog, request);
-
-    loop {
-        terminal.draw(|frame| draw(frame, &app))?;
-        if let Some(result) = app.result.take() {
-            return Ok(result);
-        }
-        if event::poll(Duration::from_millis(250))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == event::KeyEventKind::Press
-        {
-            app.handle_key(key);
-        }
-    }
-}
-
-fn setup_terminal() -> Result<Terminal<Backend>> {
-    enable_raw_mode()?;
-    let result = (|| {
-        let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
-        let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-        terminal.clear()?;
-        Ok(terminal)
-    })();
-    if result.is_err() {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
-    }
-    result
-}
-
-struct TerminalCleanup;
-
-impl Drop for TerminalCleanup {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
-    }
-}
-
-struct PickerApp<'a> {
-    catalog: &'a ModelCatalog,
+pub struct PickerApp {
+    catalog: ModelCatalog,
     stage: Stage,
     model_selected: usize,
     initial_model_selected: Option<usize>,
@@ -101,12 +36,11 @@ struct PickerApp<'a> {
     choose_model: bool,
     choose_effort: bool,
     fixed_model: String,
-    remember: bool,
     result: Option<Option<RuntimeSelection>>,
 }
 
-impl<'a> PickerApp<'a> {
-    fn new(catalog: &'a ModelCatalog, request: PickerRequest) -> Self {
+impl PickerApp {
+    pub fn new(catalog: ModelCatalog, request: PickerRequest) -> Self {
         let initial_model_selected = catalog
             .models
             .iter()
@@ -136,12 +70,11 @@ impl<'a> PickerApp<'a> {
             choose_model: request.choose_model,
             choose_effort: request.choose_effort,
             fixed_model: request.model,
-            remember: false,
             result: None,
         }
     }
 
-    fn handle_key(&mut self, key: KeyEvent) {
+    pub fn handle_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.result = Some(None);
             return;
@@ -153,8 +86,7 @@ impl<'a> PickerApp<'a> {
                 let index = character.to_digit(10).unwrap_or(1) as usize - 1;
                 self.select_index(index);
             }
-            KeyCode::Enter => self.advance(false),
-            KeyCode::Char('s') => self.advance(true),
+            KeyCode::Enter => self.advance(),
             KeyCode::Esc => {
                 if self.stage == Stage::Effort && self.choose_model {
                     self.stage = Stage::Model;
@@ -184,8 +116,7 @@ impl<'a> PickerApp<'a> {
         }
     }
 
-    fn advance(&mut self, remember: bool) {
-        self.remember |= remember;
+    fn advance(&mut self) {
         if self.stage == Stage::Model && self.choose_effort {
             if self.initial_model_selected != Some(self.model_selected)
                 && let Some(model) = self.selected_model()
@@ -206,8 +137,13 @@ impl<'a> PickerApp<'a> {
         self.result = Some(Some(RuntimeSelection {
             model,
             effort: ReasoningEffort::ALL[self.effort_selected],
-            remember: self.remember,
         }));
+    }
+
+    /// The finished selection, or `None` when the user cancelled. Returns
+    /// `None` overall while the picker is still open.
+    pub fn take_result(&mut self) -> Option<Option<RuntimeSelection>> {
+        self.result.take()
     }
 
     fn selected_model(&self) -> Option<&ModelInfo> {
@@ -215,7 +151,7 @@ impl<'a> PickerApp<'a> {
     }
 }
 
-fn draw(frame: &mut ratatui::Frame, app: &PickerApp<'_>) {
+pub fn draw(frame: &mut ratatui::Frame, app: &PickerApp) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -235,7 +171,7 @@ fn draw(frame: &mut ratatui::Frame, app: &PickerApp<'_>) {
     let header = Paragraph::new(vec![
         Line::from(vec![
             Span::styled(
-                " alc / Codex -> Claude ",
+                " alc config / Codex -> Claude ",
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
@@ -263,8 +199,8 @@ fn draw(frame: &mut ratatui::Frame, app: &PickerApp<'_>) {
     };
     let effort = ReasoningEffort::ALL[app.effort_selected];
     let footer = Paragraph::new(vec![
-        Line::from(format!(" Selected: {model} / {effort}")),
-        Line::from(" Enter: run once    S: save as default + run    Esc: back/cancel"),
+        Line::from(format!(" Default: {model} / {effort}")),
+        Line::from(" Enter: confirm    Esc: back/cancel"),
     ])
     .style(Style::default().fg(Color::Green))
     .alignment(Alignment::Center)
@@ -272,7 +208,7 @@ fn draw(frame: &mut ratatui::Frame, app: &PickerApp<'_>) {
     frame.render_widget(footer, areas[2]);
 }
 
-fn draw_models(frame: &mut ratatui::Frame, app: &PickerApp<'_>, area: Rect) {
+fn draw_models(frame: &mut ratatui::Frame, app: &PickerApp, area: Rect) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
@@ -337,7 +273,7 @@ fn draw_models(frame: &mut ratatui::Frame, app: &PickerApp<'_>, area: Rect) {
     );
 }
 
-fn draw_efforts(frame: &mut ratatui::Frame, app: &PickerApp<'_>, area: Rect) {
+fn draw_efforts(frame: &mut ratatui::Frame, app: &PickerApp, area: Rect) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
@@ -415,12 +351,61 @@ fn effort_description(effort: ReasoningEffort) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn rendered(app: &PickerApp) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(96, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn the_model_screen_shows_the_whole_catalog() {
+        let app = PickerApp::new(
+            ModelCatalog::built_in(),
+            PickerRequest {
+                model: "gpt-5.6-terra".into(),
+                effort: ReasoningEffort::Medium,
+                choose_model: true,
+                choose_effort: true,
+            },
+        );
+        let screen = rendered(&app);
+        for id in ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] {
+            assert!(screen.contains(id), "{id} is missing from the picker");
+        }
+    }
+
+    #[test]
+    fn the_effort_screen_shows_every_level() {
+        let mut app = PickerApp::new(
+            ModelCatalog::built_in(),
+            PickerRequest {
+                model: "gpt-5.6-terra".into(),
+                effort: ReasoningEffort::Medium,
+                choose_model: true,
+                choose_effort: true,
+            },
+        );
+        app.advance();
+        let screen = rendered(&app);
+        for effort in ReasoningEffort::ALL {
+            assert!(screen.contains(effort.as_str()), "{effort} is missing");
+        }
+    }
 
     #[test]
     fn picker_defaults_to_terra_when_model_is_unknown() {
         let catalog = ModelCatalog::built_in();
         let app = PickerApp::new(
-            &catalog,
+            catalog,
             PickerRequest {
                 model: "unknown".into(),
                 effort: ReasoningEffort::Medium,
@@ -441,7 +426,7 @@ mod tests {
     fn saved_effort_is_preserved_for_the_current_model() {
         let catalog = ModelCatalog::built_in();
         let mut app = PickerApp::new(
-            &catalog,
+            catalog,
             PickerRequest {
                 model: "gpt-5.6-sol".into(),
                 effort: ReasoningEffort::Max,
@@ -449,7 +434,7 @@ mod tests {
                 choose_effort: true,
             },
         );
-        app.advance(false);
+        app.advance();
         assert_eq!(
             ReasoningEffort::ALL[app.effort_selected],
             ReasoningEffort::Max
@@ -460,7 +445,7 @@ mod tests {
     fn changing_model_selects_its_codex_default_effort() {
         let catalog = ModelCatalog::built_in();
         let mut app = PickerApp::new(
-            &catalog,
+            catalog,
             PickerRequest {
                 model: "gpt-5.6-terra".into(),
                 effort: ReasoningEffort::Medium,
@@ -468,29 +453,16 @@ mod tests {
                 choose_effort: true,
             },
         );
-        app.move_selected(1);
-        app.advance(false);
+        app.move_selected(-1);
+        app.advance();
+        assert_eq!(
+            app.selected_model().unwrap().id,
+            "gpt-5.6-sol",
+            "the catalog lists the most capable model first"
+        );
         assert_eq!(
             ReasoningEffort::ALL[app.effort_selected],
             ReasoningEffort::Low
         );
-    }
-
-    #[test]
-    fn save_choice_survives_both_picker_steps() {
-        let catalog = ModelCatalog::built_in();
-        let mut app = PickerApp::new(
-            &catalog,
-            PickerRequest {
-                model: "gpt-5.6-terra".into(),
-                effort: ReasoningEffort::Medium,
-                choose_model: true,
-                choose_effort: true,
-            },
-        );
-        app.advance(true);
-        app.advance(false);
-        let selection = app.result.take().flatten().unwrap();
-        assert!(selection.remember);
     }
 }
