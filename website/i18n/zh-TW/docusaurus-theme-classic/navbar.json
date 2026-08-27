@@ -1,0 +1,22 @@
+{
+  "title": {
+    "message": "all-code",
+    "description": "The title in the navbar"
+  },
+  "logo.alt": {
+    "message": "all-code 標誌",
+    "description": "The alt text of navbar logo"
+  },
+  "item.label.Docs": {
+    "message": "文件",
+    "description": "Navbar item with label Docs"
+  },
+  "item.label.Download": {
+    "message": "下載",
+    "description": "Navbar item with label Download"
+  },
+  "item.label.GitHub": {
+    "message": "GitHub",
+    "description": "Navbar item with label GitHub"
+  }
+}
