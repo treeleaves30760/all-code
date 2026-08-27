@@ -1,7 +1,16 @@
 # all-code (`alc`)
 
-Configure LLM providers once, then launch Claude Code, Codex CLI, or OpenCode
-with the provider you want.
+**One CLI for Claude Code, Codex CLI, and OpenCode.** Configure your LLM
+providers once, then launch any of the three coding agents with any provider —
+including running Claude Code on your Codex/ChatGPT subscription.
+
+[![CI](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml/badge.svg)](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/treeleaves30760/all-code?logo=github)](https://github.com/treeleaves30760/all-code/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](#install)
+
+📖 **[Documentation](https://treeleaves30760.github.io/all-code/)** ·
+🇹🇼 **[繁體中文](https://treeleaves30760.github.io/all-code/zh-TW/)**
 
 ```text
 alc config
@@ -15,7 +24,18 @@ alc --openrouter codex
 alc --provider work opencode
 ```
 
-[繁體中文快速開始](docs/README.zh-TW.md)
+## What alc does
+
+- **Switch LLM provider per agent.** Point Claude Code, Codex CLI, or OpenCode
+  at Anthropic, the OpenAI API, OpenRouter, Ollama, vLLM, or any custom
+  endpoint, and change it for a single run without editing config files.
+- **Run Claude Code on GPT models.** `alc --codex claude` bridges your Codex /
+  ChatGPT login to Claude Code, and lists every GPT model in Claude Code's own
+  `/model` picker so you switch model and reasoning effort mid-session.
+- **Validate before launching.** alc checks that the agent and provider speak a
+  compatible model protocol instead of sending a request that cannot work.
+- **Keep credentials out of the way.** API keys live in a separate file or come
+  from environment variables; nothing is copied between agents.
 
 ## Install
 

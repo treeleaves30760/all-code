@@ -1,0 +1,54 @@
+{
+  "link.title.Docs": {
+    "message": "文件",
+    "description": "The title of the footer links column with title=Docs in the footer"
+  },
+  "link.title.Project": {
+    "message": "專案",
+    "description": "The title of the footer links column with title=Project in the footer"
+  },
+  "link.title.Agents": {
+    "message": "Coding agent",
+    "description": "The title of the footer links column with title=Agents in the footer"
+  },
+  "link.item.label.Introduction": {
+    "message": "簡介",
+    "description": "The label of footer link with label=Introduction linking to /"
+  },
+  "link.item.label.Install": {
+    "message": "安裝",
+    "description": "The label of footer link with label=Install linking to /installation"
+  },
+  "link.item.label.Claude Code on GPT": {
+    "message": "用 GPT 跑 Claude Code",
+    "description": "The label of footer link with label=Claude Code on GPT linking to /codex-to-claude"
+  },
+  "link.item.label.GitHub": {
+    "message": "GitHub",
+    "description": "The label of footer link with label=GitHub linking to https://github.com/treeleaves30760/all-code"
+  },
+  "link.item.label.Releases": {
+    "message": "發行版本",
+    "description": "The label of footer link with label=Releases linking to https://github.com/treeleaves30760/all-code/releases"
+  },
+  "link.item.label.Issues": {
+    "message": "問題回報",
+    "description": "The label of footer link with label=Issues linking to https://github.com/treeleaves30760/all-code/issues"
+  },
+  "link.item.label.Claude Code": {
+    "message": "Claude Code",
+    "description": "The label of footer link with label=Claude Code linking to https://code.claude.com/docs/en/setup"
+  },
+  "link.item.label.Codex CLI": {
+    "message": "Codex CLI",
+    "description": "The label of footer link with label=Codex CLI linking to https://learn.chatgpt.com/docs/codex/cli"
+  },
+  "link.item.label.OpenCode": {
+    "message": "OpenCode",
+    "description": "The label of footer link with label=OpenCode linking to https://opencode.ai/docs"
+  },
+  "copyright": {
+    "message": "採用 MIT 授權。Copyright © 2026 treeleaves30760。",
+    "description": "The footer copyright"
+  }
+}

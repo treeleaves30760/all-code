@@ -5,8 +5,10 @@ edition = "2024"
 description = "One CLI to configure and launch Claude Code, Codex, and OpenCode with multiple LLM providers"
 license = "MIT"
 repository = "https://github.com/treeleaves30760/all-code"
+homepage = "https://treeleaves30760.github.io/all-code/"
+documentation = "https://treeleaves30760.github.io/all-code/"
 readme = "README.md"
-keywords = ["llm", "claude-code", "codex", "opencode", "tui"]
+keywords = ["llm", "claude-code", "codex", "opencode", "coding-agent"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
