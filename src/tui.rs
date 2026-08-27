@@ -20,13 +20,17 @@ use crate::config::{
     Agent, AuthStyle, Config, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
     validate_profile_name,
 };
+use crate::model_catalog::ModelCatalog;
+use crate::model_picker::{PickerApp, PickerRequest};
 
 type Backend = CrosstermBackend<Stdout>;
 
 pub fn run(store: &mut Store) -> Result<()> {
+    // Refresh before taking over the screen so the model chooser is current.
+    let catalog = ModelCatalog::load_and_refresh_if_due(&store.dir);
     let mut terminal = setup_terminal()?;
     let _cleanup = TerminalCleanup;
-    let mut app = App::new(store.clone());
+    let mut app = App::new(store.clone(), catalog);
 
     loop {
         terminal.draw(|frame| draw(frame, &mut app))?;
@@ -77,11 +81,14 @@ enum Screen {
     Providers,
     Defaults,
     Edit,
+    Model,
     ConfirmDelete,
 }
 
 struct App {
     store: Store,
+    catalog: ModelCatalog,
+    picker: Option<PickerApp>,
     screen: Screen,
     provider_selected: usize,
     default_selected: usize,
@@ -94,9 +101,11 @@ struct App {
 }
 
 impl App {
-    fn new(store: Store) -> Self {
+    fn new(store: Store, catalog: ModelCatalog) -> Self {
         Self {
             store,
+            catalog,
+            picker: None,
             screen: Screen::Providers,
             provider_selected: 0,
             default_selected: 0,
@@ -119,6 +128,7 @@ impl App {
             Screen::Providers => self.handle_providers(key),
             Screen::Defaults => self.handle_defaults(key),
             Screen::Edit => self.handle_edit(key),
+            Screen::Model => self.handle_model_picker(key),
             Screen::ConfirmDelete => self.handle_delete_confirmation(key),
         }
     }
@@ -182,6 +192,7 @@ impl App {
             KeyCode::Enter => self.apply_edit(),
             KeyCode::Tab | KeyCode::Down => form.move_field(1),
             KeyCode::BackTab | KeyCode::Up => form.move_field(-1),
+            KeyCode::Left | KeyCode::Right if form.browses_models() => self.open_model_picker(),
             KeyCode::Left => form.cycle(-1),
             KeyCode::Right => form.cycle(1),
             KeyCode::Backspace => form.backspace(),
@@ -198,6 +209,49 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn open_model_picker(&mut self) {
+        let Some(form) = self.edit.as_ref() else {
+            return;
+        };
+        let effort = form
+            .provider
+            .reasoning_effort
+            .unwrap_or(ReasoningEffort::Medium);
+        self.picker = Some(PickerApp::new(
+            self.catalog.clone(),
+            PickerRequest {
+                model: form.provider.model.clone(),
+                effort,
+                choose_model: true,
+                choose_effort: true,
+            },
+        ));
+        self.screen = Screen::Model;
+    }
+
+    fn handle_model_picker(&mut self, key: KeyEvent) {
+        let Some(picker) = self.picker.as_mut() else {
+            self.screen = Screen::Edit;
+            return;
+        };
+        picker.handle_key(key);
+        let Some(result) = picker.take_result() else {
+            return;
+        };
+        if let Some(selection) = result
+            && let Some(form) = self.edit.as_mut()
+        {
+            form.provider.model = selection.model.clone();
+            form.provider.reasoning_effort = Some(selection.effort);
+            self.set_status(
+                format!("Default model: {} / {}", selection.model, selection.effort),
+                false,
+            );
+        }
+        self.picker = None;
+        self.screen = Screen::Edit;
     }
 
     fn handle_delete_confirmation(&mut self, key: KeyEvent) {
@@ -416,6 +470,12 @@ impl EditForm {
             (self.selected as isize + delta).rem_euclid(Self::FIELD_COUNT as isize) as usize;
     }
 
+    /// Codex profiles pick their model from the synchronized catalog instead
+    /// of typing an ID by hand.
+    fn browses_models(&self) -> bool {
+        self.selected == 2 && self.provider.kind == ProviderKind::Codex
+    }
+
     fn cycle(&mut self, delta: isize) {
         match self.selected {
             1 => {
@@ -523,7 +583,15 @@ impl EditForm {
         vec![
             ("Profile name", self.name.clone(), "text"),
             ("Kind", self.provider.kind.to_string(), "←/→"),
-            ("Model", self.provider.model.clone(), "text"),
+            (
+                "Model",
+                self.provider.model.clone(),
+                if self.provider.kind == ProviderKind::Codex {
+                    "←/→ browse"
+                } else {
+                    "text"
+                },
+            ),
             (
                 "Reasoning effort",
                 self.provider
@@ -579,6 +647,13 @@ impl EditForm {
 }
 
 fn draw(frame: &mut ratatui::Frame, app: &mut App) {
+    if app.screen == Screen::Model
+        && let Some(picker) = &app.picker
+    {
+        crate::model_picker::draw(frame, picker);
+        return;
+    }
+
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -609,7 +684,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     match app.screen {
         Screen::Providers | Screen::ConfirmDelete => draw_providers(frame, app, areas[1]),
         Screen::Defaults => draw_defaults(frame, app, areas[1]),
-        Screen::Edit => draw_edit(frame, app, areas[1]),
+        Screen::Edit | Screen::Model => draw_edit(frame, app, areas[1]),
     }
 
     let status_style = if app.status_error {
@@ -635,6 +710,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         Screen::Edit => {
             " ↑↓/Tab field  ←→ choice  type/backspace edit  Ctrl+U clear  Enter apply  Esc cancel"
         }
+        Screen::Model => " ↑↓ select  Enter confirm  Esc back",
     };
     frame.render_widget(
         Paragraph::new(help).style(Style::default().fg(Color::DarkGray)),
@@ -847,6 +923,61 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Config, Credentials};
+    use crate::model_catalog::ModelCatalog;
+    use std::path::PathBuf;
+
+    fn app_editing_codex(model: &str) -> App {
+        let store = Store {
+            dir: PathBuf::from("test"),
+            config: Config::default(),
+            credentials: Credentials::default(),
+        };
+        let mut provider = Provider::for_kind(ProviderKind::Codex);
+        provider.model = model.to_owned();
+        let mut app = App::new(store, ModelCatalog::built_in());
+        let mut form = EditForm::existing("codex".to_owned(), provider, false);
+        form.selected = 2;
+        app.edit = Some(form);
+        app.screen = Screen::Edit;
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn the_model_field_browses_the_catalog_for_codex_providers() {
+        let mut app = app_editing_codex("gpt-5.6-luna");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.screen, Screen::Model);
+    }
+
+    #[test]
+    fn other_provider_kinds_keep_typing_their_model_name() {
+        let mut app = app_editing_codex("gpt-5.6-luna");
+        app.edit.as_mut().unwrap().provider.kind = ProviderKind::Openrouter;
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.screen, Screen::Edit);
+    }
+
+    #[test]
+    fn choosing_a_model_fills_in_the_provider_form() {
+        let mut app = app_editing_codex("gpt-5.6-sol");
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+
+        let form = app.edit.as_ref().expect("edit form");
+        assert_eq!(form.provider.model, "gpt-5.6-terra");
+        assert_eq!(
+            form.provider.reasoning_effort,
+            Some(ReasoningEffort::Medium)
+        );
+        assert_eq!(app.screen, Screen::Edit);
+    }
 
     #[test]
     fn changing_kind_applies_kind_defaults() {

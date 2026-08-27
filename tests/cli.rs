@@ -116,8 +116,8 @@ fn codex_to_claude_accepts_explicit_model_and_effort() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("ALC_CODEX_MODEL=gpt-5.6-sol"))
-        .stdout(predicate::str::contains("ALC_CODEX_EFFORT=max"))
+        .stdout(predicate::str::contains("--model gpt-5.6-sol"))
+        .stdout(predicate::str::contains("--effort max"))
         .stdout(predicate::str::contains("claude-codex"));
 }
 
@@ -136,7 +136,20 @@ fn generic_gpt_56_alias_uses_bridge_supported_sol() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("ALC_CODEX_MODEL=gpt-5.6-sol"));
+        .stdout(predicate::str::contains("--model gpt-5.6-sol"));
+}
+
+#[test]
+fn codex_to_claude_offers_every_gpt_model_inside_claude_code() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"model\":\"gpt-5.6-luna\""))
+        .stdout(predicate::str::contains("\"model\":\"gpt-5.6-terra\""))
+        .stdout(predicate::str::contains("\"model\":\"gpt-5.6-sol\""))
+        .stdout(predicate::str::contains("\"replaceBuiltInOptions\":true"));
 }
 
 #[test]

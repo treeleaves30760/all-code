@@ -97,11 +97,12 @@ alc --openrouter codex
 alc -p local-vllm opencode
 ```
 
-`alc --codex claude` opens a guided picker for the GPT model and reasoning
-effort. Press Enter to run once, or `S` to save the selection and run.
+`alc --codex claude` starts Claude Code straight away and lists every GPT model
+in Claude Code's own `/model` picker, so you switch model and reasoning effort
+inside the session. Set the launch defaults in `alc config`.
 
-Apart from Claude's alc-specific `--model`, `--effort`, `--save`, and
-`--no-picker` options, arguments after the agent name are forwarded unchanged:
+Apart from Claude's alc-specific `--model`, `--effort`, and `--save` options,
+arguments after the agent name are forwarded unchanged:
 
 ```sh
 alc --codex codex exec "review this repository"
@@ -161,38 +162,51 @@ codex login
 alc --codex claude
 ```
 
-In an interactive terminal, `alc` lets you choose both settings before Claude
-Code starts:
+Claude Code starts immediately on your saved default and offers every model in
+its own `/model` picker:
 
 | Model | Beginner-friendly use case | Codex default effort |
 | --- | --- | --- |
-| `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
-| `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
 | `gpt-5.6-sol` | Frontier capability for the hardest professional work | `low` |
+| `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
+| `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
+
+The list is ordered by capability, most capable first, matching Codex's own
+tiers for this family.
 
 See OpenAI's [model selection guide](https://developers.openai.com/api/docs/guides/latest-model),
 [Luna reference](https://developers.openai.com/api/docs/models/gpt-5.6-luna),
 and [Sol reference](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
 for current upstream details.
 
-Every model can be paired with `low`, `medium`, `high`, `xhigh`, or `max`.
-Higher effort gives the model more room to reason, but can take longer and use
-more quota. For scripts, CI, or a specific one-off choice, skip the picker by
-providing both options:
+Inside the session, `/model` switches the GPT model and its left/right arrows
+adjust the effort slider; `/effort` sets a level directly. Every model accepts
+`low`, `medium`, `high`, `xhigh`, or `max`. Higher effort gives the model more
+room to reason, but can take longer and use more quota.
+
+alc passes the model list through Claude Code's
+[`modelPicker`](https://code.claude.com/docs/en/settings-reference#modelpicker)
+setting, added in Claude Code 2.1.243. The picker shows only these GPT models
+and the Default row, because Claude's own lineup cannot be served through the
+Codex adapter. Older clients ignore the setting and still get the launch default
+as a selectable entry. Because Claude Code sends the model and effort with every
+request, alc never pins either one on the adapter.
+
+To choose a different starting point for one run, or in scripts and CI:
 
 ```sh
 alc --codex claude --model gpt-5.6-luna --effort low
 alc --codex claude --model gpt-5.6-terra --effort medium --save
-alc --codex claude --no-picker
 ```
 
-`--save` stores the model and effort in the selected alc provider. `--no-picker`
-uses the saved provider values, the selected Codex profile, or the model's
-documented default. In non-interactive terminals, alc automatically uses those
-resolved defaults.
+`--save` stores the model and effort in the selected alc provider. Without
+these options the session starts on the alc provider's values, then the selected
+Codex profile, then the model's documented default. An explicit `--model`,
+`--effort`, or `--settings` placed after `--` is forwarded to Claude Code
+untouched and wins over what alc would inject.
 
 The model catalog is synchronized from the installed Codex CLI at most once
-every 24 hours. A bundled catalog keeps the picker working offline:
+every 24 hours. A bundled catalog keeps the model list working offline:
 
 ```sh
 alc models
@@ -213,10 +227,14 @@ that Claude Code child process at it, and stops it when Claude exits. The helper
 reads and may refresh `~/.codex/auth.json`; credentials are never copied into
 the `alc` config.
 
-When no choice is made, the model and effort come from the selected alc profile.
-Empty values fall through to `~/.codex/<profile>.config.toml`, then
-`~/.codex/config.toml`; the picker recommends Terra when no family member is
-configured.
+Claude Code's built-in aliases stay on Codex as well: the picker's Default row
+follows the alc default, `haiku` and background work use the cheapest catalog
+model, `sonnet` follows the session's starting model, and `opus` uses the most
+capable one.
+
+A model chosen with `/model` applies to that Claude Code session. The next
+`alc --codex claude` starts from the alc provider default again, so `alc config`
+stays the source of truth.
 
 This adapter is a third-party compatibility layer, not an official OpenAI or
 Anthropic integration. Review [THIRD_PARTY.md](THIRD_PARTY.md) and your provider
@@ -255,6 +273,8 @@ The TUI keys are shown at the bottom of every screen. The primary controls are:
 - `a`, `e`/Enter, `d`: add, edit, or delete a provider.
 - `Tab`: switch between provider profiles and agent defaults.
 - Arrow keys: navigate fields and cycle choices, including reasoning effort.
+- On a Codex profile, `←`/`→` on the Model field opens the guided GPT model and
+  effort chooser, which writes the launch defaults for `alc --codex claude`.
 - `s`: save; `q`: save and quit; `Ctrl+C`: quit without saving.
 
 ## Build from source

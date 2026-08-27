@@ -11,7 +11,9 @@ use crate::config::ReasoningEffort;
 
 const CACHE_FILE: &str = "codex-models.json";
 const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
-const TARGET_MODELS: [&str; 3] = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"];
+/// Codex publishes a fixed capability order for this family, so alc keeps the
+/// catalog sorted from the most capable model to the cheapest one.
+const TARGET_MODELS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -178,6 +180,16 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_catalog_lists_the_most_capable_model_first() {
+        let ids: Vec<_> = ModelCatalog::built_in()
+            .models
+            .iter()
+            .map(|model| model.id.clone())
+            .collect();
+        assert_eq!(ids, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    }
 
     #[test]
     fn bundled_catalog_has_requested_models_and_efforts() {

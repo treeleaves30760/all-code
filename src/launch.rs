@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use crate::config::{Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store};
+use crate::model_catalog::ModelInfo;
 
 pub const CLAUDE_CODEX_HELPER_VERSION: &str = "0.3.1";
 
@@ -20,6 +21,19 @@ pub struct LaunchOverrides {
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub context_window: Option<u64>,
+    /// Models the agent's own picker should offer for this session.
+    pub model_options: Vec<ModelInfo>,
+}
+
+/// What the bundled Codex adapter needs for a Claude Code session. The model
+/// is only the starting point: Claude Code switches models and reasoning
+/// effort per request, so neither is pinned on the adapter.
+#[derive(Debug, Clone)]
+pub struct CodexPlan {
+    pub model: String,
+    pub context_window: Option<u64>,
+    /// Ordered from the most capable model to the cheapest one.
+    pub options: Vec<ModelInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,7 +45,7 @@ pub struct LaunchSpec {
     pub provider_name: String,
     pub provider_kind: ProviderKind,
     pub agent: Agent,
-    pub needs_codex_proxy: bool,
+    pub codex_plan: Option<CodexPlan>,
 }
 
 impl LaunchSpec {
@@ -67,7 +81,7 @@ pub fn build(
         provider_name: profile_name.to_owned(),
         provider_kind: provider.kind,
         agent,
-        needs_codex_proxy: false,
+        codex_plan: None,
     };
 
     if let Some(override_path) = agent_binary_override(agent) {
@@ -104,33 +118,9 @@ pub fn build(
 }
 
 pub fn execute(mut spec: LaunchSpec) -> Result<u8> {
-    let _proxy = if spec.needs_codex_proxy {
-        let model = spec
-            .env
-            .get(OsStr::new("ALC_CODEX_MODEL"))
-            .cloned()
-            .context("internal error: Codex proxy model is missing")?;
-        let effort = spec
-            .env
-            .get(OsStr::new("ALC_CODEX_EFFORT"))
-            .and_then(|value| value.to_str())
-            .context("internal error: Codex proxy effort is missing")?
-            .parse::<ReasoningEffort>()?;
-        let context_window = spec
-            .env
-            .get(OsStr::new("ALC_CODEX_CONTEXT_WINDOW"))
-            .map(|value| {
-                value
-                    .to_string_lossy()
-                    .parse::<u64>()
-                    .context("internal error: Codex context window is invalid")
-            })
-            .transpose()?;
-        let proxy = CodexProxy::start(effort)?;
-        spec.env.remove(OsStr::new("ALC_CODEX_MODEL"));
-        spec.env.remove(OsStr::new("ALC_CODEX_EFFORT"));
-        spec.env.remove(OsStr::new("ALC_CODEX_CONTEXT_WINDOW"));
-        configure_claude_proxy_env(&mut spec, proxy.base_url(), &model, context_window);
+    let _proxy = if let Some(plan) = spec.codex_plan.clone() {
+        let proxy = CodexProxy::start()?;
+        configure_claude_proxy_env(&mut spec, proxy.base_url(), &plan);
         Some(proxy)
     } else {
         None
@@ -162,11 +152,17 @@ fn build_claude(
     passthrough: &[OsString],
     overrides: &LaunchOverrides,
 ) -> Result<()> {
-    spec.args.extend_from_slice(passthrough);
     clear_cloud_provider_env(spec);
 
     if provider.kind == ProviderKind::Codex {
-        spec.needs_codex_proxy = true;
+        if !overrides.model_options.is_empty()
+            && !has_option(passthrough, "--settings", "--settings")
+        {
+            spec.args.extend([
+                OsString::from("--settings"),
+                OsString::from(claude_model_picker_settings(&overrides.model_options)?),
+            ]);
+        }
         let model = overrides
             .model
             .clone()
@@ -176,21 +172,24 @@ fn build_claude(
             .or(provider.reasoning_effort)
             .or(resolve_codex_effort(provider)?)
             .unwrap_or(ReasoningEffort::Medium);
-        spec.env
-            .insert(OsString::from("ALC_CODEX_MODEL"), OsString::from(model));
-        spec.env.insert(
-            OsString::from("ALC_CODEX_EFFORT"),
-            OsString::from(effort.as_str()),
-        );
-        if let Some(context_window) = overrides.context_window {
-            spec.env.insert(
-                OsString::from("ALC_CODEX_CONTEXT_WINDOW"),
-                OsString::from(context_window.to_string()),
-            );
+        spec.codex_plan = Some(CodexPlan {
+            model: model.clone(),
+            context_window: overrides.context_window,
+            options: overrides.model_options.clone(),
+        });
+        if !has_model_override(passthrough) {
+            spec.args
+                .extend([OsString::from("--model"), OsString::from(model)]);
         }
+        if !has_option(passthrough, "--effort", "--effort") {
+            spec.args
+                .extend([OsString::from("--effort"), OsString::from(effort.as_str())]);
+        }
+        spec.args.extend_from_slice(passthrough);
         return Ok(());
     }
 
+    spec.args.extend_from_slice(passthrough);
     if !provider.protocol.supports_anthropic() {
         bail!(
             "provider '{profile_name}' speaks {}, but Claude Code needs Anthropic Messages; use an Anthropic-compatible endpoint, OpenRouter, Ollama, or `alc --codex claude`",
@@ -262,6 +261,29 @@ fn build_claude(
         }
     }
     Ok(())
+}
+
+/// Claude Code lists these rows in `/model`, so the user picks the GPT model
+/// inside the session instead of before launch.
+fn claude_model_picker_settings(models: &[ModelInfo]) -> Result<String> {
+    let options: Vec<Value> = models
+        .iter()
+        .map(|model| {
+            json!({
+                "model": model.id,
+                "label": model.name,
+                "description": model.description,
+            })
+        })
+        .collect();
+    serde_json::to_string(&json!({
+        "modelPicker": {
+            "options": options,
+            // Claude's own lineup cannot be served through the Codex adapter.
+            "replaceBuiltInOptions": true,
+        }
+    }))
+    .context("failed to encode the Claude Code model picker")
 }
 
 fn build_codex(
@@ -477,45 +499,47 @@ fn build_opencode(
     Ok(())
 }
 
-fn configure_claude_proxy_env(
-    spec: &mut LaunchSpec,
-    base_url: String,
-    model: &OsStr,
-    context_window: Option<u64>,
-) {
-    for name in [
-        "ANTHROPIC_MODEL",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "ANTHROPIC_SMALL_FAST_MODEL",
-        "CLAUDE_CODE_SUBAGENT_MODEL",
+fn configure_claude_proxy_env(spec: &mut LaunchSpec, base_url: String, plan: &CodexPlan) {
+    // Claude Code resolves its built-in aliases even when the picker lists GPT
+    // models, so every alias has to land on a model the adapter can serve.
+    let strongest = plan
+        .options
+        .first()
+        .map_or(plan.model.as_str(), |model| model.id.as_str());
+    let cheapest = plan
+        .options
+        .last()
+        .map_or(plan.model.as_str(), |model| model.id.as_str());
+    for (name, value) in [
+        ("ANTHROPIC_MODEL", plan.model.as_str()),
+        // Keeps the picker's Default row on a model the adapter can serve.
+        ("ANTHROPIC_DEFAULT_MODEL", plan.model.as_str()),
+        ("ANTHROPIC_DEFAULT_SONNET_MODEL", plan.model.as_str()),
+        ("ANTHROPIC_DEFAULT_OPUS_MODEL", strongest),
+        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", cheapest),
+        ("ANTHROPIC_SMALL_FAST_MODEL", cheapest),
     ] {
-        spec.env.insert(OsString::from(name), model.to_os_string());
+        spec.env.insert(OsString::from(name), OsString::from(value));
     }
     spec.env.insert(
         OsString::from("ANTHROPIC_BASE_URL"),
         OsString::from(base_url),
     );
-    spec.env.insert(
-        OsString::from("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"),
-        OsString::from("1"),
-    );
-    // Expose the gateway-specific GPT ID in Claude Code's model picker even
-    // when gateway discovery is unavailable in an older client.
+    // Clients older than the `modelPicker` setting still get one selectable
+    // GPT entry from the documented custom-model variables.
     spec.env.insert(
         OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION"),
-        model.to_os_string(),
+        OsString::from(plan.model.clone()),
     );
     spec.env.insert(
         OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
-        OsString::from(format!("{} via Codex", model.to_string_lossy())),
+        OsString::from(format!("{} via Codex", plan.model)),
     );
     spec.env.insert(
         OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
         OsString::from("Selected by all-code using your Codex login"),
     );
-    if let Some(context_window) = context_window {
+    if let Some(context_window) = plan.context_window {
         spec.env.insert(
             OsString::from("CLAUDE_CODE_MAX_CONTEXT_TOKENS"),
             OsString::from(context_window.to_string()),
@@ -783,7 +807,7 @@ struct CodexProxy {
 }
 
 impl CodexProxy {
-    fn start(effort: ReasoningEffort) -> Result<Self> {
+    fn start() -> Result<Self> {
         let helper = find_helper()?;
         let auth_file = codex_auth_file()?;
         if !auth_file.is_file() {
@@ -801,7 +825,6 @@ impl CodexProxy {
             .arg("serve")
             .env("PORT", port.to_string())
             .env("CCP_LOG_STDERR", "0")
-            .env("CCP_CODEX_EFFORT", effort.as_str())
             // The helper's fallback does not use USERPROFILE on Windows, so
             // pass the same Codex home resolution used by the official CLI.
             .env("CCP_CODEX_AUTH_FILE", auth_file)
@@ -924,6 +947,7 @@ fn health_check(address: SocketAddr) -> bool {
 mod tests {
     use super::*;
     use crate::config::{Config, Credentials};
+    use crate::model_catalog::ModelCatalog;
 
     fn store(config: Config, credentials: Credentials) -> Store {
         Store {
@@ -954,12 +978,20 @@ mod tests {
         );
     }
 
+    fn option_value(args: &[OsString], name: &str) -> Option<String> {
+        let index = args.iter().position(|arg| arg.to_string_lossy() == name)?;
+        args.get(index + 1)
+            .map(|value| value.to_string_lossy().into_owned())
+    }
+
     #[test]
-    fn codex_to_claude_passes_selected_model_and_effort_to_helper() {
+    fn codex_to_claude_lists_every_model_in_the_claude_picker() {
+        let catalog = ModelCatalog::built_in();
         let overrides = LaunchOverrides {
-            model: Some("gpt-5.6-sol".into()),
-            reasoning_effort: Some(ReasoningEffort::Max),
-            context_window: Some(272_000),
+            model: Some("gpt-5.6-terra".into()),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            model_options: catalog.models.clone(),
+            ..LaunchOverrides::default()
         };
         let spec = build(
             &store(Config::default(), Credentials::default()),
@@ -969,18 +1001,161 @@ mod tests {
             &overrides,
         )
         .unwrap();
-        assert!(spec.needs_codex_proxy);
+
+        let settings = option_value(&spec.args, "--settings").expect("--settings is injected");
+        let parsed: Value = serde_json::from_str(&settings).expect("valid settings JSON");
+        let picker = &parsed["modelPicker"];
+        let rows = picker["options"]
+            .as_array()
+            .expect("modelPicker options")
+            .clone();
+        let ids: Vec<_> = rows
+            .iter()
+            .map(|row| row["model"].as_str().expect("model id"))
+            .collect();
+        assert_eq!(ids, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
         assert_eq!(
-            spec.env[OsStr::new("ALC_CODEX_MODEL")],
-            OsString::from("gpt-5.6-sol")
+            rows[0]["label"].as_str(),
+            Some("GPT-5.6 Sol"),
+            "the most capable model is listed first"
         );
         assert_eq!(
-            spec.env[OsStr::new("ALC_CODEX_EFFORT")],
-            OsString::from("max")
+            picker["replaceBuiltInOptions"],
+            json!(true),
+            "the Claude lineup cannot be served through the Codex adapter"
         );
+        assert!(
+            rows.iter().all(|row| row.get("capabilities").is_none()),
+            "the setting schema only accepts model, label, and description"
+        );
+    }
+
+    #[test]
+    fn codex_to_claude_starts_claude_on_the_configured_default() {
+        let overrides = LaunchOverrides {
+            model: Some("gpt-5.6-sol".into()),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            model_options: ModelCatalog::built_in().models,
+            ..LaunchOverrides::default()
+        };
+        let spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Claude,
+            Some("codex"),
+            &[],
+            &overrides,
+        )
+        .unwrap();
+
         assert_eq!(
-            spec.env[OsStr::new("ALC_CODEX_CONTEXT_WINDOW")],
-            OsString::from("272000")
+            option_value(&spec.args, "--model").as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(option_value(&spec.args, "--effort").as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn explicit_claude_arguments_win_over_the_injected_defaults() {
+        let overrides = LaunchOverrides {
+            model: Some("gpt-5.6-sol".into()),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            model_options: ModelCatalog::built_in().models,
+            ..LaunchOverrides::default()
+        };
+        let passthrough = [
+            OsString::from("--model"),
+            OsString::from("gpt-5.6-luna"),
+            OsString::from("--effort"),
+            OsString::from("low"),
+            OsString::from("--settings"),
+            OsString::from("{}"),
+        ];
+        let spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Claude,
+            Some("codex"),
+            &passthrough,
+            &overrides,
+        )
+        .unwrap();
+
+        let rendered = spec
+            .args
+            .iter()
+            .map(|value| value.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(rendered, "--model gpt-5.6-luna --effort low --settings {}");
+    }
+
+    #[test]
+    fn codex_to_claude_hands_the_adapter_a_model_but_never_a_fixed_effort() {
+        let overrides = LaunchOverrides {
+            model: Some("gpt-5.6-sol".into()),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            context_window: Some(272_000),
+            model_options: ModelCatalog::built_in().models,
+        };
+        let spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Claude,
+            Some("codex"),
+            &[],
+            &overrides,
+        )
+        .unwrap();
+
+        let plan = spec.codex_plan.expect("Codex adapter plan");
+        assert_eq!(plan.model, "gpt-5.6-sol");
+        assert_eq!(plan.context_window, Some(272_000));
+        // Claude Code sends the effort with every request, so pinning it here
+        // would freeze the in-session effort slider.
+        assert!(
+            !spec
+                .env
+                .keys()
+                .any(|name| name.to_string_lossy().contains("EFFORT")),
+            "no environment variable may pin reasoning effort"
+        );
+    }
+
+    #[test]
+    fn claude_aliases_map_onto_the_codex_model_tiers() {
+        let mut spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Claude,
+            Some("codex"),
+            &[],
+            &LaunchOverrides {
+                model: Some("gpt-5.6-terra".into()),
+                model_options: ModelCatalog::built_in().models,
+                ..LaunchOverrides::default()
+            },
+        )
+        .unwrap();
+        let plan = spec.codex_plan.clone().expect("Codex adapter plan");
+
+        configure_claude_proxy_env(&mut spec, "http://127.0.0.1:9".to_owned(), &plan);
+
+        let value = |name: &str| spec.env[OsStr::new(name)].to_string_lossy().into_owned();
+        assert_eq!(value("ANTHROPIC_MODEL"), "gpt-5.6-terra");
+        // The picker's Default row would otherwise resolve to a Claude model
+        // that the Codex adapter cannot serve.
+        assert_eq!(value("ANTHROPIC_DEFAULT_MODEL"), "gpt-5.6-terra");
+        assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "gpt-5.6-luna");
+        assert_eq!(value("ANTHROPIC_DEFAULT_SONNET_MODEL"), "gpt-5.6-terra");
+        assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "gpt-5.6-sol");
+        assert!(
+            !spec
+                .env
+                .contains_key(OsStr::new("CLAUDE_CODE_SUBAGENT_MODEL")),
+            "subagents follow the model chosen in the session"
+        );
+        assert!(
+            !spec
+                .env
+                .contains_key(OsStr::new("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")),
+            "gateway discovery drops non-Claude model IDs, so alc lists them itself"
         );
     }
 

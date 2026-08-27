@@ -66,7 +66,7 @@ alc --openrouter codex
 alc --provider company-vllm opencode
 ```
 
-除了 Claude 專用的 `--model`、`--effort`、`--save`、`--no-picker` 之外，agent
+除了 Claude 專用的 `--model`、`--effort`、`--save` 之外，agent
 名稱後的參數會原封不動傳入：
 
 ```sh
@@ -92,29 +92,36 @@ codex login
 alc --codex claude
 ```
 
-在互動式終端機裡，這個指令會先開啟兩步驟選單：
+這個指令會直接啟動 Claude Code，不再先跳選單。三個模型都會出現在 Claude Code
+自己的 `/model` 選單裡：
 
-1. 選擇模型：
-   - `gpt-5.6-luna`：速度快、費用低，適合簡單修改與大量例行工作。
-   - `gpt-5.6-terra`：速度、能力、成本均衡，建議新手從這個開始。
-   - `gpt-5.6-sol`：能力最完整，適合架構、困難除錯與大型重構。
-2. 選擇推理強度：`low`、`medium`、`high`、`xhigh`、`max`。
+- `gpt-5.6-sol`：能力最完整，適合架構、困難除錯與大型重構。
+- `gpt-5.6-terra`：速度、能力、成本均衡，建議新手從這個開始。
+- `gpt-5.6-luna`：速度快、費用低，適合簡單修改與大量例行工作。
 
-推理強度越高，模型會花更多時間與額度思考。一般開發建議先用
-`terra + medium`；很簡單的工作可用 `luna + low`，真正困難的問題再提高到
-`sol + high/xhigh/max`。
+清單依能力由強到弱排列，與 Codex 對這個系列公布的分級一致。
 
-按 Enter 只執行這一次；按 `S` 會儲存成預設值後執行。也可以直接用參數，
-很適合腳本或 CI：
+在 Claude Code 裡用 `/model` 換模型，左右方向鍵可調整推理強度；也可以用
+`/effort` 直接指定 `low`、`medium`、`high`、`xhigh`、`max`。強度越高，模型會花
+更多時間與額度思考。一般開發建議先用 `terra + medium`。
+
+模型清單是透過 Claude Code 的
+[`modelPicker`](https://code.claude.com/docs/en/settings-reference#modelpicker)
+設定傳入，這個設定自 Claude Code 2.1.243 起提供。選單只會顯示這些 GPT 模型與
+Default 一列，因為 Claude 自家的模型無法經由 Codex 轉接器服務；舊版會忽略這個
+設定，仍可拿到啟動時的預設模型。因為 Claude Code 每次請求都會帶上模型與強度，
+alc 不會把任何一項鎖在轉接器上。
+
+想單次換掉起始值，或用在腳本與 CI：
 
 ```sh
 alc --codex claude --model gpt-5.6-luna --effort low
 alc --codex claude --model gpt-5.6-terra --effort medium --save
-alc --codex claude --no-picker
 ```
 
-`--save` 會把模型與 effort 存入目前的 Codex provider；`--no-picker` 會直接使用
-已儲存的值。非互動環境也會自動使用預設值，不會卡在選單。
+`--save` 會把模型與 effort 存入目前的 Codex provider。沒有這些參數時，起始值
+依序取自 alc provider、Codex profile、模型內建預設值。放在 `--` 之後的
+`--model`、`--effort`、`--settings` 會原樣交給 Claude Code，並蓋過 alc 的注入值。
 
 模型清單每天最多自動向本機 Codex CLI 同步一次；離線時會使用內建清單：
 
@@ -137,6 +144,9 @@ alc models --json
 model、API URL、Anthropic 相容 URL、protocol、驗證方式、API key 環境變數、
 Codex profile 與啟用狀態。方向鍵左右切換選項，Enter 套用，`s` 儲存。
 
+在 Codex profile 上，把游標移到 Model 欄位並按 `←`/`→`，會開啟原本的模型與
+推理強度選擇畫面，選好即成為 `alc --codex claude` 的啟動預設值。
+
 不想開 TUI 時也可以用指令設定：
 
 ```sh
@@ -147,7 +157,8 @@ alc doctor
 ```
 
 設定優先順序是「這次指令的 `--model/--effort`」→「alc provider」→「Codex
-profile」→「模型目錄預設值」。因此新手可以只用選單，進階使用者仍可完整控制。
+profile」→「模型目錄預設值」。在 Claude Code 裡用 `/model` 換的模型只影響那一次
+工作階段，下次啟動仍以 `alc config` 為準。
 
 ## 重要相容性
 
