@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use anyhow::{Result, bail};
 
 use crate::config::{Agent, Provider, Store};
-use crate::launch::{LaunchOverrides, LaunchSpec};
+use crate::launch::{BridgePlan, LaunchOverrides, LaunchSpec};
 
 pub fn build(
     agent: Agent,
@@ -26,6 +26,20 @@ pub fn build(
         }
         Agent::Pi | Agent::Copilot | Agent::Goose | Agent::Qwen | Agent::Kimi => {
             bail!("{agent} support is not wired up yet on this branch (arrives in a later task)")
+        }
+    }
+}
+
+/// Wires the running bridge (listening on `base_url`) into `spec` for
+/// `spec.agent`. Each agent speaks a different dialect of "point me at a
+/// local OpenAI-ish endpoint," so this is agent-specific.
+pub fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
+    let agent = spec.agent;
+    match agent {
+        Agent::Claude => claude::apply_bridge(spec, base_url, plan),
+        Agent::Codex => Ok(()),
+        Agent::Opencode | Agent::Pi | Agent::Copilot | Agent::Goose | Agent::Qwen | Agent::Kimi => {
+            bail!("{agent} bridge support arrives in a later task")
         }
     }
 }

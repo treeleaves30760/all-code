@@ -832,7 +832,7 @@ pub fn validate_profile_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn atomic_write(path: &Path, bytes: &[u8], secret: bool) -> Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], secret: bool) -> Result<()> {
     #[cfg(windows)]
     let _ = secret;
     let parent = path

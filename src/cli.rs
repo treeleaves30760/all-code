@@ -388,13 +388,13 @@ fn run_agent(
     args: Vec<OsString>,
     dry_run: bool,
 ) -> Result<u8> {
-    let spec = launch::build(
-        store,
-        agent,
-        requested_provider,
-        &args,
-        &launch::LaunchOverrides::default(),
-    )?;
+    let provider = store.config.resolve(agent, requested_provider)?.1.clone();
+    let overrides = if provider.kind == ProviderKind::Codex && agent != Agent::Codex {
+        codex_launch_overrides(store, &provider, dry_run)?
+    } else {
+        launch::LaunchOverrides::default()
+    };
+    let spec = launch::build(store, agent, requested_provider, &args, &overrides)?;
     run_spec(spec, dry_run)
 }
 
@@ -429,32 +429,32 @@ fn run_claude(
         return run_spec(spec, dry_run);
     }
 
-    let catalog = if dry_run {
-        ModelCatalog::load(&store.dir)
+    let overrides = if args.model.is_some() || args.effort.is_some() || args.save {
+        let catalog = load_codex_catalog(store, dry_run);
+        let (model, effort) =
+            resolve_codex_defaults(&provider, &catalog, args.model.as_deref(), args.effort)?;
+
+        if args.save {
+            let entry = store
+                .config
+                .providers
+                .get_mut(&profile_name)
+                .context("selected Codex provider disappeared from the config")?;
+            entry.model = model.clone();
+            entry.reasoning_effort = Some(effort);
+            store.save()?;
+            println!("Saved {model} / {effort} as the default for '{profile_name}'.");
+        }
+
+        let context_window = catalog.find(&model).map(|entry| entry.context_window);
+        launch::LaunchOverrides {
+            model: Some(model),
+            reasoning_effort: Some(effort),
+            context_window,
+            model_options: catalog.models.clone(),
+        }
     } else {
-        ModelCatalog::load_and_refresh_if_due(&store.dir)
-    };
-    let (model, effort) =
-        resolve_codex_defaults(&provider, &catalog, args.model.as_deref(), args.effort)?;
-
-    if args.save {
-        let entry = store
-            .config
-            .providers
-            .get_mut(&profile_name)
-            .context("selected Codex provider disappeared from the config")?;
-        entry.model = model.clone();
-        entry.reasoning_effort = Some(effort);
-        store.save()?;
-        println!("Saved {model} / {effort} as the default for '{profile_name}'.");
-    }
-
-    let context_window = catalog.find(&model).map(|entry| entry.context_window);
-    let overrides = launch::LaunchOverrides {
-        model: Some(model),
-        reasoning_effort: Some(effort),
-        context_window,
-        model_options: catalog.models.clone(),
+        codex_launch_overrides(store, &provider, dry_run)?
     };
     let spec = launch::build(
         store,
@@ -492,6 +492,35 @@ fn resolve_codex_defaults(
     Ok((model, effort))
 }
 
+/// Loads the Codex model catalog, syncing it in the background unless this
+/// is a dry run (which must never touch disk beyond a plain cache read).
+fn load_codex_catalog(store: &Store, dry_run: bool) -> ModelCatalog {
+    if dry_run {
+        ModelCatalog::load(&store.dir)
+    } else {
+        ModelCatalog::load_and_refresh_if_due(&store.dir)
+    }
+}
+
+/// The catalog-backed defaults a Codex-bridged session starts on for any
+/// agent: no CLI overrides applied. `run_claude` layers `--model`/`--effort`/
+/// `--save` on top of this for Claude Code specifically.
+fn codex_launch_overrides(
+    store: &Store,
+    provider: &Provider,
+    dry_run: bool,
+) -> Result<launch::LaunchOverrides> {
+    let catalog = load_codex_catalog(store, dry_run);
+    let (model, effort) = resolve_codex_defaults(provider, &catalog, None, None)?;
+    let context_window = catalog.find(&model).map(|entry| entry.context_window);
+    Ok(launch::LaunchOverrides {
+        model: Some(model),
+        reasoning_effort: Some(effort),
+        context_window,
+        model_options: catalog.models.clone(),
+    })
+}
+
 fn run_spec(spec: launch::LaunchSpec, dry_run: bool) -> Result<u8> {
     if dry_run {
         println!(
@@ -501,11 +530,24 @@ fn run_spec(spec: launch::LaunchSpec, dry_run: bool) -> Result<u8> {
             spec.provider_kind,
             spec.redacted_command()
         );
-        if spec.codex_plan.is_some() {
+        if spec.bridge.is_some() {
             println!(
                 "adapter: bundled claude-codex {} on an ephemeral loopback port",
                 launch::CLAUDE_CODEX_HELPER_VERSION
             );
+        }
+        for entry in &spec.file_setup {
+            match entry {
+                launch::FileSetup::UpsertJson { path, key, .. } => {
+                    println!("setup: would update {} ({key})", path.display());
+                }
+                launch::FileSetup::WriteTemp { path, .. } => {
+                    println!(
+                        "setup: temporary config at {} (contents withheld)",
+                        path.display()
+                    );
+                }
+            }
         }
         return Ok(0);
     }

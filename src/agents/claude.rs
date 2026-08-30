@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 
 use crate::config::{AuthStyle, Provider, ProviderKind, ReasoningEffort, Store};
 use crate::launch::{
-    CodexPlan, LaunchOverrides, LaunchSpec, has_model_override, has_option, key_or_error,
-    missing_key, resolve_codex_effort, resolve_codex_model,
+    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, has_model_override, has_option,
+    key_or_error, missing_key, resolve_codex_effort, resolve_codex_model,
 };
 use crate::model_catalog::ModelInfo;
 
@@ -38,10 +38,14 @@ pub(crate) fn build(
             .or(provider.reasoning_effort)
             .or(resolve_codex_effort(provider)?)
             .unwrap_or(ReasoningEffort::Medium);
-        spec.codex_plan = Some(CodexPlan {
+        spec.bridge = Some(BridgePlan {
             model: model.clone(),
+            // Claude Code sends the effort with every request, so pinning it
+            // on the bridge would freeze the in-session effort slider.
+            effort: None,
             context_window: overrides.context_window,
             options: overrides.model_options.clone(),
+            api: BridgeApi::Messages,
         });
         if !has_model_override(passthrough) {
             spec.args
@@ -152,11 +156,7 @@ fn claude_model_picker_settings(models: &[ModelInfo]) -> Result<String> {
     .context("failed to encode the Claude Code model picker")
 }
 
-pub(crate) fn configure_claude_proxy_env(
-    spec: &mut LaunchSpec,
-    base_url: String,
-    plan: &CodexPlan,
-) {
+pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
     // Claude Code resolves its built-in aliases even when the picker lists GPT
     // models, so every alias has to land on a model the adapter can serve.
     let strongest = plan
@@ -208,6 +208,7 @@ pub(crate) fn configure_claude_proxy_env(
     );
     spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
     spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
+    Ok(())
 }
 
 fn clear_cloud_provider_env(spec: &mut LaunchSpec) {

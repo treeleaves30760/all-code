@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -11,8 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 
 use crate::agents;
-use crate::agents::claude::configure_claude_proxy_env;
-use crate::config::{Agent, Provider, ProviderKind, ReasoningEffort, Store};
+use crate::config::{Agent, Provider, ProviderKind, ReasoningEffort, Store, atomic_write};
 use crate::model_catalog::ModelInfo;
 
 pub const CLAUDE_CODEX_HELPER_VERSION: &str = "0.3.1";
@@ -26,15 +26,60 @@ pub struct LaunchOverrides {
     pub model_options: Vec<ModelInfo>,
 }
 
-/// What the bundled Codex adapter needs for a Claude Code session. The model
-/// is only the starting point: Claude Code switches models and reasoning
-/// effort per request, so neither is pinned on the adapter.
+/// Which wire protocol the bundled bridge should serve to the launched agent.
+///
+/// `Responses` and `Chat` are constructed once a later task's non-Claude
+/// agent builders exist to select them; only `Messages` is produced today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeApi {
+    Messages,
+    #[allow(dead_code)]
+    Responses,
+    #[allow(dead_code)]
+    Chat,
+}
+
+/// What the bundled Codex bridge needs to serve a coding-agent session. For
+/// Claude Code the model is only the starting point: it switches models and
+/// reasoning effort per request, so neither is pinned on the bridge. Every
+/// other agent picks one model/effort at launch, which the bridge pins.
 #[derive(Debug, Clone)]
-pub struct CodexPlan {
+pub struct BridgePlan {
     pub model: String,
+    /// Pinned via CCP_CODEX_EFFORT for non-Messages clients; ALWAYS None for Claude.
+    pub effort: Option<ReasoningEffort>,
     pub context_window: Option<u64>,
-    /// Ordered from the most capable model to the cheapest one.
+    /// Most capable first (catalog order).
     pub options: Vec<ModelInfo>,
+    pub api: BridgeApi,
+}
+
+/// A file-system side effect a launch needs performed before the agent
+/// starts. Contents are never logged; dry runs only name the affected path.
+///
+/// Both variants are fully handled by `process_file_setup` today, but no
+/// agent builder constructs one yet; that arrives with the agents that need
+/// on-disk config (e.g. MCP server entries) in a later task.
+#[derive(Debug, Clone)]
+pub enum FileSetup {
+    /// Merge `value` under root[pointer][key] of a JSON file, creating it if
+    /// absent; refuses to touch a file that fails to parse.
+    #[allow(dead_code)]
+    UpsertJson {
+        path: PathBuf,
+        pointer: &'static str,
+        key: String,
+        value: serde_json::Value,
+    },
+    /// Write a fresh file (0600 on unix when secret); removed after the run
+    /// when cleanup is true.
+    #[allow(dead_code)]
+    WriteTemp {
+        path: PathBuf,
+        contents: String,
+        secret: bool,
+        cleanup: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -46,7 +91,8 @@ pub struct LaunchSpec {
     pub provider_name: String,
     pub provider_kind: ProviderKind,
     pub agent: Agent,
-    pub codex_plan: Option<CodexPlan>,
+    pub bridge: Option<BridgePlan>,
+    pub file_setup: Vec<FileSetup>,
 }
 
 impl LaunchSpec {
@@ -82,7 +128,8 @@ pub fn build(
         provider_name: profile_name.to_owned(),
         provider_kind: provider.kind,
         agent,
-        codex_plan: None,
+        bridge: None,
+        file_setup: Vec::new(),
     };
 
     if let Some(override_path) = agent_binary_override(agent) {
@@ -102,13 +149,16 @@ pub fn build(
 }
 
 pub fn execute(mut spec: LaunchSpec) -> Result<u8> {
-    let _proxy = if let Some(plan) = spec.codex_plan.clone() {
-        let proxy = CodexProxy::start()?;
-        configure_claude_proxy_env(&mut spec, proxy.base_url(), &plan);
-        Some(proxy)
+    let _bridge = if let Some(plan) = spec.bridge.clone() {
+        let bridge = Bridge::start(&plan)?;
+        agents::apply_bridge(&mut spec, &bridge.base_url(), &plan)?;
+        Some(bridge)
     } else {
         None
     };
+
+    // Held until the child exits so a failed launch still cleans up.
+    let _cleanup = CleanupFiles(process_file_setup(&spec)?);
 
     let program = resolve_program(&spec.program, spec.agent)?;
     let mut command = Command::new(&program);
@@ -333,13 +383,27 @@ fn shell_quote(value: &OsStr) -> String {
     }
 }
 
-struct CodexProxy {
+/// Conditional environment additions the bridge child process needs on top
+/// of the constant `PORT`/`CCP_LOG_STDERR`/`CCP_CODEX_AUTH_FILE` envs. Pure
+/// and side-effect-free so it can be unit tested directly.
+fn bridge_child_env(plan: &BridgePlan) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    if plan.api != BridgeApi::Messages {
+        env.insert("CCP_CODEX_RESPONSES_API".to_owned(), "1".to_owned());
+        if let Some(effort) = plan.effort {
+            env.insert("CCP_CODEX_EFFORT".to_owned(), effort.as_str().to_owned());
+        }
+    }
+    env
+}
+
+struct Bridge {
     child: Child,
     port: u16,
 }
 
-impl CodexProxy {
-    fn start() -> Result<Self> {
+impl Bridge {
+    fn start(plan: &BridgePlan) -> Result<Self> {
         let helper = find_helper()?;
         let auth_file = codex_auth_file()?;
         if !auth_file.is_file() {
@@ -360,14 +424,15 @@ impl CodexProxy {
             // The helper's fallback does not use USERPROFILE on Windows, so
             // pass the same Codex home resolution used by the official CLI.
             .env("CCP_CODEX_AUTH_FILE", auth_file)
+            .envs(bridge_child_env(plan))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("failed to start {}", helper.display()))?;
-        let mut proxy = Self { child, port };
-        proxy.wait_until_ready()?;
-        Ok(proxy)
+        let mut bridge = Self { child, port };
+        bridge.wait_until_ready()?;
+        Ok(bridge)
     }
 
     fn base_url(&self) -> String {
@@ -419,7 +484,7 @@ fn resolve_codex_auth_file(
         .context("could not resolve the Codex auth path; set CODEX_HOME")
 }
 
-impl Drop for CodexProxy {
+impl Drop for Bridge {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -473,6 +538,101 @@ fn health_check(address: SocketAddr) -> bool {
         return false;
     };
     String::from_utf8_lossy(&response[..read]).contains(" 200 ")
+}
+
+/// Performs every `spec.file_setup` entry, returning the `WriteTemp` paths
+/// that asked to be removed once the child process exits.
+fn process_file_setup(spec: &LaunchSpec) -> Result<Vec<PathBuf>> {
+    let mut pending_cleanup = Vec::new();
+    for entry in &spec.file_setup {
+        match entry {
+            FileSetup::UpsertJson {
+                path,
+                pointer,
+                key,
+                value,
+            } => {
+                upsert_json_key(path, pointer, key, value.clone())?;
+            }
+            FileSetup::WriteTemp {
+                path,
+                contents,
+                secret,
+                cleanup,
+            } => {
+                atomic_write(path, contents.as_bytes(), *secret)?;
+                if *cleanup {
+                    pending_cleanup.push(path.clone());
+                }
+            }
+        }
+    }
+    Ok(pending_cleanup)
+}
+
+/// Merges `value` under `root[pointer][key]` of the JSON file at `path`,
+/// creating the file and any intermediate objects along `pointer` as needed.
+/// A file that exists but fails to parse is left untouched and this returns
+/// an error.
+fn upsert_json_key(path: &Path, pointer: &str, key: &str, value: serde_json::Value) -> Result<()> {
+    let mut document: serde_json::Value = if path.exists() {
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse {} as JSON", path.display()))?
+    } else {
+        serde_json::Value::Object(serde_json::Map::new())
+    };
+
+    {
+        let target = json_pointer_object_mut(&mut document, pointer).with_context(|| {
+            format!(
+                "{} does not have a JSON object at {pointer:?}",
+                path.display()
+            )
+        })?;
+        target.insert(key.to_owned(), value);
+    }
+
+    let encoded = serde_json::to_vec_pretty(&document).context("failed to encode JSON")?;
+    atomic_write(path, &encoded, false)
+}
+
+/// Walks `pointer` (JSON-Pointer-style, `/`-separated segments), creating an
+/// empty object at each missing segment, and returns the object at the end
+/// of the path. Bails if an existing segment along the way is not an object.
+fn json_pointer_object_mut<'a>(
+    document: &'a mut serde_json::Value,
+    pointer: &str,
+) -> Result<&'a mut serde_json::Map<String, serde_json::Value>> {
+    if document.is_null() {
+        *document = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let mut current = document;
+    for segment in pointer.split('/').filter(|part| !part.is_empty()) {
+        let segment = segment.replace("~1", "/").replace("~0", "~");
+        let map = current
+            .as_object_mut()
+            .context("expected a JSON object along the pointer path")?;
+        current = map
+            .entry(segment)
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    }
+    current
+        .as_object_mut()
+        .context("pointer does not resolve to a JSON object")
+}
+
+/// Deletes the wrapped paths when dropped, so a `WriteTemp { cleanup: true }`
+/// file is removed after the child exits, even if the launch failed.
+struct CleanupFiles(Vec<PathBuf>);
+
+impl Drop for CleanupFiles {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -639,9 +799,11 @@ mod tests {
         )
         .unwrap();
 
-        let plan = spec.codex_plan.expect("Codex adapter plan");
+        let plan = spec.bridge.expect("Codex adapter plan");
         assert_eq!(plan.model, "gpt-5.6-sol");
         assert_eq!(plan.context_window, Some(272_000));
+        assert_eq!(plan.api, BridgeApi::Messages);
+        assert_eq!(plan.effort, None);
         // Claude Code sends the effort with every request, so pinning it here
         // would freeze the in-session effort slider.
         assert!(
@@ -667,9 +829,9 @@ mod tests {
             },
         )
         .unwrap();
-        let plan = spec.codex_plan.clone().expect("Codex adapter plan");
+        let plan = spec.bridge.clone().expect("Codex adapter plan");
 
-        configure_claude_proxy_env(&mut spec, "http://127.0.0.1:9".to_owned(), &plan);
+        agents::claude::apply_bridge(&mut spec, "http://127.0.0.1:9", &plan).unwrap();
 
         let value = |name: &str| spec.env[OsStr::new(name)].to_string_lossy().into_owned();
         assert_eq!(value("ANTHROPIC_MODEL"), "gpt-5.6-terra");
@@ -836,5 +998,171 @@ mod tests {
     fn generic_gpt_56_alias_maps_to_bridge_supported_sol() {
         assert_eq!(normalize_codex_model("gpt-5.6"), "gpt-5.6-sol");
         assert_eq!(normalize_codex_model("gpt-5.6-terra"), "gpt-5.6-terra");
+    }
+
+    #[test]
+    fn non_claude_bridges_enable_the_responses_api_and_pin_effort() {
+        let plan = BridgePlan {
+            model: "gpt-5.6-terra".into(),
+            effort: Some(ReasoningEffort::High),
+            context_window: None,
+            options: Vec::new(),
+            api: BridgeApi::Responses,
+        };
+        let env = bridge_child_env(&plan);
+        assert_eq!(
+            env.get("CCP_CODEX_RESPONSES_API").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            env.get("CCP_CODEX_EFFORT").map(String::as_str),
+            Some("high")
+        );
+
+        let claude = BridgePlan {
+            api: BridgeApi::Messages,
+            effort: None,
+            ..plan
+        };
+        let env = bridge_child_env(&claude);
+        assert!(!env.contains_key("CCP_CODEX_RESPONSES_API"));
+        assert!(!env.contains_key("CCP_CODEX_EFFORT"));
+    }
+
+    #[test]
+    fn upsert_json_key_creates_a_fresh_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+
+        upsert_json_key(&path, "/servers", "alc", json!({"url": "http://x"})).unwrap();
+
+        let document: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+            .expect("valid JSON was written");
+        assert_eq!(document["servers"]["alc"]["url"], json!("http://x"));
+    }
+
+    #[test]
+    fn upsert_json_key_preserves_unrelated_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"servers":{"other":{"url":"http://keep-me"}},"unrelated":true}"#,
+        )
+        .unwrap();
+
+        upsert_json_key(&path, "/servers", "alc", json!({"url": "http://x"})).unwrap();
+
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(document["servers"]["other"]["url"], json!("http://keep-me"));
+        assert_eq!(document["unrelated"], json!(true));
+        assert_eq!(document["servers"]["alc"]["url"], json!("http://x"));
+    }
+
+    #[test]
+    fn upsert_json_key_replaces_the_same_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        upsert_json_key(&path, "/servers", "alc", json!({"url": "http://old"})).unwrap();
+
+        upsert_json_key(&path, "/servers", "alc", json!({"url": "http://new"})).unwrap();
+
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(document["servers"]["alc"]["url"], json!("http://new"));
+    }
+
+    #[test]
+    fn upsert_json_key_bails_leaving_invalid_json_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        std::fs::write(&path, "not valid json").unwrap();
+
+        let error =
+            upsert_json_key(&path, "/servers", "alc", json!({"url": "http://x"})).unwrap_err();
+
+        assert!(
+            error.to_string().to_lowercase().contains("json")
+                || error.to_string().to_lowercase().contains("pars"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not valid json");
+    }
+
+    fn empty_spec() -> LaunchSpec {
+        LaunchSpec {
+            program: OsString::from("true"),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            env_remove: Vec::new(),
+            provider_name: "test".to_owned(),
+            provider_kind: ProviderKind::Codex,
+            agent: Agent::Codex,
+            bridge: None,
+            file_setup: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn process_file_setup_applies_both_variants_and_only_flags_write_temp_for_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let json_path = temp.path().join("config.json");
+        let temp_path = temp.path().join("secret.json");
+
+        let mut spec = empty_spec();
+        spec.file_setup = vec![
+            FileSetup::UpsertJson {
+                path: json_path.clone(),
+                pointer: "/mcpServers",
+                key: "alc".to_owned(),
+                value: json!({"url": "http://127.0.0.1:1"}),
+            },
+            FileSetup::WriteTemp {
+                path: temp_path.clone(),
+                contents: "shh".to_owned(),
+                secret: true,
+                cleanup: true,
+            },
+        ];
+
+        let cleanup = process_file_setup(&spec).unwrap();
+        assert_eq!(cleanup, vec![temp_path.clone()]);
+
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+        assert_eq!(
+            document["mcpServers"]["alc"]["url"],
+            json!("http://127.0.0.1:1")
+        );
+        assert_eq!(std::fs::read_to_string(&temp_path).unwrap(), "shh");
+
+        drop(CleanupFiles(cleanup));
+        assert!(
+            !temp_path.exists(),
+            "CleanupFiles must remove cleanup:true WriteTemp paths on drop"
+        );
+        assert!(
+            json_path.exists(),
+            "UpsertJson output is not a temp file and must survive"
+        );
+    }
+
+    #[test]
+    fn process_file_setup_does_not_queue_write_temp_without_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("kept.json");
+        let mut spec = empty_spec();
+        spec.file_setup = vec![FileSetup::WriteTemp {
+            path: path.clone(),
+            contents: "keep-me".to_owned(),
+            secret: false,
+            cleanup: false,
+        }];
+
+        let cleanup = process_file_setup(&spec).unwrap();
+
+        assert!(cleanup.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep-me");
     }
 }
