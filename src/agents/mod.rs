@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod codex;
 pub mod copilot;
+pub mod goose;
 pub mod opencode;
 pub mod pi;
 
@@ -30,7 +31,8 @@ pub fn build(
             opencode::build(spec, store, profile_name, provider, passthrough, overrides)
         }
         Agent::Pi => pi::build(spec, store, profile_name, provider, passthrough, overrides),
-        Agent::Goose | Agent::Qwen | Agent::Kimi => {
+        Agent::Goose => goose::build(spec, store, profile_name, provider, passthrough, overrides),
+        Agent::Qwen | Agent::Kimi => {
             bail!("{agent} support is not wired up yet on this branch (arrives in a later task)")
         }
     }
@@ -47,7 +49,8 @@ pub fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) ->
         Agent::Copilot => copilot::apply_bridge(spec, base_url, plan),
         Agent::Opencode => opencode::apply_bridge(spec, base_url, plan),
         Agent::Pi => pi::apply_bridge(spec, base_url, plan),
-        Agent::Goose | Agent::Qwen | Agent::Kimi => {
+        Agent::Goose => goose::apply_bridge(spec, base_url, plan),
+        Agent::Qwen | Agent::Kimi => {
             bail!("{agent} bridge support arrives in a later task")
         }
     }

@@ -284,6 +284,23 @@ pub(crate) fn openai_style_base_url(provider: &Provider) -> Option<String> {
     }
 }
 
+/// Splits a chat-style provider's base URL into the root host Goose expects
+/// in `OPENAI_HOST` and the request path it expects in `OPENAI_BASE_PATH`.
+///
+/// "https://api.z.ai/api/paas/v4" -> ("https://api.z.ai", "api/paas/v4/chat/completions")
+pub(crate) fn split_chat_url(base: &str) -> (String, String) {
+    let trimmed = base.trim_end_matches('/');
+    let after_scheme = trimmed.find("://").map(|i| i + 3).unwrap_or(0);
+    match trimmed[after_scheme..].find('/') {
+        Some(slash) => {
+            let origin = &trimmed[..after_scheme + slash];
+            let path = &trimmed[after_scheme + slash + 1..];
+            (origin.to_owned(), format!("{path}/chat/completions"))
+        }
+        None => (trimmed.to_owned(), "v1/chat/completions".to_owned()),
+    }
+}
+
 /// Whether a provider should be driven through its Anthropic-compatible
 /// surface rather than an OpenAI-style one.
 pub(crate) fn anthropic_shaped(provider: &Provider) -> bool {
@@ -733,6 +750,41 @@ mod tests {
     #[test]
     fn anthropic_shaped_is_false_for_openai_kind() {
         assert!(!anthropic_shaped(&Provider::for_kind(ProviderKind::Openai)));
+    }
+
+    // Goose's chat-style provider needs a host and a request path split out
+    // of alc's single base URL; this is the case that motivated the helper.
+    #[test]
+    fn split_chat_url_splits_zai_style_paths() {
+        assert_eq!(
+            split_chat_url("https://api.z.ai/api/paas/v4"),
+            (
+                "https://api.z.ai".to_owned(),
+                "api/paas/v4/chat/completions".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn split_chat_url_defaults_v1_for_a_bare_origin() {
+        assert_eq!(
+            split_chat_url("https://api.openai.com"),
+            (
+                "https://api.openai.com".to_owned(),
+                "v1/chat/completions".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn split_chat_url_splits_the_standard_v1_suffix() {
+        assert_eq!(
+            split_chat_url("https://api.openai.com/v1"),
+            (
+                "https://api.openai.com".to_owned(),
+                "v1/chat/completions".to_owned()
+            )
+        );
     }
 
     #[test]

@@ -245,6 +245,20 @@ fn copilot_dry_run_uses_byok_env() {
 }
 
 #[test]
+fn goose_dry_run_defaults_to_session_with_env_config() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "secret")
+        .args(["--openrouter", "--dry-run", "goose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("GOOSE_PROVIDER=openrouter"))
+        .stdout(predicate::str::contains(" session"))
+        .stdout(predicate::str::contains("<redacted>"))
+        .stdout(predicate::str::contains("secret").not());
+}
+
+#[test]
 fn preset_kind_upsert_prefills_urls_and_supports_claude() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
