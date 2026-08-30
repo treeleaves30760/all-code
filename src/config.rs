@@ -534,13 +534,12 @@ impl Provider {
 pub struct Defaults(BTreeMap<Agent, String>);
 
 impl Default for Defaults {
+    /// Empty: a fresh config names no default explicitly, so every agent
+    /// resolves through `get`'s `Agent::default_provider()` fallback and
+    /// `is_explicit` stays `false` until something actually writes a key
+    /// (`config set-default`, the TUI, or an older alc's saved config.toml).
     fn default() -> Self {
-        Self(
-            Agent::ALL
-                .into_iter()
-                .map(|agent| (agent, agent.default_provider().to_owned()))
-                .collect(),
-        )
+        Self(BTreeMap::new())
     }
 }
 
@@ -884,6 +883,20 @@ mod tests {
     }
 
     #[test]
+    fn default_config_has_no_explicit_defaults() {
+        let config = Config::default();
+        for agent in Agent::ALL {
+            assert!(
+                !config.defaults.is_explicit(agent),
+                "{agent} should not be explicit on a fresh config"
+            );
+        }
+        // `get` still resolves through `Agent::default_provider()`.
+        assert_eq!(config.defaults.get(Agent::Claude), "anthropic");
+        assert_eq!(config.defaults.get(Agent::Qwen), "openai");
+    }
+
+    #[test]
     fn provider_kind_fallback_resolves_unique_profile() {
         let mut config = Config::default();
         config.providers.remove("openrouter");
@@ -977,6 +990,9 @@ enabled = true
         .unwrap();
         assert_eq!(config.defaults.get(Agent::Claude), "anthropic");
         assert_eq!(config.defaults.get(Agent::Pi), "anthropic"); // implicit fallback
+        assert!(config.defaults.is_explicit(Agent::Claude));
+        assert!(config.defaults.is_explicit(Agent::Codex));
+        assert!(config.defaults.is_explicit(Agent::Opencode));
         assert!(!config.defaults.is_explicit(Agent::Pi));
         // openai profile is absent, so the implicit qwen fallback must not fail validation
         config.validate().unwrap();
