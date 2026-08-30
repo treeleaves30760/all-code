@@ -1,8 +1,15 @@
 # all-code (`alc`)
 
-**One CLI for Claude Code, Codex CLI, and OpenCode.** Configure your LLM
-providers once, then launch any of the three coding agents with any provider —
-including running Claude Code on your Codex/ChatGPT subscription.
+**One CLI for eight coding agents.** Configure your LLM providers once, then
+launch [Claude Code](https://code.claude.com/docs/en/setup),
+[Codex CLI](https://learn.chatgpt.com/docs/codex/cli),
+[OpenCode](https://opencode.ai/docs),
+[Pi](https://github.com/earendil-works/pi),
+[Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli),
+[Goose](https://block.github.io/goose/),
+[Qwen Code](https://github.com/QwenLM/qwen-code), or
+[Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli) with any provider —
+including running any of them on your Codex/ChatGPT subscription.
 
 [![CI](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml/badge.svg)](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/treeleaves30760/all-code?logo=github)](https://github.com/treeleaves30760/all-code/releases/latest)
@@ -18,20 +25,29 @@ alc update
 alc claude
 alc codex
 alc opencode
+alc pi
+alc copilot
+alc goose
+alc qwen
+alc kimi
 alc --codex claude
+alc --codex opencode
 alc --codex claude --model gpt-5.6-terra --effort medium
+alc --deepseek claude
 alc --openrouter codex
 alc --provider work opencode
 ```
 
 ## What alc does
 
-- **Switch LLM provider per agent.** Point Claude Code, Codex CLI, or OpenCode
-  at Anthropic, the OpenAI API, OpenRouter, Ollama, vLLM, or any custom
-  endpoint, and change it for a single run without editing config files.
-- **Run Claude Code on GPT models.** `alc --codex claude` bridges your Codex /
-  ChatGPT login to Claude Code, and lists every GPT model in Claude Code's own
-  `/model` picker so you switch model and reasoning effort mid-session.
+- **Switch LLM provider per agent.** Point any of the eight agents at
+  Anthropic, the OpenAI API, OpenRouter, Ollama, vLLM, DeepSeek, Moonshot,
+  Z.ai, MiniMax, Groq, xAI, Google, or any custom endpoint, and change it for
+  a single run without editing config files.
+- **Run every agent on GPT models.** `alc --codex <agent>` bridges your Codex /
+  ChatGPT login to whichever agent you launch. Claude Code lists every GPT
+  model in its own `/model` picker so you switch model and reasoning effort
+  mid-session; every other agent picks one model for the session.
 - **Validate before launching.** alc checks that the agent and provider speak a
   compatible model protocol instead of sending a request that cannot work.
 - **Keep credentials out of the way.** API keys live in a separate file or come
@@ -51,10 +67,10 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
 ```
 
-The installer puts `alc` and its Codex-to-Claude loopback helper in
-`~/.local/bin` (Windows: `%USERPROFILE%\.local\bin`) and adds that directory to
-your user PATH when needed. On macOS/Linux, restart the terminal or source the
-profile named by the installer. PowerShell updates the current session and your
+The installer puts `alc` and its Codex bridge helper in `~/.local/bin`
+(Windows: `%USERPROFILE%\.local\bin`) and adds that directory to your user
+PATH when needed. On macOS/Linux, restart the terminal or source the profile
+named by the installer. PowerShell updates the current session and your
 User PATH. If PATH cannot be changed, the installer prints the exact directory
 to add manually.
 
@@ -87,6 +103,11 @@ plan to use separately:
 - [Claude Code](https://code.claude.com/docs/en/setup)
 - [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)
 - [OpenCode](https://opencode.ai/docs)
+- [Pi](https://github.com/earendil-works/pi) (`npm install -g @earendil-works/pi-coding-agent`)
+- [Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli)
+- [Goose](https://block.github.io/goose/)
+- [Qwen Code](https://github.com/QwenLM/qwen-code)
+- [Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli)
 
 ## Quick start
 
@@ -107,6 +128,11 @@ Then launch an agent with its configured default:
 alc claude
 alc codex
 alc opencode
+alc pi
+alc copilot
+alc goose
+alc qwen
+alc kimi
 ```
 
 Override the provider for one session:
@@ -114,12 +140,20 @@ Override the provider for one session:
 ```sh
 alc --codex claude
 alc --openrouter codex
+alc --deepseek pi
+alc --codex opencode
 alc -p local-vllm opencode
 ```
 
+`--provider` (or `-p`) takes a profile name, or a provider kind when only one
+profile of that kind exists. The shortcut flags `--anthropic`, `--openai`,
+`--openrouter`, `--codex`, `--ollama`, `--vllm`, `--deepseek`, `--moonshot`,
+`--zai`, `--minimax`, `--groq`, `--xai`, and `--google` are equivalent.
+
 `alc --codex claude` starts Claude Code straight away and lists every GPT model
 in Claude Code's own `/model` picker, so you switch model and reasoning effort
-inside the session. Set the launch defaults in `alc config`.
+inside the session. `alc --codex <agent>` bridges every other agent onto one
+model for the session. Set the launch defaults in `alc config`.
 
 Apart from Claude's alc-specific `--model`, `--effort`, and `--save` options,
 arguments after the agent name are forwarded unchanged:
@@ -128,6 +162,7 @@ arguments after the agent name are forwarded unchanged:
 alc --codex codex exec "review this repository"
 alc --openrouter claude --print "summarize the diff"
 alc --ollama opencode run "fix the failing test"
+alc goose run --name my-session
 ```
 
 To pass an option with one of those same names to Claude itself, place it after
@@ -145,42 +180,86 @@ Run diagnostics:
 alc doctor
 ```
 
-## Provider compatibility
+`alc doctor` reports all eight agent binaries, credential status, provider
+profiles with a per-agent compatibility column each, the resolved defaults,
+and, when a Codex provider is configured, the Codex bridge's login state.
 
-The coding agents do not all speak the same model protocol. `alc` validates the
-combination before launch instead of silently sending an incompatible request.
+## Providers and agents
 
-| Provider profile | Claude Code | Codex CLI | OpenCode |
-| --- | --- | --- | --- |
-| Anthropic | Yes | No | Yes |
-| OpenAI API | Gateway required | Yes (Responses API) | Yes |
-| OpenRouter | Yes (Anthropic skin) | Yes (Responses API) | Yes |
-| Codex login | Yes (bundled adapter) | Yes (native) | No direct credential reuse |
-| Ollama | Yes (Anthropic compatibility) | Yes (`--oss`) | Yes |
-| vLLM | If it exposes Anthropic Messages | If it exposes Responses | Yes |
-| Custom | According to configured protocol | According to configured protocol | Yes |
+The eight agents do not all speak the same model protocol, and the fourteen
+provider kinds do not all expose the same one either. `alc` validates the
+combination before launch instead of silently sending a request that cannot
+work.
 
-Relevant upstream behavior:
+### Provider kinds
 
-- Claude Code gateways must expose Anthropic Messages, Bedrock, or Vertex API
-  formats. `ANTHROPIC_BASE_URL` selects the gateway.
-- Codex custom providers use the OpenAI Responses wire API.
-- OpenRouter and Ollama expose Anthropic-compatible endpoints that Claude Code
-  can use directly.
+| Kind | Default endpoint | Key env | Protocols | Claude-ready? |
+| --- | --- | --- | --- | --- |
+| `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | anthropic | Yes |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | responses, chat | No |
+| `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | anthropic, responses, chat | Yes |
+| `codex` | — (native `codex login`) | — | native | Yes (bridge) |
+| `ollama` | `http://localhost:11434` | — | anthropic, responses, chat | Yes |
+| `vllm` | `http://localhost:8000/v1` | — | responses, chat | No |
+| `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | chat (+ anthropic) | Yes |
+| `moonshot` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | chat (+ anthropic) | Yes |
+| `zai` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | chat (+ anthropic) | Yes |
+| `minimax` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | chat (+ anthropic) | Yes |
+| `groq` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | chat | No |
+| `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` | chat | No |
+| `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` | chat | No |
+| `custom` | user-defined | user-defined (`--api-key-env`) | configurable | No, unless configured |
 
-If an OpenAI-compatible service only implements Chat Completions, use it with
-OpenCode. Claude Code needs an Anthropic-compatible gateway, and current Codex
-requires Responses rather than Chat Completions.
+`deepseek`, `moonshot`, `zai`, and `minimax` each also ship a separate
+Anthropic-compatible base URL alongside their primary OpenAI-chat one (see
+`alc config show`) — that is what makes those four "Claude-ready" without any
+extra configuration. Presets are starting values: run `alc config show` to see
+the exact model ID a profile currently uses, and edit it with `alc config
+upsert` when upstream renames or retires a model.
 
-## `alc --codex claude`
+### Agent requirements
 
-This path lets Claude Code use GPT models available through your Codex/ChatGPT
-login:
+| Agent | Binary | Accepts | alc injects | Codex bridge |
+| --- | --- | --- | --- | --- |
+| Claude Code | `claude` | Anthropic-compatible endpoint | env (`ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_API_KEY`) | Yes (`/model` picker) |
+| Codex CLI | `codex` | OpenAI Responses API | flags + `--config` overrides | Yes (native login) |
+| OpenCode | `opencode` | Any API-compatible provider | inline `OPENCODE_CONFIG_CONTENT` env | Yes |
+| Pi | `pi` | Anthropic-, OpenAI-, or OpenAI-compatible endpoint | `models.json` merge + flags | Yes |
+| Copilot CLI | `copilot` | OpenAI- or Anthropic-compatible endpoint | `COPILOT_PROVIDER_*` env | Yes |
+| Goose | `goose` | OpenAI- or Anthropic-compatible endpoint | `GOOSE_*` + provider key env | Yes |
+| Qwen Code | `qwen` | OpenAI-, Anthropic-, or Gemini-compatible endpoint | `--auth-type` flag + env | Yes |
+| Kimi Code CLI | `kimi` | OpenAI- or Anthropic-compatible endpoint | temp `--config-file` (merged TOML, deleted after the run) | Yes |
+
+Every agent reaches the Codex bridge with one `codex login`, regardless of
+what it accepts natively — see [Codex bridge](#codex-bridge) below. Run `alc
+doctor` for the full compatibility matrix (every provider profile against all
+eight agents) resolved for your own configuration.
+
+## Codex bridge
+
+One `codex login` serves every agent alc launches:
 
 ```sh
 codex login
 alc --codex claude
+alc --codex opencode
+alc --codex pi
+alc --codex copilot
+alc --codex goose
+alc --codex qwen
+alc --codex kimi
 ```
+
+`alc` starts the bundled `claude-codex` adapter on a loopback port and points
+only the launched agent's process at it. The adapter speaks Anthropic Messages
+for Claude Code, OpenAI Responses for OpenCode/Pi/Kimi Code CLI, and OpenAI
+Chat Completions for Copilot CLI/Goose/Qwen Code — three different wire
+protocols backed by the same login. Claude Code is the only agent with
+in-session switching (it sends the model and effort with every request, so alc
+never pins either on the adapter); every other agent picks one model, and one
+pinned reasoning effort, at launch.
+
+### Claude Code
 
 Claude Code starts immediately on your saved default and offers every model in
 its own `/model` picker:
@@ -225,6 +304,25 @@ Codex profile, then the model's documented default. An explicit `--model`,
 `--effort`, or `--settings` placed after `--` is forwarded to Claude Code
 untouched and wins over what alc would inject.
 
+Claude Code's built-in aliases stay on Codex as well: the picker's Default row
+follows the alc default, `haiku` and background work use the cheapest catalog
+model, `sonnet` follows the session's starting model, and `opus` uses the most
+capable one.
+
+A model chosen with `/model` applies to that Claude Code session. The next
+`alc --codex claude` starts from the alc provider default again, so `alc config`
+stays the source of truth.
+
+### Every other agent
+
+OpenCode, Pi, and Kimi Code CLI speak the adapter's OpenAI Responses surface
+directly; Copilot CLI, Goose, and Qwen Code speak its OpenAI Chat Completions
+surface. Each is wired in with its own mechanism (`alc-codex` in
+`OPENCODE_CONFIG_CONTENT`, an `alc-codex` `models.json` entry, an `alc-codex`
+temp config, or the same BYOK environment variables/`--auth-type` each already
+uses for the `openai` kind) pointed at the loopback adapter instead of an
+in-session picker.
+
 The model catalog is synchronized from the installed Codex CLI at most once
 every 24 hours. A bundled catalog keeps the model list working offline:
 
@@ -243,18 +341,9 @@ of Claude's generic fallback.
 The release archive bundles
 [`claude-codex` 0.3.1](https://github.com/fcakyon/claude-code-with-codex), an
 MIT-licensed helper. `alc` starts it on a random `127.0.0.1` port, points only
-that Claude Code child process at it, and stops it when Claude exits. The helper
-reads and may refresh `~/.codex/auth.json`; credentials are never copied into
-the `alc` config.
-
-Claude Code's built-in aliases stay on Codex as well: the picker's Default row
-follows the alc default, `haiku` and background work use the cheapest catalog
-model, `sonnet` follows the session's starting model, and `opus` uses the most
-capable one.
-
-A model chosen with `/model` applies to that Claude Code session. The next
-`alc --codex claude` starts from the alc provider default again, so `alc config`
-stays the source of truth.
+the launched agent's process at it, and stops it when that process exits. The
+helper reads and may refresh `~/.codex/auth.json`; credentials are never copied
+into the `alc` config.
 
 This adapter is a third-party compatibility layer, not an official OpenAI or
 Anthropic integration. Review [THIRD_PARTY.md](THIRD_PARTY.md) and your provider
@@ -305,7 +394,7 @@ Rust 1.88 or newer:
 cargo build --release --locked
 ```
 
-The source build produces only `alc`. To use `alc --codex claude`, put a
+The source build produces only `alc`. To use `alc --codex <agent>`, put a
 compatible `claude-codex` binary on PATH or set `ALC_CLAUDE_CODEX_BIN`. Official
 `alc` release archives already bundle the pinned helper.
 

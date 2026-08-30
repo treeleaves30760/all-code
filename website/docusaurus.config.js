@@ -106,7 +106,7 @@ const config = {
             items: [
               {label: 'Introduction', to: '/'},
               {label: 'Install', to: '/installation'},
-              {label: 'Claude Code on GPT', to: '/codex-to-claude'},
+              {label: 'Codex bridge', to: '/codex-to-claude'},
             ],
           },
           {

@@ -2,7 +2,7 @@
 id: quick-start
 title: Quick start
 sidebar_position: 3
-description: Configure providers in the alc TUI, launch Claude Code, Codex CLI, or OpenCode, override the provider for one run, and preview the resolved command.
+description: Configure providers in the alc TUI, launch any of the eight coding agents, override the provider for one run, and preview the resolved command.
 keywords:
   - switch llm provider
   - launch claude code
@@ -32,19 +32,29 @@ Each agent launches with its configured default provider:
 alc claude
 alc codex
 alc opencode
+alc pi
+alc copilot
+alc goose
+alc qwen
+alc kimi
 ```
+
+See [Supported agents](./agents.md) for what alc sets for each one.
 
 ## 3. Override the provider for one run
 
 ```sh
 alc --codex claude
 alc --openrouter codex
+alc --deepseek pi
+alc --codex opencode
 alc -p local-vllm opencode
 ```
 
 `--provider` (or `-p`) takes a profile name, or a provider kind when only one
 profile of that kind exists. The shortcut flags `--anthropic`, `--openai`,
-`--openrouter`, `--codex`, `--ollama`, and `--vllm` are equivalent.
+`--openrouter`, `--codex`, `--ollama`, `--vllm`, `--deepseek`, `--moonshot`,
+`--zai`, `--minimax`, `--groq`, `--xai`, and `--google` are equivalent.
 
 ## Forwarding arguments
 
@@ -79,6 +89,6 @@ alc --openrouter --dry-run claude
 alc doctor
 ```
 
-`alc doctor` reports agent binaries, credential status, the Codex login, the
-bundled adapter, the resolved Codex-to-Claude defaults, and the compatibility
-matrix.
+`alc doctor` reports all eight agent binaries, credential status, provider
+profiles with a per-agent compatibility column each, the resolved defaults,
+and, when a Codex provider is configured, the Codex bridge's login state.
