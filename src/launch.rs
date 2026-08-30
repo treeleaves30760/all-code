@@ -542,8 +542,14 @@ fn health_check(address: SocketAddr) -> bool {
 
 /// Performs every `spec.file_setup` entry, returning the `WriteTemp` paths
 /// that asked to be removed once the child process exits.
+///
+/// Accumulates into a `CleanupFiles` guard as it goes (not just at the end):
+/// if a later entry fails, the guard is still holding the `cleanup: true`
+/// paths written by earlier entries in this same call, so its `Drop` removes
+/// those partials instead of orphaning them. On success the accumulated
+/// paths are moved out to the caller, leaving the guard empty (a no-op drop).
 fn process_file_setup(spec: &LaunchSpec) -> Result<Vec<PathBuf>> {
-    let mut pending_cleanup = Vec::new();
+    let mut guard = CleanupFiles(Vec::new());
     for entry in &spec.file_setup {
         match entry {
             FileSetup::UpsertJson {
@@ -562,19 +568,27 @@ fn process_file_setup(spec: &LaunchSpec) -> Result<Vec<PathBuf>> {
             } => {
                 atomic_write(path, contents.as_bytes(), *secret)?;
                 if *cleanup {
-                    pending_cleanup.push(path.clone());
+                    guard.0.push(path.clone());
                 }
             }
         }
     }
-    Ok(pending_cleanup)
+    Ok(std::mem::take(&mut guard.0))
 }
 
 /// Merges `value` under `root[pointer][key]` of the JSON file at `path`,
 /// creating the file and any intermediate objects along `pointer` as needed.
 /// A file that exists but fails to parse is left untouched and this returns
 /// an error.
+///
+/// On unix, a pre-existing file's permission bits are restored after the
+/// write: `atomic_write` always creates its temp file at 0644 before renaming
+/// it over `path`, which would otherwise silently relax a mode-restricted
+/// target (e.g. a 0600 agent config holding a token) to 0644.
 fn upsert_json_key(path: &Path, pointer: &str, key: &str, value: serde_json::Value) -> Result<()> {
+    #[cfg(unix)]
+    let previous_mode = unix_mode(path)?;
+
     let mut document: serde_json::Value = if path.exists() {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
@@ -595,7 +609,27 @@ fn upsert_json_key(path: &Path, pointer: &str, key: &str, value: serde_json::Val
     }
 
     let encoded = serde_json::to_vec_pretty(&document).context("failed to encode JSON")?;
-    atomic_write(path, &encoded, false)
+    atomic_write(path, &encoded, false)?;
+
+    #[cfg(unix)]
+    if let Some(mode) = previous_mode {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+            .with_context(|| format!("failed to restore permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The pre-existing unix permission bits of `path`, or `None` when it does
+/// not exist yet (a fresh file keeps whatever `atomic_write` gives it).
+#[cfg(unix)]
+fn unix_mode(path: &Path) -> Result<Option<u32>> {
+    use std::os::unix::fs::PermissionsExt;
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata.permissions().mode())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to stat {}", path.display())),
+    }
 }
 
 /// Walks `pointer` (JSON-Pointer-style, `/`-separated segments), creating an
@@ -1090,6 +1124,25 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "not valid json");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn upsert_json_key_preserves_an_existing_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        upsert_json_key(&path, "/servers", "alc", json!({"url": "http://x"})).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "upsert must not relax an existing file's permissions"
+        );
+    }
+
     fn empty_spec() -> LaunchSpec {
         LaunchSpec {
             program: OsString::from("true"),
@@ -1164,5 +1217,47 @@ mod tests {
 
         assert!(cleanup.is_empty());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep-me");
+    }
+
+    #[test]
+    fn process_file_setup_removes_partial_write_temp_files_when_a_later_entry_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = temp.path().join("secret.json");
+        let broken_json_path = temp.path().join("broken.json");
+        std::fs::write(&broken_json_path, "not valid json").unwrap();
+
+        let mut spec = empty_spec();
+        spec.file_setup = vec![
+            FileSetup::WriteTemp {
+                path: temp_path.clone(),
+                contents: "shh".to_owned(),
+                secret: true,
+                cleanup: true,
+            },
+            FileSetup::UpsertJson {
+                path: broken_json_path.clone(),
+                pointer: "/servers",
+                key: "alc".to_owned(),
+                value: json!({"url": "http://x"}),
+            },
+        ];
+
+        assert!(!temp_path.exists(), "sanity: not written yet");
+        let error = process_file_setup(&spec).unwrap_err();
+
+        assert!(
+            error.to_string().to_lowercase().contains("json")
+                || error.to_string().to_lowercase().contains("pars"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !temp_path.exists(),
+            "a cleanup:true WriteTemp from an earlier entry must not be orphaned when a later entry fails"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&broken_json_path).unwrap(),
+            "not valid json",
+            "the failing entry's own file is left untouched"
+        );
     }
 }
