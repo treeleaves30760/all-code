@@ -173,7 +173,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::PathBuf;
 
-    use crate::config::{Agent, Config, Credentials, ProviderKind, ReasoningEffort};
+    use crate::config::{Agent, Config, Credentials, Protocol, ProviderKind, ReasoningEffort};
     use crate::launch::{self, BridgeApi};
     use crate::model_catalog::ModelCatalog;
 
@@ -317,6 +317,48 @@ mod tests {
         assert!(
             env_value(&spec, "ANTHROPIC_HOST").is_none(),
             "the default Anthropic URL must not be echoed back as a host override"
+        );
+    }
+
+    // (4b) positive-path counterpart: an Anthropic-shaped provider whose
+    // base URL is NOT the default must have ANTHROPIC_HOST set to it.
+    // Custom kind + an explicit AnthropicMessages protocol makes
+    // anthropic_shaped() true via its second disjunct; setting
+    // anthropic_base_url directly (rather than relying on the
+    // effective_base_url() fallback) keeps the fixture unambiguous about
+    // which URL is under test.
+    #[test]
+    fn anthropic_shaped_provider_with_a_non_default_url_sets_anthropic_host() {
+        let mut config = Config::default();
+        let mut provider = Provider::for_kind(ProviderKind::Custom);
+        provider.protocol = Protocol::AnthropicMessages;
+        provider.anthropic_base_url = Some("https://gateway.example.com".into());
+        config.providers.insert("gateway".into(), provider);
+        let mut credentials = Credentials::default();
+        credentials
+            .api_keys
+            .insert("gateway".into(), "secret".into());
+        let spec = launch::build(
+            &store(config, credentials),
+            Agent::Goose,
+            Some("gateway"),
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            env_value(&spec, "GOOSE_PROVIDER").as_deref(),
+            Some("anthropic")
+        );
+        assert_eq!(
+            env_value(&spec, "ANTHROPIC_API_KEY").as_deref(),
+            Some("secret")
+        );
+        assert_eq!(
+            env_value(&spec, "ANTHROPIC_HOST").as_deref(),
+            Some("https://gateway.example.com"),
+            "a non-default Anthropic base URL must be surfaced as a host override"
         );
     }
 
