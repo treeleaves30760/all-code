@@ -363,6 +363,20 @@ pub(crate) fn has_option(args: &[OsString], long: &str, short: &str) -> bool {
     })
 }
 
+/// Inserts `args` at the very front of `spec.args`, preserving their given
+/// order, ahead of anything already there. Unlike every other builder (which
+/// injects its own flags before extending with the user's passthrough inside
+/// `build`), a bridged agent copies passthrough into `spec.args` verbatim at
+/// build time because the bridge-resolved model is not known until
+/// `apply_bridge` runs later against the started bridge. `prepend_args` lets
+/// `apply_bridge` still land its flags ahead of that already-copied
+/// passthrough instead of after it.
+pub(crate) fn prepend_args(spec: &mut LaunchSpec, args: &[&str]) {
+    for (offset, arg) in args.iter().enumerate() {
+        spec.args.insert(offset, OsString::from(*arg));
+    }
+}
+
 fn agent_binary_override(agent: Agent) -> Option<OsString> {
     let name = match agent {
         Agent::Claude => "ALC_CLAUDE_BIN",

@@ -259,6 +259,22 @@ fn goose_dry_run_defaults_to_session_with_env_config() {
 }
 
 #[test]
+fn qwen_dry_run_uses_auth_type_flags_and_env() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENAI_API_KEY", "secret")
+        .args(["--openai", "--dry-run", "qwen"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--auth-type openai"))
+        .stdout(predicate::str::contains(
+            "OPENAI_BASE_URL=https://api.openai.com/v1",
+        ))
+        .stdout(predicate::str::contains("<redacted>"))
+        .stdout(predicate::str::contains("secret").not());
+}
+
+#[test]
 fn preset_kind_upsert_prefills_urls_and_supports_claude() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
