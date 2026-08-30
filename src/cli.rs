@@ -95,7 +95,7 @@ enum Command {
     Config(ConfigArgs),
     /// Check agent binaries, credentials, defaults, and compatibility.
     Doctor,
-    /// Show or refresh the GPT models available for Codex-to-Claude.
+    /// Show or refresh the GPT models available through the Codex bridge.
     Models(ModelsArgs),
     /// Check for and install the latest alc release.
     Update(UpdateArgs),
@@ -565,7 +565,7 @@ fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {
         return Ok(0);
     }
 
-    println!("Codex -> Claude model catalog");
+    println!("Codex bridge model catalog");
     println!("source: {}", catalog.source);
     for model in &catalog.models {
         let efforts = model

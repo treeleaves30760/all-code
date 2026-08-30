@@ -191,6 +191,18 @@ fn codex_to_opencode_dry_run_reports_the_bridge() {
 }
 
 #[test]
+fn doctor_lists_every_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let assert = alc(&temp).args(["doctor"]).assert();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    for agent in [
+        "claude", "codex", "opencode", "pi", "copilot", "goose", "qwen", "kimi",
+    ] {
+        assert!(output.contains(agent), "{agent} missing from doctor output");
+    }
+}
+
+#[test]
 fn bundled_model_catalog_is_available_offline() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
