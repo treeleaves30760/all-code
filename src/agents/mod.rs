@@ -38,7 +38,8 @@ pub fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) ->
     match agent {
         Agent::Claude => claude::apply_bridge(spec, base_url, plan),
         Agent::Codex => Ok(()),
-        Agent::Opencode | Agent::Pi | Agent::Copilot | Agent::Goose | Agent::Qwen | Agent::Kimi => {
+        Agent::Opencode => opencode::apply_bridge(spec, base_url, plan),
+        Agent::Pi | Agent::Copilot | Agent::Goose | Agent::Qwen | Agent::Kimi => {
             bail!("{agent} bridge support arrives in a later task")
         }
     }

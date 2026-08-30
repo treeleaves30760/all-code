@@ -181,6 +181,16 @@ fn codex_to_claude_can_save_defaults_without_picker() {
 }
 
 #[test]
+fn codex_to_opencode_dry_run_reports_the_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "--dry-run", "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude-codex"));
+}
+
+#[test]
 fn bundled_model_catalog_is_available_offline() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)

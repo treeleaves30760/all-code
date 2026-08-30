@@ -28,12 +28,12 @@ pub struct LaunchOverrides {
 
 /// Which wire protocol the bundled bridge should serve to the launched agent.
 ///
-/// `Responses` and `Chat` are constructed once a later task's non-Claude
-/// agent builders exist to select them; only `Messages` is produced today.
+/// `Chat` is constructed once a later task's non-Claude agent builder exists
+/// to select it; `Messages` (Claude Code) and `Responses` (OpenCode) are
+/// produced today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeApi {
     Messages,
-    #[allow(dead_code)]
     Responses,
     #[allow(dead_code)]
     Chat,
@@ -1012,6 +1012,43 @@ mod tests {
         )
         .unwrap();
         assert_eq!(spec.args, ["models", "ollama"].map(OsString::from));
+    }
+
+    #[test]
+    fn codex_to_opencode_uses_the_bridge_with_the_full_catalog() {
+        let overrides = LaunchOverrides {
+            model: Some("gpt-5.6-terra".into()),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            model_options: ModelCatalog::built_in().models,
+            ..LaunchOverrides::default()
+        };
+        let mut spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Opencode,
+            Some("codex"),
+            &[],
+            &overrides,
+        )
+        .unwrap();
+        let plan = spec.bridge.clone().expect("bridge plan");
+        assert_eq!(plan.api, BridgeApi::Responses);
+        assert_eq!(plan.model, "gpt-5.6-terra");
+
+        agents::apply_bridge(&mut spec, "http://127.0.0.1:9", &plan).unwrap();
+        let inline = spec.env[OsStr::new("OPENCODE_CONFIG_CONTENT")]
+            .to_string_lossy()
+            .into_owned();
+        let parsed: Value = serde_json::from_str(&inline).unwrap();
+        assert_eq!(parsed["model"], json!("alc-codex/gpt-5.6-terra"));
+        assert_eq!(
+            parsed["provider"]["alc-codex"]["npm"],
+            json!("@ai-sdk/openai")
+        );
+        assert_eq!(
+            parsed["provider"]["alc-codex"]["options"]["baseURL"],
+            json!("http://127.0.0.1:9/v1")
+        );
+        assert!(parsed["provider"]["alc-codex"]["models"]["gpt-5.6-sol"].is_object());
     }
 
     #[test]

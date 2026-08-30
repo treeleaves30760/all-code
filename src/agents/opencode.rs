@@ -4,7 +4,10 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use crate::config::{AuthStyle, Protocol, Provider, ProviderKind, Store};
-use crate::launch::{LaunchOverrides, LaunchSpec, has_model_override};
+use crate::launch::{
+    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, has_model_override, resolve_codex_effort,
+    resolve_codex_model,
+};
 
 pub(crate) fn build(
     spec: &mut LaunchSpec,
@@ -15,9 +18,21 @@ pub(crate) fn build(
     overrides: &LaunchOverrides,
 ) -> Result<()> {
     if provider.kind == ProviderKind::Codex {
-        bail!(
-            "Codex CLI login cannot be injected into OpenCode directly; connect OpenAI inside OpenCode or choose an API/OpenRouter profile"
-        );
+        spec.bridge = Some(BridgePlan {
+            model: overrides
+                .model
+                .clone()
+                .map_or_else(|| resolve_codex_model(provider), Ok)?,
+            effort: overrides
+                .reasoning_effort
+                .or(provider.reasoning_effort)
+                .or(resolve_codex_effort(provider)?),
+            context_window: overrides.context_window,
+            options: overrides.model_options.clone(),
+            api: BridgeApi::Responses,
+        });
+        spec.args.extend_from_slice(passthrough);
+        return Ok(());
     }
 
     let (provider_id, needs_custom_config) = match provider.kind {
@@ -105,6 +120,48 @@ pub(crate) fn build(
         OsString::from(serde_json::to_string(&inline)?),
     );
     spec.args.extend_from_slice(passthrough);
+    Ok(())
+}
+
+/// Wires the bundled Codex bridge (listening on `base_url`) into an OpenCode
+/// session as an `@ai-sdk/openai` provider named `alc-codex`, pointed at the
+/// loopback bridge instead of api.openai.com.
+pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
+    let models: Map<String, Value> = if plan.options.is_empty() {
+        let mut fallback = Map::new();
+        fallback.insert(plan.model.clone(), json!({ "name": plan.model }));
+        fallback
+    } else {
+        plan.options
+            .iter()
+            .map(|model| (model.id.clone(), json!({ "name": model.name })))
+            .collect()
+    };
+
+    let mut inline = json!({
+        "$schema": "https://opencode.ai/config.json"
+    });
+    if !has_model_override(&spec.args) {
+        inline["model"] = Value::String(format!("alc-codex/{}", plan.model));
+    }
+    inline["provider"] = json!({
+        "alc-codex": {
+            "npm": "@ai-sdk/openai",
+            "name": "alc: Codex subscription",
+            "options": {
+                // The loopback bridge ignores auth entirely; the SDK still
+                // requires some non-empty apiKey value to be configured.
+                "baseURL": format!("{base_url}/v1"),
+                "apiKey": "alc",
+            },
+            "models": models,
+        }
+    });
+
+    spec.env.insert(
+        OsString::from("OPENCODE_CONFIG_CONTENT"),
+        OsString::from(serde_json::to_string(&inline)?),
+    );
     Ok(())
 }
 
