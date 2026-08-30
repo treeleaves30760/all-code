@@ -8,8 +8,8 @@ binary. Building `alc` from source does not download or compile this helper.
 - Project: <https://github.com/fcakyon/claude-code-with-codex>
 - Based on: <https://github.com/raine/claude-code-proxy>
 - License: MIT
-- Purpose: loopback-only Anthropic Messages to Codex Responses translation for
-  `alc --codex claude`
+- Purpose: loopback-only Anthropic Messages / OpenAI Responses / Chat
+  Completions translation for the alc Codex bridge (`alc --codex <agent>`)
 
 The helper reads and may refresh the current user's Codex CLI credentials. It
 is started only for a Codex-backed Claude Code session and is terminated when

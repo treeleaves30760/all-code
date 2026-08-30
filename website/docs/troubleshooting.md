@@ -17,14 +17,16 @@ Start with:
 alc doctor
 ```
 
-It reports agent binaries, credential status, the Codex login, the bundled
-adapter, the resolved Codex-to-Claude defaults, and the compatibility matrix.
+It reports all eight agent binaries, credential status, provider profiles
+with a per-agent compatibility column each, the resolved defaults, and, when
+a Codex provider is configured, the Codex bridge's login state.
 
 ## `'claude' is not installed or not on PATH`
 
 alc launches agents that already exist on your machine. Install the agent, or
-point alc at a specific binary with `ALC_CLAUDE_BIN`, `ALC_CODEX_BIN`, or
-`ALC_OPENCODE_BIN`.
+point alc at a specific binary with `ALC_CLAUDE_BIN`, `ALC_CODEX_BIN`,
+`ALC_OPENCODE_BIN`, `ALC_PI_BIN`, `ALC_COPILOT_BIN`, `ALC_GOOSE_BIN`,
+`ALC_QWEN_BIN`, or `ALC_KIMI_BIN`.
 
 ## `provider '…' cannot be used with claude; Claude Code needs Anthropic Messages`
 
@@ -41,7 +43,7 @@ in the profile's `api_key_env` field.
 ## `Codex credentials were not found`
 
 Run `codex login`, then retry. `alc doctor` reports the login state under
-**Codex login**.
+**Codex bridge**.
 
 ## `the bundled claude-codex … helper is missing`
 

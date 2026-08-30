@@ -2,8 +2,8 @@
 import {themes as prismThemes} from 'prism-react-renderer';
 
 const tagline =
-  'Configure your LLM providers once, then launch Claude Code, Codex CLI, or ' +
-  'OpenCode with any of them — including Claude Code on your Codex/ChatGPT login.';
+  'Configure your LLM providers once, then launch any of eight coding agents ' +
+  'with any provider — including Claude Code on your Codex/ChatGPT login.';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -65,7 +65,8 @@ const config = {
         {
           name: 'keywords',
           content:
-            'claude code, codex cli, opencode, llm provider, anthropic, ' +
+            'claude code, codex cli, opencode, pi coding agent, copilot cli, ' +
+            'goose, qwen code, kimi code cli, llm provider, anthropic, ' +
             'openai, openrouter, ollama, vllm, coding agent, cli, rust',
         },
         {property: 'og:type', content: 'website'},
@@ -138,6 +139,20 @@ const config = {
                 href: 'https://learn.chatgpt.com/docs/codex/cli',
               },
               {label: 'OpenCode', href: 'https://opencode.ai/docs'},
+              {label: 'Pi', href: 'https://github.com/earendil-works/pi'},
+              {
+                label: 'Copilot CLI',
+                href: 'https://docs.github.com/en/copilot/how-tos/copilot-cli',
+              },
+              {label: 'Goose', href: 'https://block.github.io/goose/'},
+              {
+                label: 'Qwen Code',
+                href: 'https://github.com/QwenLM/qwen-code',
+              },
+              {
+                label: 'Kimi Code CLI',
+                href: 'https://github.com/MoonshotAI/kimi-cli',
+              },
             ],
           },
         ],
