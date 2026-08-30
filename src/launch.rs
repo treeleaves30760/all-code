@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 
 use crate::agents;
-use crate::config::{Agent, Provider, ProviderKind, ReasoningEffort, Store, atomic_write};
+use crate::config::{
+    Agent, Protocol, Provider, ProviderKind, ReasoningEffort, Store, atomic_write,
+};
 use crate::model_catalog::ModelInfo;
 
 pub const CLAUDE_CODEX_HELPER_VERSION: &str = "0.3.1";
@@ -28,14 +30,12 @@ pub struct LaunchOverrides {
 
 /// Which wire protocol the bundled bridge should serve to the launched agent.
 ///
-/// `Chat` is constructed once a later task's non-Claude agent builder exists
-/// to select it; `Messages` (Claude Code) and `Responses` (OpenCode) are
-/// produced today.
+/// `Messages` (Claude Code) and `Responses` (OpenCode, Pi) are constructed
+/// today; `Chat` is produced by the Copilot builder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeApi {
     Messages,
     Responses,
-    #[allow(dead_code)]
     Chat,
 }
 
@@ -282,6 +282,14 @@ pub(crate) fn openai_style_base_url(provider: &Provider) -> Option<String> {
     } else {
         Some(base.to_owned())
     }
+}
+
+/// Whether a provider should be driven through its Anthropic-compatible
+/// surface rather than an OpenAI-style one.
+pub(crate) fn anthropic_shaped(provider: &Provider) -> bool {
+    provider.kind == ProviderKind::Anthropic
+        || provider.protocol == Protocol::AnthropicMessages
+        || (!provider.speaks_chat() && provider.speaks_anthropic())
 }
 
 pub(crate) fn key_or_error(
@@ -697,6 +705,34 @@ mod tests {
             config,
             credentials,
         }
+    }
+
+    #[test]
+    fn anthropic_shaped_is_true_for_anthropic_kind() {
+        assert!(anthropic_shaped(&Provider::for_kind(
+            ProviderKind::Anthropic
+        )));
+    }
+
+    #[test]
+    fn anthropic_shaped_is_false_for_a_dual_surface_chat_preset() {
+        // Deepseek speaks both chat and an Anthropic-compatible surface, but
+        // it is chat-first, so it must not be routed through the Anthropic skin.
+        assert!(!anthropic_shaped(&Provider::for_kind(
+            ProviderKind::Deepseek
+        )));
+    }
+
+    #[test]
+    fn anthropic_shaped_is_true_for_an_explicit_anthropic_messages_protocol() {
+        let mut provider = Provider::for_kind(ProviderKind::Custom);
+        provider.protocol = Protocol::AnthropicMessages;
+        assert!(anthropic_shaped(&provider));
+    }
+
+    #[test]
+    fn anthropic_shaped_is_false_for_openai_kind() {
+        assert!(!anthropic_shaped(&Provider::for_kind(ProviderKind::Openai)));
     }
 
     #[test]

@@ -229,6 +229,22 @@ fn codex_to_pi_dry_run_reports_bridge_and_setup() {
 }
 
 #[test]
+fn copilot_dry_run_uses_byok_env() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "secret")
+        .args(["--openrouter", "--dry-run", "copilot"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "COPILOT_PROVIDER_BASE_URL=https://openrouter.ai/api/v1",
+        ))
+        .stdout(predicate::str::contains("COPILOT_PROVIDER_TYPE=openai"))
+        .stdout(predicate::str::contains("<redacted>"))
+        .stdout(predicate::str::contains("secret").not());
+}
+
+#[test]
 fn preset_kind_upsert_prefills_urls_and_supports_claude() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
