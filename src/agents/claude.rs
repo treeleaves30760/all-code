@@ -56,7 +56,7 @@ pub(crate) fn build(
     }
 
     spec.args.extend_from_slice(passthrough);
-    if !provider.protocol.supports_anthropic() {
+    if !provider.speaks_anthropic() {
         bail!(
             "provider '{profile_name}' speaks {}, but Claude Code needs Anthropic Messages; use an Anthropic-compatible endpoint, OpenRouter, Ollama, or `alc --codex claude`",
             provider.protocol

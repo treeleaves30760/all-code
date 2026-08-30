@@ -49,6 +49,34 @@ struct Cli {
     #[arg(long, global = true)]
     vllm: bool,
 
+    /// Shortcut for --provider deepseek.
+    #[arg(long, global = true)]
+    deepseek: bool,
+
+    /// Shortcut for --provider moonshot.
+    #[arg(long, global = true)]
+    moonshot: bool,
+
+    /// Shortcut for --provider zai.
+    #[arg(long, global = true)]
+    zai: bool,
+
+    /// Shortcut for --provider minimax.
+    #[arg(long, global = true)]
+    minimax: bool,
+
+    /// Shortcut for --provider groq.
+    #[arg(long, global = true)]
+    groq: bool,
+
+    /// Shortcut for --provider xai.
+    #[arg(long, global = true)]
+    xai: bool,
+
+    /// Shortcut for --provider google.
+    #[arg(long, global = true)]
+    google: bool,
+
     /// Print the resolved command and environment without launching it.
     #[arg(long, global = true)]
     dry_run: bool,
@@ -329,6 +357,13 @@ fn provider_selector(cli: &Cli) -> Result<Option<String>> {
         (cli.openrouter, "openrouter"),
         (cli.ollama, "ollama"),
         (cli.vllm, "vllm"),
+        (cli.deepseek, "deepseek"),
+        (cli.moonshot, "moonshot"),
+        (cli.zai, "zai"),
+        (cli.minimax, "minimax"),
+        (cli.groq, "groq"),
+        (cli.xai, "xai"),
+        (cli.google, "google"),
     ];
     let selected: Vec<_> = shortcuts
         .into_iter()

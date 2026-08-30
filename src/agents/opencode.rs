@@ -28,7 +28,17 @@ pub(crate) fn build(
         // Always inject it so a fresh OpenCode install does not depend on local
         // provider discovery having run first.
         ProviderKind::Ollama => ("ollama".to_owned(), true),
-        ProviderKind::Vllm | ProviderKind::Custom => (format!("alc-{profile_name}"), true),
+        // The seven OpenAI-chat presets have no bespoke OpenCode provider id
+        // of their own, so they are injected the same way as vLLM/Custom.
+        ProviderKind::Vllm
+        | ProviderKind::Deepseek
+        | ProviderKind::Moonshot
+        | ProviderKind::Zai
+        | ProviderKind::Minimax
+        | ProviderKind::Groq
+        | ProviderKind::Xai
+        | ProviderKind::Google
+        | ProviderKind::Custom => (format!("alc-{profile_name}"), true),
         ProviderKind::Codex => unreachable!(),
     };
 

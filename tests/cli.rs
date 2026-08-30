@@ -205,6 +205,23 @@ fn new_agent_subcommands_exist_and_fail_cleanly_before_wiring() {
 }
 
 #[test]
+fn preset_kind_upsert_prefills_urls_and_supports_claude() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["config", "upsert", "ds", "--kind", "deepseek"])
+        .assert()
+        .success();
+    alc(&temp)
+        .env("DEEPSEEK_API_KEY", "k")
+        .args(["--provider", "ds", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "https://api.deepseek.com/anthropic",
+        ));
+}
+
+#[test]
 fn update_check_does_not_require_a_valid_provider_config() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(

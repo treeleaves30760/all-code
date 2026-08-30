@@ -154,17 +154,31 @@ pub enum ProviderKind {
     Codex,
     Ollama,
     Vllm,
+    Deepseek,
+    Moonshot,
+    Zai,
+    Minimax,
+    Groq,
+    Xai,
+    Google,
     Custom,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 14] = [
         Self::Anthropic,
         Self::Openai,
         Self::Openrouter,
         Self::Codex,
         Self::Ollama,
         Self::Vllm,
+        Self::Deepseek,
+        Self::Moonshot,
+        Self::Zai,
+        Self::Minimax,
+        Self::Groq,
+        Self::Xai,
+        Self::Google,
         Self::Custom,
     ];
 
@@ -176,6 +190,13 @@ impl ProviderKind {
             Self::Codex => "codex",
             Self::Ollama => "ollama",
             Self::Vllm => "vllm",
+            Self::Deepseek => "deepseek",
+            Self::Moonshot => "moonshot",
+            Self::Zai => "zai",
+            Self::Minimax => "minimax",
+            Self::Groq => "groq",
+            Self::Xai => "xai",
+            Self::Google => "google",
             Self::Custom => "custom",
         }
     }
@@ -187,6 +208,13 @@ impl ProviderKind {
             Self::Openrouter => Protocol::Dual,
             Self::Codex => Protocol::CodexNative,
             Self::Ollama => Protocol::Dual,
+            Self::Deepseek
+            | Self::Moonshot
+            | Self::Zai
+            | Self::Minimax
+            | Self::Groq
+            | Self::Xai
+            | Self::Google => Protocol::OpenaiChat,
             Self::Custom => Protocol::OpenaiResponses,
         }
     }
@@ -198,7 +226,26 @@ impl ProviderKind {
             Self::Openrouter => Some("https://openrouter.ai/api/v1"),
             Self::Ollama => Some("http://localhost:11434"),
             Self::Vllm => Some("http://localhost:8000/v1"),
+            Self::Deepseek => Some("https://api.deepseek.com/v1"),
+            Self::Moonshot => Some("https://api.moonshot.ai/v1"),
+            Self::Zai => Some("https://api.z.ai/api/paas/v4"),
+            Self::Minimax => Some("https://api.minimax.io/v1"),
+            Self::Groq => Some("https://api.groq.com/openai/v1"),
+            Self::Xai => Some("https://api.x.ai/v1"),
+            Self::Google => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
             Self::Codex | Self::Custom => None,
+        }
+    }
+
+    /// Separate Anthropic-compatible base URL for presets that proxy the
+    /// Anthropic Messages API alongside their native OpenAI-chat endpoint.
+    pub fn default_anthropic_base_url(self) -> Option<&'static str> {
+        match self {
+            Self::Deepseek => Some("https://api.deepseek.com/anthropic"),
+            Self::Moonshot => Some("https://api.moonshot.ai/anthropic"),
+            Self::Zai => Some("https://api.z.ai/api/anthropic"),
+            Self::Minimax => Some("https://api.minimax.io/anthropic"),
+            _ => None,
         }
     }
 
@@ -207,6 +254,13 @@ impl ProviderKind {
             Self::Anthropic => Some("ANTHROPIC_API_KEY"),
             Self::Openai => Some("OPENAI_API_KEY"),
             Self::Openrouter => Some("OPENROUTER_API_KEY"),
+            Self::Deepseek => Some("DEEPSEEK_API_KEY"),
+            Self::Moonshot => Some("MOONSHOT_API_KEY"),
+            Self::Zai => Some("ZAI_API_KEY"),
+            Self::Minimax => Some("MINIMAX_API_KEY"),
+            Self::Groq => Some("GROQ_API_KEY"),
+            Self::Xai => Some("XAI_API_KEY"),
+            Self::Google => Some("GEMINI_API_KEY"),
             Self::Codex | Self::Ollama | Self::Vllm | Self::Custom => None,
         }
     }
@@ -229,9 +283,16 @@ impl std::str::FromStr for ProviderKind {
             "codex" => Ok(Self::Codex),
             "ollama" => Ok(Self::Ollama),
             "vllm" | "v-llm" => Ok(Self::Vllm),
+            "deepseek" => Ok(Self::Deepseek),
+            "moonshot" | "moonshotai" => Ok(Self::Moonshot),
+            "zai" | "z-ai" => Ok(Self::Zai),
+            "minimax" => Ok(Self::Minimax),
+            "groq" => Ok(Self::Groq),
+            "xai" | "x-ai" | "grok" => Ok(Self::Xai),
+            "google" | "gemini" => Ok(Self::Google),
             "custom" => Ok(Self::Custom),
             _ => bail!(
-                "unknown provider kind '{value}'; expected anthropic, openai, openrouter, codex, ollama, vllm, or custom"
+                "unknown provider kind '{value}'; expected anthropic, openai, openrouter, codex, ollama, vllm, deepseek, moonshot, zai, minimax, groq, xai, google, or custom"
             ),
         }
     }
@@ -370,11 +431,26 @@ impl Provider {
             ProviderKind::Openrouter => "anthropic/claude-sonnet-4.6",
             ProviderKind::Codex => "",
             ProviderKind::Ollama => "qwen3-coder",
+            ProviderKind::Deepseek => "deepseek-v4-pro",
+            ProviderKind::Moonshot => "kimi-k3",
+            ProviderKind::Zai => "glm-5.3",
+            ProviderKind::Minimax => "MiniMax-M3",
+            ProviderKind::Groq => "llama-3.3-70b-versatile",
+            ProviderKind::Xai => "grok-build-0.1",
+            ProviderKind::Google => "gemini-3.7-flash",
             ProviderKind::Vllm | ProviderKind::Custom => "",
         };
         let auth = match kind {
             ProviderKind::Anthropic => AuthStyle::ApiKey,
-            ProviderKind::Openai | ProviderKind::Openrouter => AuthStyle::Bearer,
+            ProviderKind::Openai
+            | ProviderKind::Openrouter
+            | ProviderKind::Deepseek
+            | ProviderKind::Moonshot
+            | ProviderKind::Zai
+            | ProviderKind::Minimax
+            | ProviderKind::Groq
+            | ProviderKind::Xai
+            | ProviderKind::Google => AuthStyle::Bearer,
             ProviderKind::Codex => AuthStyle::Native,
             ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::Custom => AuthStyle::None,
         };
@@ -382,9 +458,9 @@ impl Provider {
             kind,
             model: model.to_owned(),
             reasoning_effort: (kind == ProviderKind::Openai).then_some(ReasoningEffort::Medium),
-            small_model: None,
+            small_model: (kind == ProviderKind::Deepseek).then(|| "deepseek-v4-flash".to_owned()),
             base_url: kind.default_base_url().map(str::to_owned),
-            anthropic_base_url: None,
+            anthropic_base_url: kind.default_anthropic_base_url().map(str::to_owned),
             protocol: kind.default_protocol(),
             auth,
             api_key_env: kind.default_key_env().map(str::to_owned),
@@ -950,6 +1026,82 @@ enabled = true
                     provider.kind
                 );
             }
+        }
+    }
+
+    #[test]
+    fn preset_kinds_carry_urls_keys_and_claude_support() {
+        let cases = [
+            (
+                ProviderKind::Deepseek,
+                "https://api.deepseek.com/v1",
+                Some("https://api.deepseek.com/anthropic"),
+                "DEEPSEEK_API_KEY",
+                "deepseek-v4-pro",
+            ),
+            (
+                ProviderKind::Moonshot,
+                "https://api.moonshot.ai/v1",
+                Some("https://api.moonshot.ai/anthropic"),
+                "MOONSHOT_API_KEY",
+                "kimi-k3",
+            ),
+            (
+                ProviderKind::Zai,
+                "https://api.z.ai/api/paas/v4",
+                Some("https://api.z.ai/api/anthropic"),
+                "ZAI_API_KEY",
+                "glm-5.3",
+            ),
+            (
+                ProviderKind::Minimax,
+                "https://api.minimax.io/v1",
+                Some("https://api.minimax.io/anthropic"),
+                "MINIMAX_API_KEY",
+                "MiniMax-M3",
+            ),
+            (
+                ProviderKind::Groq,
+                "https://api.groq.com/openai/v1",
+                None,
+                "GROQ_API_KEY",
+                "llama-3.3-70b-versatile",
+            ),
+            (
+                ProviderKind::Xai,
+                "https://api.x.ai/v1",
+                None,
+                "XAI_API_KEY",
+                "grok-build-0.1",
+            ),
+            (
+                ProviderKind::Google,
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+                None,
+                "GEMINI_API_KEY",
+                "gemini-3.7-flash",
+            ),
+        ];
+        for (kind, base, anthropic, key_env, model) in cases {
+            let provider = Provider::for_kind(kind);
+            assert_eq!(provider.base_url.as_deref(), Some(base), "{kind}");
+            assert_eq!(provider.anthropic_base_url.as_deref(), anthropic, "{kind}");
+            assert_eq!(provider.api_key_env.as_deref(), Some(key_env), "{kind}");
+            assert_eq!(provider.model, model, "{kind}");
+            assert_eq!(provider.protocol, Protocol::OpenaiChat, "{kind}");
+            assert_eq!(provider.auth, AuthStyle::Bearer, "{kind}");
+            // Anthropic-compatible presets serve Claude Code; the rest do not.
+            assert_eq!(
+                provider.supports(Agent::Claude),
+                anthropic.is_some(),
+                "{kind}"
+            );
+            // None of the seven speak the Responses API, so Codex CLI is out.
+            assert!(!provider.supports(Agent::Codex), "{kind}");
+            assert!(
+                provider.supports(Agent::Pi) && provider.supports(Agent::Opencode),
+                "{kind}"
+            );
         }
     }
 }
