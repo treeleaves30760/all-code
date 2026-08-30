@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod codex;
 pub mod opencode;
+pub mod pi;
 
 use std::ffi::OsString;
 
@@ -24,7 +25,8 @@ pub fn build(
         Agent::Opencode => {
             opencode::build(spec, store, profile_name, provider, passthrough, overrides)
         }
-        Agent::Pi | Agent::Copilot | Agent::Goose | Agent::Qwen | Agent::Kimi => {
+        Agent::Pi => pi::build(spec, store, profile_name, provider, passthrough, overrides),
+        Agent::Copilot | Agent::Goose | Agent::Qwen | Agent::Kimi => {
             bail!("{agent} support is not wired up yet on this branch (arrives in a later task)")
         }
     }
@@ -39,7 +41,8 @@ pub fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) ->
         Agent::Claude => claude::apply_bridge(spec, base_url, plan),
         Agent::Codex => Ok(()),
         Agent::Opencode => opencode::apply_bridge(spec, base_url, plan),
-        Agent::Pi | Agent::Copilot | Agent::Goose | Agent::Qwen | Agent::Kimi => {
+        Agent::Pi => pi::apply_bridge(spec, base_url, plan),
+        Agent::Copilot | Agent::Goose | Agent::Qwen | Agent::Kimi => {
             bail!("{agent} bridge support arrives in a later task")
         }
     }

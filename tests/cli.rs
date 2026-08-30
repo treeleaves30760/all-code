@@ -205,13 +205,27 @@ fn bundled_model_catalog_is_available_offline() {
 }
 
 #[test]
-fn new_agent_subcommands_exist_and_fail_cleanly_before_wiring() {
+fn pi_dry_run_selects_the_alc_provider_entry() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
-        .args(["--dry-run", "pi"])
+        .env("OPENROUTER_API_KEY", "secret")
+        .args(["--openrouter", "--dry-run", "pi"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("not wired up yet"));
+        .success()
+        .stdout(predicate::str::contains("--provider alc-openrouter"))
+        .stdout(predicate::str::contains("<redacted>"))
+        .stdout(predicate::str::contains("secret").not());
+}
+
+#[test]
+fn codex_to_pi_dry_run_reports_bridge_and_setup() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "--dry-run", "pi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude-codex"))
+        .stdout(predicate::str::contains("--provider alc-codex"));
 }
 
 #[test]

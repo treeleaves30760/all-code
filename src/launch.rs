@@ -57,14 +57,14 @@ pub struct BridgePlan {
 /// A file-system side effect a launch needs performed before the agent
 /// starts. Contents are never logged; dry runs only name the affected path.
 ///
-/// Both variants are fully handled by `process_file_setup` today, but no
-/// agent builder constructs one yet; that arrives with the agents that need
-/// on-disk config (e.g. MCP server entries) in a later task.
+/// Both variants are fully handled by `process_file_setup` today. `UpsertJson`
+/// is constructed by the Pi builder to merge a provider entry into
+/// `models.json`; `WriteTemp` arrives with the agents that need a fresh
+/// on-disk config file (e.g. MCP server entries) in a later task.
 #[derive(Debug, Clone)]
 pub enum FileSetup {
     /// Merge `value` under root[pointer][key] of a JSON file, creating it if
     /// absent; refuses to touch a file that fails to parse.
-    #[allow(dead_code)]
     UpsertJson {
         path: PathBuf,
         pointer: &'static str,
@@ -268,6 +268,20 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
     #[cfg(not(windows))]
     let name = "HOME";
     env::var_os(name).map(PathBuf::from)
+}
+
+/// A provider's base URL as an OpenAI-compatible client expects it: Ollama's
+/// default `/api` root does not itself serve the OpenAI-shaped routes, so an
+/// `/v1` suffix is appended when the configured URL does not already end in
+/// one. Every other provider kind is returned unchanged (trailing slash
+/// trimmed). Shared by every agent builder that speaks OpenAI chat/responses.
+pub(crate) fn openai_style_base_url(provider: &Provider) -> Option<String> {
+    let base = provider.effective_base_url()?.trim_end_matches('/');
+    if provider.kind == ProviderKind::Ollama && !base.ends_with("/v1") {
+        Some(format!("{base}/v1"))
+    } else {
+        Some(base.to_owned())
+    }
 }
 
 pub(crate) fn key_or_error(

@@ -5,8 +5,8 @@ use serde_json::{Map, Value, json};
 
 use crate::config::{AuthStyle, Protocol, Provider, ProviderKind, Store};
 use crate::launch::{
-    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, has_model_override, resolve_codex_effort,
-    resolve_codex_model,
+    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, has_model_override, openai_style_base_url,
+    resolve_codex_effort, resolve_codex_model,
 };
 
 pub(crate) fn build(
@@ -84,7 +84,7 @@ pub(crate) fn build(
     }
 
     if needs_custom_config {
-        let base_url = opencode_base_url(provider)
+        let base_url = openai_style_base_url(provider)
             .with_context(|| format!("provider '{profile_name}' needs a base URL"))?;
         let package = match (provider.kind, provider.protocol) {
             (ProviderKind::Ollama, _) => "@ai-sdk/openai-compatible",
@@ -163,15 +163,6 @@ pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgeP
         OsString::from(serde_json::to_string(&inline)?),
     );
     Ok(())
-}
-
-fn opencode_base_url(provider: &Provider) -> Option<String> {
-    let base = provider.effective_base_url()?.trim_end_matches('/');
-    if provider.kind == ProviderKind::Ollama && !base.ends_with("/v1") {
-        Some(format!("{base}/v1"))
-    } else {
-        Some(base.to_owned())
-    }
 }
 
 fn custom_kind_url(provider: &Provider) -> bool {
