@@ -469,6 +469,39 @@ api_key = "existing-key"
         assert!(contents.contains(r#"default_model = "alc-anthropic""#));
     }
 
+    // (4b) deepseek kind: a dual chat+anthropic surface, but chat-first, so
+    // anthropic_shaped() must be false and provider_entry's third branch
+    // ("openai_legacy") must be reached — not "openai_responses" (deepseek's
+    // kind isn't Openai) and not "anthropic" (chat wins over the dual
+    // surface), mirroring the qwen/goose deepseek tests. This is the only
+    // test exercising the openai_legacy branch of provider_entry.
+    #[test]
+    fn deepseek_kind_uses_the_openai_legacy_type_and_chat_base_url() {
+        let mut config = Config::default();
+        config
+            .providers
+            .insert("ds".into(), Provider::for_kind(ProviderKind::Deepseek));
+        let mut credentials = Credentials::default();
+        credentials.api_keys.insert("ds".into(), "secret".into());
+        let spec = launch::build(
+            &store(config, credentials),
+            Agent::Kimi,
+            Some("ds"),
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+
+        let (_, contents, ..) = only_write_temp(&spec);
+        assert!(contents.contains(r#"type = "openai_legacy""#));
+        assert!(contents.contains("https://api.deepseek.com/v1"));
+        assert!(
+            !contents.contains(r#"type = "anthropic""#),
+            "deepseek is dual-surface; the chat route must win over the Anthropic-shaped branch"
+        );
+        assert!(contents.contains(r#"default_model = "alc-ds""#));
+    }
+
     // (5) a user-supplied --config-file disables alc's own injection
     // entirely: no WriteTemp, no extra args, passthrough forwarded verbatim,
     // and no stored key is required even though "openai" normally needs one.
