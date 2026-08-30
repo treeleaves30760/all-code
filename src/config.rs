@@ -511,9 +511,13 @@ impl Provider {
         if !self.enabled {
             return false;
         }
-        if self.kind == ProviderKind::Codex || self.protocol == Protocol::CodexNative {
+        if self.kind == ProviderKind::Codex {
             // Native for Codex CLI; the bundled bridge for every other agent.
             return true;
+        }
+        if self.protocol == Protocol::CodexNative {
+            // codex-native is only meaningful on the codex kind.
+            return false;
         }
         match agent {
             Agent::Claude => self.speaks_anthropic(),

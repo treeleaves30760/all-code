@@ -1,7 +1,7 @@
 ---
 id: agents
 title: 支援的 agent
-sidebar_label: Agents
+sidebar_label: 支援的 agent
 sidebar_position: 6
 description: alc 啟動的八個 coding agent，每一個各自會被注入什麼 —— 逐一列出實際的環境變數、旗標與設定檔。
 keywords:

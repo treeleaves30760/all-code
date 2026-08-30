@@ -342,3 +342,24 @@ fn update_check_does_not_require_a_valid_provider_config() {
 
     server.join().expect("test HTTP server");
 }
+
+#[test]
+fn removing_a_provider_only_blocks_on_explicit_defaults() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp).args(["config", "init"]).assert().success();
+    // Fresh config: qwen/kimi fall back to 'openai' implicitly — removal must succeed.
+    alc(&temp)
+        .args(["config", "remove", "openai"])
+        .assert()
+        .success();
+    // An explicit default still blocks removal.
+    alc(&temp)
+        .args(["config", "set-default", "opencode", "openrouter"])
+        .assert()
+        .success();
+    alc(&temp)
+        .args(["config", "remove", "openrouter"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("still the default"));
+}

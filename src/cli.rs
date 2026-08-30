@@ -723,7 +723,9 @@ fn remove(store: &mut Store, name: &str) -> Result<()> {
     }
     let defaults: Vec<_> = Agent::ALL
         .into_iter()
-        .filter(|agent| store.config.defaults.get(*agent) == name)
+        .filter(|agent| {
+            store.config.defaults.is_explicit(*agent) && store.config.defaults.get(*agent) == name
+        })
         .collect();
     if !defaults.is_empty() {
         let list = defaults

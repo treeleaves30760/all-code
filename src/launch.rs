@@ -1412,4 +1412,51 @@ mod tests {
             "the failing entry's own file is left untouched"
         );
     }
+
+    #[test]
+    fn the_matrix_and_the_builders_agree() {
+        // Every combination the matrix approves must build, and every one it
+        // rejects must fail to build, for providers with credentials in place.
+        let mut config = Config::default();
+        if let Some(vllm) = config.providers.get_mut("vllm") {
+            vllm.enabled = true;
+            vllm.model = "test-model".into();
+        }
+        for kind in [
+            ProviderKind::Deepseek,
+            ProviderKind::Moonshot,
+            ProviderKind::Zai,
+            ProviderKind::Minimax,
+            ProviderKind::Groq,
+            ProviderKind::Xai,
+            ProviderKind::Google,
+        ] {
+            config
+                .providers
+                .insert(kind.as_str().to_owned(), Provider::for_kind(kind));
+        }
+        let mut fake_native = Provider::for_kind(ProviderKind::Custom);
+        fake_native.base_url = Some("https://example.test/v1".into());
+        fake_native.model = "m".into();
+        fake_native.protocol = Protocol::CodexNative;
+        config.providers.insert("fake-native".into(), fake_native);
+
+        let mut credentials = Credentials::default();
+        for name in config.providers.keys() {
+            credentials.api_keys.insert(name.clone(), "k".into());
+        }
+        let store = store(config, credentials);
+
+        for (name, provider) in &store.config.providers {
+            for agent in Agent::ALL {
+                let supported = provider.supports(agent);
+                let built =
+                    build(&store, agent, Some(name), &[], &LaunchOverrides::default()).is_ok();
+                assert_eq!(
+                    supported, built,
+                    "matrix vs builder disagree for {name} × {agent}"
+                );
+            }
+        }
+    }
 }

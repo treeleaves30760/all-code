@@ -380,7 +380,10 @@ impl App {
         };
         let defaults: Vec<_> = Agent::ALL
             .into_iter()
-            .filter(|agent| self.store.config.defaults.get(*agent) == name)
+            .filter(|agent| {
+                self.store.config.defaults.is_explicit(*agent)
+                    && self.store.config.defaults.get(*agent) == name
+            })
             .collect();
         if !defaults.is_empty() {
             let list = defaults
