@@ -56,22 +56,65 @@ impl std::str::FromStr for ReasoningEffort {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Agent {
     Claude,
     Codex,
     Opencode,
+    Pi,
+    Copilot,
+    Goose,
+    Qwen,
+    Kimi,
 }
 
 impl Agent {
-    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Opencode];
+    pub const ALL: [Self; 8] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Opencode,
+        Self::Pi,
+        Self::Copilot,
+        Self::Goose,
+        Self::Qwen,
+        Self::Kimi,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Opencode => "opencode",
+            Self::Pi => "pi",
+            Self::Copilot => "copilot",
+            Self::Goose => "goose",
+            Self::Qwen => "qwen",
+            Self::Kimi => "kimi",
+        }
+    }
+
+    /// Built-in default provider profile when `[defaults]` has no entry.
+    pub fn default_provider(self) -> &'static str {
+        match self {
+            Self::Claude | Self::Pi => "anthropic",
+            Self::Codex => "codex",
+            Self::Opencode | Self::Copilot | Self::Goose => "openrouter",
+            Self::Qwen | Self::Kimi => "openai",
+        }
+    }
+
+    /// One-line protocol requirement used in compatibility errors.
+    pub fn requirement(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code needs an Anthropic-compatible endpoint",
+            Self::Codex => "Codex needs the OpenAI Responses API",
+            Self::Opencode => "OpenCode needs an API-compatible provider",
+            Self::Pi => "Pi needs an Anthropic-, OpenAI-, or OpenAI-compatible endpoint",
+            Self::Copilot => "Copilot CLI needs an OpenAI- or Anthropic-compatible endpoint",
+            Self::Goose => "Goose needs an OpenAI- or Anthropic-compatible endpoint",
+            Self::Qwen => "Qwen Code needs an OpenAI-, Anthropic-, or Gemini-compatible endpoint",
+            Self::Kimi => "Kimi Code CLI needs an OpenAI- or Anthropic-compatible endpoint",
         }
     }
 }
@@ -90,7 +133,14 @@ impl std::str::FromStr for Agent {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "opencode" | "open-code" => Ok(Self::Opencode),
-            _ => bail!("unknown agent '{value}'; expected claude, codex, or opencode"),
+            "pi" => Ok(Self::Pi),
+            "copilot" | "copilot-cli" => Ok(Self::Copilot),
+            "goose" => Ok(Self::Goose),
+            "qwen" | "qwen-code" => Ok(Self::Qwen),
+            "kimi" | "kimi-cli" | "kimi-code" => Ok(Self::Kimi),
+            _ => bail!(
+                "unknown agent '{value}'; expected claude, codex, opencode, pi, copilot, goose, qwen, or kimi"
+            ),
         }
     }
 }
@@ -360,58 +410,79 @@ impl Provider {
             })
     }
 
+    pub fn speaks_anthropic(&self) -> bool {
+        self.protocol.supports_anthropic()
+            || self
+                .anthropic_base_url
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+    }
+
+    pub fn speaks_responses(&self) -> bool {
+        self.protocol.supports_responses()
+    }
+
+    /// Documented assumption: every known Responses endpoint also serves
+    /// Chat Completions (OpenAI, OpenRouter, vLLM, the bundled bridge).
+    pub fn speaks_chat(&self) -> bool {
+        matches!(
+            self.protocol,
+            Protocol::OpenaiChat | Protocol::OpenaiResponses | Protocol::Dual
+        )
+    }
+
     pub fn supports(&self, agent: Agent) -> bool {
         if !self.enabled {
             return false;
         }
+        if self.kind == ProviderKind::Codex || self.protocol == Protocol::CodexNative {
+            // Native for Codex CLI; the bundled bridge for every other agent.
+            return true;
+        }
         match agent {
-            Agent::Claude => self.kind == ProviderKind::Codex || self.protocol.supports_anthropic(),
-            Agent::Codex => {
-                self.kind == ProviderKind::Codex
-                    || self.kind == ProviderKind::Ollama
-                    || self.protocol.supports_responses()
+            Agent::Claude => self.speaks_anthropic(),
+            Agent::Codex => self.kind == ProviderKind::Ollama || self.speaks_responses(),
+            Agent::Opencode => true,
+            Agent::Pi | Agent::Kimi => {
+                self.speaks_chat() || self.speaks_responses() || self.speaks_anthropic()
             }
-            Agent::Opencode => {
-                self.kind != ProviderKind::Codex && self.protocol != Protocol::CodexNative
+            Agent::Copilot | Agent::Goose | Agent::Qwen => {
+                self.speaks_chat() || self.speaks_anthropic()
             }
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Defaults {
-    pub claude: String,
-    pub codex: String,
-    pub opencode: String,
-}
+#[serde(transparent)]
+pub struct Defaults(BTreeMap<Agent, String>);
 
 impl Default for Defaults {
     fn default() -> Self {
-        Self {
-            claude: "anthropic".to_owned(),
-            codex: "codex".to_owned(),
-            opencode: "openrouter".to_owned(),
-        }
+        Self(
+            Agent::ALL
+                .into_iter()
+                .map(|agent| (agent, agent.default_provider().to_owned()))
+                .collect(),
+        )
     }
 }
 
 impl Defaults {
     pub fn get(&self, agent: Agent) -> &str {
-        match agent {
-            Agent::Claude => &self.claude,
-            Agent::Codex => &self.codex,
-            Agent::Opencode => &self.opencode,
-        }
+        self.0
+            .get(&agent)
+            .map(String::as_str)
+            .unwrap_or_else(|| agent.default_provider())
     }
 
     pub fn set(&mut self, agent: Agent, provider: impl Into<String>) {
-        let provider = provider.into();
-        match agent {
-            Agent::Claude => self.claude = provider,
-            Agent::Codex => self.codex = provider,
-            Agent::Opencode => self.opencode = provider,
-        }
+        self.0.insert(agent, provider.into());
+    }
+
+    /// Whether the config file names this default itself (vs. built-in fallback).
+    pub fn is_explicit(&self, agent: Agent) -> bool {
+        self.0.contains_key(&agent)
     }
 }
 
@@ -474,19 +545,19 @@ impl Config {
         }
         for agent in Agent::ALL {
             let default_name = self.defaults.get(agent);
-            let provider = self.providers.get(default_name).with_context(|| {
-                format!("default {agent} provider '{default_name}' does not exist")
-            })?;
-            if !provider.supports(agent) {
-                let requirement = match agent {
-                    Agent::Claude => "Claude Code needs Anthropic Messages",
-                    Agent::Codex => "Codex needs the OpenAI Responses API",
-                    Agent::Opencode => "OpenCode needs an API-compatible provider",
-                };
-                bail!(
-                    "provider '{default_name}' ({}) cannot be used with {agent}; {requirement}",
+            match self.providers.get(default_name) {
+                Some(provider) if provider.supports(agent) => {}
+                Some(provider) if self.defaults.is_explicit(agent) => bail!(
+                    "provider '{default_name}' ({}) cannot be used with {agent}; {}",
                     provider.kind,
-                );
+                    agent.requirement(),
+                ),
+                None if self.defaults.is_explicit(agent) => {
+                    bail!("default {agent} provider '{default_name}' does not exist")
+                }
+                // Implicit fallback that is absent or incompatible: only an error
+                // once the user actually launches that agent (resolve reports it).
+                _ => {}
             }
         }
         Ok(())
@@ -500,14 +571,10 @@ impl Config {
         let requested = requested.unwrap_or_else(|| self.defaults.get(agent));
         if let Some((name, provider)) = self.providers.get_key_value(requested) {
             if !provider.supports(agent) {
-                let requirement = match agent {
-                    Agent::Claude => "Claude Code needs Anthropic Messages",
-                    Agent::Codex => "Codex needs the OpenAI Responses API",
-                    Agent::Opencode => "OpenCode needs an API-compatible provider",
-                };
                 bail!(
-                    "provider '{name}' ({}) is not compatible with {agent}; {requirement}. Run `alc doctor` for the compatibility matrix",
-                    provider.kind
+                    "provider '{name}' ({}) is not compatible with {agent}; {}. Run `alc doctor` for the compatibility matrix",
+                    provider.kind,
+                    agent.requirement()
                 );
             }
             return Ok((name.as_str(), provider));
@@ -748,7 +815,7 @@ mod tests {
             "work".to_owned(),
             Provider::for_kind(ProviderKind::Openrouter),
         );
-        config.defaults.opencode = "work".to_owned();
+        config.defaults.set(Agent::Opencode, "work");
 
         let (name, _) = config.resolve(Agent::Claude, Some("openrouter")).unwrap();
         assert_eq!(name, "work");
@@ -800,5 +867,89 @@ enabled = true
         .unwrap();
         assert_eq!(provider.kind, ProviderKind::Codex);
         assert_eq!(provider.reasoning_effort, None);
+    }
+
+    #[test]
+    fn legacy_three_key_defaults_still_load_and_fall_back() {
+        let config: Config = toml::from_str(
+            r#"
+version = 1
+[defaults]
+claude = "anthropic"
+codex = "codex"
+opencode = "openrouter"
+[providers.anthropic]
+kind = "anthropic"
+model = "sonnet"
+protocol = "anthropic-messages"
+auth = "api-key"
+enabled = true
+[providers.codex]
+kind = "codex"
+model = ""
+protocol = "codex-native"
+auth = "native"
+enabled = true
+[providers.openrouter]
+kind = "openrouter"
+model = "anthropic/claude-sonnet-4.6"
+protocol = "dual"
+auth = "bearer"
+enabled = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.defaults.get(Agent::Claude), "anthropic");
+        assert_eq!(config.defaults.get(Agent::Pi), "anthropic"); // implicit fallback
+        assert!(!config.defaults.is_explicit(Agent::Pi));
+        // openai profile is absent, so the implicit qwen fallback must not fail validation
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn compatibility_matrix_matches_the_documented_capabilities() {
+        let by_kind = |kind| Provider::for_kind(kind);
+        let cases: &[(Provider, &[Agent])] = &[
+            // codex login reaches every agent through the bridge
+            (by_kind(ProviderKind::Codex), &Agent::ALL),
+            // anthropic: everything except codex CLI
+            (
+                by_kind(ProviderKind::Anthropic),
+                &[
+                    Agent::Claude,
+                    Agent::Opencode,
+                    Agent::Pi,
+                    Agent::Copilot,
+                    Agent::Goose,
+                    Agent::Qwen,
+                    Agent::Kimi,
+                ],
+            ),
+            // openai (responses+chat): everything except claude
+            (
+                by_kind(ProviderKind::Openai),
+                &[
+                    Agent::Codex,
+                    Agent::Opencode,
+                    Agent::Pi,
+                    Agent::Copilot,
+                    Agent::Goose,
+                    Agent::Qwen,
+                    Agent::Kimi,
+                ],
+            ),
+            // openrouter (dual): all eight
+            (by_kind(ProviderKind::Openrouter), &Agent::ALL),
+        ];
+        for (provider, expected) in cases {
+            for agent in Agent::ALL {
+                assert_eq!(
+                    provider.supports(agent),
+                    expected.contains(&agent),
+                    "{} × {agent}",
+                    provider.kind
+                );
+            }
+        }
     }
 }

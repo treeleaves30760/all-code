@@ -127,9 +127,9 @@ fn binaries(theme: &Theme, codex_for_claude: bool, issues: &mut Vec<Issue>) {
 
 fn profiles(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     heading(theme, "Provider profiles");
-    let mut table = Table::new(vec![
-        "PROFILE", "KIND", "KEY", "CLAUDE", "CODEX", "OPENCODE",
-    ]);
+    let mut headers = vec!["PROFILE".to_owned(), "KIND".to_owned(), "KEY".to_owned()];
+    headers.extend(Agent::ALL.map(|agent| agent.as_str().to_uppercase()));
+    let mut table = Table::new(headers);
 
     for (name, provider) in &store.config.providers {
         let (key, tone) = key_status(store, name, provider);
@@ -568,14 +568,14 @@ impl Cell {
 /// A whitespace-aligned table whose columns are sized from the widest value in each,
 /// so the layout cannot drift as profile names and provider kinds change.
 struct Table {
-    headers: Vec<&'static str>,
+    headers: Vec<String>,
     rows: Vec<Vec<Cell>>,
 }
 
 impl Table {
-    fn new(headers: Vec<&'static str>) -> Self {
+    fn new<S: Into<String>>(headers: Vec<S>) -> Self {
         Self {
-            headers,
+            headers: headers.into_iter().map(Into::into).collect(),
             rows: Vec::new(),
         }
     }
@@ -663,6 +663,11 @@ fn binary_for(agent: Agent) -> std::ffi::OsString {
         Agent::Claude => "ALC_CLAUDE_BIN",
         Agent::Codex => "ALC_CODEX_BIN",
         Agent::Opencode => "ALC_OPENCODE_BIN",
+        Agent::Pi => "ALC_PI_BIN",
+        Agent::Copilot => "ALC_COPILOT_BIN",
+        Agent::Goose => "ALC_GOOSE_BIN",
+        Agent::Qwen => "ALC_QWEN_BIN",
+        Agent::Kimi => "ALC_KIMI_BIN",
     };
     env::var_os(override_name).unwrap_or_else(|| agent.as_str().into())
 }

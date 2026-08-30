@@ -279,6 +279,11 @@ fn agent_binary_override(agent: Agent) -> Option<OsString> {
         Agent::Claude => "ALC_CLAUDE_BIN",
         Agent::Codex => "ALC_CODEX_BIN",
         Agent::Opencode => "ALC_OPENCODE_BIN",
+        Agent::Pi => "ALC_PI_BIN",
+        Agent::Copilot => "ALC_COPILOT_BIN",
+        Agent::Goose => "ALC_GOOSE_BIN",
+        Agent::Qwen => "ALC_QWEN_BIN",
+        Agent::Kimi => "ALC_KIMI_BIN",
     };
     env::var_os(name).filter(|value| !value.is_empty())
 }
@@ -776,7 +781,7 @@ mod tests {
             &LaunchOverrides::default(),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("Anthropic Messages"));
+        assert!(error.to_string().contains("Anthropic-compatible endpoint"));
     }
 
     #[test]

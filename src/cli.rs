@@ -77,6 +77,16 @@ enum Command {
     Codex(Passthrough),
     /// Launch OpenCode.
     Opencode(Passthrough),
+    /// Launch Pi.
+    Pi(Passthrough),
+    /// Launch GitHub Copilot CLI.
+    Copilot(Passthrough),
+    /// Launch Goose.
+    Goose(Passthrough),
+    /// Launch Qwen Code.
+    Qwen(Passthrough),
+    /// Launch Kimi Code CLI.
+    Kimi(Passthrough),
 }
 
 #[derive(Debug, Args)]
@@ -162,7 +172,7 @@ enum ConfigCommand {
     },
     /// Change an agent's default provider profile.
     SetDefault {
-        /// claude, codex, or opencode.
+        /// claude, codex, opencode, pi, copilot, goose, qwen, or kimi.
         agent: Agent,
         /// Provider profile name.
         provider: String,
@@ -269,6 +279,41 @@ pub fn run() -> Result<u8> {
         Command::Opencode(args) => run_agent(
             &store,
             Agent::Opencode,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+        ),
+        Command::Pi(args) => run_agent(
+            &store,
+            Agent::Pi,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+        ),
+        Command::Copilot(args) => run_agent(
+            &store,
+            Agent::Copilot,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+        ),
+        Command::Goose(args) => run_agent(
+            &store,
+            Agent::Goose,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+        ),
+        Command::Qwen(args) => run_agent(
+            &store,
+            Agent::Qwen,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+        ),
+        Command::Kimi(args) => run_agent(
+            &store,
+            Agent::Kimi,
             requested_provider.as_deref(),
             args.args,
             cli.dry_run,

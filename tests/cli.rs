@@ -97,7 +97,7 @@ fn incompatible_provider_has_actionable_error() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "Claude Code needs Anthropic Messages",
+            "Claude Code needs an Anthropic-compatible endpoint",
         ));
 }
 
@@ -192,6 +192,16 @@ fn bundled_model_catalog_is_available_offline() {
         .stdout(predicate::str::contains("gpt-5.6-terra"))
         .stdout(predicate::str::contains("gpt-5.6-sol"))
         .stdout(predicate::str::contains("low, medium, high, xhigh, max"));
+}
+
+#[test]
+fn new_agent_subcommands_exist_and_fail_cleanly_before_wiring() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--dry-run", "pi"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not wired up yet"));
 }
 
 #[test]
