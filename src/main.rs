@@ -1,3 +1,4 @@
+mod agents;
 mod cli;
 mod config;
 mod doctor;

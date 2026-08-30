@@ -9,9 +9,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use serde_json::{Map, Value, json};
 
-use crate::config::{Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store};
+use crate::agents;
+use crate::agents::claude::configure_claude_proxy_env;
+use crate::config::{Agent, Provider, ProviderKind, ReasoningEffort, Store};
 use crate::model_catalog::ModelInfo;
 
 pub const CLAUDE_CODEX_HELPER_VERSION: &str = "0.3.1";
@@ -88,32 +89,15 @@ pub fn build(
         spec.program = override_path;
     }
 
-    match agent {
-        Agent::Claude => build_claude(
-            &mut spec,
-            store,
-            profile_name,
-            provider,
-            passthrough,
-            overrides,
-        )?,
-        Agent::Codex => build_codex(
-            &mut spec,
-            store,
-            profile_name,
-            provider,
-            passthrough,
-            overrides,
-        )?,
-        Agent::Opencode => build_opencode(
-            &mut spec,
-            store,
-            profile_name,
-            provider,
-            passthrough,
-            overrides,
-        )?,
-    }
+    agents::build(
+        agent,
+        &mut spec,
+        store,
+        profile_name,
+        provider,
+        passthrough,
+        overrides,
+    )?;
     Ok(spec)
 }
 
@@ -142,425 +126,6 @@ pub fn execute(mut spec: LaunchSpec) -> Result<u8> {
         .status()
         .with_context(|| format!("failed to launch {}", program.display()))?;
     Ok(exit_code(status))
-}
-
-fn build_claude(
-    spec: &mut LaunchSpec,
-    store: &Store,
-    profile_name: &str,
-    provider: &Provider,
-    passthrough: &[OsString],
-    overrides: &LaunchOverrides,
-) -> Result<()> {
-    clear_cloud_provider_env(spec);
-
-    if provider.kind == ProviderKind::Codex {
-        if !overrides.model_options.is_empty()
-            && !has_option(passthrough, "--settings", "--settings")
-        {
-            spec.args.extend([
-                OsString::from("--settings"),
-                OsString::from(claude_model_picker_settings(&overrides.model_options)?),
-            ]);
-        }
-        let model = overrides
-            .model
-            .clone()
-            .unwrap_or(resolve_codex_model(provider)?);
-        let effort = overrides
-            .reasoning_effort
-            .or(provider.reasoning_effort)
-            .or(resolve_codex_effort(provider)?)
-            .unwrap_or(ReasoningEffort::Medium);
-        spec.codex_plan = Some(CodexPlan {
-            model: model.clone(),
-            context_window: overrides.context_window,
-            options: overrides.model_options.clone(),
-        });
-        if !has_model_override(passthrough) {
-            spec.args
-                .extend([OsString::from("--model"), OsString::from(model)]);
-        }
-        if !has_option(passthrough, "--effort", "--effort") {
-            spec.args
-                .extend([OsString::from("--effort"), OsString::from(effort.as_str())]);
-        }
-        spec.args.extend_from_slice(passthrough);
-        return Ok(());
-    }
-
-    spec.args.extend_from_slice(passthrough);
-    if !provider.protocol.supports_anthropic() {
-        bail!(
-            "provider '{profile_name}' speaks {}, but Claude Code needs Anthropic Messages; use an Anthropic-compatible endpoint, OpenRouter, Ollama, or `alc --codex claude`",
-            provider.protocol
-        );
-    }
-
-    let base_url = claude_base_url(provider)
-        .with_context(|| format!("provider '{profile_name}' needs an Anthropic base URL"))?;
-    spec.env.insert(
-        OsString::from("ANTHROPIC_BASE_URL"),
-        OsString::from(base_url),
-    );
-    spec.env.insert(
-        OsString::from("ANTHROPIC_MODEL"),
-        OsString::from(overrides.model.as_deref().unwrap_or(&provider.model)),
-    );
-    if let Some(small_model) = provider
-        .small_model
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        spec.env.insert(
-            OsString::from("ANTHROPIC_SMALL_FAST_MODEL"),
-            OsString::from(small_model),
-        );
-    }
-
-    let key = store.credentials.key_for(profile_name, provider);
-    match provider.auth {
-        AuthStyle::ApiKey => {
-            if let Some(key) = key {
-                spec.env
-                    .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::from(key));
-                spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-            } else if provider.kind != ProviderKind::Anthropic {
-                missing_key(profile_name, provider)?;
-            } else {
-                // No configured key means the user selected Claude's native
-                // login. Do not let an unrelated ambient token override it.
-                spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
-                spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-            }
-        }
-        AuthStyle::Bearer => {
-            let key = key_or_error(profile_name, provider, key)?;
-            spec.env
-                .insert(OsString::from("ANTHROPIC_AUTH_TOKEN"), OsString::from(key));
-            // Claude Code and OpenRouter both require this to be explicitly empty.
-            spec.env
-                .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::new());
-        }
-        AuthStyle::Native => {
-            spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
-            spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-        }
-        AuthStyle::None => {
-            let token = if provider.kind == ProviderKind::Ollama {
-                "ollama"
-            } else {
-                "alc"
-            };
-            spec.env.insert(
-                OsString::from("ANTHROPIC_AUTH_TOKEN"),
-                OsString::from(token),
-            );
-            spec.env
-                .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::new());
-        }
-    }
-    Ok(())
-}
-
-/// Claude Code lists these rows in `/model`, so the user picks the GPT model
-/// inside the session instead of before launch.
-fn claude_model_picker_settings(models: &[ModelInfo]) -> Result<String> {
-    let options: Vec<Value> = models
-        .iter()
-        .map(|model| {
-            json!({
-                "model": model.id,
-                "label": model.name,
-                "description": model.description,
-            })
-        })
-        .collect();
-    serde_json::to_string(&json!({
-        "modelPicker": {
-            "options": options,
-            // Claude's own lineup cannot be served through the Codex adapter.
-            "replaceBuiltInOptions": true,
-        }
-    }))
-    .context("failed to encode the Claude Code model picker")
-}
-
-fn build_codex(
-    spec: &mut LaunchSpec,
-    store: &Store,
-    profile_name: &str,
-    provider: &Provider,
-    passthrough: &[OsString],
-    overrides: &LaunchOverrides,
-) -> Result<()> {
-    if provider.kind == ProviderKind::Codex {
-        if !has_option(passthrough, "--profile", "-p")
-            && let Some(profile) = provider
-                .codex_profile
-                .as_deref()
-                .filter(|value| !value.is_empty())
-        {
-            spec.args
-                .extend([OsString::from("--profile"), OsString::from(profile)]);
-        }
-        let model = overrides.model.as_deref().unwrap_or(&provider.model);
-        if !model.is_empty() && !has_model_override(passthrough) {
-            spec.args
-                .extend([OsString::from("--model"), OsString::from(model)]);
-        }
-        if !has_effort_override(passthrough)
-            && let Some(effort) = overrides.reasoning_effort.or(provider.reasoning_effort)
-        {
-            push_codex_config(
-                &mut spec.args,
-                "model_reasoning_effort",
-                toml_string(effort.as_str()),
-            );
-        }
-        spec.args.extend_from_slice(passthrough);
-        return Ok(());
-    }
-
-    if provider.kind == ProviderKind::Ollama {
-        if !has_option(passthrough, "--oss", "--oss") {
-            spec.args.push(OsString::from("--oss"));
-        }
-        if !has_option(passthrough, "--local-provider", "--local-provider") {
-            spec.args
-                .extend([OsString::from("--local-provider"), OsString::from("ollama")]);
-        }
-        if !has_model_override(passthrough) {
-            spec.args.extend([
-                OsString::from("--model"),
-                OsString::from(overrides.model.as_deref().unwrap_or(&provider.model)),
-            ]);
-        }
-        spec.args.extend_from_slice(passthrough);
-        return Ok(());
-    }
-
-    if !provider.protocol.supports_responses() {
-        bail!(
-            "provider '{profile_name}' speaks {}, but Codex requires the OpenAI Responses API",
-            provider.protocol
-        );
-    }
-    let base_url = provider
-        .effective_base_url()
-        .with_context(|| format!("provider '{profile_name}' needs a base URL"))?;
-    let provider_id = codex_provider_id(profile_name);
-
-    if !has_model_override(passthrough) {
-        spec.args.extend([
-            OsString::from("--model"),
-            OsString::from(overrides.model.as_deref().unwrap_or(&provider.model)),
-        ]);
-    }
-    if !has_effort_override(passthrough)
-        && let Some(effort) = overrides.reasoning_effort.or(provider.reasoning_effort)
-    {
-        push_codex_config(
-            &mut spec.args,
-            "model_reasoning_effort",
-            toml_string(effort.as_str()),
-        );
-    }
-    push_codex_config(&mut spec.args, "model_provider", toml_string(&provider_id));
-    push_codex_config(
-        &mut spec.args,
-        &format!("model_providers.{provider_id}.name"),
-        toml_string(&format!("alc: {profile_name}")),
-    );
-    push_codex_config(
-        &mut spec.args,
-        &format!("model_providers.{provider_id}.base_url"),
-        toml_string(base_url),
-    );
-    push_codex_config(
-        &mut spec.args,
-        &format!("model_providers.{provider_id}.wire_api"),
-        toml_string("responses"),
-    );
-    push_codex_config(
-        &mut spec.args,
-        &format!("model_providers.{provider_id}.requires_openai_auth"),
-        "false".to_owned(),
-    );
-
-    if provider.auth != AuthStyle::None {
-        let key = key_or_error(
-            profile_name,
-            provider,
-            store.credentials.key_for(profile_name, provider),
-        )?;
-        let env_name = "ALC_PROVIDER_API_KEY";
-        spec.env
-            .insert(OsString::from(env_name), OsString::from(key));
-        push_codex_config(
-            &mut spec.args,
-            &format!("model_providers.{provider_id}.env_key"),
-            toml_string(env_name),
-        );
-    }
-    spec.args.extend_from_slice(passthrough);
-    Ok(())
-}
-
-fn build_opencode(
-    spec: &mut LaunchSpec,
-    store: &Store,
-    profile_name: &str,
-    provider: &Provider,
-    passthrough: &[OsString],
-    overrides: &LaunchOverrides,
-) -> Result<()> {
-    if provider.kind == ProviderKind::Codex {
-        bail!(
-            "Codex CLI login cannot be injected into OpenCode directly; connect OpenAI inside OpenCode or choose an API/OpenRouter profile"
-        );
-    }
-
-    let (provider_id, needs_custom_config) = match provider.kind {
-        ProviderKind::Anthropic => ("anthropic".to_owned(), custom_kind_url(provider)),
-        ProviderKind::Openai => ("openai".to_owned(), custom_kind_url(provider)),
-        ProviderKind::Openrouter => ("openrouter".to_owned(), custom_kind_url(provider)),
-        // OpenCode documents Ollama as an explicit OpenAI-compatible provider.
-        // Always inject it so a fresh OpenCode install does not depend on local
-        // provider discovery having run first.
-        ProviderKind::Ollama => ("ollama".to_owned(), true),
-        ProviderKind::Vllm | ProviderKind::Custom => (format!("alc-{profile_name}"), true),
-        ProviderKind::Codex => unreachable!(),
-    };
-
-    let key = store.credentials.key_for(profile_name, provider);
-    if let Some(key) = &key {
-        let env_name = provider
-            .api_key_env
-            .as_deref()
-            .unwrap_or(match provider.kind {
-                ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
-                ProviderKind::Openai => "OPENAI_API_KEY",
-                ProviderKind::Openrouter => "OPENROUTER_API_KEY",
-                _ => "ALC_PROVIDER_API_KEY",
-            });
-        spec.env
-            .insert(OsString::from(env_name), OsString::from(key));
-        spec.env
-            .insert(OsString::from("ALC_PROVIDER_API_KEY"), OsString::from(key));
-    }
-
-    let model = overrides.model.as_deref().unwrap_or(&provider.model);
-    let model_reference = format!("{provider_id}/{model}");
-    let mut inline = json!({
-        "$schema": "https://opencode.ai/config.json"
-    });
-    if !has_model_override(passthrough) {
-        inline["model"] = Value::String(model_reference);
-    }
-
-    if needs_custom_config {
-        let base_url = opencode_base_url(provider)
-            .with_context(|| format!("provider '{profile_name}' needs a base URL"))?;
-        let package = match (provider.kind, provider.protocol) {
-            (ProviderKind::Ollama, _) => "@ai-sdk/openai-compatible",
-            (_, Protocol::AnthropicMessages) => "@ai-sdk/anthropic",
-            (_, Protocol::OpenaiResponses | Protocol::Dual) => "@ai-sdk/openai",
-            (_, Protocol::OpenaiChat) => "@ai-sdk/openai-compatible",
-            (_, Protocol::CodexNative) => {
-                bail!("provider '{profile_name}' uses codex-native, which OpenCode cannot load")
-            }
-        };
-        let mut options = Map::new();
-        options.insert("baseURL".to_owned(), Value::String(base_url.to_owned()));
-        if provider.auth != AuthStyle::None {
-            options.insert(
-                "apiKey".to_owned(),
-                Value::String("{env:ALC_PROVIDER_API_KEY}".to_owned()),
-            );
-        }
-        inline["provider"] = json!({
-                &provider_id: {
-                    "npm": package,
-                    "name": format!("alc: {profile_name}"),
-                    "options": options,
-                    "models": {
-                        (model): { "name": model }
-                    }
-                }
-        });
-    }
-
-    spec.env.insert(
-        OsString::from("OPENCODE_CONFIG_CONTENT"),
-        OsString::from(serde_json::to_string(&inline)?),
-    );
-    spec.args.extend_from_slice(passthrough);
-    Ok(())
-}
-
-fn configure_claude_proxy_env(spec: &mut LaunchSpec, base_url: String, plan: &CodexPlan) {
-    // Claude Code resolves its built-in aliases even when the picker lists GPT
-    // models, so every alias has to land on a model the adapter can serve.
-    let strongest = plan
-        .options
-        .first()
-        .map_or(plan.model.as_str(), |model| model.id.as_str());
-    let cheapest = plan
-        .options
-        .last()
-        .map_or(plan.model.as_str(), |model| model.id.as_str());
-    for (name, value) in [
-        ("ANTHROPIC_MODEL", plan.model.as_str()),
-        // Keeps the picker's Default row on a model the adapter can serve.
-        ("ANTHROPIC_DEFAULT_MODEL", plan.model.as_str()),
-        ("ANTHROPIC_DEFAULT_SONNET_MODEL", plan.model.as_str()),
-        ("ANTHROPIC_DEFAULT_OPUS_MODEL", strongest),
-        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", cheapest),
-        ("ANTHROPIC_SMALL_FAST_MODEL", cheapest),
-    ] {
-        spec.env.insert(OsString::from(name), OsString::from(value));
-    }
-    spec.env.insert(
-        OsString::from("ANTHROPIC_BASE_URL"),
-        OsString::from(base_url),
-    );
-    // Clients older than the `modelPicker` setting still get one selectable
-    // GPT entry from the documented custom-model variables.
-    spec.env.insert(
-        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION"),
-        OsString::from(plan.model.clone()),
-    );
-    spec.env.insert(
-        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
-        OsString::from(format!("{} via Codex", plan.model)),
-    );
-    spec.env.insert(
-        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
-        OsString::from("Selected by all-code using your Codex login"),
-    );
-    if let Some(context_window) = plan.context_window {
-        spec.env.insert(
-            OsString::from("CLAUDE_CODE_MAX_CONTEXT_TOKENS"),
-            OsString::from(context_window.to_string()),
-        );
-    }
-    spec.env.insert(
-        OsString::from("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
-        OsString::from("1"),
-    );
-    spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
-    spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-}
-
-fn clear_cloud_provider_env(spec: &mut LaunchSpec) {
-    for name in [
-        "CLAUDE_CODE_USE_BEDROCK",
-        "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY",
-    ] {
-        spec.env_remove.push(OsString::from(name));
-    }
 }
 
 pub(crate) fn resolve_codex_model(provider: &Provider) -> Result<String> {
@@ -647,7 +212,7 @@ fn read_codex_preference(path: &Path, key: &str) -> Result<Option<String>> {
         .map(str::to_owned))
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     let name = "USERPROFILE";
     #[cfg(not(windows))]
@@ -655,40 +220,11 @@ fn home_dir() -> Option<PathBuf> {
     env::var_os(name).map(PathBuf::from)
 }
 
-fn claude_base_url(provider: &Provider) -> Option<String> {
-    let base = provider
-        .effective_anthropic_base_url()?
-        .trim_end_matches('/');
-    if provider.kind == ProviderKind::Openrouter && base.ends_with("/api/v1") {
-        Some(base.trim_end_matches("/v1").to_owned())
-    } else {
-        Some(base.to_owned())
-    }
-}
-
-fn custom_kind_url(provider: &Provider) -> bool {
-    match (
-        provider.effective_base_url(),
-        provider.kind.default_base_url(),
-    ) {
-        (Some(actual), Some(default)) => {
-            actual.trim_end_matches('/') != default.trim_end_matches('/')
-        }
-        (Some(_), None) => true,
-        _ => false,
-    }
-}
-
-fn opencode_base_url(provider: &Provider) -> Option<String> {
-    let base = provider.effective_base_url()?.trim_end_matches('/');
-    if provider.kind == ProviderKind::Ollama && !base.ends_with("/v1") {
-        Some(format!("{base}/v1"))
-    } else {
-        Some(base.to_owned())
-    }
-}
-
-fn key_or_error(profile_name: &str, provider: &Provider, key: Option<String>) -> Result<String> {
+pub(crate) fn key_or_error(
+    profile_name: &str,
+    provider: &Provider,
+    key: Option<String>,
+) -> Result<String> {
     if let Some(key) = key.filter(|value| !value.is_empty()) {
         return Ok(key);
     }
@@ -696,7 +232,7 @@ fn key_or_error(profile_name: &str, provider: &Provider, key: Option<String>) ->
     unreachable!()
 }
 
-fn missing_key(profile_name: &str, provider: &Provider) -> Result<()> {
+pub(crate) fn missing_key(profile_name: &str, provider: &Provider) -> Result<()> {
     let hint = provider
         .api_key_env
         .as_deref()
@@ -705,20 +241,11 @@ fn missing_key(profile_name: &str, provider: &Provider) -> Result<()> {
     bail!("provider '{profile_name}' has no API key; {hint}run `alc config` to save one")
 }
 
-fn push_codex_config(args: &mut Vec<OsString>, key: &str, value: String) {
-    args.push(OsString::from("--config"));
-    args.push(OsString::from(format!("{key}={value}")));
-}
-
-fn toml_string(value: &str) -> String {
+pub(crate) fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_owned()).to_string()
 }
 
-fn codex_provider_id(profile: &str) -> String {
-    format!("alc_{}", profile.replace('-', "_"))
-}
-
-fn has_model_override(args: &[OsString]) -> bool {
+pub(crate) fn has_model_override(args: &[OsString]) -> bool {
     args.iter().any(|arg| {
         let value = arg.to_string_lossy();
         matches!(value.as_ref(), "--model" | "-m")
@@ -727,7 +254,7 @@ fn has_model_override(args: &[OsString]) -> bool {
     })
 }
 
-fn has_effort_override(args: &[OsString]) -> bool {
+pub(crate) fn has_effort_override(args: &[OsString]) -> bool {
     args.iter().enumerate().any(|(index, arg)| {
         let value = arg.to_string_lossy();
         value.starts_with("--config=model_reasoning_effort=")
@@ -740,7 +267,7 @@ fn has_effort_override(args: &[OsString]) -> bool {
     })
 }
 
-fn has_option(args: &[OsString], long: &str, short: &str) -> bool {
+pub(crate) fn has_option(args: &[OsString], long: &str, short: &str) -> bool {
     args.iter().any(|arg| {
         let value = arg.to_string_lossy();
         value == long || value == short || value.starts_with(&format!("{long}="))
@@ -946,6 +473,8 @@ fn health_check(address: SocketAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
+
     use crate::config::{Config, Credentials};
     use crate::model_catalog::ModelCatalog;
 
