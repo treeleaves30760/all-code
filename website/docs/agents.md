@@ -48,7 +48,8 @@ alc --codex claude --model gpt-5.6-terra --effort medium
 - alc injects: `--model` and, when configured, `--config
   model_reasoning_effort=<level>`. A non-Codex provider also gets a full
   `model_providers.<id>.*` override (`base_url`, `wire_api=responses`,
-  `env_key`) plus an `ALC_PROVIDER_API_KEY` env carrying the key; an Ollama
+  `requires_openai_auth=false`), plus — only for a profile that needs a key
+  at all — `env_key` and an `ALC_PROVIDER_API_KEY` env carrying it; an Ollama
   profile instead gets `--oss --local-provider ollama --model <model>`.
 - Codex CLI is the one agent that never goes through the bridge: a
   `codex`-kind profile runs `codex` directly on your native `codex login`.
@@ -63,11 +64,18 @@ alc --openrouter codex
 - Binary: `opencode` — [install](https://opencode.ai/docs)
 - Accepts: any API-compatible provider
 - alc injects an inline `OPENCODE_CONFIG_CONTENT` JSON environment variable
-  (no file is written) naming the model. Profiles that need a custom endpoint
-  — Ollama, vLLM, Custom, any of the seven new provider-kind presets, or an
-  Anthropic/OpenAI/OpenRouter profile pointed at a non-default URL — also get
-  a full `provider.alc-<profile>` object in that same JSON (npm package,
-  `baseURL`, `apiKey: "{env:ALC_PROVIDER_API_KEY}"`).
+  (no file is written) naming the model as `<provider-id>/<model>`. The
+  provider id is the literal kind name for Anthropic, OpenAI, OpenRouter, and
+  Ollama profiles (`anthropic`, `openai`, `openrouter`, `ollama`); every other
+  kind — vLLM, Custom, and the seven new provider-kind presets — gets
+  `alc-<profile>` instead.
+- A full `provider.<id>` object (npm package, `name`, `options.baseURL`,
+  `models`) is also written into that same JSON: always for Ollama, vLLM,
+  Custom, and the seven new presets; for an Anthropic/OpenAI/OpenRouter
+  profile only when its base URL has been pointed away from that kind's own
+  default. `options.apiKey: "{env:ALC_PROVIDER_API_KEY}"` is added only when
+  the profile needs a key at all — a default (keyless) Ollama profile gets no
+  `apiKey` field.
 - Through the bridge, the same mechanism defines an `alc-codex` provider
   pointed at the loopback adapter.
 

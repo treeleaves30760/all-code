@@ -4,7 +4,7 @@ slug: /
 title: all-code (alc)
 sidebar_label: Introduction
 sidebar_position: 1
-description: One CLI to configure LLM providers once and launch eight coding agents with any of them, including Claude Code on a Codex/ChatGPT login.
+description: One CLI to configure LLM providers once and launch eight coding agents with any of them, including running any of them on a Codex/ChatGPT login.
 keywords:
   - claude code
   - codex cli
@@ -29,7 +29,7 @@ launch [Claude Code](https://code.claude.com/docs/en/setup),
 [Goose](https://block.github.io/goose/),
 [Qwen Code](https://github.com/QwenLM/qwen-code), or
 [Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli) with any of them —
-including running Claude Code on your Codex/ChatGPT subscription.
+including running any of them on your Codex/ChatGPT subscription.
 
 ```sh
 alc config
@@ -66,12 +66,12 @@ alc --provider work opencode
 ## Why it exists
 
 Each coding agent has its own idea of how a provider is configured: Claude
-Code and Copilot CLI read environment variables, Codex CLI takes TOML
-overrides on the command line, OpenCode expects an inline JSON config, Pi
-merges an entry into its own `models.json`, and Kimi Code CLI merges one into
-a TOML config file. Keeping the same set of providers usable across all eight
-means repeating that work eight times, in eight formats, every time a key or
-an endpoint changes.
+Code, Copilot CLI, and Goose read environment variables; Codex CLI and Qwen
+Code take flags on the command line; OpenCode expects an inline JSON config;
+Pi merges an entry into its own `models.json`; and Kimi Code CLI merges one
+into a TOML config file. Keeping the same set of providers usable across all
+eight means repeating that work eight times, in eight formats, every time a
+key or an endpoint changes.
 
 `alc` holds one provider list and translates it into whatever the agent you are
 launching expects — see [Supported agents](./agents.md) for exactly what it

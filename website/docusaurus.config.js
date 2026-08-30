@@ -3,7 +3,8 @@ import {themes as prismThemes} from 'prism-react-renderer';
 
 const tagline =
   'Configure your LLM providers once, then launch any of eight coding agents ' +
-  'with any provider — including Claude Code on your Codex/ChatGPT login.';
+  'with any provider — including running any of them on your Codex/ChatGPT ' +
+  'subscription.';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {

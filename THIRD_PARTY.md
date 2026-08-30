@@ -12,6 +12,6 @@ binary. Building `alc` from source does not download or compile this helper.
   Completions translation for the alc Codex bridge (`alc --codex <agent>`)
 
 The helper reads and may refresh the current user's Codex CLI credentials. It
-is started only for a Codex-backed Claude Code session and is terminated when
-that session exits. See the bundled license in
+is started only for Codex-backed sessions — of any supported agent — and is
+terminated when that session exits. See the bundled license in
 `THIRD_PARTY_LICENSES/claude-codex-LICENSE`.
