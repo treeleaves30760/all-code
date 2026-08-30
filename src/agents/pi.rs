@@ -201,6 +201,20 @@ mod tests {
     use crate::launch;
     use crate::model_catalog::ModelCatalog;
 
+    /// Guards `PI_CODING_AGENT_DIR` mutation. Exactly one test in this module
+    /// (`agent_dir_honors_override_and_building_a_spec_never_writes`)
+    /// mutates that variable; every other test only *reads* it indirectly
+    /// (via `agent_dir()`, reached through `launch::build`) and never asserts
+    /// on the resolved directory, so a read racing an unsynchronized
+    /// mutation cannot fail a sibling assertion here today. This lock does
+    /// not make those reads synchronized with the mutation — `std::env`
+    /// offers no such thing, and readers here don't take the lock. Its real
+    /// job is to serialize the mutating test against itself and against any
+    /// *future* env-mutating test added to this module, since
+    /// `set_var`/`remove_var` are `unsafe` precisely because unsynchronized
+    /// concurrent mutation across threads is unsound.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn store(config: Config, credentials: Credentials) -> Store {
         Store {
             dir: PathBuf::from("test"),
@@ -500,11 +514,22 @@ mod tests {
     // building a spec (the dry-run path) never performs file I/O: writes
     // only happen in `launch::execute`, which this test never calls.
     //
-    // This is the only test in the suite that reads or writes
-    // PI_CODING_AGENT_DIR, so it never races another test over that variable.
+    // This is the only test in the module that mutates PI_CODING_AGENT_DIR;
+    // see ENV_LOCK's doc comment for why holding it for the whole body is
+    // enough (sibling tests only read the variable and never assert on the
+    // resolved path). The pre-existing value (if any — e.g. a developer's
+    // shell already exporting it) is captured and restored rather than
+    // assumed absent, so this test cannot leak a changed value to whatever
+    // runs after it either inside or outside this process.
     #[test]
     fn agent_dir_honors_override_and_building_a_spec_never_writes() {
-        // SAFETY: sole owner of PI_CODING_AGENT_DIR across the test suite.
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = env::var_os("PI_CODING_AGENT_DIR");
+
+        // SAFETY: serialized by ENV_LOCK; this is the only test in the
+        // module that mutates PI_CODING_AGENT_DIR.
         unsafe { env::remove_var("PI_CODING_AGENT_DIR") };
         assert_eq!(
             agent_dir(),
@@ -515,7 +540,7 @@ mod tests {
         );
 
         let temp = tempfile::tempdir().unwrap();
-        // SAFETY: same sole-owner justification as above.
+        // SAFETY: see above.
         unsafe { env::set_var("PI_CODING_AGENT_DIR", temp.path()) };
         assert_eq!(agent_dir(), temp.path(), "the override is honored verbatim");
 
@@ -540,7 +565,13 @@ mod tests {
             "building a spec must never perform file I/O; writes happen only in execute()"
         );
 
-        // SAFETY: same sole-owner justification as above.
-        unsafe { env::remove_var("PI_CODING_AGENT_DIR") };
+        // SAFETY: see above. Restores whatever PI_CODING_AGENT_DIR held
+        // before this test ran instead of assuming it was unset.
+        unsafe {
+            match &previous {
+                Some(value) => env::set_var("PI_CODING_AGENT_DIR", value),
+                None => env::remove_var("PI_CODING_AGENT_DIR"),
+            }
+        }
     }
 }
