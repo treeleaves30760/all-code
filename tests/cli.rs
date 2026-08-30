@@ -275,6 +275,22 @@ fn qwen_dry_run_uses_auth_type_flags_and_env() {
 }
 
 #[test]
+fn kimi_dry_run_uses_a_temporary_config_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("kimi-config.toml");
+    std::fs::write(&config, "default_thinking = true\n").unwrap();
+    alc(&temp)
+        .env("OPENAI_API_KEY", "secret")
+        .env("ALC_KIMI_CONFIG", &config)
+        .args(["--openai", "--dry-run", "kimi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--config-file"))
+        .stdout(predicate::str::contains("setup: temporary config"))
+        .stdout(predicate::str::contains("secret").not());
+}
+
+#[test]
 fn preset_kind_upsert_prefills_urls_and_supports_claude() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)

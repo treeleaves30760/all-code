@@ -59,8 +59,8 @@ pub struct BridgePlan {
 ///
 /// Both variants are fully handled by `process_file_setup` today. `UpsertJson`
 /// is constructed by the Pi builder to merge a provider entry into
-/// `models.json`; `WriteTemp` arrives with the agents that need a fresh
-/// on-disk config file (e.g. MCP server entries) in a later task.
+/// `models.json`; `WriteTemp` is constructed by the Kimi builder to write a
+/// merged `--config-file` document to a fresh temp path.
 #[derive(Debug, Clone)]
 pub enum FileSetup {
     /// Merge `value` under root[pointer][key] of a JSON file, creating it if
@@ -73,7 +73,6 @@ pub enum FileSetup {
     },
     /// Write a fresh file (0600 on unix when secret); removed after the run
     /// when cleanup is true.
-    #[allow(dead_code)]
     WriteTemp {
         path: PathBuf,
         contents: String,
