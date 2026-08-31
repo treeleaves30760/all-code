@@ -6,6 +6,7 @@ const sidebars = {
     'quick-start',
     'codex-to-claude',
     'providers',
+    'agents',
     'configuration',
     'updating',
     'troubleshooting',

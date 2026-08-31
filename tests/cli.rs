@@ -97,7 +97,7 @@ fn incompatible_provider_has_actionable_error() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "Claude Code needs Anthropic Messages",
+            "Claude Code needs an Anthropic-compatible endpoint",
         ));
 }
 
@@ -181,6 +181,28 @@ fn codex_to_claude_can_save_defaults_without_picker() {
 }
 
 #[test]
+fn codex_to_opencode_dry_run_reports_the_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "--dry-run", "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude-codex"));
+}
+
+#[test]
+fn doctor_lists_every_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let assert = alc(&temp).args(["doctor"]).assert();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    for agent in [
+        "claude", "codex", "opencode", "pi", "copilot", "goose", "qwen", "kimi",
+    ] {
+        assert!(output.contains(agent), "{agent} missing from doctor output");
+    }
+}
+
+#[test]
 fn bundled_model_catalog_is_available_offline() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
@@ -192,6 +214,109 @@ fn bundled_model_catalog_is_available_offline() {
         .stdout(predicate::str::contains("gpt-5.6-terra"))
         .stdout(predicate::str::contains("gpt-5.6-sol"))
         .stdout(predicate::str::contains("low, medium, high, xhigh, max"));
+}
+
+#[test]
+fn pi_dry_run_selects_the_alc_provider_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "secret")
+        .args(["--openrouter", "--dry-run", "pi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--provider alc-openrouter"))
+        .stdout(predicate::str::contains("<redacted>"))
+        .stdout(predicate::str::contains("secret").not());
+}
+
+#[test]
+fn codex_to_pi_dry_run_reports_bridge_and_setup() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "--dry-run", "pi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude-codex"))
+        .stdout(predicate::str::contains("--provider alc-codex"));
+}
+
+#[test]
+fn copilot_dry_run_uses_byok_env() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "secret")
+        .args(["--openrouter", "--dry-run", "copilot"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "COPILOT_PROVIDER_BASE_URL=https://openrouter.ai/api/v1",
+        ))
+        .stdout(predicate::str::contains("COPILOT_PROVIDER_TYPE=openai"))
+        .stdout(predicate::str::contains("<redacted>"))
+        .stdout(predicate::str::contains("secret").not());
+}
+
+#[test]
+fn goose_dry_run_defaults_to_session_with_env_config() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "secret")
+        .args(["--openrouter", "--dry-run", "goose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("GOOSE_PROVIDER=openrouter"))
+        .stdout(predicate::str::contains(" session"))
+        .stdout(predicate::str::contains("<redacted>"))
+        .stdout(predicate::str::contains("secret").not());
+}
+
+#[test]
+fn qwen_dry_run_uses_auth_type_flags_and_env() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENAI_API_KEY", "secret")
+        .args(["--openai", "--dry-run", "qwen"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--auth-type openai"))
+        .stdout(predicate::str::contains(
+            "OPENAI_BASE_URL=https://api.openai.com/v1",
+        ))
+        .stdout(predicate::str::contains("<redacted>"))
+        .stdout(predicate::str::contains("secret").not());
+}
+
+#[test]
+fn kimi_dry_run_uses_a_temporary_config_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("kimi-config.toml");
+    std::fs::write(&config, "default_thinking = true\n").unwrap();
+    alc(&temp)
+        .env("OPENAI_API_KEY", "secret")
+        .env("ALC_KIMI_CONFIG", &config)
+        .args(["--openai", "--dry-run", "kimi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--config-file"))
+        .stdout(predicate::str::contains("setup: temporary config"))
+        .stdout(predicate::str::contains("secret").not());
+}
+
+#[test]
+fn preset_kind_upsert_prefills_urls_and_supports_claude() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["config", "upsert", "ds", "--kind", "deepseek"])
+        .assert()
+        .success();
+    alc(&temp)
+        .env("DEEPSEEK_API_KEY", "k")
+        .args(["--provider", "ds", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "https://api.deepseek.com/anthropic",
+        ));
 }
 
 #[test]
@@ -216,4 +341,25 @@ fn update_check_does_not_require_a_valid_provider_config() {
         .stdout(predicate::str::contains("is up to date"));
 
     server.join().expect("test HTTP server");
+}
+
+#[test]
+fn removing_a_provider_only_blocks_on_explicit_defaults() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp).args(["config", "init"]).assert().success();
+    // Fresh config: qwen/kimi fall back to 'openai' implicitly — removal must succeed.
+    alc(&temp)
+        .args(["config", "remove", "openai"])
+        .assert()
+        .success();
+    // An explicit default still blocks removal.
+    alc(&temp)
+        .args(["config", "set-default", "opencode", "openrouter"])
+        .assert()
+        .success();
+    alc(&temp)
+        .args(["config", "remove", "openrouter"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("still the default"));
 }

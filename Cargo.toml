@@ -1,8 +1,8 @@
 [package]
 name = "all-code"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
-description = "One CLI to configure and launch Claude Code, Codex, and OpenCode with multiple LLM providers"
+description = "One CLI to configure and launch Claude Code, Codex, OpenCode, Pi, Copilot CLI, Goose, Qwen Code, and Kimi Code CLI with multiple LLM providers"
 license = "MIT"
 repository = "https://github.com/treeleaves30760/all-code"
 homepage = "https://treeleaves30760.github.io/all-code/"

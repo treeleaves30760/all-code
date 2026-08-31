@@ -16,13 +16,16 @@ keywords:
 alc doctor
 ```
 
-它會列出 agent 執行檔、憑證狀態、Codex 登入、隨附的轉接器、Codex-to-Claude 的解析
-結果，以及相容性矩陣。
+它會列出全部八個 agent 的執行檔狀態、憑證狀態、每個 provider profile 各自的
+agent 相容性欄位、解析後的預設值，以及（當設定了 Codex provider 時）Codex
+橋接的登入狀態。
 
 ## `'claude' is not installed or not on PATH`
 
-alc 只負責啟動這台機器上已安裝的 agent。請先安裝該 agent，或用 `ALC_CLAUDE_BIN`、
-`ALC_CODEX_BIN`、`ALC_OPENCODE_BIN` 指定執行檔位置。
+alc 只負責啟動這台機器上已安裝的 agent。請先安裝該 agent，或用
+`ALC_CLAUDE_BIN`、`ALC_CODEX_BIN`、`ALC_OPENCODE_BIN`、`ALC_PI_BIN`、
+`ALC_COPILOT_BIN`、`ALC_GOOSE_BIN`、`ALC_QWEN_BIN`、`ALC_KIMI_BIN` 指定執行檔
+位置。
 
 ## `provider '…' cannot be used with claude; Claude Code needs Anthropic Messages`
 
@@ -38,12 +41,13 @@ OpenRouter 或 Ollama，或改用
 
 ## `Codex credentials were not found`
 
-執行 `codex login` 後再試一次。`alc doctor` 的 **Codex login** 區塊會顯示登入狀態。
+執行 `codex login` 後再試一次。登入狀態會顯示在 `alc doctor` 輸出的
+**Codex bridge** 底下。
 
 ## `the bundled claude-codex … helper is missing`
 
-從原始碼建置不會包含轉接器。請改用一行安裝器重新安裝、把相容的 `claude-codex` 放進
-PATH，或設定 `ALC_CLAUDE_CODEX_BIN`。
+從原始碼建置不會包含轉接器。請改用一行安裝器重新安裝、把相容的 `claude-codex`
+放進 PATH，或設定 `ALC_CLAUDE_CODEX_BIN`。
 
 ## 模型清單看起來過期
 

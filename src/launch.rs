@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -9,9 +10,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use serde_json::{Map, Value, json};
 
-use crate::config::{Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store};
+use crate::agents;
+use crate::config::{
+    Agent, Protocol, Provider, ProviderKind, ReasoningEffort, Store, atomic_write,
+};
 use crate::model_catalog::ModelInfo;
 
 pub const CLAUDE_CODEX_HELPER_VERSION: &str = "0.3.1";
@@ -25,15 +28,57 @@ pub struct LaunchOverrides {
     pub model_options: Vec<ModelInfo>,
 }
 
-/// What the bundled Codex adapter needs for a Claude Code session. The model
-/// is only the starting point: Claude Code switches models and reasoning
-/// effort per request, so neither is pinned on the adapter.
+/// Which wire protocol the bundled bridge should serve to the launched agent.
+///
+/// `Messages` (Claude Code) and `Responses` (OpenCode, Pi) are constructed
+/// today; `Chat` is produced by the Copilot builder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeApi {
+    Messages,
+    Responses,
+    Chat,
+}
+
+/// What the bundled Codex bridge needs to serve a coding-agent session. For
+/// Claude Code the model is only the starting point: it switches models and
+/// reasoning effort per request, so neither is pinned on the bridge. Every
+/// other agent picks one model/effort at launch, which the bridge pins.
 #[derive(Debug, Clone)]
-pub struct CodexPlan {
+pub struct BridgePlan {
     pub model: String,
+    /// Pinned via CCP_CODEX_EFFORT for non-Messages clients; ALWAYS None for Claude.
+    pub effort: Option<ReasoningEffort>,
     pub context_window: Option<u64>,
-    /// Ordered from the most capable model to the cheapest one.
+    /// Most capable first (catalog order).
     pub options: Vec<ModelInfo>,
+    pub api: BridgeApi,
+}
+
+/// A file-system side effect a launch needs performed before the agent
+/// starts. Contents are never logged; dry runs only name the affected path.
+///
+/// Both variants are fully handled by `process_file_setup` today. `UpsertJson`
+/// is constructed by the Pi builder to merge a provider entry into
+/// `models.json`; `WriteTemp` is constructed by the Kimi builder to write a
+/// merged `--config-file` document to a fresh temp path.
+#[derive(Debug, Clone)]
+pub enum FileSetup {
+    /// Merge `value` under root[pointer][key] of a JSON file, creating it if
+    /// absent; refuses to touch a file that fails to parse.
+    UpsertJson {
+        path: PathBuf,
+        pointer: &'static str,
+        key: String,
+        value: serde_json::Value,
+    },
+    /// Write a fresh file (0600 on unix when secret); removed after the run
+    /// when cleanup is true.
+    WriteTemp {
+        path: PathBuf,
+        contents: String,
+        secret: bool,
+        cleanup: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -45,7 +90,8 @@ pub struct LaunchSpec {
     pub provider_name: String,
     pub provider_kind: ProviderKind,
     pub agent: Agent,
-    pub codex_plan: Option<CodexPlan>,
+    pub bridge: Option<BridgePlan>,
+    pub file_setup: Vec<FileSetup>,
 }
 
 impl LaunchSpec {
@@ -81,50 +127,37 @@ pub fn build(
         provider_name: profile_name.to_owned(),
         provider_kind: provider.kind,
         agent,
-        codex_plan: None,
+        bridge: None,
+        file_setup: Vec::new(),
     };
 
     if let Some(override_path) = agent_binary_override(agent) {
         spec.program = override_path;
     }
 
-    match agent {
-        Agent::Claude => build_claude(
-            &mut spec,
-            store,
-            profile_name,
-            provider,
-            passthrough,
-            overrides,
-        )?,
-        Agent::Codex => build_codex(
-            &mut spec,
-            store,
-            profile_name,
-            provider,
-            passthrough,
-            overrides,
-        )?,
-        Agent::Opencode => build_opencode(
-            &mut spec,
-            store,
-            profile_name,
-            provider,
-            passthrough,
-            overrides,
-        )?,
-    }
+    agents::build(
+        agent,
+        &mut spec,
+        store,
+        profile_name,
+        provider,
+        passthrough,
+        overrides,
+    )?;
     Ok(spec)
 }
 
 pub fn execute(mut spec: LaunchSpec) -> Result<u8> {
-    let _proxy = if let Some(plan) = spec.codex_plan.clone() {
-        let proxy = CodexProxy::start()?;
-        configure_claude_proxy_env(&mut spec, proxy.base_url(), &plan);
-        Some(proxy)
+    let _bridge = if let Some(plan) = spec.bridge.clone() {
+        let bridge = Bridge::start(&plan)?;
+        agents::apply_bridge(&mut spec, &bridge.base_url(), &plan)?;
+        Some(bridge)
     } else {
         None
     };
+
+    // Held until the child exits so a failed launch still cleans up.
+    let _cleanup = CleanupFiles(process_file_setup(&spec)?);
 
     let program = resolve_program(&spec.program, spec.agent)?;
     let mut command = Command::new(&program);
@@ -142,425 +175,6 @@ pub fn execute(mut spec: LaunchSpec) -> Result<u8> {
         .status()
         .with_context(|| format!("failed to launch {}", program.display()))?;
     Ok(exit_code(status))
-}
-
-fn build_claude(
-    spec: &mut LaunchSpec,
-    store: &Store,
-    profile_name: &str,
-    provider: &Provider,
-    passthrough: &[OsString],
-    overrides: &LaunchOverrides,
-) -> Result<()> {
-    clear_cloud_provider_env(spec);
-
-    if provider.kind == ProviderKind::Codex {
-        if !overrides.model_options.is_empty()
-            && !has_option(passthrough, "--settings", "--settings")
-        {
-            spec.args.extend([
-                OsString::from("--settings"),
-                OsString::from(claude_model_picker_settings(&overrides.model_options)?),
-            ]);
-        }
-        let model = overrides
-            .model
-            .clone()
-            .unwrap_or(resolve_codex_model(provider)?);
-        let effort = overrides
-            .reasoning_effort
-            .or(provider.reasoning_effort)
-            .or(resolve_codex_effort(provider)?)
-            .unwrap_or(ReasoningEffort::Medium);
-        spec.codex_plan = Some(CodexPlan {
-            model: model.clone(),
-            context_window: overrides.context_window,
-            options: overrides.model_options.clone(),
-        });
-        if !has_model_override(passthrough) {
-            spec.args
-                .extend([OsString::from("--model"), OsString::from(model)]);
-        }
-        if !has_option(passthrough, "--effort", "--effort") {
-            spec.args
-                .extend([OsString::from("--effort"), OsString::from(effort.as_str())]);
-        }
-        spec.args.extend_from_slice(passthrough);
-        return Ok(());
-    }
-
-    spec.args.extend_from_slice(passthrough);
-    if !provider.protocol.supports_anthropic() {
-        bail!(
-            "provider '{profile_name}' speaks {}, but Claude Code needs Anthropic Messages; use an Anthropic-compatible endpoint, OpenRouter, Ollama, or `alc --codex claude`",
-            provider.protocol
-        );
-    }
-
-    let base_url = claude_base_url(provider)
-        .with_context(|| format!("provider '{profile_name}' needs an Anthropic base URL"))?;
-    spec.env.insert(
-        OsString::from("ANTHROPIC_BASE_URL"),
-        OsString::from(base_url),
-    );
-    spec.env.insert(
-        OsString::from("ANTHROPIC_MODEL"),
-        OsString::from(overrides.model.as_deref().unwrap_or(&provider.model)),
-    );
-    if let Some(small_model) = provider
-        .small_model
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        spec.env.insert(
-            OsString::from("ANTHROPIC_SMALL_FAST_MODEL"),
-            OsString::from(small_model),
-        );
-    }
-
-    let key = store.credentials.key_for(profile_name, provider);
-    match provider.auth {
-        AuthStyle::ApiKey => {
-            if let Some(key) = key {
-                spec.env
-                    .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::from(key));
-                spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-            } else if provider.kind != ProviderKind::Anthropic {
-                missing_key(profile_name, provider)?;
-            } else {
-                // No configured key means the user selected Claude's native
-                // login. Do not let an unrelated ambient token override it.
-                spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
-                spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-            }
-        }
-        AuthStyle::Bearer => {
-            let key = key_or_error(profile_name, provider, key)?;
-            spec.env
-                .insert(OsString::from("ANTHROPIC_AUTH_TOKEN"), OsString::from(key));
-            // Claude Code and OpenRouter both require this to be explicitly empty.
-            spec.env
-                .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::new());
-        }
-        AuthStyle::Native => {
-            spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
-            spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-        }
-        AuthStyle::None => {
-            let token = if provider.kind == ProviderKind::Ollama {
-                "ollama"
-            } else {
-                "alc"
-            };
-            spec.env.insert(
-                OsString::from("ANTHROPIC_AUTH_TOKEN"),
-                OsString::from(token),
-            );
-            spec.env
-                .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::new());
-        }
-    }
-    Ok(())
-}
-
-/// Claude Code lists these rows in `/model`, so the user picks the GPT model
-/// inside the session instead of before launch.
-fn claude_model_picker_settings(models: &[ModelInfo]) -> Result<String> {
-    let options: Vec<Value> = models
-        .iter()
-        .map(|model| {
-            json!({
-                "model": model.id,
-                "label": model.name,
-                "description": model.description,
-            })
-        })
-        .collect();
-    serde_json::to_string(&json!({
-        "modelPicker": {
-            "options": options,
-            // Claude's own lineup cannot be served through the Codex adapter.
-            "replaceBuiltInOptions": true,
-        }
-    }))
-    .context("failed to encode the Claude Code model picker")
-}
-
-fn build_codex(
-    spec: &mut LaunchSpec,
-    store: &Store,
-    profile_name: &str,
-    provider: &Provider,
-    passthrough: &[OsString],
-    overrides: &LaunchOverrides,
-) -> Result<()> {
-    if provider.kind == ProviderKind::Codex {
-        if !has_option(passthrough, "--profile", "-p")
-            && let Some(profile) = provider
-                .codex_profile
-                .as_deref()
-                .filter(|value| !value.is_empty())
-        {
-            spec.args
-                .extend([OsString::from("--profile"), OsString::from(profile)]);
-        }
-        let model = overrides.model.as_deref().unwrap_or(&provider.model);
-        if !model.is_empty() && !has_model_override(passthrough) {
-            spec.args
-                .extend([OsString::from("--model"), OsString::from(model)]);
-        }
-        if !has_effort_override(passthrough)
-            && let Some(effort) = overrides.reasoning_effort.or(provider.reasoning_effort)
-        {
-            push_codex_config(
-                &mut spec.args,
-                "model_reasoning_effort",
-                toml_string(effort.as_str()),
-            );
-        }
-        spec.args.extend_from_slice(passthrough);
-        return Ok(());
-    }
-
-    if provider.kind == ProviderKind::Ollama {
-        if !has_option(passthrough, "--oss", "--oss") {
-            spec.args.push(OsString::from("--oss"));
-        }
-        if !has_option(passthrough, "--local-provider", "--local-provider") {
-            spec.args
-                .extend([OsString::from("--local-provider"), OsString::from("ollama")]);
-        }
-        if !has_model_override(passthrough) {
-            spec.args.extend([
-                OsString::from("--model"),
-                OsString::from(overrides.model.as_deref().unwrap_or(&provider.model)),
-            ]);
-        }
-        spec.args.extend_from_slice(passthrough);
-        return Ok(());
-    }
-
-    if !provider.protocol.supports_responses() {
-        bail!(
-            "provider '{profile_name}' speaks {}, but Codex requires the OpenAI Responses API",
-            provider.protocol
-        );
-    }
-    let base_url = provider
-        .effective_base_url()
-        .with_context(|| format!("provider '{profile_name}' needs a base URL"))?;
-    let provider_id = codex_provider_id(profile_name);
-
-    if !has_model_override(passthrough) {
-        spec.args.extend([
-            OsString::from("--model"),
-            OsString::from(overrides.model.as_deref().unwrap_or(&provider.model)),
-        ]);
-    }
-    if !has_effort_override(passthrough)
-        && let Some(effort) = overrides.reasoning_effort.or(provider.reasoning_effort)
-    {
-        push_codex_config(
-            &mut spec.args,
-            "model_reasoning_effort",
-            toml_string(effort.as_str()),
-        );
-    }
-    push_codex_config(&mut spec.args, "model_provider", toml_string(&provider_id));
-    push_codex_config(
-        &mut spec.args,
-        &format!("model_providers.{provider_id}.name"),
-        toml_string(&format!("alc: {profile_name}")),
-    );
-    push_codex_config(
-        &mut spec.args,
-        &format!("model_providers.{provider_id}.base_url"),
-        toml_string(base_url),
-    );
-    push_codex_config(
-        &mut spec.args,
-        &format!("model_providers.{provider_id}.wire_api"),
-        toml_string("responses"),
-    );
-    push_codex_config(
-        &mut spec.args,
-        &format!("model_providers.{provider_id}.requires_openai_auth"),
-        "false".to_owned(),
-    );
-
-    if provider.auth != AuthStyle::None {
-        let key = key_or_error(
-            profile_name,
-            provider,
-            store.credentials.key_for(profile_name, provider),
-        )?;
-        let env_name = "ALC_PROVIDER_API_KEY";
-        spec.env
-            .insert(OsString::from(env_name), OsString::from(key));
-        push_codex_config(
-            &mut spec.args,
-            &format!("model_providers.{provider_id}.env_key"),
-            toml_string(env_name),
-        );
-    }
-    spec.args.extend_from_slice(passthrough);
-    Ok(())
-}
-
-fn build_opencode(
-    spec: &mut LaunchSpec,
-    store: &Store,
-    profile_name: &str,
-    provider: &Provider,
-    passthrough: &[OsString],
-    overrides: &LaunchOverrides,
-) -> Result<()> {
-    if provider.kind == ProviderKind::Codex {
-        bail!(
-            "Codex CLI login cannot be injected into OpenCode directly; connect OpenAI inside OpenCode or choose an API/OpenRouter profile"
-        );
-    }
-
-    let (provider_id, needs_custom_config) = match provider.kind {
-        ProviderKind::Anthropic => ("anthropic".to_owned(), custom_kind_url(provider)),
-        ProviderKind::Openai => ("openai".to_owned(), custom_kind_url(provider)),
-        ProviderKind::Openrouter => ("openrouter".to_owned(), custom_kind_url(provider)),
-        // OpenCode documents Ollama as an explicit OpenAI-compatible provider.
-        // Always inject it so a fresh OpenCode install does not depend on local
-        // provider discovery having run first.
-        ProviderKind::Ollama => ("ollama".to_owned(), true),
-        ProviderKind::Vllm | ProviderKind::Custom => (format!("alc-{profile_name}"), true),
-        ProviderKind::Codex => unreachable!(),
-    };
-
-    let key = store.credentials.key_for(profile_name, provider);
-    if let Some(key) = &key {
-        let env_name = provider
-            .api_key_env
-            .as_deref()
-            .unwrap_or(match provider.kind {
-                ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
-                ProviderKind::Openai => "OPENAI_API_KEY",
-                ProviderKind::Openrouter => "OPENROUTER_API_KEY",
-                _ => "ALC_PROVIDER_API_KEY",
-            });
-        spec.env
-            .insert(OsString::from(env_name), OsString::from(key));
-        spec.env
-            .insert(OsString::from("ALC_PROVIDER_API_KEY"), OsString::from(key));
-    }
-
-    let model = overrides.model.as_deref().unwrap_or(&provider.model);
-    let model_reference = format!("{provider_id}/{model}");
-    let mut inline = json!({
-        "$schema": "https://opencode.ai/config.json"
-    });
-    if !has_model_override(passthrough) {
-        inline["model"] = Value::String(model_reference);
-    }
-
-    if needs_custom_config {
-        let base_url = opencode_base_url(provider)
-            .with_context(|| format!("provider '{profile_name}' needs a base URL"))?;
-        let package = match (provider.kind, provider.protocol) {
-            (ProviderKind::Ollama, _) => "@ai-sdk/openai-compatible",
-            (_, Protocol::AnthropicMessages) => "@ai-sdk/anthropic",
-            (_, Protocol::OpenaiResponses | Protocol::Dual) => "@ai-sdk/openai",
-            (_, Protocol::OpenaiChat) => "@ai-sdk/openai-compatible",
-            (_, Protocol::CodexNative) => {
-                bail!("provider '{profile_name}' uses codex-native, which OpenCode cannot load")
-            }
-        };
-        let mut options = Map::new();
-        options.insert("baseURL".to_owned(), Value::String(base_url.to_owned()));
-        if provider.auth != AuthStyle::None {
-            options.insert(
-                "apiKey".to_owned(),
-                Value::String("{env:ALC_PROVIDER_API_KEY}".to_owned()),
-            );
-        }
-        inline["provider"] = json!({
-                &provider_id: {
-                    "npm": package,
-                    "name": format!("alc: {profile_name}"),
-                    "options": options,
-                    "models": {
-                        (model): { "name": model }
-                    }
-                }
-        });
-    }
-
-    spec.env.insert(
-        OsString::from("OPENCODE_CONFIG_CONTENT"),
-        OsString::from(serde_json::to_string(&inline)?),
-    );
-    spec.args.extend_from_slice(passthrough);
-    Ok(())
-}
-
-fn configure_claude_proxy_env(spec: &mut LaunchSpec, base_url: String, plan: &CodexPlan) {
-    // Claude Code resolves its built-in aliases even when the picker lists GPT
-    // models, so every alias has to land on a model the adapter can serve.
-    let strongest = plan
-        .options
-        .first()
-        .map_or(plan.model.as_str(), |model| model.id.as_str());
-    let cheapest = plan
-        .options
-        .last()
-        .map_or(plan.model.as_str(), |model| model.id.as_str());
-    for (name, value) in [
-        ("ANTHROPIC_MODEL", plan.model.as_str()),
-        // Keeps the picker's Default row on a model the adapter can serve.
-        ("ANTHROPIC_DEFAULT_MODEL", plan.model.as_str()),
-        ("ANTHROPIC_DEFAULT_SONNET_MODEL", plan.model.as_str()),
-        ("ANTHROPIC_DEFAULT_OPUS_MODEL", strongest),
-        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", cheapest),
-        ("ANTHROPIC_SMALL_FAST_MODEL", cheapest),
-    ] {
-        spec.env.insert(OsString::from(name), OsString::from(value));
-    }
-    spec.env.insert(
-        OsString::from("ANTHROPIC_BASE_URL"),
-        OsString::from(base_url),
-    );
-    // Clients older than the `modelPicker` setting still get one selectable
-    // GPT entry from the documented custom-model variables.
-    spec.env.insert(
-        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION"),
-        OsString::from(plan.model.clone()),
-    );
-    spec.env.insert(
-        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
-        OsString::from(format!("{} via Codex", plan.model)),
-    );
-    spec.env.insert(
-        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
-        OsString::from("Selected by all-code using your Codex login"),
-    );
-    if let Some(context_window) = plan.context_window {
-        spec.env.insert(
-            OsString::from("CLAUDE_CODE_MAX_CONTEXT_TOKENS"),
-            OsString::from(context_window.to_string()),
-        );
-    }
-    spec.env.insert(
-        OsString::from("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
-        OsString::from("1"),
-    );
-    spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
-    spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-}
-
-fn clear_cloud_provider_env(spec: &mut LaunchSpec) {
-    for name in [
-        "CLAUDE_CODE_USE_BEDROCK",
-        "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY",
-    ] {
-        spec.env_remove.push(OsString::from(name));
-    }
 }
 
 pub(crate) fn resolve_codex_model(provider: &Provider) -> Result<String> {
@@ -647,7 +261,7 @@ fn read_codex_preference(path: &Path, key: &str) -> Result<Option<String>> {
         .map(str::to_owned))
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     let name = "USERPROFILE";
     #[cfg(not(windows))]
@@ -655,31 +269,12 @@ fn home_dir() -> Option<PathBuf> {
     env::var_os(name).map(PathBuf::from)
 }
 
-fn claude_base_url(provider: &Provider) -> Option<String> {
-    let base = provider
-        .effective_anthropic_base_url()?
-        .trim_end_matches('/');
-    if provider.kind == ProviderKind::Openrouter && base.ends_with("/api/v1") {
-        Some(base.trim_end_matches("/v1").to_owned())
-    } else {
-        Some(base.to_owned())
-    }
-}
-
-fn custom_kind_url(provider: &Provider) -> bool {
-    match (
-        provider.effective_base_url(),
-        provider.kind.default_base_url(),
-    ) {
-        (Some(actual), Some(default)) => {
-            actual.trim_end_matches('/') != default.trim_end_matches('/')
-        }
-        (Some(_), None) => true,
-        _ => false,
-    }
-}
-
-fn opencode_base_url(provider: &Provider) -> Option<String> {
+/// A provider's base URL as an OpenAI-compatible client expects it: Ollama's
+/// default `/api` root does not itself serve the OpenAI-shaped routes, so an
+/// `/v1` suffix is appended when the configured URL does not already end in
+/// one. Every other provider kind is returned unchanged (trailing slash
+/// trimmed). Shared by every agent builder that speaks OpenAI chat/responses.
+pub(crate) fn openai_style_base_url(provider: &Provider) -> Option<String> {
     let base = provider.effective_base_url()?.trim_end_matches('/');
     if provider.kind == ProviderKind::Ollama && !base.ends_with("/v1") {
         Some(format!("{base}/v1"))
@@ -688,7 +283,36 @@ fn opencode_base_url(provider: &Provider) -> Option<String> {
     }
 }
 
-fn key_or_error(profile_name: &str, provider: &Provider, key: Option<String>) -> Result<String> {
+/// Splits a chat-style provider's base URL into the root host Goose expects
+/// in `OPENAI_HOST` and the request path it expects in `OPENAI_BASE_PATH`.
+///
+/// "https://api.z.ai/api/paas/v4" -> ("https://api.z.ai", "api/paas/v4/chat/completions")
+pub(crate) fn split_chat_url(base: &str) -> (String, String) {
+    let trimmed = base.trim_end_matches('/');
+    let after_scheme = trimmed.find("://").map(|i| i + 3).unwrap_or(0);
+    match trimmed[after_scheme..].find('/') {
+        Some(slash) => {
+            let origin = &trimmed[..after_scheme + slash];
+            let path = &trimmed[after_scheme + slash + 1..];
+            (origin.to_owned(), format!("{path}/chat/completions"))
+        }
+        None => (trimmed.to_owned(), "v1/chat/completions".to_owned()),
+    }
+}
+
+/// Whether a provider should be driven through its Anthropic-compatible
+/// surface rather than an OpenAI-style one.
+pub(crate) fn anthropic_shaped(provider: &Provider) -> bool {
+    provider.kind == ProviderKind::Anthropic
+        || provider.protocol == Protocol::AnthropicMessages
+        || (!provider.speaks_chat() && provider.speaks_anthropic())
+}
+
+pub(crate) fn key_or_error(
+    profile_name: &str,
+    provider: &Provider,
+    key: Option<String>,
+) -> Result<String> {
     if let Some(key) = key.filter(|value| !value.is_empty()) {
         return Ok(key);
     }
@@ -696,7 +320,7 @@ fn key_or_error(profile_name: &str, provider: &Provider, key: Option<String>) ->
     unreachable!()
 }
 
-fn missing_key(profile_name: &str, provider: &Provider) -> Result<()> {
+pub(crate) fn missing_key(profile_name: &str, provider: &Provider) -> Result<()> {
     let hint = provider
         .api_key_env
         .as_deref()
@@ -705,20 +329,11 @@ fn missing_key(profile_name: &str, provider: &Provider) -> Result<()> {
     bail!("provider '{profile_name}' has no API key; {hint}run `alc config` to save one")
 }
 
-fn push_codex_config(args: &mut Vec<OsString>, key: &str, value: String) {
-    args.push(OsString::from("--config"));
-    args.push(OsString::from(format!("{key}={value}")));
-}
-
-fn toml_string(value: &str) -> String {
+pub(crate) fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_owned()).to_string()
 }
 
-fn codex_provider_id(profile: &str) -> String {
-    format!("alc_{}", profile.replace('-', "_"))
-}
-
-fn has_model_override(args: &[OsString]) -> bool {
+pub(crate) fn has_model_override(args: &[OsString]) -> bool {
     args.iter().any(|arg| {
         let value = arg.to_string_lossy();
         matches!(value.as_ref(), "--model" | "-m")
@@ -727,7 +342,7 @@ fn has_model_override(args: &[OsString]) -> bool {
     })
 }
 
-fn has_effort_override(args: &[OsString]) -> bool {
+pub(crate) fn has_effort_override(args: &[OsString]) -> bool {
     args.iter().enumerate().any(|(index, arg)| {
         let value = arg.to_string_lossy();
         value.starts_with("--config=model_reasoning_effort=")
@@ -740,11 +355,25 @@ fn has_effort_override(args: &[OsString]) -> bool {
     })
 }
 
-fn has_option(args: &[OsString], long: &str, short: &str) -> bool {
+pub(crate) fn has_option(args: &[OsString], long: &str, short: &str) -> bool {
     args.iter().any(|arg| {
         let value = arg.to_string_lossy();
         value == long || value == short || value.starts_with(&format!("{long}="))
     })
+}
+
+/// Inserts `args` at the very front of `spec.args`, preserving their given
+/// order, ahead of anything already there. Unlike every other builder (which
+/// injects its own flags before extending with the user's passthrough inside
+/// `build`), a bridged agent copies passthrough into `spec.args` verbatim at
+/// build time because the bridge-resolved model is not known until
+/// `apply_bridge` runs later against the started bridge. `prepend_args` lets
+/// `apply_bridge` still land its flags ahead of that already-copied
+/// passthrough instead of after it.
+pub(crate) fn prepend_args(spec: &mut LaunchSpec, args: &[&str]) {
+    for (offset, arg) in args.iter().enumerate() {
+        spec.args.insert(offset, OsString::from(*arg));
+    }
 }
 
 fn agent_binary_override(agent: Agent) -> Option<OsString> {
@@ -752,6 +381,11 @@ fn agent_binary_override(agent: Agent) -> Option<OsString> {
         Agent::Claude => "ALC_CLAUDE_BIN",
         Agent::Codex => "ALC_CODEX_BIN",
         Agent::Opencode => "ALC_OPENCODE_BIN",
+        Agent::Pi => "ALC_PI_BIN",
+        Agent::Copilot => "ALC_COPILOT_BIN",
+        Agent::Goose => "ALC_GOOSE_BIN",
+        Agent::Qwen => "ALC_QWEN_BIN",
+        Agent::Kimi => "ALC_KIMI_BIN",
     };
     env::var_os(name).filter(|value| !value.is_empty())
 }
@@ -801,13 +435,27 @@ fn shell_quote(value: &OsStr) -> String {
     }
 }
 
-struct CodexProxy {
+/// Conditional environment additions the bridge child process needs on top
+/// of the constant `PORT`/`CCP_LOG_STDERR`/`CCP_CODEX_AUTH_FILE` envs. Pure
+/// and side-effect-free so it can be unit tested directly.
+fn bridge_child_env(plan: &BridgePlan) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    if plan.api != BridgeApi::Messages {
+        env.insert("CCP_CODEX_RESPONSES_API".to_owned(), "1".to_owned());
+        if let Some(effort) = plan.effort {
+            env.insert("CCP_CODEX_EFFORT".to_owned(), effort.as_str().to_owned());
+        }
+    }
+    env
+}
+
+struct Bridge {
     child: Child,
     port: u16,
 }
 
-impl CodexProxy {
-    fn start() -> Result<Self> {
+impl Bridge {
+    fn start(plan: &BridgePlan) -> Result<Self> {
         let helper = find_helper()?;
         let auth_file = codex_auth_file()?;
         if !auth_file.is_file() {
@@ -828,14 +476,15 @@ impl CodexProxy {
             // The helper's fallback does not use USERPROFILE on Windows, so
             // pass the same Codex home resolution used by the official CLI.
             .env("CCP_CODEX_AUTH_FILE", auth_file)
+            .envs(bridge_child_env(plan))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("failed to start {}", helper.display()))?;
-        let mut proxy = Self { child, port };
-        proxy.wait_until_ready()?;
-        Ok(proxy)
+        let mut bridge = Self { child, port };
+        bridge.wait_until_ready()?;
+        Ok(bridge)
     }
 
     fn base_url(&self) -> String {
@@ -887,7 +536,7 @@ fn resolve_codex_auth_file(
         .context("could not resolve the Codex auth path; set CODEX_HOME")
 }
 
-impl Drop for CodexProxy {
+impl Drop for Bridge {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -943,9 +592,140 @@ fn health_check(address: SocketAddr) -> bool {
     String::from_utf8_lossy(&response[..read]).contains(" 200 ")
 }
 
+/// Performs every `spec.file_setup` entry, returning the `WriteTemp` paths
+/// that asked to be removed once the child process exits.
+///
+/// Accumulates into a `CleanupFiles` guard as it goes (not just at the end):
+/// if a later entry fails, the guard is still holding the `cleanup: true`
+/// paths written by earlier entries in this same call, so its `Drop` removes
+/// those partials instead of orphaning them. On success the accumulated
+/// paths are moved out to the caller, leaving the guard empty (a no-op drop).
+fn process_file_setup(spec: &LaunchSpec) -> Result<Vec<PathBuf>> {
+    let mut guard = CleanupFiles(Vec::new());
+    for entry in &spec.file_setup {
+        match entry {
+            FileSetup::UpsertJson {
+                path,
+                pointer,
+                key,
+                value,
+            } => {
+                upsert_json_key(path, pointer, key, value.clone())?;
+            }
+            FileSetup::WriteTemp {
+                path,
+                contents,
+                secret,
+                cleanup,
+            } => {
+                atomic_write(path, contents.as_bytes(), *secret)?;
+                if *cleanup {
+                    guard.0.push(path.clone());
+                }
+            }
+        }
+    }
+    Ok(std::mem::take(&mut guard.0))
+}
+
+/// Merges `value` under `root[pointer][key]` of the JSON file at `path`,
+/// creating the file and any intermediate objects along `pointer` as needed.
+/// A file that exists but fails to parse is left untouched and this returns
+/// an error.
+///
+/// On unix, a pre-existing file's permission bits are restored after the
+/// write: `atomic_write` always creates its temp file at 0644 before renaming
+/// it over `path`, which would otherwise silently relax a mode-restricted
+/// target (e.g. a 0600 agent config holding a token) to 0644.
+fn upsert_json_key(path: &Path, pointer: &str, key: &str, value: serde_json::Value) -> Result<()> {
+    #[cfg(unix)]
+    let previous_mode = unix_mode(path)?;
+
+    let mut document: serde_json::Value = if path.exists() {
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse {} as JSON", path.display()))?
+    } else {
+        serde_json::Value::Object(serde_json::Map::new())
+    };
+
+    {
+        let target = json_pointer_object_mut(&mut document, pointer).with_context(|| {
+            format!(
+                "{} does not have a JSON object at {pointer:?}",
+                path.display()
+            )
+        })?;
+        target.insert(key.to_owned(), value);
+    }
+
+    let encoded = serde_json::to_vec_pretty(&document).context("failed to encode JSON")?;
+    atomic_write(path, &encoded, false)?;
+
+    #[cfg(unix)]
+    if let Some(mode) = previous_mode {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+            .with_context(|| format!("failed to restore permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The pre-existing unix permission bits of `path`, or `None` when it does
+/// not exist yet (a fresh file keeps whatever `atomic_write` gives it).
+#[cfg(unix)]
+fn unix_mode(path: &Path) -> Result<Option<u32>> {
+    use std::os::unix::fs::PermissionsExt;
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata.permissions().mode())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to stat {}", path.display())),
+    }
+}
+
+/// Walks `pointer` (JSON-Pointer-style, `/`-separated segments), creating an
+/// empty object at each missing segment, and returns the object at the end
+/// of the path. Bails if an existing segment along the way is not an object.
+fn json_pointer_object_mut<'a>(
+    document: &'a mut serde_json::Value,
+    pointer: &str,
+) -> Result<&'a mut serde_json::Map<String, serde_json::Value>> {
+    if document.is_null() {
+        *document = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let mut current = document;
+    for segment in pointer.split('/').filter(|part| !part.is_empty()) {
+        let segment = segment.replace("~1", "/").replace("~0", "~");
+        let map = current
+            .as_object_mut()
+            .context("expected a JSON object along the pointer path")?;
+        current = map
+            .entry(segment)
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    }
+    current
+        .as_object_mut()
+        .context("pointer does not resolve to a JSON object")
+}
+
+/// Deletes the wrapped paths when dropped, so a `WriteTemp { cleanup: true }`
+/// file is removed after the child exits, even if the launch failed.
+struct CleanupFiles(Vec<PathBuf>);
+
+impl Drop for CleanupFiles {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
+
     use crate::config::{Config, Credentials};
     use crate::model_catalog::ModelCatalog;
 
@@ -955,6 +735,69 @@ mod tests {
             config,
             credentials,
         }
+    }
+
+    #[test]
+    fn anthropic_shaped_is_true_for_anthropic_kind() {
+        assert!(anthropic_shaped(&Provider::for_kind(
+            ProviderKind::Anthropic
+        )));
+    }
+
+    #[test]
+    fn anthropic_shaped_is_false_for_a_dual_surface_chat_preset() {
+        // Deepseek speaks both chat and an Anthropic-compatible surface, but
+        // it is chat-first, so it must not be routed through the Anthropic skin.
+        assert!(!anthropic_shaped(&Provider::for_kind(
+            ProviderKind::Deepseek
+        )));
+    }
+
+    #[test]
+    fn anthropic_shaped_is_true_for_an_explicit_anthropic_messages_protocol() {
+        let mut provider = Provider::for_kind(ProviderKind::Custom);
+        provider.protocol = Protocol::AnthropicMessages;
+        assert!(anthropic_shaped(&provider));
+    }
+
+    #[test]
+    fn anthropic_shaped_is_false_for_openai_kind() {
+        assert!(!anthropic_shaped(&Provider::for_kind(ProviderKind::Openai)));
+    }
+
+    // Goose's chat-style provider needs a host and a request path split out
+    // of alc's single base URL; this is the case that motivated the helper.
+    #[test]
+    fn split_chat_url_splits_zai_style_paths() {
+        assert_eq!(
+            split_chat_url("https://api.z.ai/api/paas/v4"),
+            (
+                "https://api.z.ai".to_owned(),
+                "api/paas/v4/chat/completions".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn split_chat_url_defaults_v1_for_a_bare_origin() {
+        assert_eq!(
+            split_chat_url("https://api.openai.com"),
+            (
+                "https://api.openai.com".to_owned(),
+                "v1/chat/completions".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn split_chat_url_splits_the_standard_v1_suffix() {
+        assert_eq!(
+            split_chat_url("https://api.openai.com/v1"),
+            (
+                "https://api.openai.com".to_owned(),
+                "v1/chat/completions".to_owned()
+            )
+        );
     }
 
     #[test]
@@ -1105,9 +948,11 @@ mod tests {
         )
         .unwrap();
 
-        let plan = spec.codex_plan.expect("Codex adapter plan");
+        let plan = spec.bridge.expect("Codex adapter plan");
         assert_eq!(plan.model, "gpt-5.6-sol");
         assert_eq!(plan.context_window, Some(272_000));
+        assert_eq!(plan.api, BridgeApi::Messages);
+        assert_eq!(plan.effort, None);
         // Claude Code sends the effort with every request, so pinning it here
         // would freeze the in-session effort slider.
         assert!(
@@ -1133,9 +978,9 @@ mod tests {
             },
         )
         .unwrap();
-        let plan = spec.codex_plan.clone().expect("Codex adapter plan");
+        let plan = spec.bridge.clone().expect("Codex adapter plan");
 
-        configure_claude_proxy_env(&mut spec, "http://127.0.0.1:9".to_owned(), &plan);
+        agents::claude::apply_bridge(&mut spec, "http://127.0.0.1:9", &plan).unwrap();
 
         let value = |name: &str| spec.env[OsStr::new(name)].to_string_lossy().into_owned();
         assert_eq!(value("ANTHROPIC_MODEL"), "gpt-5.6-terra");
@@ -1247,7 +1092,7 @@ mod tests {
             &LaunchOverrides::default(),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("Anthropic Messages"));
+        assert!(error.to_string().contains("Anthropic-compatible endpoint"));
     }
 
     #[test]
@@ -1285,6 +1130,43 @@ mod tests {
     }
 
     #[test]
+    fn codex_to_opencode_uses_the_bridge_with_the_full_catalog() {
+        let overrides = LaunchOverrides {
+            model: Some("gpt-5.6-terra".into()),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            model_options: ModelCatalog::built_in().models,
+            ..LaunchOverrides::default()
+        };
+        let mut spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Opencode,
+            Some("codex"),
+            &[],
+            &overrides,
+        )
+        .unwrap();
+        let plan = spec.bridge.clone().expect("bridge plan");
+        assert_eq!(plan.api, BridgeApi::Responses);
+        assert_eq!(plan.model, "gpt-5.6-terra");
+
+        agents::apply_bridge(&mut spec, "http://127.0.0.1:9", &plan).unwrap();
+        let inline = spec.env[OsStr::new("OPENCODE_CONFIG_CONTENT")]
+            .to_string_lossy()
+            .into_owned();
+        let parsed: Value = serde_json::from_str(&inline).unwrap();
+        assert_eq!(parsed["model"], json!("alc-codex/gpt-5.6-terra"));
+        assert_eq!(
+            parsed["provider"]["alc-codex"]["npm"],
+            json!("@ai-sdk/openai")
+        );
+        assert_eq!(
+            parsed["provider"]["alc-codex"]["options"]["baseURL"],
+            json!("http://127.0.0.1:9/v1")
+        );
+        assert!(parsed["provider"]["alc-codex"]["models"]["gpt-5.6-sol"].is_object());
+    }
+
+    #[test]
     fn codex_auth_path_falls_back_to_the_platform_user_home() {
         let path = resolve_codex_auth_file(None, None, Some(PathBuf::from("user-home"))).unwrap();
         assert_eq!(path, PathBuf::from("user-home/.codex/auth.json"));
@@ -1302,5 +1184,279 @@ mod tests {
     fn generic_gpt_56_alias_maps_to_bridge_supported_sol() {
         assert_eq!(normalize_codex_model("gpt-5.6"), "gpt-5.6-sol");
         assert_eq!(normalize_codex_model("gpt-5.6-terra"), "gpt-5.6-terra");
+    }
+
+    #[test]
+    fn non_claude_bridges_enable_the_responses_api_and_pin_effort() {
+        let plan = BridgePlan {
+            model: "gpt-5.6-terra".into(),
+            effort: Some(ReasoningEffort::High),
+            context_window: None,
+            options: Vec::new(),
+            api: BridgeApi::Responses,
+        };
+        let env = bridge_child_env(&plan);
+        assert_eq!(
+            env.get("CCP_CODEX_RESPONSES_API").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            env.get("CCP_CODEX_EFFORT").map(String::as_str),
+            Some("high")
+        );
+
+        let claude = BridgePlan {
+            api: BridgeApi::Messages,
+            effort: None,
+            ..plan
+        };
+        let env = bridge_child_env(&claude);
+        assert!(!env.contains_key("CCP_CODEX_RESPONSES_API"));
+        assert!(!env.contains_key("CCP_CODEX_EFFORT"));
+    }
+
+    #[test]
+    fn upsert_json_key_creates_a_fresh_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+
+        upsert_json_key(&path, "/servers", "alc", json!({"url": "http://x"})).unwrap();
+
+        let document: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+            .expect("valid JSON was written");
+        assert_eq!(document["servers"]["alc"]["url"], json!("http://x"));
+    }
+
+    #[test]
+    fn upsert_json_key_preserves_unrelated_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"servers":{"other":{"url":"http://keep-me"}},"unrelated":true}"#,
+        )
+        .unwrap();
+
+        upsert_json_key(&path, "/servers", "alc", json!({"url": "http://x"})).unwrap();
+
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(document["servers"]["other"]["url"], json!("http://keep-me"));
+        assert_eq!(document["unrelated"], json!(true));
+        assert_eq!(document["servers"]["alc"]["url"], json!("http://x"));
+    }
+
+    #[test]
+    fn upsert_json_key_replaces_the_same_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        upsert_json_key(&path, "/servers", "alc", json!({"url": "http://old"})).unwrap();
+
+        upsert_json_key(&path, "/servers", "alc", json!({"url": "http://new"})).unwrap();
+
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(document["servers"]["alc"]["url"], json!("http://new"));
+    }
+
+    #[test]
+    fn upsert_json_key_bails_leaving_invalid_json_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        std::fs::write(&path, "not valid json").unwrap();
+
+        let error =
+            upsert_json_key(&path, "/servers", "alc", json!({"url": "http://x"})).unwrap_err();
+
+        assert!(
+            error.to_string().to_lowercase().contains("json")
+                || error.to_string().to_lowercase().contains("pars"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not valid json");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upsert_json_key_preserves_an_existing_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        upsert_json_key(&path, "/servers", "alc", json!({"url": "http://x"})).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "upsert must not relax an existing file's permissions"
+        );
+    }
+
+    fn empty_spec() -> LaunchSpec {
+        LaunchSpec {
+            program: OsString::from("true"),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            env_remove: Vec::new(),
+            provider_name: "test".to_owned(),
+            provider_kind: ProviderKind::Codex,
+            agent: Agent::Codex,
+            bridge: None,
+            file_setup: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn process_file_setup_applies_both_variants_and_only_flags_write_temp_for_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let json_path = temp.path().join("config.json");
+        let temp_path = temp.path().join("secret.json");
+
+        let mut spec = empty_spec();
+        spec.file_setup = vec![
+            FileSetup::UpsertJson {
+                path: json_path.clone(),
+                pointer: "/mcpServers",
+                key: "alc".to_owned(),
+                value: json!({"url": "http://127.0.0.1:1"}),
+            },
+            FileSetup::WriteTemp {
+                path: temp_path.clone(),
+                contents: "shh".to_owned(),
+                secret: true,
+                cleanup: true,
+            },
+        ];
+
+        let cleanup = process_file_setup(&spec).unwrap();
+        assert_eq!(cleanup, vec![temp_path.clone()]);
+
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+        assert_eq!(
+            document["mcpServers"]["alc"]["url"],
+            json!("http://127.0.0.1:1")
+        );
+        assert_eq!(std::fs::read_to_string(&temp_path).unwrap(), "shh");
+
+        drop(CleanupFiles(cleanup));
+        assert!(
+            !temp_path.exists(),
+            "CleanupFiles must remove cleanup:true WriteTemp paths on drop"
+        );
+        assert!(
+            json_path.exists(),
+            "UpsertJson output is not a temp file and must survive"
+        );
+    }
+
+    #[test]
+    fn process_file_setup_does_not_queue_write_temp_without_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("kept.json");
+        let mut spec = empty_spec();
+        spec.file_setup = vec![FileSetup::WriteTemp {
+            path: path.clone(),
+            contents: "keep-me".to_owned(),
+            secret: false,
+            cleanup: false,
+        }];
+
+        let cleanup = process_file_setup(&spec).unwrap();
+
+        assert!(cleanup.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep-me");
+    }
+
+    #[test]
+    fn process_file_setup_removes_partial_write_temp_files_when_a_later_entry_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = temp.path().join("secret.json");
+        let broken_json_path = temp.path().join("broken.json");
+        std::fs::write(&broken_json_path, "not valid json").unwrap();
+
+        let mut spec = empty_spec();
+        spec.file_setup = vec![
+            FileSetup::WriteTemp {
+                path: temp_path.clone(),
+                contents: "shh".to_owned(),
+                secret: true,
+                cleanup: true,
+            },
+            FileSetup::UpsertJson {
+                path: broken_json_path.clone(),
+                pointer: "/servers",
+                key: "alc".to_owned(),
+                value: json!({"url": "http://x"}),
+            },
+        ];
+
+        assert!(!temp_path.exists(), "sanity: not written yet");
+        let error = process_file_setup(&spec).unwrap_err();
+
+        assert!(
+            error.to_string().to_lowercase().contains("json")
+                || error.to_string().to_lowercase().contains("pars"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !temp_path.exists(),
+            "a cleanup:true WriteTemp from an earlier entry must not be orphaned when a later entry fails"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&broken_json_path).unwrap(),
+            "not valid json",
+            "the failing entry's own file is left untouched"
+        );
+    }
+
+    #[test]
+    fn the_matrix_and_the_builders_agree() {
+        // Every combination the matrix approves must build, and every one it
+        // rejects must fail to build, for providers with credentials in place.
+        let mut config = Config::default();
+        if let Some(vllm) = config.providers.get_mut("vllm") {
+            vllm.enabled = true;
+            vllm.model = "test-model".into();
+        }
+        for kind in [
+            ProviderKind::Deepseek,
+            ProviderKind::Moonshot,
+            ProviderKind::Zai,
+            ProviderKind::Minimax,
+            ProviderKind::Groq,
+            ProviderKind::Xai,
+            ProviderKind::Google,
+        ] {
+            config
+                .providers
+                .insert(kind.as_str().to_owned(), Provider::for_kind(kind));
+        }
+        let mut fake_native = Provider::for_kind(ProviderKind::Custom);
+        fake_native.base_url = Some("https://example.test/v1".into());
+        fake_native.model = "m".into();
+        fake_native.protocol = Protocol::CodexNative;
+        config.providers.insert("fake-native".into(), fake_native);
+
+        let mut credentials = Credentials::default();
+        for name in config.providers.keys() {
+            credentials.api_keys.insert(name.clone(), "k".into());
+        }
+        let store = store(config, credentials);
+
+        for (name, provider) in &store.config.providers {
+            for agent in Agent::ALL {
+                let supported = provider.supports(agent);
+                let built =
+                    build(&store, agent, Some(name), &[], &LaunchOverrides::default()).is_ok();
+                assert_eq!(
+                    supported, built,
+                    "matrix vs builder disagree for {name} × {agent}"
+                );
+            }
+        }
     }
 }

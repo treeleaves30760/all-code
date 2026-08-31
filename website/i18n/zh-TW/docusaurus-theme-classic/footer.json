@@ -19,9 +19,9 @@
     "message": "安裝",
     "description": "The label of footer link with label=Install linking to /installation"
   },
-  "link.item.label.Claude Code on GPT": {
-    "message": "用 GPT 跑 Claude Code",
-    "description": "The label of footer link with label=Claude Code on GPT linking to /codex-to-claude"
+  "link.item.label.Codex bridge": {
+    "message": "Codex 橋接",
+    "description": "The label of footer link with label=Codex bridge linking to /codex-to-claude"
   },
   "link.item.label.GitHub": {
     "message": "GitHub",
@@ -46,6 +46,26 @@
   "link.item.label.OpenCode": {
     "message": "OpenCode",
     "description": "The label of footer link with label=OpenCode linking to https://opencode.ai/docs"
+  },
+  "link.item.label.Pi": {
+    "message": "Pi",
+    "description": "The label of footer link with label=Pi linking to https://github.com/earendil-works/pi"
+  },
+  "link.item.label.Copilot CLI": {
+    "message": "Copilot CLI",
+    "description": "The label of footer link with label=Copilot CLI linking to https://docs.github.com/en/copilot/how-tos/copilot-cli"
+  },
+  "link.item.label.Goose": {
+    "message": "Goose",
+    "description": "The label of footer link with label=Goose linking to https://block.github.io/goose/"
+  },
+  "link.item.label.Qwen Code": {
+    "message": "Qwen Code",
+    "description": "The label of footer link with label=Qwen Code linking to https://github.com/QwenLM/qwen-code"
+  },
+  "link.item.label.Kimi Code CLI": {
+    "message": "Kimi Code CLI",
+    "description": "The label of footer link with label=Kimi Code CLI linking to https://github.com/MoonshotAI/kimi-cli"
   },
   "copyright": {
     "message": "採用 MIT 授權。Copyright © 2026 treeleaves30760。",

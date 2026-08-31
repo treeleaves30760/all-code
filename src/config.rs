@@ -56,22 +56,65 @@ impl std::str::FromStr for ReasoningEffort {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Agent {
     Claude,
     Codex,
     Opencode,
+    Pi,
+    Copilot,
+    Goose,
+    Qwen,
+    Kimi,
 }
 
 impl Agent {
-    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Opencode];
+    pub const ALL: [Self; 8] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Opencode,
+        Self::Pi,
+        Self::Copilot,
+        Self::Goose,
+        Self::Qwen,
+        Self::Kimi,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Opencode => "opencode",
+            Self::Pi => "pi",
+            Self::Copilot => "copilot",
+            Self::Goose => "goose",
+            Self::Qwen => "qwen",
+            Self::Kimi => "kimi",
+        }
+    }
+
+    /// Built-in default provider profile when `[defaults]` has no entry.
+    pub fn default_provider(self) -> &'static str {
+        match self {
+            Self::Claude | Self::Pi => "anthropic",
+            Self::Codex => "codex",
+            Self::Opencode | Self::Copilot | Self::Goose => "openrouter",
+            Self::Qwen | Self::Kimi => "openai",
+        }
+    }
+
+    /// One-line protocol requirement used in compatibility errors.
+    pub fn requirement(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code needs an Anthropic-compatible endpoint",
+            Self::Codex => "Codex needs the OpenAI Responses API",
+            Self::Opencode => "OpenCode needs an API-compatible provider",
+            Self::Pi => "Pi needs an Anthropic-, OpenAI-, or OpenAI-compatible endpoint",
+            Self::Copilot => "Copilot CLI needs an OpenAI- or Anthropic-compatible endpoint",
+            Self::Goose => "Goose needs an OpenAI- or Anthropic-compatible endpoint",
+            Self::Qwen => "Qwen Code needs an OpenAI-, Anthropic-, or Gemini-compatible endpoint",
+            Self::Kimi => "Kimi Code CLI needs an OpenAI- or Anthropic-compatible endpoint",
         }
     }
 }
@@ -90,7 +133,14 @@ impl std::str::FromStr for Agent {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "opencode" | "open-code" => Ok(Self::Opencode),
-            _ => bail!("unknown agent '{value}'; expected claude, codex, or opencode"),
+            "pi" => Ok(Self::Pi),
+            "copilot" | "copilot-cli" => Ok(Self::Copilot),
+            "goose" => Ok(Self::Goose),
+            "qwen" | "qwen-code" => Ok(Self::Qwen),
+            "kimi" | "kimi-cli" | "kimi-code" => Ok(Self::Kimi),
+            _ => bail!(
+                "unknown agent '{value}'; expected claude, codex, opencode, pi, copilot, goose, qwen, or kimi"
+            ),
         }
     }
 }
@@ -104,17 +154,31 @@ pub enum ProviderKind {
     Codex,
     Ollama,
     Vllm,
+    Deepseek,
+    Moonshot,
+    Zai,
+    Minimax,
+    Groq,
+    Xai,
+    Google,
     Custom,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 14] = [
         Self::Anthropic,
         Self::Openai,
         Self::Openrouter,
         Self::Codex,
         Self::Ollama,
         Self::Vllm,
+        Self::Deepseek,
+        Self::Moonshot,
+        Self::Zai,
+        Self::Minimax,
+        Self::Groq,
+        Self::Xai,
+        Self::Google,
         Self::Custom,
     ];
 
@@ -126,6 +190,13 @@ impl ProviderKind {
             Self::Codex => "codex",
             Self::Ollama => "ollama",
             Self::Vllm => "vllm",
+            Self::Deepseek => "deepseek",
+            Self::Moonshot => "moonshot",
+            Self::Zai => "zai",
+            Self::Minimax => "minimax",
+            Self::Groq => "groq",
+            Self::Xai => "xai",
+            Self::Google => "google",
             Self::Custom => "custom",
         }
     }
@@ -137,6 +208,13 @@ impl ProviderKind {
             Self::Openrouter => Protocol::Dual,
             Self::Codex => Protocol::CodexNative,
             Self::Ollama => Protocol::Dual,
+            Self::Deepseek
+            | Self::Moonshot
+            | Self::Zai
+            | Self::Minimax
+            | Self::Groq
+            | Self::Xai
+            | Self::Google => Protocol::OpenaiChat,
             Self::Custom => Protocol::OpenaiResponses,
         }
     }
@@ -148,7 +226,26 @@ impl ProviderKind {
             Self::Openrouter => Some("https://openrouter.ai/api/v1"),
             Self::Ollama => Some("http://localhost:11434"),
             Self::Vllm => Some("http://localhost:8000/v1"),
+            Self::Deepseek => Some("https://api.deepseek.com/v1"),
+            Self::Moonshot => Some("https://api.moonshot.ai/v1"),
+            Self::Zai => Some("https://api.z.ai/api/paas/v4"),
+            Self::Minimax => Some("https://api.minimax.io/v1"),
+            Self::Groq => Some("https://api.groq.com/openai/v1"),
+            Self::Xai => Some("https://api.x.ai/v1"),
+            Self::Google => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
             Self::Codex | Self::Custom => None,
+        }
+    }
+
+    /// Separate Anthropic-compatible base URL for presets that proxy the
+    /// Anthropic Messages API alongside their native OpenAI-chat endpoint.
+    pub fn default_anthropic_base_url(self) -> Option<&'static str> {
+        match self {
+            Self::Deepseek => Some("https://api.deepseek.com/anthropic"),
+            Self::Moonshot => Some("https://api.moonshot.ai/anthropic"),
+            Self::Zai => Some("https://api.z.ai/api/anthropic"),
+            Self::Minimax => Some("https://api.minimax.io/anthropic"),
+            _ => None,
         }
     }
 
@@ -157,6 +254,13 @@ impl ProviderKind {
             Self::Anthropic => Some("ANTHROPIC_API_KEY"),
             Self::Openai => Some("OPENAI_API_KEY"),
             Self::Openrouter => Some("OPENROUTER_API_KEY"),
+            Self::Deepseek => Some("DEEPSEEK_API_KEY"),
+            Self::Moonshot => Some("MOONSHOT_API_KEY"),
+            Self::Zai => Some("ZAI_API_KEY"),
+            Self::Minimax => Some("MINIMAX_API_KEY"),
+            Self::Groq => Some("GROQ_API_KEY"),
+            Self::Xai => Some("XAI_API_KEY"),
+            Self::Google => Some("GEMINI_API_KEY"),
             Self::Codex | Self::Ollama | Self::Vllm | Self::Custom => None,
         }
     }
@@ -179,9 +283,16 @@ impl std::str::FromStr for ProviderKind {
             "codex" => Ok(Self::Codex),
             "ollama" => Ok(Self::Ollama),
             "vllm" | "v-llm" => Ok(Self::Vllm),
+            "deepseek" => Ok(Self::Deepseek),
+            "moonshot" | "moonshotai" => Ok(Self::Moonshot),
+            "zai" | "z-ai" => Ok(Self::Zai),
+            "minimax" => Ok(Self::Minimax),
+            "groq" => Ok(Self::Groq),
+            "xai" | "x-ai" | "grok" => Ok(Self::Xai),
+            "google" | "gemini" => Ok(Self::Google),
             "custom" => Ok(Self::Custom),
             _ => bail!(
-                "unknown provider kind '{value}'; expected anthropic, openai, openrouter, codex, ollama, vllm, or custom"
+                "unknown provider kind '{value}'; expected anthropic, openai, openrouter, codex, ollama, vllm, deepseek, moonshot, zai, minimax, groq, xai, google, or custom"
             ),
         }
     }
@@ -320,11 +431,26 @@ impl Provider {
             ProviderKind::Openrouter => "anthropic/claude-sonnet-4.6",
             ProviderKind::Codex => "",
             ProviderKind::Ollama => "qwen3-coder",
+            ProviderKind::Deepseek => "deepseek-v4-pro",
+            ProviderKind::Moonshot => "kimi-k3",
+            ProviderKind::Zai => "glm-5.3",
+            ProviderKind::Minimax => "MiniMax-M3",
+            ProviderKind::Groq => "llama-3.3-70b-versatile",
+            ProviderKind::Xai => "grok-build-0.1",
+            ProviderKind::Google => "gemini-3.7-flash",
             ProviderKind::Vllm | ProviderKind::Custom => "",
         };
         let auth = match kind {
             ProviderKind::Anthropic => AuthStyle::ApiKey,
-            ProviderKind::Openai | ProviderKind::Openrouter => AuthStyle::Bearer,
+            ProviderKind::Openai
+            | ProviderKind::Openrouter
+            | ProviderKind::Deepseek
+            | ProviderKind::Moonshot
+            | ProviderKind::Zai
+            | ProviderKind::Minimax
+            | ProviderKind::Groq
+            | ProviderKind::Xai
+            | ProviderKind::Google => AuthStyle::Bearer,
             ProviderKind::Codex => AuthStyle::Native,
             ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::Custom => AuthStyle::None,
         };
@@ -332,9 +458,9 @@ impl Provider {
             kind,
             model: model.to_owned(),
             reasoning_effort: (kind == ProviderKind::Openai).then_some(ReasoningEffort::Medium),
-            small_model: None,
+            small_model: (kind == ProviderKind::Deepseek).then(|| "deepseek-v4-flash".to_owned()),
             base_url: kind.default_base_url().map(str::to_owned),
-            anthropic_base_url: None,
+            anthropic_base_url: kind.default_anthropic_base_url().map(str::to_owned),
             protocol: kind.default_protocol(),
             auth,
             api_key_env: kind.default_key_env().map(str::to_owned),
@@ -360,58 +486,82 @@ impl Provider {
             })
     }
 
+    pub fn speaks_anthropic(&self) -> bool {
+        self.protocol.supports_anthropic()
+            || self
+                .anthropic_base_url
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+    }
+
+    pub fn speaks_responses(&self) -> bool {
+        self.protocol.supports_responses()
+    }
+
+    /// Documented assumption: every known Responses endpoint also serves
+    /// Chat Completions (OpenAI, OpenRouter, vLLM, the bundled bridge).
+    pub fn speaks_chat(&self) -> bool {
+        matches!(
+            self.protocol,
+            Protocol::OpenaiChat | Protocol::OpenaiResponses | Protocol::Dual
+        )
+    }
+
     pub fn supports(&self, agent: Agent) -> bool {
         if !self.enabled {
             return false;
         }
+        if self.kind == ProviderKind::Codex {
+            // Native for Codex CLI; the bundled bridge for every other agent.
+            return true;
+        }
+        if self.protocol == Protocol::CodexNative {
+            // codex-native is only meaningful on the codex kind.
+            return false;
+        }
         match agent {
-            Agent::Claude => self.kind == ProviderKind::Codex || self.protocol.supports_anthropic(),
-            Agent::Codex => {
-                self.kind == ProviderKind::Codex
-                    || self.kind == ProviderKind::Ollama
-                    || self.protocol.supports_responses()
+            Agent::Claude => self.speaks_anthropic(),
+            Agent::Codex => self.kind == ProviderKind::Ollama || self.speaks_responses(),
+            Agent::Opencode => true,
+            Agent::Pi | Agent::Kimi => {
+                self.speaks_chat() || self.speaks_responses() || self.speaks_anthropic()
             }
-            Agent::Opencode => {
-                self.kind != ProviderKind::Codex && self.protocol != Protocol::CodexNative
+            Agent::Copilot | Agent::Goose | Agent::Qwen => {
+                self.speaks_chat() || self.speaks_anthropic()
             }
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Defaults {
-    pub claude: String,
-    pub codex: String,
-    pub opencode: String,
-}
+#[serde(transparent)]
+pub struct Defaults(BTreeMap<Agent, String>);
 
 impl Default for Defaults {
+    /// Empty: a fresh config names no default explicitly, so every agent
+    /// resolves through `get`'s `Agent::default_provider()` fallback and
+    /// `is_explicit` stays `false` until something actually writes a key
+    /// (`config set-default`, the TUI, or an older alc's saved config.toml).
     fn default() -> Self {
-        Self {
-            claude: "anthropic".to_owned(),
-            codex: "codex".to_owned(),
-            opencode: "openrouter".to_owned(),
-        }
+        Self(BTreeMap::new())
     }
 }
 
 impl Defaults {
     pub fn get(&self, agent: Agent) -> &str {
-        match agent {
-            Agent::Claude => &self.claude,
-            Agent::Codex => &self.codex,
-            Agent::Opencode => &self.opencode,
-        }
+        self.0
+            .get(&agent)
+            .map(String::as_str)
+            .unwrap_or_else(|| agent.default_provider())
     }
 
     pub fn set(&mut self, agent: Agent, provider: impl Into<String>) {
-        let provider = provider.into();
-        match agent {
-            Agent::Claude => self.claude = provider,
-            Agent::Codex => self.codex = provider,
-            Agent::Opencode => self.opencode = provider,
-        }
+        self.0.insert(agent, provider.into());
+    }
+
+    /// Whether the config file names this default itself (vs. built-in fallback).
+    pub fn is_explicit(&self, agent: Agent) -> bool {
+        self.0.contains_key(&agent)
     }
 }
 
@@ -474,19 +624,19 @@ impl Config {
         }
         for agent in Agent::ALL {
             let default_name = self.defaults.get(agent);
-            let provider = self.providers.get(default_name).with_context(|| {
-                format!("default {agent} provider '{default_name}' does not exist")
-            })?;
-            if !provider.supports(agent) {
-                let requirement = match agent {
-                    Agent::Claude => "Claude Code needs Anthropic Messages",
-                    Agent::Codex => "Codex needs the OpenAI Responses API",
-                    Agent::Opencode => "OpenCode needs an API-compatible provider",
-                };
-                bail!(
-                    "provider '{default_name}' ({}) cannot be used with {agent}; {requirement}",
+            match self.providers.get(default_name) {
+                Some(provider) if provider.supports(agent) => {}
+                Some(provider) if self.defaults.is_explicit(agent) => bail!(
+                    "provider '{default_name}' ({}) cannot be used with {agent}; {}",
                     provider.kind,
-                );
+                    agent.requirement(),
+                ),
+                None if self.defaults.is_explicit(agent) => {
+                    bail!("default {agent} provider '{default_name}' does not exist")
+                }
+                // Implicit fallback that is absent or incompatible: only an error
+                // once the user actually launches that agent (resolve reports it).
+                _ => {}
             }
         }
         Ok(())
@@ -500,14 +650,10 @@ impl Config {
         let requested = requested.unwrap_or_else(|| self.defaults.get(agent));
         if let Some((name, provider)) = self.providers.get_key_value(requested) {
             if !provider.supports(agent) {
-                let requirement = match agent {
-                    Agent::Claude => "Claude Code needs Anthropic Messages",
-                    Agent::Codex => "Codex needs the OpenAI Responses API",
-                    Agent::Opencode => "OpenCode needs an API-compatible provider",
-                };
                 bail!(
-                    "provider '{name}' ({}) is not compatible with {agent}; {requirement}. Run `alc doctor` for the compatibility matrix",
-                    provider.kind
+                    "provider '{name}' ({}) is not compatible with {agent}; {}. Run `alc doctor` for the compatibility matrix",
+                    provider.kind,
+                    agent.requirement()
                 );
             }
             return Ok((name.as_str(), provider));
@@ -689,7 +835,7 @@ pub fn validate_profile_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn atomic_write(path: &Path, bytes: &[u8], secret: bool) -> Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], secret: bool) -> Result<()> {
     #[cfg(windows)]
     let _ = secret;
     let parent = path
@@ -741,6 +887,20 @@ mod tests {
     }
 
     #[test]
+    fn default_config_has_no_explicit_defaults() {
+        let config = Config::default();
+        for agent in Agent::ALL {
+            assert!(
+                !config.defaults.is_explicit(agent),
+                "{agent} should not be explicit on a fresh config"
+            );
+        }
+        // `get` still resolves through `Agent::default_provider()`.
+        assert_eq!(config.defaults.get(Agent::Claude), "anthropic");
+        assert_eq!(config.defaults.get(Agent::Qwen), "openai");
+    }
+
+    #[test]
     fn provider_kind_fallback_resolves_unique_profile() {
         let mut config = Config::default();
         config.providers.remove("openrouter");
@@ -748,7 +908,7 @@ mod tests {
             "work".to_owned(),
             Provider::for_kind(ProviderKind::Openrouter),
         );
-        config.defaults.opencode = "work".to_owned();
+        config.defaults.set(Agent::Opencode, "work");
 
         let (name, _) = config.resolve(Agent::Claude, Some("openrouter")).unwrap();
         assert_eq!(name, "work");
@@ -800,5 +960,168 @@ enabled = true
         .unwrap();
         assert_eq!(provider.kind, ProviderKind::Codex);
         assert_eq!(provider.reasoning_effort, None);
+    }
+
+    #[test]
+    fn legacy_three_key_defaults_still_load_and_fall_back() {
+        let config: Config = toml::from_str(
+            r#"
+version = 1
+[defaults]
+claude = "anthropic"
+codex = "codex"
+opencode = "openrouter"
+[providers.anthropic]
+kind = "anthropic"
+model = "sonnet"
+protocol = "anthropic-messages"
+auth = "api-key"
+enabled = true
+[providers.codex]
+kind = "codex"
+model = ""
+protocol = "codex-native"
+auth = "native"
+enabled = true
+[providers.openrouter]
+kind = "openrouter"
+model = "anthropic/claude-sonnet-4.6"
+protocol = "dual"
+auth = "bearer"
+enabled = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.defaults.get(Agent::Claude), "anthropic");
+        assert_eq!(config.defaults.get(Agent::Pi), "anthropic"); // implicit fallback
+        assert!(config.defaults.is_explicit(Agent::Claude));
+        assert!(config.defaults.is_explicit(Agent::Codex));
+        assert!(config.defaults.is_explicit(Agent::Opencode));
+        assert!(!config.defaults.is_explicit(Agent::Pi));
+        // openai profile is absent, so the implicit qwen fallback must not fail validation
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn compatibility_matrix_matches_the_documented_capabilities() {
+        let by_kind = |kind| Provider::for_kind(kind);
+        let cases: &[(Provider, &[Agent])] = &[
+            // codex login reaches every agent through the bridge
+            (by_kind(ProviderKind::Codex), &Agent::ALL),
+            // anthropic: everything except codex CLI
+            (
+                by_kind(ProviderKind::Anthropic),
+                &[
+                    Agent::Claude,
+                    Agent::Opencode,
+                    Agent::Pi,
+                    Agent::Copilot,
+                    Agent::Goose,
+                    Agent::Qwen,
+                    Agent::Kimi,
+                ],
+            ),
+            // openai (responses+chat): everything except claude
+            (
+                by_kind(ProviderKind::Openai),
+                &[
+                    Agent::Codex,
+                    Agent::Opencode,
+                    Agent::Pi,
+                    Agent::Copilot,
+                    Agent::Goose,
+                    Agent::Qwen,
+                    Agent::Kimi,
+                ],
+            ),
+            // openrouter (dual): all eight
+            (by_kind(ProviderKind::Openrouter), &Agent::ALL),
+        ];
+        for (provider, expected) in cases {
+            for agent in Agent::ALL {
+                assert_eq!(
+                    provider.supports(agent),
+                    expected.contains(&agent),
+                    "{} × {agent}",
+                    provider.kind
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preset_kinds_carry_urls_keys_and_claude_support() {
+        let cases = [
+            (
+                ProviderKind::Deepseek,
+                "https://api.deepseek.com/v1",
+                Some("https://api.deepseek.com/anthropic"),
+                "DEEPSEEK_API_KEY",
+                "deepseek-v4-pro",
+            ),
+            (
+                ProviderKind::Moonshot,
+                "https://api.moonshot.ai/v1",
+                Some("https://api.moonshot.ai/anthropic"),
+                "MOONSHOT_API_KEY",
+                "kimi-k3",
+            ),
+            (
+                ProviderKind::Zai,
+                "https://api.z.ai/api/paas/v4",
+                Some("https://api.z.ai/api/anthropic"),
+                "ZAI_API_KEY",
+                "glm-5.3",
+            ),
+            (
+                ProviderKind::Minimax,
+                "https://api.minimax.io/v1",
+                Some("https://api.minimax.io/anthropic"),
+                "MINIMAX_API_KEY",
+                "MiniMax-M3",
+            ),
+            (
+                ProviderKind::Groq,
+                "https://api.groq.com/openai/v1",
+                None,
+                "GROQ_API_KEY",
+                "llama-3.3-70b-versatile",
+            ),
+            (
+                ProviderKind::Xai,
+                "https://api.x.ai/v1",
+                None,
+                "XAI_API_KEY",
+                "grok-build-0.1",
+            ),
+            (
+                ProviderKind::Google,
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+                None,
+                "GEMINI_API_KEY",
+                "gemini-3.7-flash",
+            ),
+        ];
+        for (kind, base, anthropic, key_env, model) in cases {
+            let provider = Provider::for_kind(kind);
+            assert_eq!(provider.base_url.as_deref(), Some(base), "{kind}");
+            assert_eq!(provider.anthropic_base_url.as_deref(), anthropic, "{kind}");
+            assert_eq!(provider.api_key_env.as_deref(), Some(key_env), "{kind}");
+            assert_eq!(provider.model, model, "{kind}");
+            assert_eq!(provider.protocol, Protocol::OpenaiChat, "{kind}");
+            assert_eq!(provider.auth, AuthStyle::Bearer, "{kind}");
+            // Anthropic-compatible presets serve Claude Code; the rest do not.
+            assert_eq!(
+                provider.supports(Agent::Claude),
+                anthropic.is_some(),
+                "{kind}"
+            );
+            // None of the seven speak the Responses API, so Codex CLI is out.
+            assert!(!provider.supports(Agent::Codex), "{kind}");
+            assert!(
+                provider.supports(Agent::Pi) && provider.supports(Agent::Opencode),
+                "{kind}"
+            );
+        }
     }
 }

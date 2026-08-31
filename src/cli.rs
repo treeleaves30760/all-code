@@ -49,6 +49,34 @@ struct Cli {
     #[arg(long, global = true)]
     vllm: bool,
 
+    /// Shortcut for --provider deepseek.
+    #[arg(long, global = true)]
+    deepseek: bool,
+
+    /// Shortcut for --provider moonshot.
+    #[arg(long, global = true)]
+    moonshot: bool,
+
+    /// Shortcut for --provider zai.
+    #[arg(long, global = true)]
+    zai: bool,
+
+    /// Shortcut for --provider minimax.
+    #[arg(long, global = true)]
+    minimax: bool,
+
+    /// Shortcut for --provider groq.
+    #[arg(long, global = true)]
+    groq: bool,
+
+    /// Shortcut for --provider xai.
+    #[arg(long, global = true)]
+    xai: bool,
+
+    /// Shortcut for --provider google.
+    #[arg(long, global = true)]
+    google: bool,
+
     /// Print the resolved command and environment without launching it.
     #[arg(long, global = true)]
     dry_run: bool,
@@ -67,7 +95,7 @@ enum Command {
     Config(ConfigArgs),
     /// Check agent binaries, credentials, defaults, and compatibility.
     Doctor,
-    /// Show or refresh the GPT models available for Codex-to-Claude.
+    /// Show or refresh the GPT models available through the Codex bridge.
     Models(ModelsArgs),
     /// Check for and install the latest alc release.
     Update(UpdateArgs),
@@ -77,6 +105,16 @@ enum Command {
     Codex(Passthrough),
     /// Launch OpenCode.
     Opencode(Passthrough),
+    /// Launch Pi.
+    Pi(Passthrough),
+    /// Launch GitHub Copilot CLI.
+    Copilot(Passthrough),
+    /// Launch Goose.
+    Goose(Passthrough),
+    /// Launch Qwen Code.
+    Qwen(Passthrough),
+    /// Launch Kimi Code CLI.
+    Kimi(Passthrough),
 }
 
 #[derive(Debug, Args)]
@@ -162,7 +200,7 @@ enum ConfigCommand {
     },
     /// Change an agent's default provider profile.
     SetDefault {
-        /// claude, codex, or opencode.
+        /// claude, codex, opencode, pi, copilot, goose, qwen, or kimi.
         agent: Agent,
         /// Provider profile name.
         provider: String,
@@ -273,6 +311,41 @@ pub fn run() -> Result<u8> {
             args.args,
             cli.dry_run,
         ),
+        Command::Pi(args) => run_agent(
+            &store,
+            Agent::Pi,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+        ),
+        Command::Copilot(args) => run_agent(
+            &store,
+            Agent::Copilot,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+        ),
+        Command::Goose(args) => run_agent(
+            &store,
+            Agent::Goose,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+        ),
+        Command::Qwen(args) => run_agent(
+            &store,
+            Agent::Qwen,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+        ),
+        Command::Kimi(args) => run_agent(
+            &store,
+            Agent::Kimi,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+        ),
     }
 }
 
@@ -284,6 +357,13 @@ fn provider_selector(cli: &Cli) -> Result<Option<String>> {
         (cli.openrouter, "openrouter"),
         (cli.ollama, "ollama"),
         (cli.vllm, "vllm"),
+        (cli.deepseek, "deepseek"),
+        (cli.moonshot, "moonshot"),
+        (cli.zai, "zai"),
+        (cli.minimax, "minimax"),
+        (cli.groq, "groq"),
+        (cli.xai, "xai"),
+        (cli.google, "google"),
     ];
     let selected: Vec<_> = shortcuts
         .into_iter()
@@ -308,13 +388,13 @@ fn run_agent(
     args: Vec<OsString>,
     dry_run: bool,
 ) -> Result<u8> {
-    let spec = launch::build(
-        store,
-        agent,
-        requested_provider,
-        &args,
-        &launch::LaunchOverrides::default(),
-    )?;
+    let provider = store.config.resolve(agent, requested_provider)?.1.clone();
+    let overrides = if provider.kind == ProviderKind::Codex && agent != Agent::Codex {
+        codex_launch_overrides(store, &provider, dry_run)?
+    } else {
+        launch::LaunchOverrides::default()
+    };
+    let spec = launch::build(store, agent, requested_provider, &args, &overrides)?;
     run_spec(spec, dry_run)
 }
 
@@ -349,32 +429,32 @@ fn run_claude(
         return run_spec(spec, dry_run);
     }
 
-    let catalog = if dry_run {
-        ModelCatalog::load(&store.dir)
+    let overrides = if args.model.is_some() || args.effort.is_some() || args.save {
+        let catalog = load_codex_catalog(store, dry_run);
+        let (model, effort) =
+            resolve_codex_defaults(&provider, &catalog, args.model.as_deref(), args.effort)?;
+
+        if args.save {
+            let entry = store
+                .config
+                .providers
+                .get_mut(&profile_name)
+                .context("selected Codex provider disappeared from the config")?;
+            entry.model = model.clone();
+            entry.reasoning_effort = Some(effort);
+            store.save()?;
+            println!("Saved {model} / {effort} as the default for '{profile_name}'.");
+        }
+
+        let context_window = catalog.find(&model).map(|entry| entry.context_window);
+        launch::LaunchOverrides {
+            model: Some(model),
+            reasoning_effort: Some(effort),
+            context_window,
+            model_options: catalog.models.clone(),
+        }
     } else {
-        ModelCatalog::load_and_refresh_if_due(&store.dir)
-    };
-    let (model, effort) =
-        resolve_codex_defaults(&provider, &catalog, args.model.as_deref(), args.effort)?;
-
-    if args.save {
-        let entry = store
-            .config
-            .providers
-            .get_mut(&profile_name)
-            .context("selected Codex provider disappeared from the config")?;
-        entry.model = model.clone();
-        entry.reasoning_effort = Some(effort);
-        store.save()?;
-        println!("Saved {model} / {effort} as the default for '{profile_name}'.");
-    }
-
-    let context_window = catalog.find(&model).map(|entry| entry.context_window);
-    let overrides = launch::LaunchOverrides {
-        model: Some(model),
-        reasoning_effort: Some(effort),
-        context_window,
-        model_options: catalog.models.clone(),
+        codex_launch_overrides(store, &provider, dry_run)?
     };
     let spec = launch::build(
         store,
@@ -412,6 +492,35 @@ fn resolve_codex_defaults(
     Ok((model, effort))
 }
 
+/// Loads the Codex model catalog, syncing it in the background unless this
+/// is a dry run (which must never touch disk beyond a plain cache read).
+fn load_codex_catalog(store: &Store, dry_run: bool) -> ModelCatalog {
+    if dry_run {
+        ModelCatalog::load(&store.dir)
+    } else {
+        ModelCatalog::load_and_refresh_if_due(&store.dir)
+    }
+}
+
+/// The catalog-backed defaults a Codex-bridged session starts on for any
+/// agent: no CLI overrides applied. `run_claude` layers `--model`/`--effort`/
+/// `--save` on top of this for Claude Code specifically.
+fn codex_launch_overrides(
+    store: &Store,
+    provider: &Provider,
+    dry_run: bool,
+) -> Result<launch::LaunchOverrides> {
+    let catalog = load_codex_catalog(store, dry_run);
+    let (model, effort) = resolve_codex_defaults(provider, &catalog, None, None)?;
+    let context_window = catalog.find(&model).map(|entry| entry.context_window);
+    Ok(launch::LaunchOverrides {
+        model: Some(model),
+        reasoning_effort: Some(effort),
+        context_window,
+        model_options: catalog.models.clone(),
+    })
+}
+
 fn run_spec(spec: launch::LaunchSpec, dry_run: bool) -> Result<u8> {
     if dry_run {
         println!(
@@ -421,11 +530,24 @@ fn run_spec(spec: launch::LaunchSpec, dry_run: bool) -> Result<u8> {
             spec.provider_kind,
             spec.redacted_command()
         );
-        if spec.codex_plan.is_some() {
+        if spec.bridge.is_some() {
             println!(
                 "adapter: bundled claude-codex {} on an ephemeral loopback port",
                 launch::CLAUDE_CODEX_HELPER_VERSION
             );
+        }
+        for entry in &spec.file_setup {
+            match entry {
+                launch::FileSetup::UpsertJson { path, key, .. } => {
+                    println!("setup: would update {} ({key})", path.display());
+                }
+                launch::FileSetup::WriteTemp { path, .. } => {
+                    println!(
+                        "setup: temporary config at {} (contents withheld)",
+                        path.display()
+                    );
+                }
+            }
         }
         return Ok(0);
     }
@@ -443,7 +565,7 @@ fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {
         return Ok(0);
     }
 
-    println!("Codex -> Claude model catalog");
+    println!("Codex bridge model catalog");
     println!("source: {}", catalog.source);
     for model in &catalog.models {
         let efforts = model
@@ -601,7 +723,9 @@ fn remove(store: &mut Store, name: &str) -> Result<()> {
     }
     let defaults: Vec<_> = Agent::ALL
         .into_iter()
-        .filter(|agent| store.config.defaults.get(*agent) == name)
+        .filter(|agent| {
+            store.config.defaults.is_explicit(*agent) && store.config.defaults.get(*agent) == name
+        })
         .collect();
     if !defaults.is_empty() {
         let list = defaults

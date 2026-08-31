@@ -16,7 +16,7 @@ const NAME_LIMIT: usize = 24;
 pub fn run(store: &Store) -> Result<bool> {
     let theme = Theme::detect();
     let mut issues = Vec::new();
-    let codex_for_claude = store
+    let codex_bridge_enabled = store
         .config
         .providers
         .values()
@@ -24,11 +24,11 @@ pub fn run(store: &Store) -> Result<bool> {
 
     println!("{}", theme.paint(Tone::Head, "alc doctor"));
     environment(store, &theme, &mut issues);
-    binaries(&theme, codex_for_claude, &mut issues);
+    binaries(store, &theme, codex_bridge_enabled, &mut issues);
     profiles(store, &theme, &mut issues);
     defaults(store, &theme);
-    if codex_for_claude {
-        codex_to_claude(store, &theme, &mut issues);
+    if codex_bridge_enabled {
+        codex_bridge(store, &theme, &mut issues);
     }
     summary(&theme, &issues);
 
@@ -60,7 +60,7 @@ fn environment(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     ]);
 }
 
-fn binaries(theme: &Theme, codex_for_claude: bool, issues: &mut Vec<Issue>) {
+fn binaries(store: &Store, theme: &Theme, codex_bridge_enabled: bool, issues: &mut Vec<Issue>) {
     heading(theme, "Agent binaries");
     let mut rows = Vec::new();
 
@@ -70,16 +70,27 @@ fn binaries(theme: &Theme, codex_for_claude: bool, issues: &mut Vec<Issue>) {
             Some(path) => rows.push(Row::new(Status::Good, agent, path.display().to_string())),
             None => {
                 let name = binary.to_string_lossy().into_owned();
-                rows.push(Row::new(
-                    Status::Bad,
-                    agent,
-                    theme.paint(Tone::Bad, &format!("not found ({name})")),
-                ));
-                issues.push(Issue::new(
-                    agent.to_string(),
-                    format!("`{name}` is not on PATH"),
-                    Some(format!("install {agent}, then reopen your shell")),
-                ));
+                // An agent nobody has pointed a default at yet is just not
+                // installed; only an explicit default's missing binary is
+                // something the user actually needs to fix.
+                if store.config.defaults.is_explicit(agent) {
+                    rows.push(Row::new(
+                        Status::Bad,
+                        agent,
+                        theme.paint(Tone::Bad, &format!("not found ({name})")),
+                    ));
+                    issues.push(Issue::new(
+                        agent.to_string(),
+                        format!("`{name}` is not on PATH"),
+                        Some(format!("install {agent}, then reopen your shell")),
+                    ));
+                } else {
+                    rows.push(Row::new(
+                        Status::Warn,
+                        agent,
+                        theme.paint(Tone::Warn, &format!("not found ({name})")),
+                    ));
+                }
             }
         }
     }
@@ -100,7 +111,7 @@ fn binaries(theme: &Theme, codex_for_claude: bool, issues: &mut Vec<Issue>) {
                 )
             ),
         )),
-        None if codex_for_claude => {
+        None if codex_bridge_enabled => {
             rows.push(Row::new(
                 Status::Bad,
                 "adapter",
@@ -108,10 +119,7 @@ fn binaries(theme: &Theme, codex_for_claude: bool, issues: &mut Vec<Issue>) {
             ));
             issues.push(Issue::new(
                 "adapter",
-                format!(
-                    "claude-codex is required by Codex {} Claude profiles",
-                    theme.arrow()
-                ),
+                "claude-codex is required by the Codex bridge".to_owned(),
                 Some("reinstall alc, or put `claude-codex` on PATH".to_owned()),
             ));
         }
@@ -127,9 +135,9 @@ fn binaries(theme: &Theme, codex_for_claude: bool, issues: &mut Vec<Issue>) {
 
 fn profiles(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     heading(theme, "Provider profiles");
-    let mut table = Table::new(vec![
-        "PROFILE", "KIND", "KEY", "CLAUDE", "CODEX", "OPENCODE",
-    ]);
+    let mut headers = vec!["PROFILE".to_owned(), "KIND".to_owned(), "KEY".to_owned()];
+    headers.extend(Agent::ALL.map(|agent| agent.as_str().to_uppercase()));
+    let mut table = Table::new(headers);
 
     for (name, provider) in &store.config.providers {
         let (key, tone) = key_status(store, name, provider);
@@ -200,8 +208,12 @@ fn defaults(store: &Store, theme: &Theme) {
     marked(theme, &rows);
 }
 
-fn codex_to_claude(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
-    heading(theme, &format!("Codex {} Claude", theme.arrow()));
+fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
+    heading(theme, "Codex bridge");
+    println!(
+        "{INDENT}{}",
+        theme.paint(Tone::Dim, "serves every agent through one `codex login`")
+    );
     let catalog = ModelCatalog::load(&store.dir);
     let mut rows = Vec::new();
 
@@ -568,14 +580,14 @@ impl Cell {
 /// A whitespace-aligned table whose columns are sized from the widest value in each,
 /// so the layout cannot drift as profile names and provider kinds change.
 struct Table {
-    headers: Vec<&'static str>,
+    headers: Vec<String>,
     rows: Vec<Vec<Cell>>,
 }
 
 impl Table {
-    fn new(headers: Vec<&'static str>) -> Self {
+    fn new<S: Into<String>>(headers: Vec<S>) -> Self {
         Self {
-            headers,
+            headers: headers.into_iter().map(Into::into).collect(),
             rows: Vec::new(),
         }
     }
@@ -663,6 +675,11 @@ fn binary_for(agent: Agent) -> std::ffi::OsString {
         Agent::Claude => "ALC_CLAUDE_BIN",
         Agent::Codex => "ALC_CODEX_BIN",
         Agent::Opencode => "ALC_OPENCODE_BIN",
+        Agent::Pi => "ALC_PI_BIN",
+        Agent::Copilot => "ALC_COPILOT_BIN",
+        Agent::Goose => "ALC_GOOSE_BIN",
+        Agent::Qwen => "ALC_QWEN_BIN",
+        Agent::Kimi => "ALC_KIMI_BIN",
     };
     env::var_os(override_name).unwrap_or_else(|| agent.as_str().into())
 }
