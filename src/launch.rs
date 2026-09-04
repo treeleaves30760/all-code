@@ -440,6 +440,9 @@ fn shell_quote(value: &OsStr) -> String {
 /// and side-effect-free so it can be unit tested directly.
 fn bridge_child_env(plan: &BridgePlan) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
+    // UltraCode can open several bridge sessions concurrently. If Codex rejects
+    // a WebSocket upgrade, auto transport retries the request over HTTP.
+    env.insert("CCP_CODEX_TRANSPORT".to_owned(), "auto".to_owned());
     if plan.api != BridgeApi::Messages {
         env.insert("CCP_CODEX_RESPONSES_API".to_owned(), "1".to_owned());
         if let Some(effort) = plan.effort {
@@ -1197,6 +1200,10 @@ mod tests {
         };
         let env = bridge_child_env(&plan);
         assert_eq!(
+            env.get("CCP_CODEX_TRANSPORT").map(String::as_str),
+            Some("auto")
+        );
+        assert_eq!(
             env.get("CCP_CODEX_RESPONSES_API").map(String::as_str),
             Some("1")
         );
@@ -1211,6 +1218,10 @@ mod tests {
             ..plan
         };
         let env = bridge_child_env(&claude);
+        assert_eq!(
+            env.get("CCP_CODEX_TRANSPORT").map(String::as_str),
+            Some("auto")
+        );
         assert!(!env.contains_key("CCP_CODEX_RESPONSES_API"));
         assert!(!env.contains_key("CCP_CODEX_EFFORT"));
     }
