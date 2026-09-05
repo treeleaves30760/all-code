@@ -5,6 +5,7 @@ mod doctor;
 mod launch;
 mod model_catalog;
 mod model_picker;
+mod ollama;
 mod tui;
 mod update;
 

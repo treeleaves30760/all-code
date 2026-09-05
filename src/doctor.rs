@@ -7,6 +7,7 @@ use anyhow::Result;
 
 use crate::config::{Agent, AuthStyle, Provider, ProviderKind, ReasoningEffort, Store};
 use crate::model_catalog::ModelCatalog;
+use crate::ollama;
 
 const INDENT: &str = "  ";
 const GUTTER: &str = "  ";
@@ -30,6 +31,7 @@ pub fn run(store: &Store) -> Result<bool> {
     if codex_bridge_enabled {
         codex_bridge(store, &theme, &mut issues);
     }
+    local_models(store, &theme, &mut issues);
     summary(&theme, &issues);
 
     Ok(issues.is_empty())
@@ -262,6 +264,132 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
         theme.paint(Tone::Dim, &catalog.source),
     ));
 
+    marked(theme, &rows);
+}
+
+/// Claude Code opens every session with a prompt of roughly 25k-40k tokens
+/// (system prompt, tool schemas, project context); a smaller window means
+/// Ollama silently truncates it before the model ever sees the request.
+const MIN_LOCAL_CONTEXT_TOKENS: u64 = 65_536;
+
+/// Every enabled Ollama profile, checked against the running server: is it
+/// up, is the model pulled, can the model call tools, and how much context
+/// does it really get. All three answers come from local metadata calls that
+/// give up after a moment, so a stopped server only costs a warning.
+fn local_models(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
+    let profiles: Vec<_> = store
+        .config
+        .providers
+        .iter()
+        .filter(|(_, provider)| provider.enabled && provider.kind == ProviderKind::Ollama)
+        .collect();
+    if profiles.is_empty() {
+        return;
+    }
+
+    heading(theme, "Ollama");
+    println!(
+        "{INDENT}{}",
+        theme.paint(
+            Tone::Dim,
+            "coding agents need a model that calls tools and a context window that fits their first prompt"
+        )
+    );
+    let mut rows = Vec::new();
+    for (name, provider) in profiles {
+        let Some(root) = ollama::api_root(provider) else {
+            continue;
+        };
+        match ollama::server_version(&root) {
+            Some(version) => rows.push(Row::new(
+                Status::Good,
+                name.clone(),
+                format!(
+                    "{root}{}",
+                    theme.paint(Tone::Dim, &format!("  Ollama {version}"))
+                ),
+            )),
+            None => {
+                rows.push(Row::new(
+                    Status::Bad,
+                    name.clone(),
+                    theme.paint(Tone::Bad, &format!("no server answering at {root}")),
+                ));
+                issues.push(Issue::new(
+                    name.clone(),
+                    format!("Ollama is not answering at {root}"),
+                    Some("start Ollama, or fix the profile's base_url".to_owned()),
+                ));
+                continue;
+            }
+        }
+
+        let model = provider.model.as_str();
+        let Some(facts) = ollama::model_facts(&root, model) else {
+            rows.push(Row::new(
+                Status::Bad,
+                model,
+                theme.paint(Tone::Bad, "not pulled"),
+            ));
+            issues.push(Issue::new(
+                name.clone(),
+                format!("model '{model}' is not pulled"),
+                Some(format!("ollama pull {model}")),
+            ));
+            continue;
+        };
+        let context = match facts.context_length {
+            Some(tokens) => format!("{tokens} tokens of context"),
+            None => "unknown context length".to_owned(),
+        };
+        if !facts.supports_tools() {
+            rows.push(Row::new(
+                Status::Bad,
+                model,
+                format!(
+                    "{}{}",
+                    theme.paint(Tone::Bad, "cannot call tools"),
+                    theme.paint(Tone::Dim, &format!("  {context}"))
+                ),
+            ));
+            issues.push(Issue::new(
+                name.clone(),
+                format!("model '{model}' cannot call tools, which every coding agent relies on"),
+                Some("pick a model whose `ollama show` lists the tools capability".to_owned()),
+            ));
+        } else if facts
+            .context_length
+            .is_some_and(|tokens| tokens < MIN_LOCAL_CONTEXT_TOKENS)
+        {
+            rows.push(Row::new(
+                Status::Warn,
+                model,
+                format!(
+                    "tools{}",
+                    theme.paint(
+                        Tone::Warn,
+                        &format!(
+                            "  {context}, below the {MIN_LOCAL_CONTEXT_TOKENS} Claude Code needs"
+                        )
+                    )
+                ),
+            ));
+            issues.push(Issue::new(
+                name.clone(),
+                format!("model '{model}' gets only {context}; Claude Code's first request alone can be 40k"),
+                Some(
+                    "raise the context length in Ollama's settings (or OLLAMA_CONTEXT_LENGTH)"
+                        .to_owned(),
+                ),
+            ));
+        } else {
+            rows.push(Row::new(
+                Status::Good,
+                model,
+                format!("tools{}", theme.paint(Tone::Dim, &format!("  {context}"))),
+            ));
+        }
+    }
     marked(theme, &rows);
 }
 

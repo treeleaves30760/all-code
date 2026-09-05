@@ -49,6 +49,33 @@ OpenRouter 或 Ollama，或改用
 從原始碼建置不會包含轉接器。請改用一行安裝器重新安裝、把相容的 `claude-codex`
 放進 PATH，或設定 `ALC_CLAUDE_CODEX_BIN`。
 
+## Ollama profile 出現 `API Error: Request timed out`（或 `500`）
+
+Claude Code 會放棄六分鐘內還沒開始回應的請求並重試；Ollama 則把被放棄的請求
+記成 `500`。原因單純是模型來不及在時限內讀完 Claude Code 的第一個請求
+（25k 到 40k tokens）。現在的 alc 會為 Ollama profile 設定
+`API_FORCE_IDLE_TIMEOUT=0` 與 `API_TIMEOUT_MS=1800000`，讓 Claude Code 改為
+等待（如果還看到六分鐘的截止，請更新 alc）；沒有這兩個變數時，重試會從
+Ollama 的 prompt cache 接續，工作階段通常在第二或第三次嘗試時才開始。要讓
+第一輪一次就快：
+
+- 看 `alc doctor` 的 **Ollama** 區塊：模型必須已 pull、能呼叫工具，
+  而且 context 至少 64k。
+- 啟動時少掛一些 MCP server、plugin 和 skill；每一個都會把工具 schema
+  加進第一個請求，讀取時間隨長度增加。
+- 小機器上把 Ollama 的 context 長度維持在 64k–128k，不要開到模型的上限，
+  並用 `OLLAMA_KEEP_ALIVE=4h` 讓模型保持載入，prompt cache 才能跨輪保留。
+- 先讓進行中的 `ollama pull` 跑完，並關掉其他吃記憶體的程式。
+
+見[在本機 Ollama 模型上跑 Claude Code](./providers.md#在本機-ollama-模型上跑-claude-code)。
+
+## Ollama 回傳 `404 model 'claude-…' not found`
+
+Claude Code 向伺服器要求了它自己的 model ID —— 通常是背景工作用的 `haiku`
+別名，或 `/model` 選單裡的某一列。現在的 alc 會把 Ollama profile 的每個別名
+都釘在 profile 的模型上；請更新 alc，或把 profile 的 `small_model` 設成
+你已經 pull 下來的模型。
+
 ## 模型清單看起來過期
 
 模型目錄每 24 小時最多向本機 Codex CLI 同步一次：

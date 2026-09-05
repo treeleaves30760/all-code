@@ -1,3 +1,4 @@
+use std::env;
 use std::ffi::OsString;
 
 use anyhow::{Context, Result, bail};
@@ -73,19 +74,27 @@ pub(crate) fn build(
         OsString::from("ANTHROPIC_BASE_URL"),
         OsString::from(base_url),
     );
-    spec.env.insert(
-        OsString::from("ANTHROPIC_MODEL"),
-        OsString::from(overrides.model.as_deref().unwrap_or(&provider.model)),
-    );
-    if let Some(small_model) = provider
+    let model = overrides.model.as_deref().unwrap_or(&provider.model);
+    let small_model = provider
         .small_model
         .as_deref()
-        .filter(|value| !value.is_empty())
-    {
+        .filter(|value| !value.is_empty());
+    spec.env
+        .insert(OsString::from("ANTHROPIC_MODEL"), OsString::from(model));
+    if let Some(small_model) = small_model {
         spec.env.insert(
             OsString::from("ANTHROPIC_SMALL_FAST_MODEL"),
             OsString::from(small_model),
         );
+    }
+    if let Some(context_window) = overrides.context_window {
+        spec.env.insert(
+            OsString::from("CLAUDE_CODE_MAX_CONTEXT_TOKENS"),
+            OsString::from(context_window.to_string()),
+        );
+    }
+    if provider.kind == ProviderKind::Ollama {
+        apply_local_server_env(spec, model, small_model);
     }
 
     let key = store.credentials.key_for(profile_name, provider);
@@ -131,6 +140,55 @@ pub(crate) fn build(
         }
     }
     Ok(())
+}
+
+/// Everything Claude Code has to be told about a local Ollama server that it
+/// would otherwise assume from Anthropic's API.
+fn apply_local_server_env(spec: &mut LaunchSpec, model: &str, small_model: Option<&str>) {
+    let small = small_model.unwrap_or(model);
+    for (name, value) in [
+        // Ollama serves only the models that were pulled, so every alias
+        // Claude Code resolves on its own (`haiku` for background work, the
+        // picker's Default row, `/model sonnet`) has to land on this one
+        // instead of a Claude model id the server answers with 404.
+        ("ANTHROPIC_DEFAULT_MODEL", model),
+        ("ANTHROPIC_DEFAULT_SONNET_MODEL", model),
+        ("ANTHROPIC_DEFAULT_OPUS_MODEL", model),
+        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", small),
+        ("ANTHROPIC_SMALL_FAST_MODEL", small),
+        // A local server answers one request at a time, so the session-title
+        // and similar side requests would queue ahead of the real one for
+        // minutes.
+        ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+    ] {
+        spec.env.insert(OsString::from(name), OsString::from(value));
+    }
+    let is_set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
+    for (name, value) in local_server_timeout_env(is_set) {
+        spec.env.insert(OsString::from(name), OsString::from(value));
+    }
+}
+
+/// Talking to any host other than Anthropic's, Claude Code leaves its
+/// runtime's idle timeout on and abandons a request that has not produced a
+/// byte after about six minutes; its SDK then caps the wait for response
+/// headers at ten. A laptop model can need longer than either just to read
+/// the ~30k-token prompt Claude Code opens every session with, and Ollama
+/// sends nothing at all until the first generated token.
+pub(crate) const LOCAL_SERVER_TIMEOUT_ENV: [(&str, &str); 2] = [
+    ("API_FORCE_IDLE_TIMEOUT", "0"),
+    ("API_TIMEOUT_MS", "1800000"),
+];
+
+/// The timeout variables to inject for a local server, minus any the user
+/// already set (`is_set`), whose own value must win.
+pub(crate) fn local_server_timeout_env(
+    is_set: impl Fn(&str) -> bool,
+) -> Vec<(&'static str, &'static str)> {
+    LOCAL_SERVER_TIMEOUT_ENV
+        .into_iter()
+        .filter(|(name, _)| !is_set(name))
+        .collect()
 }
 
 /// Claude Code lists these rows in `/model`, so the user picks the GPT model
@@ -229,5 +287,30 @@ fn claude_base_url(provider: &Provider) -> Option<String> {
         Some(base.trim_end_matches("/v1").to_owned())
     } else {
         Some(base.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_server_timeouts_are_injected_when_unset() {
+        assert_eq!(
+            local_server_timeout_env(|_| false),
+            vec![
+                ("API_FORCE_IDLE_TIMEOUT", "0"),
+                ("API_TIMEOUT_MS", "1800000")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_user_set_timeout_variable_is_left_alone() {
+        assert_eq!(
+            local_server_timeout_env(|name| name == "API_TIMEOUT_MS"),
+            vec![("API_FORCE_IDLE_TIMEOUT", "0")]
+        );
+        assert!(local_server_timeout_env(|_| true).is_empty());
     }
 }

@@ -29,7 +29,12 @@ alc 會啟動八個 coding agent。每一個對「如何設定 provider」都有
 - 支援端點：Anthropic 相容端點
 - alc 會注入：`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL`、`ANTHROPIC_API_KEY`
   （像 OpenRouter 這種 bearer 型 provider 則改為 `ANTHROPIC_AUTH_TOKEN`），
-  以及在 profile 有設定 small model 時的 `ANTHROPIC_SMALL_FAST_MODEL`
+  以及在 profile 有設定 small model 時的 `ANTHROPIC_SMALL_FAST_MODEL`。
+  Ollama profile 還會把每個模型別名都釘在本機模型上、加上
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`、`API_FORCE_IDLE_TIMEOUT=0` 和
+  三十分鐘的 `API_TIMEOUT_MS`，並把伺服器回報的 context 長度放進
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS` —— 見
+  [在本機 Ollama 模型上跑 Claude Code](./providers.md#在本機-ollama-模型上跑-claude-code)。
 - 透過橋接時，Claude Code 是唯一能在工作階段中切換的 agent：每個 GPT 模型
   都會出現在它自己的 `/model` 選單裡，`/model`／`/effort` 可以直接變更正在
   執行的工作階段 —— 完整說明請見 [Codex 橋接](./codex-to-claude.md)。

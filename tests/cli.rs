@@ -29,6 +29,61 @@ fn serve_once(body: String) -> (String, thread::JoinHandle<()>) {
     (format!("http://{address}/latest"), handle)
 }
 
+/// A stand-in Ollama server that answers the metadata calls alc makes:
+/// `/api/version`, `/api/show`, and `/api/ps` (nothing loaded). It serves
+/// until the test process exits.
+fn serve_ollama() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Ollama");
+    let address = listener.local_addr().expect("fake Ollama address");
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let mut request = [0_u8; 8192];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let head = String::from_utf8_lossy(&request[..read]);
+            let path = head.split_whitespace().nth(1).unwrap_or("");
+            let (status, body) = if path.starts_with("/api/version") {
+                ("200 OK", r#"{"version":"0.33.3"}"#)
+            } else if path.starts_with("/api/show") {
+                (
+                    "200 OK",
+                    r#"{"capabilities":["completion","tools","thinking"],"model_info":{"general.architecture":"gemma4","gemma4.context_length":131072},"parameters":"temperature 1"}"#,
+                )
+            } else if path.starts_with("/api/ps") {
+                ("200 OK", r#"{"models":[]}"#)
+            } else {
+                ("404 Not Found", r#"{"error":"not found"}"#)
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    format!("http://{address}")
+}
+
+fn ollama_profile(temp: &tempfile::TempDir, base_url: &str) {
+    alc(temp).args(["config", "init"]).assert().success();
+    alc(temp)
+        .args([
+            "config",
+            "upsert",
+            "ollama",
+            "--kind",
+            "ollama",
+            "--model",
+            "gemma4:12b",
+            "--base-url",
+            base_url,
+        ])
+        .assert()
+        .success();
+}
+
 #[test]
 fn initializes_and_prints_default_config() {
     let temp = tempfile::tempdir().unwrap();
@@ -68,6 +123,74 @@ fn openrouter_claude_dry_run_redacts_key() {
         .stdout(predicate::str::contains("https://openrouter.ai/api"))
         .stdout(predicate::str::contains("<redacted>"))
         .stdout(predicate::str::contains("never-print-this").not());
+}
+
+#[test]
+fn ollama_claude_dry_run_pins_aliases_and_reports_the_servers_context() {
+    let temp = tempfile::tempdir().unwrap();
+    ollama_profile(&temp, &serve_ollama());
+    let assert = alc(&temp)
+        .env_remove("API_FORCE_IDLE_TIMEOUT")
+        .env_remove("API_TIMEOUT_MS")
+        .args(["--ollama", "--dry-run", "claude"])
+        .assert()
+        .success();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    for expected in [
+        "API_FORCE_IDLE_TIMEOUT=0",
+        "API_TIMEOUT_MS=1800000",
+        "ANTHROPIC_MODEL=gemma4:12b",
+        "ANTHROPIC_DEFAULT_MODEL=gemma4:12b",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL=gemma4:12b",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL=gemma4:12b",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL=gemma4:12b",
+        "ANTHROPIC_SMALL_FAST_MODEL=gemma4:12b",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS=131072",
+    ] {
+        assert!(output.contains(expected), "missing {expected} in {output}");
+    }
+}
+
+#[test]
+fn ollama_claude_keeps_the_users_own_timeout() {
+    let temp = tempfile::tempdir().unwrap();
+    ollama_profile(&temp, "http://127.0.0.1:9");
+    alc(&temp)
+        .env("API_TIMEOUT_MS", "42")
+        .env_remove("API_FORCE_IDLE_TIMEOUT")
+        .args(["--ollama", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("API_FORCE_IDLE_TIMEOUT=0"))
+        .stdout(predicate::str::contains("API_TIMEOUT_MS=").not());
+}
+
+#[test]
+fn ollama_claude_dry_run_works_without_a_running_server() {
+    let temp = tempfile::tempdir().unwrap();
+    // Nothing listens here, so the context probe must give up quietly.
+    ollama_profile(&temp, "http://127.0.0.1:9");
+    alc(&temp)
+        .args(["--ollama", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL=gemma4:12b",
+        ))
+        .stdout(predicate::str::contains("CLAUDE_CODE_MAX_CONTEXT_TOKENS").not());
+}
+
+#[test]
+fn doctor_checks_the_ollama_model() {
+    let temp = tempfile::tempdir().unwrap();
+    ollama_profile(&temp, &serve_ollama());
+    let assert = alc(&temp).args(["doctor"]).assert();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(output.contains("Ollama 0.33.3"), "{output}");
+    assert!(output.contains("gemma4:12b"), "{output}");
+    assert!(output.contains("tools"), "{output}");
+    assert!(output.contains("131072 tokens of context"), "{output}");
 }
 
 #[test]

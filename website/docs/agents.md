@@ -29,7 +29,12 @@ with a single `codex login`; see that page for how the bridge itself works.
 - Accepts: an Anthropic-compatible endpoint
 - alc injects: `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, `ANTHROPIC_API_KEY`
   (or `ANTHROPIC_AUTH_TOKEN` for bearer-style providers such as OpenRouter),
-  and `ANTHROPIC_SMALL_FAST_MODEL` when the profile sets a small model
+  and `ANTHROPIC_SMALL_FAST_MODEL` when the profile sets a small model. An
+  Ollama profile additionally gets every model alias pinned to the local
+  model, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `API_FORCE_IDLE_TIMEOUT=0`
+  with a thirty-minute `API_TIMEOUT_MS`, and the context window the server
+  reports in `CLAUDE_CODE_MAX_CONTEXT_TOKENS` — see
+  [Claude Code on a local Ollama model](./providers.md#claude-code-on-a-local-ollama-model).
 - Through the bridge, Claude Code is the one agent with in-session switching:
   every GPT model appears in its own `/model` picker, and `/model`/`/effort`
   change the running session — see [Codex bridge](./codex-to-claude.md) for

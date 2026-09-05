@@ -10,7 +10,7 @@ use crate::config::{
     validate_profile_name,
 };
 use crate::model_catalog::ModelCatalog;
-use crate::{doctor, launch, tui, update};
+use crate::{doctor, launch, ollama, tui, update};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -415,8 +415,17 @@ fn run_claude(
                 "--effort and --save are available with a Codex provider; use `alc --codex claude`"
             );
         }
+        // A local Ollama server can say how much context it really gives the
+        // model, which is worth more than Claude Code's 200k guess for an
+        // unknown model id. Skipped silently when the server is not running.
+        let context_window = (provider.kind == ProviderKind::Ollama)
+            .then(|| {
+                ollama::context_window(&provider, args.model.as_deref().unwrap_or(&provider.model))
+            })
+            .flatten();
         let overrides = launch::LaunchOverrides {
             model: args.model,
+            context_window,
             ..launch::LaunchOverrides::default()
         };
         let spec = launch::build(

@@ -232,6 +232,52 @@ ID，等上游改名或棄用某個模型時，再用 `alc config upsert` 修改
 完整的相容矩陣（每個 provider profile 對照全部八個 agent），依你目前的
 設定解析。
 
+### 在本機 Ollama 模型上跑 Claude Code
+
+`alc --ollama claude` 會把 Claude Code 指向 Ollama 伺服器的 Anthropic
+Messages 端點。本機伺服器只提供已經 pull 下來的模型，而且一次只回答一個
+請求，所以 alc 對這種工作階段的設定和雲端 provider 不同：
+
+- `ANTHROPIC_DEFAULT_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL`、
+  `ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_HAIKU_MODEL` 與
+  `ANTHROPIC_SMALL_FAST_MODEL` 全部指向 profile 的模型（有設定 `small_model`
+  時，haiku 這一層改指向它），這樣 Claude Code 自己的別名、背景呼叫和
+  `/model` 選單都不會向 Ollama 要求它沒有的 Claude model ID
+  （`404 model not found`）。
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 略過產生工作階段標題之類的
+  附帶請求；否則它們會先佔住伺服器唯一的處理槽好幾分鐘，真正的請求才輪得到。
+- `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 帶入 Ollama 回報的模型 context 長度
+  （模型已載入時取 `/api/ps`，否則取 `/api/show`），讓自動壓縮依照實際的
+  視窗，而不是 Claude Code 對未知 model ID 假設的 200k。伺服器沒開時會
+  安靜地略過。
+- 除非你自己已經設定，否則加上 `API_FORCE_IDLE_TIMEOUT=0` 與
+  `API_TIMEOUT_MS=1800000`，讓 Claude Code 最多等三十分鐘才等到第一個
+  token；對 Anthropic 以外的主機，它原本會在六分鐘後放棄請求並重來。
+
+Claude Code 每個工作階段的第一個請求大約有 25k 到 40k tokens（系統提示、
+工具 schema、專案內容），而筆電等級的模型每秒只能讀幾十個 token：在 M3
+MacBook Air 上，`gemma4:12b` 讀完 22k tokens 的第一個請求要約六分鐘，39k
+的要約十五分鐘，之後才吐出第一個 token。有了上面這兩個逾時變數，Claude Code
+會一直等下去（舊版 alc 或直接執行 `claude` 時，每次嘗試六分鐘後就會被放棄；
+重試會從 Ollama 的 prompt cache 接續，所以工作階段終究還是會開始）。但只有
+提示夠小、模型讀得夠快，第一輪才會順暢。在筆電上這代表：
+
+- 選擇 `ollama show <model>` 的 capabilities 列有 `tools` 的模型；不能呼叫
+  工具的模型對 coding agent 毫無用處。
+- 讓第一個請求維持精簡：每個 MCP server、plugin 和 skill 都會把工具 schema
+  加進去，讀取時間隨長度增加 —— 對 Gemma 4 這類模型甚至比線性更快，
+  因為它的全注意力層越深入提示就越慢。
+- 給模型 64k 到 128k 的 context（Ollama 設定或 `OLLAMA_CONTEXT_LENGTH`）：
+  Claude Code 至少需要 64k，而在 24 GB 的 Mac 上開 256k 視窗只是白白預留
+  好幾 GB 的 KV cache。Flash attention 預設就已開啟；`OLLAMA_KV_CACHE_TYPE=q8_0`
+  可以再把剩下的記憶體用量減半。
+- 讓模型保持載入（`OLLAMA_KEEP_ALIVE=4h` 或 `-1`）：Ollama 在閒置五分鐘後
+  卸載模型時，prompt cache 也跟著消失，下一輪就得重新讀完整段對話。
+- 工作階段進行中，不要同時 pull 或執行其他模型。
+
+`alc doctor` 會印出 **Ollama** 區塊：伺服器版本、模型是否已 pull、能否呼叫
+工具，以及它實際拿到的 context 長度。
+
 ## Codex 橋接
 
 一次 `codex login` 就能讓 alc 啟動的每個 agent 使用：

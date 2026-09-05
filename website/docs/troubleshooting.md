@@ -51,6 +51,36 @@ Source builds do not include the adapter. Reinstall with the one-line
 installer, put a compatible `claude-codex` on PATH, or set
 `ALC_CLAUDE_CODEX_BIN`.
 
+## `API Error: Request timed out` (or `500`) with an Ollama profile
+
+Claude Code abandons a request that has not started answering after six minutes
+and retries it; Ollama logs the abandoned request as a `500`. The model simply
+did not get through Claude Code's first request — 25k to 40k tokens — in time.
+Current alc versions set `API_FORCE_IDLE_TIMEOUT=0` and
+`API_TIMEOUT_MS=1800000` for Ollama profiles so Claude Code waits instead
+(update alc if you still see the cutoff); without them, retries resume from
+Ollama's prompt cache and the session usually starts on the second or third
+attempt. To make the first turn quick instead:
+
+- Check the **Ollama** section of `alc doctor`: the model must be pulled and
+  able to call tools, and its context must be at least 64k.
+- Launch with fewer MCP servers, plugins, and skills; every one of them adds
+  tool schemas to the first request, and reading time grows with its length.
+- Keep Ollama's context length at 64k–128k rather than the model's maximum on
+  a small machine, and keep the model loaded with `OLLAMA_KEEP_ALIVE=4h` so
+  the prompt cache survives between turns.
+- Let any running `ollama pull` finish first, and close other memory-hungry
+  programs.
+
+See [Claude Code on a local Ollama model](./providers.md#claude-code-on-a-local-ollama-model).
+
+## `404 model 'claude-…' not found` from Ollama
+
+Claude Code asked the server for one of its own model IDs — usually through the
+`haiku` alias it uses for background work or a `/model` row. alc now pins every
+alias to the profile's model for Ollama profiles; update alc, or set the
+profile's `small_model` to a model you have pulled.
+
 ## The model list looks out of date
 
 The catalog syncs from the installed Codex CLI at most once every 24 hours:

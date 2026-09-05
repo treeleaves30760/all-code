@@ -1056,6 +1056,95 @@ mod tests {
         );
     }
 
+    fn ollama_claude_env(
+        config: Config,
+        overrides: &LaunchOverrides,
+    ) -> BTreeMap<OsString, OsString> {
+        build(
+            &store(config, Credentials::default()),
+            Agent::Claude,
+            Some("ollama"),
+            &[],
+            overrides,
+        )
+        .unwrap()
+        .env
+    }
+
+    #[test]
+    fn ollama_claude_pins_every_alias_to_the_local_model() {
+        let env = ollama_claude_env(Config::default(), &LaunchOverrides::default());
+        let value = |name: &str| env[OsStr::new(name)].to_string_lossy().into_owned();
+        assert_eq!(value("ANTHROPIC_BASE_URL"), "http://localhost:11434");
+        assert_eq!(value("ANTHROPIC_AUTH_TOKEN"), "ollama");
+        assert_eq!(value("ANTHROPIC_API_KEY"), "");
+        // Ollama serves only pulled models, so none of Claude Code's own
+        // aliases may reach it as a Claude model id.
+        for name in [
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+        ] {
+            assert_eq!(value(name), "qwen3-coder", "{name}");
+        }
+        assert_eq!(value("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"), "1");
+        assert!(!env.contains_key(OsStr::new("CLAUDE_CODE_MAX_CONTEXT_TOKENS")));
+    }
+
+    #[test]
+    fn ollama_claude_uses_the_small_model_for_the_haiku_tier() {
+        let mut config = Config::default();
+        config.providers.get_mut("ollama").unwrap().small_model = Some("qwen3:4b".into());
+        let env = ollama_claude_env(config, &LaunchOverrides::default());
+        let value = |name: &str| env[OsStr::new(name)].to_string_lossy().into_owned();
+        assert_eq!(value("ANTHROPIC_DEFAULT_SONNET_MODEL"), "qwen3-coder");
+        assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "qwen3-coder");
+        assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "qwen3:4b");
+        assert_eq!(value("ANTHROPIC_SMALL_FAST_MODEL"), "qwen3:4b");
+    }
+
+    #[test]
+    fn ollama_claude_passes_the_probed_context_window() {
+        let overrides = LaunchOverrides {
+            context_window: Some(65_536),
+            ..LaunchOverrides::default()
+        };
+        let env = ollama_claude_env(Config::default(), &overrides);
+        assert_eq!(
+            env[OsStr::new("CLAUDE_CODE_MAX_CONTEXT_TOKENS")],
+            OsString::from("65536")
+        );
+    }
+
+    #[test]
+    fn hosted_anthropic_compatible_providers_keep_claudes_own_aliases() {
+        let mut credentials = Credentials::default();
+        credentials
+            .api_keys
+            .insert("openrouter".into(), "secret".into());
+        let spec = build(
+            &store(Config::default(), credentials),
+            Agent::Claude,
+            Some("openrouter"),
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+        for name in [
+            "ANTHROPIC_DEFAULT_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+            "API_FORCE_IDLE_TIMEOUT",
+            "API_TIMEOUT_MS",
+        ] {
+            assert!(!spec.env.contains_key(OsStr::new(name)), "{name}");
+        }
+    }
+
     #[test]
     fn codex_api_provider_uses_responses_config() {
         let mut credentials = Credentials::default();

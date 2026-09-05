@@ -83,6 +83,60 @@ drift faster than alc releases, so treat every `Starting model` above as a
 default to edit in `alc config`, not a guarantee of what a provider currently
 serves.
 
+## Claude Code on a local Ollama model
+
+`alc --ollama claude` points Claude Code at the Ollama server's Anthropic
+Messages endpoint. A local server serves only the models it has pulled and
+answers one request at a time, so alc sets the session up differently from a
+hosted provider:
+
+- `ANTHROPIC_DEFAULT_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
+  `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, and
+  `ANTHROPIC_SMALL_FAST_MODEL` all point at the profile's model (the haiku
+  tier at its `small_model` when one is set), so Claude Code's own aliases,
+  background calls, and `/model` rows never ask Ollama for a Claude model ID
+  it does not have (`404 model not found`).
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` skips the session-title and
+  similar side requests, which would otherwise hold the server's single slot
+  for minutes before the real request even starts.
+- `CLAUDE_CODE_MAX_CONTEXT_TOKENS` carries the context window Ollama reports
+  for the model (`/api/ps` while it is loaded, `/api/show` otherwise), so
+  auto-compaction follows the real window instead of the 200k Claude Code
+  assumes for an unknown model ID. Skipped silently when the server is down.
+- `API_FORCE_IDLE_TIMEOUT=0` and `API_TIMEOUT_MS=1800000`, unless you set
+  them yourself, let Claude Code wait up to thirty minutes for the first
+  token. Against any host other than Anthropic's it would otherwise abandon
+  the request after six minutes and start over.
+
+Claude Code opens every session with a request of roughly 25k to 40k tokens
+(system prompt, tool schemas, project context), and a laptop-sized model reads
+that at a few dozen tokens per second: on an M3 MacBook Air, `gemma4:12b` needs
+about six minutes for a 22k-token first request and fifteen for a 39k one
+before a single token comes back. The two timeout variables above keep Claude
+Code waiting through that (an older alc, or a bare `claude`, abandons each
+attempt after six minutes; retries resume from Ollama's prompt cache, so the
+session still starts eventually). The first turn is only pleasant when the
+prompt is small and the model is quick to read it. On a laptop that means:
+
+- Use a model whose `ollama show <model>` lists the `tools` capability;
+  coding agents are useless without tool calling.
+- Keep the first request small: every MCP server, plugin, and skill adds
+  tool schemas to it, and reading time grows with its length — faster than
+  linearly for models such as Gemma 4, whose full-attention layers slow
+  down the deeper they get into the prompt.
+- Give the model a 64k to 128k context (Ollama's settings, or
+  `OLLAMA_CONTEXT_LENGTH`): Claude Code needs at least 64k, while a 256k
+  window on a 24 GB Mac reserves gigabytes of KV cache for nothing. Flash
+  attention is already on by default; `OLLAMA_KV_CACHE_TYPE=q8_0` halves
+  what is left.
+- Keep the model loaded (`OLLAMA_KEEP_ALIVE=4h`, or `-1`): when Ollama
+  unloads it after five idle minutes the prompt cache goes too, and the next
+  turn reads the whole conversation again.
+- Do not pull or run other models during a session.
+
+`alc doctor` prints an **Ollama** section with the server version, whether
+the model is pulled, whether it can call tools, and the context it gets.
+
 ## Protocols alc understands
 
 Each provider profile declares a protocol, which decides what alc will allow:
