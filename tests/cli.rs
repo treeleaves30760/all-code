@@ -4,9 +4,17 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
+/// Every alc invocation in this file is bounded.
+///
+/// Not a nicety: a command that blocks here stalls CI for as long as the job
+/// is allowed to run, and reports nothing about where it stopped. With a
+/// deadline the same bug is a failure with output attached.
+const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 fn alc(temp: &tempfile::TempDir) -> Command {
     let mut command = Command::cargo_bin("alc").expect("alc binary");
     command.env("ALC_CONFIG_DIR", temp.path());
+    command.timeout(COMMAND_TIMEOUT);
     command
 }
 
@@ -568,6 +576,7 @@ fn concurrent_starts_produce_exactly_one_hub() {
                 Command::cargo_bin("alc")
                     .expect("alc binary")
                     .env("ALC_CONFIG_DIR", &dir)
+                    .timeout(COMMAND_TIMEOUT)
                     .args(["hub", "start"])
                     .assert()
                     .success();
