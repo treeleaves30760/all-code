@@ -901,6 +901,85 @@ fn apply(session: &Session, frame: ClientFrame, grade: Grade) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bound(bind: Bind, lan_requested: bool) -> (tempfile::TempDir, Server) {
+        let secrets = Secrets {
+            ctl: "ctl-token-for-tests-only-0000".to_owned(),
+            operator: "operator-token-for-tests-0000".to_owned(),
+            viewer: "viewer-token-for-tests-000000".to_owned(),
+        };
+        let settings = RemoteSettings {
+            port: 0,
+            bind,
+            ..RemoteSettings::default()
+        };
+        let config = tempfile::tempdir().unwrap();
+        let server = Server::bind(config.path(), &settings, &secrets, lan_requested).unwrap();
+        (config, server)
+    }
+
+    #[test]
+    fn the_default_bind_stays_on_loopback() {
+        let (_temp, server) = bound(Bind::Loopback, false);
+        assert!(
+            server.address().ip().is_loopback(),
+            "bound to {}",
+            server.address()
+        );
+    }
+
+    /// Either switch is enough. Reaching a session from a phone on the same
+    /// Wi-Fi is the shape of the request, and the token is what guards the
+    /// socket either way - requiring a config edit as well was friction
+    /// with no security to show for it.
+    #[test]
+    fn either_the_flag_or_the_setting_binds_to_the_network() {
+        for (bind, flag) in [
+            (Bind::Loopback, true),
+            (Bind::Lan, false),
+            (Bind::Lan, true),
+        ] {
+            let (_temp, server) = bound(bind, flag);
+            assert!(
+                server.address().ip().is_unspecified(),
+                "bind={bind} flag={flag} stayed on {}",
+                server.address()
+            );
+        }
+    }
+
+    #[test]
+    fn the_url_carries_the_token_in_the_fragment() {
+        // A fragment is never sent to a server and never lands in a proxy or
+        // an access log.
+        let secrets = Secrets {
+            ctl: "ctl-token-for-tests-only-0000".to_owned(),
+            operator: "operator-token-for-tests-0000".to_owned(),
+            viewer: "viewer-token-for-tests-000000".to_owned(),
+        };
+        let settings = RemoteSettings {
+            port: 0,
+            ..RemoteSettings::default()
+        };
+        let config = tempfile::tempdir().unwrap();
+        let server = Server::bind(config.path(), &settings, &secrets, false).unwrap();
+        let url = page_url(server.address().port(), &secrets.operator, false);
+        assert!(url.contains("/#k="), "{url}");
+        let (before, _) = url.split_once('#').unwrap();
+        assert!(!before.contains(&secrets.operator), "{url}");
+    }
+}
+
+/// The tests that put a real agent behind the server.
+///
+/// Unix only, because the fixture spawns `/bin/sh` under a pty. What they
+/// cover beyond that - the `Host` and `Origin` rules, token grades, the
+/// static-asset allowlist - is also covered by the pure tests in
+/// `request.rs`, which do run everywhere; these add the integration over an
+/// actual session on top.
+#[cfg(all(test, unix))]
+mod live_tests {
+    use super::*;
     use std::ffi::OsString;
     use std::io::{BufRead, BufReader};
     use std::path::Path;
@@ -1147,72 +1226,5 @@ mod tests {
             );
         }
         let _ = harness.session.kill();
-    }
-
-    #[test]
-    fn the_default_bind_stays_on_loopback() {
-        let (_temp, server) = bound(Bind::Loopback, false);
-        assert!(
-            server.address().ip().is_loopback(),
-            "bound to {}",
-            server.address()
-        );
-    }
-
-    /// Either switch is enough. Reaching a session from a phone on the same
-    /// Wi-Fi is the shape of the request, and the token is what guards the
-    /// socket either way - requiring a config edit as well was friction
-    /// with no security to show for it.
-    #[test]
-    fn either_the_flag_or_the_setting_binds_to_the_network() {
-        for (bind, flag) in [
-            (Bind::Loopback, true),
-            (Bind::Lan, false),
-            (Bind::Lan, true),
-        ] {
-            let (_temp, server) = bound(bind, flag);
-            assert!(
-                server.address().ip().is_unspecified(),
-                "bind={bind} flag={flag} stayed on {}",
-                server.address()
-            );
-        }
-    }
-
-    fn bound(bind: Bind, lan_requested: bool) -> (tempfile::TempDir, Server) {
-        let secrets = Secrets {
-            ctl: "ctl-token-for-tests-only-0000".to_owned(),
-            operator: "operator-token-for-tests-0000".to_owned(),
-            viewer: "viewer-token-for-tests-000000".to_owned(),
-        };
-        let settings = RemoteSettings {
-            port: 0,
-            bind,
-            ..RemoteSettings::default()
-        };
-        let config = tempfile::tempdir().unwrap();
-        let server = Server::bind(config.path(), &settings, &secrets, lan_requested).unwrap();
-        (config, server)
-    }
-
-    #[test]
-    fn the_url_carries_the_token_in_the_fragment() {
-        // A fragment is never sent to a server and never lands in a proxy or
-        // an access log.
-        let secrets = Secrets {
-            ctl: "ctl-token-for-tests-only-0000".to_owned(),
-            operator: "operator-token-for-tests-0000".to_owned(),
-            viewer: "viewer-token-for-tests-000000".to_owned(),
-        };
-        let settings = RemoteSettings {
-            port: 0,
-            ..RemoteSettings::default()
-        };
-        let config = tempfile::tempdir().unwrap();
-        let server = Server::bind(config.path(), &settings, &secrets, false).unwrap();
-        let url = page_url(server.address().port(), &secrets.operator, false);
-        assert!(url.contains("/#k="), "{url}");
-        let (before, _) = url.split_once('#').unwrap();
-        assert!(!before.contains(&secrets.operator), "{url}");
     }
 }
