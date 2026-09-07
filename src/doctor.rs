@@ -32,6 +32,7 @@ pub fn run(store: &Store) -> Result<bool> {
         codex_bridge(store, &theme, &mut issues);
     }
     local_models(store, &theme, &mut issues);
+    remote(store, &theme, &mut issues);
     summary(&theme, &issues);
 
     Ok(issues.is_empty())
@@ -447,6 +448,20 @@ fn summary(theme: &Theme, issues: &[Issue]) {
             theme.bullet(),
             pad(&issue.subject, subject, Align::Left)
         );
+    }
+}
+
+/// Remote control's posture.
+///
+/// Almost all of this is informational: a user who never turns sharing on
+/// should not start failing `alc doctor` because the feature exists. Only a
+/// credential another account can read is a real problem.
+fn remote(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
+    let report = crate::remote::report(store);
+    heading(theme, "Remote control");
+    pairs(&report.rows);
+    for (subject, problem, fix) in report.issues {
+        issues.push(Issue::new(subject, problem, Some(fix)));
     }
 }
 

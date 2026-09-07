@@ -74,10 +74,7 @@ pub(crate) fn build(
             provider,
             store.credentials.key_for(profile_name, provider),
         )?;
-        spec.env.insert(
-            OsString::from("COPILOT_PROVIDER_API_KEY"),
-            OsString::from(key),
-        );
+        spec.set_secret_env("COPILOT_PROVIDER_API_KEY", key);
     }
 
     if !has_option(passthrough, "--model", "--model") {

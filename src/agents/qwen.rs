@@ -61,8 +61,7 @@ pub(crate) fn build(
             OsString::from("ANTHROPIC_BASE_URL"),
             OsString::from(base_url),
         );
-        spec.env
-            .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::from(key));
+        spec.set_secret_env("ANTHROPIC_API_KEY", key);
     } else if provider.kind == ProviderKind::Google {
         push_auth_type(spec, passthrough, "gemini");
         let key = key_or_error(
@@ -70,8 +69,7 @@ pub(crate) fn build(
             provider,
             store.credentials.key_for(profile_name, provider),
         )?;
-        spec.env
-            .insert(OsString::from("GEMINI_API_KEY"), OsString::from(key));
+        spec.set_secret_env("GEMINI_API_KEY", key);
     } else {
         push_auth_type(spec, passthrough, "openai");
         let base_url = provider
@@ -89,8 +87,7 @@ pub(crate) fn build(
         };
         spec.env
             .insert(OsString::from("OPENAI_BASE_URL"), OsString::from(base_url));
-        spec.env
-            .insert(OsString::from("OPENAI_API_KEY"), OsString::from(key));
+        spec.set_secret_env("OPENAI_API_KEY", key);
     }
 
     if !has_model_override(passthrough) {

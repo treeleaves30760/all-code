@@ -1,7 +1,8 @@
 [package]
 name = "all-code"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
+rust-version = "1.88"
 description = "One CLI to configure and launch Claude Code, Codex, OpenCode, Pi, Copilot CLI, Goose, Qwen Code, and Kimi Code CLI with multiple LLM providers"
 license = "MIT"
 repository = "https://github.com/treeleaves30760/all-code"
@@ -17,9 +18,12 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
+avt = "0.18"
 clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = "0.29"
 flate2 = "1.1"
+getrandom = "0.4"
+portable-pty = "0.9"
 ratatui = "0.30"
 rpassword = "7.4"
 semver = "1.0"
@@ -29,9 +33,16 @@ sha2 = "0.11"
 tar = "0.4"
 tempfile = "3.14"
 toml = "1.1"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 ureq = "3.4"
 which = "8.0"
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
+
+[build-dependencies]
+flate2 = "1.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2.0"

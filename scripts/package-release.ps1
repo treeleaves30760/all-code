@@ -86,9 +86,11 @@ try {
     Copy-Item -LiteralPath $helperBinary -Destination (Join-Path $stage "claude-codex$binaryExtension")
     Copy-Item -LiteralPath (Join-Path $workspace 'LICENSE') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $workspace 'THIRD_PARTY.md') -Destination $stage
-    New-Item -ItemType Directory -Path (Join-Path $stage 'THIRD_PARTY_LICENSES') | Out-Null
-    Copy-Item -LiteralPath (Join-Path $workspace 'THIRD_PARTY_LICENSES/claude-codex-LICENSE') `
-        -Destination (Join-Path $stage 'THIRD_PARTY_LICENSES')
+    # The whole directory, not one named file: a license added for a new
+    # bundled dependency has to reach the archive without anyone remembering
+    # to edit this script.
+    Copy-Item -LiteralPath (Join-Path $workspace 'THIRD_PARTY_LICENSES') `
+        -Destination $stage -Recurse
 
     if ($Os -ne 'windows') {
         & chmod 0755 (Join-Path $stage 'alc') (Join-Path $stage 'claude-codex')

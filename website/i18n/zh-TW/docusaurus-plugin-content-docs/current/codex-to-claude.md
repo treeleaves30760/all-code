@@ -51,11 +51,15 @@ Claude Code 會直接以你儲存的預設值啟動，並把所有模型都放�
 
 | 模型 | 適合的情境 | Codex 預設強度 |
 | --- | --- | --- |
+| `gpt-6-astra` | GPT-6，能力最強，適合複雜且吃重的工作 | `medium` |
 | `gpt-5.6-sol` | 能力最完整，適合架構、困難除錯與大型重構 | `low` |
 | `gpt-5.6-terra` | 速度、能力、成本均衡，建議新手從這個開始 | `medium` |
 | `gpt-5.6-luna` | 速度快、費用低，適合簡單修改與大量例行工作 | `medium` |
 
-清單依能力由強到弱排列，與 Codex 對這個系列公布的分級一致。上游細節可參考
+清單依能力由強到弱排列，與 Codex 自己的分級一致。`gpt-6-astra` 與較新的 GPT-5.6
+模型另外提供高於 `max` 的 `ultra` 強度。這一級可以用原生的 `alc codex` 使用，但
+**無法**透過 Codex 橋接：內建 helper 自己的強度範圍到 `max` 為止，所以 alc 會在
+啟動時把它降到 `max` 並明說，而不是讓請求在 session 進行到一半被拒絕。上游細節可參考
 OpenAI 的
 [模型選擇指南](https://developers.openai.com/api/docs/guides/latest-model)、
 [Luna 說明](https://developers.openai.com/api/docs/models/gpt-5.6-luna)與

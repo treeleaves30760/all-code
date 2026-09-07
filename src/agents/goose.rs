@@ -59,8 +59,7 @@ pub(crate) fn build(
             OsString::from("GOOSE_PROVIDER"),
             OsString::from("openrouter"),
         );
-        spec.env
-            .insert(OsString::from("OPENROUTER_API_KEY"), OsString::from(key));
+        spec.set_secret_env("OPENROUTER_API_KEY", key);
     } else if provider.kind == ProviderKind::Ollama {
         let base_url = provider
             .effective_base_url()
@@ -85,8 +84,7 @@ pub(crate) fn build(
             OsString::from("GOOSE_PROVIDER"),
             OsString::from("anthropic"),
         );
-        spec.env
-            .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::from(key));
+        spec.set_secret_env("ANTHROPIC_API_KEY", key);
         if base_url != ANTHROPIC_DEFAULT_HOST {
             spec.env
                 .insert(OsString::from("ANTHROPIC_HOST"), OsString::from(base_url));
@@ -107,8 +105,7 @@ pub(crate) fn build(
         let (host, base_path) = split_chat_url(base_url);
         spec.env
             .insert(OsString::from("GOOSE_PROVIDER"), OsString::from("openai"));
-        spec.env
-            .insert(OsString::from("OPENAI_API_KEY"), OsString::from(key_value));
+        spec.set_secret_env("OPENAI_API_KEY", key_value);
         spec.env
             .insert(OsString::from("OPENAI_HOST"), OsString::from(host));
         spec.env.insert(

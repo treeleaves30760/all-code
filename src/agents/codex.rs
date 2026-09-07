@@ -117,8 +117,7 @@ pub(crate) fn build(
             store.credentials.key_for(profile_name, provider),
         )?;
         let env_name = "ALC_PROVIDER_API_KEY";
-        spec.env
-            .insert(OsString::from(env_name), OsString::from(key));
+        spec.set_secret_env(env_name, key);
         push_codex_config(
             &mut spec.args,
             &format!("model_providers.{provider_id}.env_key"),

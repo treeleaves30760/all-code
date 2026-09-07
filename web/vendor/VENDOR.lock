@@ -1,0 +1,10 @@
+# Third-party browser assets vendored into the alc binary.
+#
+# The remote-control page must work with no network and under a
+# `default-src 'self'` CSP, so these are committed rather than fetched from a
+# CDN at page load. CI re-hashes them; refresh them deliberately.
+#
+# name          package                     sha256                                                            upstream
+xterm.js        @xterm/xterm@6.0.0          14903579ff54664cd72f8e8699e6961a6272c21863ec1c3b118cdc8af5d4a972  https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.js
+xterm.css       @xterm/xterm@6.0.0          854a7c0fb70e8b1a083c16797ab827299fb18744f5ad34f227b48337e33293c6  https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css
+addon-fit.js    @xterm/addon-fit@0.11.0     ba3ea256ce0620a0992a197d6c9baea64823fc93d8da07a9e366ca9943c18527  https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/lib/addon-fit.js

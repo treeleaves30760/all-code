@@ -11,9 +11,19 @@ use crate::config::ReasoningEffort;
 
 const CACHE_FILE: &str = "codex-models.json";
 const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
-/// Codex publishes a fixed capability order for this family, so alc keeps the
-/// catalog sorted from the most capable model to the cheapest one.
-const TARGET_MODELS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+/// Codex publishes a fixed capability order, so alc keeps the catalog sorted
+/// from the most capable model to the cheapest one.
+///
+/// A model missing from the installed Codex is skipped rather than fatal:
+/// this list spans generations, and requiring all of them would mean a user
+/// on an older Codex silently stopped getting catalog refreshes the day a
+/// newer model was added here.
+const TARGET_MODELS: [&str; 4] = [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,9 +108,9 @@ impl ModelCatalog {
                 supported_efforts,
             });
         }
-        if models.len() != TARGET_MODELS.len() {
+        if models.is_empty() {
             bail!(
-                "Codex did not report the complete GPT-5.6 Luna/Terra/Sol family; keeping the previous catalog"
+                "the installed Codex reported none of the models alc offers; keeping the previous catalog"
             );
         }
 
@@ -188,20 +198,38 @@ mod tests {
             .iter()
             .map(|model| model.id.clone())
             .collect();
-        assert_eq!(ids, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+        assert_eq!(
+            ids,
+            [
+                "gpt-6-astra",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna"
+            ]
+        );
     }
 
     #[test]
     fn bundled_catalog_has_requested_models_and_efforts() {
         let catalog = ModelCatalog::built_in();
-        assert_eq!(catalog.models.len(), 3);
+        assert_eq!(catalog.models.len(), TARGET_MODELS.len());
         for id in TARGET_MODELS {
-            let model = catalog.find(id).expect("requested GPT-5.6 model");
-            assert_eq!(
-                model.supported_efforts,
-                ReasoningEffort::ALL,
-                "{id} should offer low through max"
-            );
+            let model = catalog.find(id).expect("a model alc offers");
+            // Not every model has every tier - `ultra` arrived with GPT-6
+            // and the newer GPT-5.6 models - so the floor is what all of
+            // them share.
+            for effort in [
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Xhigh,
+                ReasoningEffort::Max,
+            ] {
+                assert!(
+                    model.supported_efforts.contains(&effort),
+                    "{id} should offer {effort}"
+                );
+            }
             assert!(
                 model.context_window > 0,
                 "{id} should include its context window"

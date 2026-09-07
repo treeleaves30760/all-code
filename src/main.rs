@@ -6,6 +6,7 @@ mod launch;
 mod model_catalog;
 mod model_picker;
 mod ollama;
+mod remote;
 mod tui;
 mod update;
 

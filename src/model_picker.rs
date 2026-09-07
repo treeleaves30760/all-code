@@ -334,6 +334,7 @@ fn beginner_model_hint(model: &str) -> &'static str {
         "gpt-5.6-luna" => "Best for quick fixes, repetitive work, and keeping usage low.",
         "gpt-5.6-terra" => "Best starting point for most coding sessions.",
         "gpt-5.6-sol" => "Best for architecture, hard debugging, and large refactors.",
+        "gpt-6-astra" => "Best for the most complex work: coding, computer use, and research.",
         _ => "Choose based on the provider documentation.",
     }
 }
@@ -345,6 +346,9 @@ fn effort_description(effort: ReasoningEffort) -> &'static str {
         ReasoningEffort::High => "More analysis for debugging and multi-file implementation.",
         ReasoningEffort::Xhigh => "Deep analysis for difficult, ambiguous, or high-risk work.",
         ReasoningEffort::Max => "Maximum depth for the hardest tasks; slowest and most expensive.",
+        ReasoningEffort::Ultra => {
+            "Maximum depth with automatic task delegation. Native Codex only."
+        }
     }
 }
 
@@ -417,9 +421,18 @@ mod tests {
     }
 
     #[test]
-    fn max_effort_is_available() {
-        assert_eq!(ReasoningEffort::ALL.last(), Some(&ReasoningEffort::Max));
+    fn the_top_tier_is_the_last_one_offered() {
+        assert_eq!(ReasoningEffort::ALL.last(), Some(&ReasoningEffort::Ultra));
         assert!(effort_description(ReasoningEffort::Max).contains("Maximum"));
+    }
+
+    /// `ultra` is reachable natively but not through the bundled bridge, so
+    /// its description has to say which, or a user picking it in the TUI
+    /// would be choosing something that silently becomes `max`.
+    #[test]
+    fn the_ultra_tier_says_where_it_works() {
+        let described = effort_description(ReasoningEffort::Ultra);
+        assert!(described.contains("Native Codex only"), "{described}");
     }
 
     #[test]

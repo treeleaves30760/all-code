@@ -17,10 +17,26 @@ pub enum ReasoningEffort {
     High,
     Xhigh,
     Max,
+    /// GPT-6 and the newer GPT-5.6 models add this tier above `max`.
+    ///
+    /// Reachable natively (`alc codex`), but NOT through the bundled
+    /// claude-codex bridge: that helper's own effort enum is
+    /// `none|low|medium|high|xhigh|max`, so a request carrying `ultra`
+    /// is refused. `cli::resolve_codex_defaults` clamps it at that one
+    /// boundary, out loud, rather than letting the rejection surface as a
+    /// confusing provider error mid-session.
+    Ultra,
 }
 
 impl ReasoningEffort {
-    pub const ALL: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::Xhigh, Self::Max];
+    pub const ALL: [Self; 6] = [
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::Xhigh,
+        Self::Max,
+        Self::Ultra,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -29,6 +45,7 @@ impl ReasoningEffort {
             Self::High => "high",
             Self::Xhigh => "xhigh",
             Self::Max => "max",
+            Self::Ultra => "ultra",
         }
     }
 }
@@ -49,8 +66,9 @@ impl std::str::FromStr for ReasoningEffort {
             "high" => Ok(Self::High),
             "xhigh" | "x-high" => Ok(Self::Xhigh),
             "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
             _ => bail!(
-                "unknown reasoning effort '{value}'; expected low, medium, high, xhigh, or max"
+                "unknown reasoning effort '{value}'; expected low, medium, high, xhigh, max, or ultra"
             ),
         }
     }
@@ -846,14 +864,38 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], secret: bool) -> Result<()
         .file_name()
         .and_then(|name| name.to_str())
         .context("config path has a non-UTF-8 file name")?;
-    let temp = parent.join(format!(".{file_name}.tmp"));
+    // A secret's temp path is unguessable and is created rather than
+    // opened. The predictable `.<name>.tmp` is fine for a config file, but a
+    // credential written through it can be captured by a symlink planted at
+    // that path beforehand: `create(true)` follows one, so the secret lands
+    // in the attacker's file and the rename then leaves the real path a
+    // symlink to it, catching every later read and rotate too.
+    let temp = if secret {
+        let mut suffix = [0_u8; 9];
+        getrandom::fill(&mut suffix)
+            .map_err(|error| anyhow::anyhow!("failed to read system randomness: {error}"))?;
+        let suffix: String = suffix.iter().map(|byte| format!("{byte:02x}")).collect();
+        parent.join(format!(".{file_name}.{suffix}.tmp"))
+    } else {
+        parent.join(format!(".{file_name}.tmp"))
+    };
 
     let mut options = OpenOptions::new();
-    options.create(true).truncate(true).write(true);
+    options.write(true);
+    if secret {
+        // Fails rather than opens if anything is already there, so there is
+        // nothing to plant.
+        options.create_new(true);
+    } else {
+        options.create(true).truncate(true);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(if secret { 0o600 } else { 0o644 });
+        if secret {
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
     }
     let mut file = options
         .open(&temp)
@@ -866,8 +908,15 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], secret: bool) -> Result<()
     if path.exists() {
         fs::remove_file(path).with_context(|| format!("failed to replace {}", path.display()))?;
     }
-    fs::rename(&temp, path)
-        .with_context(|| format!("failed to move {} to {}", temp.display(), path.display()))?;
+    let renamed = fs::rename(&temp, path)
+        .with_context(|| format!("failed to move {} to {}", temp.display(), path.display()));
+    if renamed.is_err() {
+        // The unguessable temp name means a failed rename would otherwise
+        // leave a readable copy of the secret behind under a name nothing
+        // will ever clean up.
+        let _ = fs::remove_file(&temp);
+    }
+    renamed?;
 
     #[cfg(unix)]
     if secret {
@@ -1123,5 +1172,67 @@ enabled = true
                 "{kind}"
             );
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod secret_write_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A credential's temp file must not be capturable by a symlink planted
+    /// at a predictable path. Without `O_NOFOLLOW` and an unguessable name,
+    /// the secret lands in the attacker's file and the rename then leaves
+    /// the real path pointing at it, catching every later read too.
+    #[test]
+    fn a_planted_symlink_cannot_capture_a_secret_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("captured");
+        let secret_path = temp.path().join("token");
+        std::os::unix::fs::symlink(&target, temp.path().join(".token.tmp")).unwrap();
+
+        atomic_write(&secret_path, b"a-real-credential", true).unwrap();
+
+        assert!(
+            !target.exists(),
+            "the secret was written through the symlink"
+        );
+        assert_eq!(
+            fs::read_to_string(&secret_path).unwrap(),
+            "a-real-credential"
+        );
+        assert!(!fs::symlink_metadata(&secret_path).unwrap().is_symlink());
+    }
+
+    #[test]
+    fn a_secret_file_is_owner_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("token");
+        atomic_write(&path, b"a-real-credential", true).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn a_secret_write_leaves_no_temp_file_behind() {
+        let temp = tempfile::tempdir().unwrap();
+        atomic_write(&temp.path().join("token"), b"a-real-credential", true).unwrap();
+        let strays: Vec<_> = fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(strays.is_empty(), "left {} temp files", strays.len());
+    }
+
+    #[test]
+    fn a_non_secret_write_still_replaces_an_existing_file() {
+        // The predictable temp path is deliberately kept for config files:
+        // it is what makes a crashed write recoverable by hand.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        atomic_write(&path, b"first", false).unwrap();
+        atomic_write(&path, b"second", false).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
     }
 }

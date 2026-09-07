@@ -4,9 +4,17 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
+/// Every alc invocation in this file is bounded.
+///
+/// Not a nicety: a command that blocks here stalls CI for as long as the job
+/// is allowed to run, and reports nothing about where it stopped. With a
+/// deadline the same bug is a failure with output attached.
+const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 fn alc(temp: &tempfile::TempDir) -> Command {
     let mut command = Command::cargo_bin("alc").expect("alc binary");
     command.env("ALC_CONFIG_DIR", temp.path());
+    command.timeout(COMMAND_TIMEOUT);
     command
 }
 
@@ -123,6 +131,508 @@ fn openrouter_claude_dry_run_redacts_key() {
         .stdout(predicate::str::contains("https://openrouter.ai/api"))
         .stdout(predicate::str::contains("<redacted>"))
         .stdout(predicate::str::contains("never-print-this").not());
+}
+
+/// A provider profile can name any environment variable through
+/// `api_key_env`, so redaction cannot rely on recognising the conventional
+/// spellings. alc marks what it actually wrote instead.
+#[test]
+fn dry_run_redacts_a_key_stored_under_a_custom_env_name() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "gateway",
+            "--kind",
+            "custom",
+            "--base-url",
+            "https://gateway.example/v1",
+            "--model",
+            "some-model",
+            "--api-key-env",
+            "MY_GATEWAY_CREDENTIAL",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .args(["config", "key", "gateway", "--stdin"])
+        .write_stdin("never-print-this")
+        .assert()
+        .success();
+
+    alc(&temp)
+        .args(["--provider", "gateway", "--dry-run", "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MY_GATEWAY_CREDENTIAL=<redacted>"))
+        .stdout(predicate::str::contains("never-print-this").not());
+}
+
+/// `--share` needs a terminal on both ends. A scripted `alc claude -p … >
+/// out.txt` must fail loudly rather than fill that file with the escape
+/// sequences a mirrored TUI session emits.
+#[test]
+fn share_refuses_when_stdio_is_redirected() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--share", "claude", "--print", "hello"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(refusal()));
+}
+
+/// `trailing_var_arg` hands everything after the first agent argument to the
+/// agent, so appending alc's own flag - the most natural gesture there is -
+/// would silently send `--share` to the model as prompt text.
+#[test]
+fn a_share_flag_after_the_agents_arguments_is_rejected_with_guidance() {
+    let temp = tempfile::tempdir().unwrap();
+    for agent in ["claude", "codex", "opencode", "goose"] {
+        alc(&temp)
+            .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+            .args(["--openrouter", agent, "review this", "--share"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("alc share"))
+            .stderr(predicate::str::contains("before the agent name"));
+    }
+}
+
+#[test]
+fn a_dry_run_says_it_would_share_and_binds_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--share", "--dry-run", "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("share:"))
+        .stdout(predicate::str::contains("<redacted>").or(predicate::str::contains("command:")));
+}
+
+#[test]
+fn the_share_subcommand_takes_the_agent_as_an_argument() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--dry-run", "share", "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("agent: opencode"));
+}
+
+#[test]
+fn remote_status_reports_the_posture_without_binding_anything() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("bind:"))
+        .stdout(predicate::str::contains("loopback"));
+}
+
+#[test]
+fn remote_can_be_turned_off_and_back_on() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp).args(["remote", "off"]).assert().success();
+    alc(&temp)
+        .args(["remote", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("remote control: off"));
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--share", "opencode"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("turned off"));
+    alc(&temp).args(["remote", "on"]).assert().success();
+}
+
+/// alc has no command that prints a token: a link is minted at launch and
+/// handed over once. `--rotate` is the only thing this subcommand does.
+#[test]
+fn remote_token_never_prints_a_token() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "token"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--rotate"));
+    alc(&temp)
+        .args(["remote", "token", "--rotate"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rotated"))
+        .stdout(
+            predicate::str::is_match("[A-Za-z0-9_-]{40,}")
+                .unwrap()
+                .not(),
+        );
+}
+
+/// Reaching a session from a phone on the same Wi-Fi is the shape of the
+/// request, so the flag alone is enough. The token guards the socket either
+/// way; requiring a config edit as well was friction with no security to
+/// show for it.
+#[test]
+fn the_bind_lan_flag_is_enough_on_its_own() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args([
+            "--openrouter",
+            "--dry-run",
+            "--share",
+            "--bind-lan",
+            "opencode",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("share:"));
+}
+
+/// A tunnel's hostname is not knowable until the tunnel is up, and a
+/// `cloudflared` quick tunnel renames itself every run - so this has to be
+/// reachable from the command line rather than a file edit.
+#[test]
+fn a_tunnel_hostname_can_be_allowed_from_the_command_line() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "allow-host", "box.tail1a2b.ts.net"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("box.tail1a2b.ts.net"));
+    alc(&temp)
+        .args(["remote", "allow-host", "*.trycloudflare.com"])
+        .assert()
+        .success();
+
+    alc(&temp)
+        .args(["remote", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("box.tail1a2b.ts.net"))
+        .stdout(predicate::str::contains("*.trycloudflare.com"));
+}
+
+#[test]
+fn a_host_entry_that_is_not_a_host_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "allow-host", "https://box.example/path"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a host name"));
+}
+
+/// The confirmation for loosening a session's permissions has to come from a
+/// person at the machine - not from whoever holds the link, and not from the
+/// agent piping a command into a shell.
+#[test]
+fn confirm_refuses_without_a_terminal() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["confirm", "ABCDEFGHIJ"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("at a terminal on this machine"));
+}
+
+#[test]
+fn an_unknown_permission_rung_is_named_with_the_ones_that_exist() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args([
+            "--openrouter",
+            "--share",
+            "--permission",
+            "nonsense",
+            "opencode",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("auto-edit"));
+}
+
+/// alc adds a permission flag only for the agents it has confirmed against a
+/// real `--help`. A guessed flag name does not tighten a session, it stops
+/// the session from starting.
+#[test]
+fn a_verified_agent_gets_a_permission_flag_and_an_unverified_one_does_not() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--dry-run", "--share", "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("share:"));
+
+    // Qwen's flags are documentation-derived, so an unasked-for launch adds
+    // nothing to its arguments.
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--dry-run", "qwen"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--approval-mode").not());
+}
+
+#[test]
+fn remote_status_reports_the_permission_ceiling() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ceiling:"))
+        .stdout(predicate::str::contains("alc confirm"));
+}
+
+/// Writes a remote.toml that keeps a test hub off the default port, so two
+/// tests running at once cannot collide and neither can touch a real hub.
+/// Why alc turns a `--share` down on this platform.
+///
+/// Both are correct refusals; which one comes first is a property of the
+/// platform, not of the case under test.
+fn refusal() -> &'static str {
+    if cfg!(unix) {
+        "interactive terminal"
+    } else {
+        "not available on Windows"
+    }
+}
+
+#[cfg(unix)]
+fn ephemeral_remote(temp: &tempfile::TempDir) {
+    std::fs::write(
+        temp.path().join("remote.toml"),
+        "port = 0\nmax_permission = \"auto-edit\"\n",
+    )
+    .expect("write remote.toml");
+}
+
+/// The link `alc <agent> --share` prints scrolls away the moment the agent
+/// draws its own interface, so it has to be recoverable.
+#[cfg(unix)]
+#[test]
+fn the_page_link_is_recoverable_after_it_scrolls_away() {
+    let temp = tempfile::tempdir().unwrap();
+    ephemeral_remote(&temp);
+    alc(&temp).args(["hub", "start"]).assert().success();
+
+    alc(&temp)
+        .args(["remote", "url"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("http://127.0.0.1:"))
+        .stdout(predicate::str::contains("/#k="));
+
+    // And `alc sessions` leads with it, because that is where a user looks.
+    alc(&temp)
+        .args(["sessions"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("page "))
+        .stdout(predicate::str::contains("/#k="));
+
+    alc(&temp).args(["hub", "stop"]).assert().success();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tunnel_hostname_is_offered_as_a_link_too() {
+    let temp = tempfile::tempdir().unwrap();
+    ephemeral_remote(&temp);
+    alc(&temp)
+        .args(["remote", "allow-host", "box.tail1a2b.ts.net"])
+        .assert()
+        .success();
+    // A wildcard is a pattern, not a name, so it cannot become a link.
+    alc(&temp)
+        .args(["remote", "allow-host", "*.trycloudflare.com"])
+        .assert()
+        .success();
+    alc(&temp).args(["hub", "start"]).assert().success();
+
+    alc(&temp)
+        .args(["remote", "url"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("https://box.tail1a2b.ts.net/#k="))
+        .stdout(predicate::str::contains("trycloudflare").not());
+
+    alc(&temp).args(["hub", "stop"]).assert().success();
+}
+
+#[test]
+fn asking_for_the_link_without_a_hub_says_how_to_get_one() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "url"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--share"));
+}
+
+/// A standing preference must not be the reason a scripted run starts
+/// failing, so a redirected invocation quietly does not share.
+#[test]
+fn sharing_by_default_stays_out_of_the_way_of_a_scripted_run() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "auto-share", "on"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("on"));
+
+    // assert_cmd pipes stdio, which is exactly the scripted case.
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--dry-run", "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("share:").not());
+
+    alc(&temp)
+        .args(["remote", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("share by default: on"));
+}
+
+/// An explicit `--share` still fails loudly, because there the user asked
+/// for something alc cannot do.
+#[test]
+fn an_explicit_share_still_refuses_a_scripted_run() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "auto-share", "on"])
+        .assert()
+        .success();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--share", "opencode"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(refusal()));
+}
+
+#[cfg(unix)]
+#[test]
+fn hub_status_says_so_when_nothing_is_running() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["hub", "status"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("not running"));
+}
+
+#[cfg(unix)]
+#[test]
+fn session_commands_explain_themselves_when_no_hub_is_running() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["sessions"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("alc hub start"));
+}
+
+/// The hub is what makes one page show every session and lets a session
+/// outlive its terminal, so it has to come up, answer, and go away again
+/// without one.
+#[cfg(unix)]
+#[test]
+fn a_hub_starts_answers_and_stops() {
+    let temp = tempfile::tempdir().unwrap();
+    ephemeral_remote(&temp);
+
+    alc(&temp)
+        .args(["hub", "start"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hub running"));
+
+    alc(&temp)
+        .args(["hub", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("running"))
+        .stdout(predicate::str::contains("sessions: 0"));
+
+    alc(&temp)
+        .args(["sessions"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no shared sessions"));
+
+    alc(&temp).args(["hub", "stop"]).assert().success();
+    alc(&temp)
+        .args(["hub", "status"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("not running"));
+}
+
+/// Two clients racing to start a hub must end up with one, not with a
+/// spurious error for whichever lost.
+#[cfg(unix)]
+#[test]
+fn concurrent_starts_produce_exactly_one_hub() {
+    let temp = tempfile::tempdir().unwrap();
+    ephemeral_remote(&temp);
+
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let dir = temp.path().to_owned();
+            std::thread::spawn(move || {
+                Command::cargo_bin("alc")
+                    .expect("alc binary")
+                    .env("ALC_CONFIG_DIR", &dir)
+                    .timeout(COMMAND_TIMEOUT)
+                    .args(["hub", "start"])
+                    .assert()
+                    .success();
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().expect("a hub start panicked");
+    }
+
+    alc(&temp)
+        .args(["hub", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("running"));
+    alc(&temp).args(["hub", "stop"]).assert().success();
+}
+
+/// A hub killed outright leaves its record behind; the next one must not
+/// report a dead pid as running.
+#[cfg(unix)]
+#[test]
+fn a_stale_hub_record_is_not_mistaken_for_a_running_hub() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("run")).unwrap();
+    std::fs::write(
+        temp.path().join("run/hub.json"),
+        r#"{"pid":999999,"port":8787,"instance":"ghost","alc":"1.2.0"}"#,
+    )
+    .unwrap();
+
+    alc(&temp)
+        .args(["hub", "status"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("not running"))
+        .stdout(predicate::str::contains("stale"));
 }
 
 #[test]

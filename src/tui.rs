@@ -22,6 +22,7 @@ use crate::config::{
 };
 use crate::model_catalog::ModelCatalog;
 use crate::model_picker::{PickerApp, PickerRequest};
+use crate::remote::{RemoteBind as Bind, SafetyRung, Settings as RemoteSettings};
 
 type Backend = CrosstermBackend<Stdout>;
 
@@ -80,9 +81,26 @@ impl Drop for TerminalCleanup {
 enum Screen {
     Providers,
     Defaults,
+    Remote,
     Edit,
     Model,
     ConfirmDelete,
+}
+
+/// One toggleable remote-control setting, in the order the screen lists it.
+///
+/// Kept as an enum rather than an index into a Vec so that adding a row and
+/// forgetting to handle it is a compile error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteRow {
+    Enabled,
+    AutoShare,
+    Bind,
+    Ceiling,
+}
+
+impl RemoteRow {
+    const ALL: [Self; 4] = [Self::Enabled, Self::AutoShare, Self::Bind, Self::Ceiling];
 }
 
 struct App {
@@ -93,6 +111,11 @@ struct App {
     provider_selected: usize,
     default_selected: usize,
     edit: Option<EditForm>,
+    /// Remote control lives in its own sidecar file, so it is loaded and
+    /// saved separately from `store`. `None` means the file could not be
+    /// read, and the screen says so rather than offering to overwrite it.
+    remote: Option<RemoteSettings>,
+    remote_selected: usize,
     status: String,
     status_error: bool,
     dirty: bool,
@@ -102,6 +125,7 @@ struct App {
 
 impl App {
     fn new(store: Store, catalog: ModelCatalog) -> Self {
+        let store_dir = store.dir.clone();
         Self {
             store,
             catalog,
@@ -110,6 +134,8 @@ impl App {
             provider_selected: 0,
             default_selected: 0,
             edit: None,
+            remote: RemoteSettings::load(&store_dir).ok(),
+            remote_selected: 0,
             status: "Ready. Changes are saved with s or q.".to_owned(),
             status_error: false,
             dirty: false,
@@ -127,6 +153,7 @@ impl App {
         match self.screen {
             Screen::Providers => self.handle_providers(key),
             Screen::Defaults => self.handle_defaults(key),
+            Screen::Remote => self.handle_remote(key),
             Screen::Edit => self.handle_edit(key),
             Screen::Model => self.handle_model_picker(key),
             Screen::ConfirmDelete => self.handle_delete_confirmation(key),
@@ -149,10 +176,8 @@ impl App {
                     self.screen = Screen::Edit;
                 }
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
-                if self.selected_provider_name().is_some() {
-                    self.screen = Screen::ConfirmDelete;
-                }
+            KeyCode::Char('d') | KeyCode::Delete if self.selected_provider_name().is_some() => {
+                self.screen = Screen::ConfirmDelete;
             }
             KeyCode::Tab => self.screen = Screen::Defaults,
             KeyCode::Char('s') => self.save(false),
@@ -171,11 +196,65 @@ impl App {
             }
             KeyCode::Left | KeyCode::Char('h') => self.cycle_default(-1),
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => self.cycle_default(1),
+            KeyCode::Tab => self.screen = Screen::Remote,
+            KeyCode::Esc => self.screen = Screen::Providers,
+            KeyCode::Char('s') => self.save(false),
+            KeyCode::Char('q') => self.save(true),
+            _ => {}
+        }
+    }
+
+    fn handle_remote(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.remote_selected = self.remote_selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.remote_selected = (self.remote_selected + 1).min(RemoteRow::ALL.len() - 1);
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
+                self.cycle_remote(matches!(key.code, KeyCode::Left));
+            }
             KeyCode::Tab | KeyCode::Esc => self.screen = Screen::Providers,
             KeyCode::Char('s') => self.save(false),
             KeyCode::Char('q') => self.save(true),
             _ => {}
         }
+    }
+
+    fn cycle_remote(&mut self, backwards: bool) {
+        let Some(settings) = self.remote.as_mut() else {
+            self.set_status(
+                "remote.toml could not be read; fix or delete it first.",
+                true,
+            );
+            return;
+        };
+        match RemoteRow::ALL[self.remote_selected] {
+            RemoteRow::Enabled => settings.enabled = !settings.enabled,
+            RemoteRow::AutoShare => settings.auto_share = !settings.auto_share,
+            RemoteRow::Bind => {
+                settings.bind = match settings.bind {
+                    Bind::Loopback => Bind::Lan,
+                    Bind::Lan => Bind::Loopback,
+                };
+            }
+            RemoteRow::Ceiling => {
+                let rungs = SafetyRung::ALL;
+                let current = settings
+                    .max_permission
+                    .parse::<SafetyRung>()
+                    .unwrap_or(SafetyRung::AutoEdit);
+                let at = rungs.iter().position(|rung| *rung == current).unwrap_or(2);
+                let next = if backwards {
+                    (at + rungs.len() - 1) % rungs.len()
+                } else {
+                    (at + 1) % rungs.len()
+                };
+                settings.max_permission = rungs[next].as_str().to_owned();
+            }
+        }
+        self.dirty = true;
     }
 
     fn handle_edit(&mut self, key: KeyEvent) {
@@ -409,6 +488,14 @@ impl App {
     }
 
     fn save(&mut self, exit_after: bool) {
+        // The sidecar first: a failure there must not leave the impression
+        // that everything was written.
+        if let Some(settings) = &self.remote
+            && let Err(error) = settings.save(&self.store.dir)
+        {
+            self.set_status(error.to_string(), true);
+            return;
+        }
         match self.store.save() {
             Ok(()) => {
                 self.dirty = false;
@@ -687,6 +774,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     match app.screen {
         Screen::Providers | Screen::ConfirmDelete => draw_providers(frame, app, areas[1]),
         Screen::Defaults => draw_defaults(frame, app, areas[1]),
+        Screen::Remote => draw_remote(frame, app, areas[1]),
         Screen::Edit | Screen::Model => draw_edit(frame, app, areas[1]),
     }
 
@@ -708,7 +796,10 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             " ↑↓ select  Enter/e edit  a add  d delete  Tab defaults  s save  q save+quit  Ctrl+C cancel"
         }
         Screen::Defaults => {
-            " ↑↓ agent  ←→ provider  Tab/Esc providers  s save  q save+quit  Ctrl+C cancel"
+            " ↑↓ agent  ←→ provider  Tab remote  Esc providers  s save  q save+quit  Ctrl+C cancel"
+        }
+        Screen::Remote => {
+            " ↑↓ setting  ←→/Enter change  Tab/Esc providers  s save  q save+quit  Ctrl+C cancel"
         }
         Screen::Edit => {
             " ↑↓/Tab field  ←→ choice  type/backspace edit  Ctrl+U clear  Enter apply  Esc cancel"
@@ -804,6 +895,85 @@ fn draw_providers(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     .highlight_symbol("› ");
     let mut state = TableState::default().with_selected(Some(app.provider_selected));
     frame.render_stateful_widget(table, area, &mut state);
+}
+
+/// The remote-control settings, edited in place.
+///
+/// Lives beside the provider screens even though it writes a different file:
+/// `alc config` is where a user goes to change how alc behaves, and having
+/// to know that sharing is configured somewhere else is exactly the kind of
+/// thing that makes a feature go unused.
+fn draw_remote(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
+    let header = Row::new(["Setting", "Value", "What it does"])
+        .style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = match &app.remote {
+        Some(settings) => RemoteRow::ALL
+            .into_iter()
+            .map(|row| {
+                let (name, value, note) = match row {
+                    RemoteRow::Enabled => (
+                        "sharing",
+                        on_off(settings.enabled).to_owned(),
+                        "Whether `--share` works at all.",
+                    ),
+                    RemoteRow::AutoShare => (
+                        "share by default",
+                        on_off(settings.auto_share).to_owned(),
+                        "Share every session without passing --share.",
+                    ),
+                    RemoteRow::Bind => (
+                        "bind",
+                        settings.bind.to_string(),
+                        "lan lets a phone on this network connect directly.",
+                    ),
+                    RemoteRow::Ceiling => (
+                        "permission ceiling",
+                        settings.max_permission.clone(),
+                        "Loosest mode the page can reach without `alc confirm`.",
+                    ),
+                };
+                Row::new([Cell::from(name), Cell::from(value), Cell::from(note)])
+            })
+            .collect(),
+        None => vec![Row::new([
+            Cell::from("remote.toml"),
+            Cell::from("unreadable"),
+            Cell::from("Fix or delete the file; alc will not overwrite it."),
+        ])],
+    };
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(20),
+            Constraint::Length(14),
+            Constraint::Min(24),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .title(" Remote control — ←→ or Enter changes the selected setting ")
+            .borders(Borders::ALL),
+    )
+    .row_highlight_style(
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol("› ");
+    let mut state = TableState::default().with_selected(Some(app.remote_selected));
+    frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
 }
 
 fn draw_defaults(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
@@ -948,6 +1118,111 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn app_on_remote_screen(dir: &std::path::Path) -> App {
+        let store = Store {
+            dir: dir.to_owned(),
+            config: Config::default(),
+            credentials: Credentials::default(),
+        };
+        let mut app = App::new(store, ModelCatalog::built_in());
+        app.screen = Screen::Remote;
+        app
+    }
+
+    /// Sharing is configured in a sidecar file, but a user looking for it
+    /// goes to `alc config`. Having to know it lives somewhere else is
+    /// exactly what makes a feature go unused.
+    #[test]
+    fn the_config_screen_can_turn_sharing_on_by_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        assert!(!app.remote.as_ref().unwrap().auto_share);
+
+        app.remote_selected = 1;
+        press(&mut app, KeyCode::Right);
+
+        assert!(app.remote.as_ref().unwrap().auto_share);
+        assert!(app.dirty, "the change should be pending a save");
+    }
+
+    #[test]
+    fn saving_the_config_screen_writes_the_sidecar() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.remote_selected = 1;
+        press(&mut app, KeyCode::Right);
+        app.save(false);
+
+        let reloaded = RemoteSettings::load(temp.path()).unwrap();
+        assert!(reloaded.auto_share, "auto_share did not reach remote.toml");
+    }
+
+    #[test]
+    fn the_bind_setting_toggles_between_loopback_and_the_network() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.remote_selected = 2;
+
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.remote.as_ref().unwrap().bind, Bind::Lan);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.remote.as_ref().unwrap().bind, Bind::Loopback);
+    }
+
+    #[test]
+    fn the_permission_ceiling_cycles_through_every_rung() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.remote_selected = 3;
+
+        let mut seen = vec![app.remote.as_ref().unwrap().max_permission.clone()];
+        for _ in 0..SafetyRung::ALL.len() {
+            press(&mut app, KeyCode::Right);
+            seen.push(app.remote.as_ref().unwrap().max_permission.clone());
+        }
+        // A full cycle returns to where it started, and passes through
+        // every rung on the way.
+        assert_eq!(seen.first(), seen.last());
+        for rung in SafetyRung::ALL {
+            assert!(seen.contains(&rung.as_str().to_owned()), "missed {rung}");
+        }
+    }
+
+    #[test]
+    fn tab_reaches_the_remote_screen_from_the_provider_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.screen = Screen::Providers;
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.screen, Screen::Defaults);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.screen, Screen::Remote);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.screen, Screen::Providers);
+    }
+
+    /// A settings file alc cannot parse is never silently replaced with
+    /// defaults: these values are a security posture, and overwriting them
+    /// because of a typo would be the worst possible response.
+    #[test]
+    fn an_unreadable_settings_file_is_reported_rather_than_overwritten() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("remote.toml"), "bind = yes please\n").unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        assert!(app.remote.is_none());
+
+        press(&mut app, KeyCode::Right);
+        assert!(app.status_error, "{}", app.status);
+        assert!(!app.dirty);
+
+        app.save(false);
+        let raw = std::fs::read_to_string(temp.path().join("remote.toml")).unwrap();
+        assert!(
+            raw.contains("yes please"),
+            "the broken file was overwritten"
+        );
     }
 
     #[test]

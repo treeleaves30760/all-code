@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -92,22 +92,99 @@ pub struct LaunchSpec {
     pub agent: Agent,
     pub bridge: Option<BridgePlan>,
     pub file_setup: Vec<FileSetup>,
+    /// The model this session starts on, once the builder has resolved it.
+    /// Descriptive only: the agent was already told through args or env.
+    pub model: Option<String>,
+    /// The reasoning effort this session starts on, where the agent takes one.
+    pub effort: Option<ReasoningEffort>,
+    /// Environment names this launch filled with credential material.
+    ///
+    /// `is_secret_env` recognises the conventional spellings, but a provider
+    /// profile can name any variable through `api_key_env`, so the builders
+    /// mark what they actually wrote rather than leaving redaction to a
+    /// pattern that a custom profile can walk straight past.
+    pub secret_env: BTreeSet<OsString>,
+    /// The literal credential strings this launch handled, so output that
+    /// echoes one back can be masked. Never serialised, never logged.
+    pub secret_values: Vec<String>,
 }
 
 impl LaunchSpec {
+    /// Sets `name` to a credential value: writes the environment entry, marks
+    /// the name for redaction, and records the value for output scrubbing.
+    /// Every builder that puts a key in the environment goes through here.
+    pub(crate) fn set_secret_env(&mut self, name: impl Into<OsString>, value: impl Into<String>) {
+        let name = name.into();
+        let value = value.into();
+        self.secret_env.insert(name.clone());
+        self.mark_secret_value(&value);
+        self.env.insert(name, OsString::from(value));
+    }
+
+    /// Records a credential that reaches the agent by some route other than
+    /// the environment - Kimi writes one into a temporary config file - so it
+    /// can still be masked wherever it turns up.
+    pub(crate) fn mark_secret_value(&mut self, value: &str) {
+        // A short value would mask unrelated text; a placeholder is not a secret.
+        if value.len() < 8 || value == "alc" {
+            return;
+        }
+        if !self.secret_values.iter().any(|known| known == value) {
+            self.secret_values.push(value.to_owned());
+        }
+    }
+
+    /// A minimal spec for tests in this crate. Kept beside the real
+    /// fields so a new one cannot be forgotten here.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            program: OsString::from("true"),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            env_remove: Vec::new(),
+            provider_name: "test".to_owned(),
+            provider_kind: ProviderKind::Codex,
+            agent: Agent::Codex,
+            bridge: None,
+            file_setup: Vec::new(),
+            model: None,
+            effort: None,
+            secret_env: BTreeSet::new(),
+            secret_values: Vec::new(),
+        }
+    }
+
     pub fn redacted_command(&self) -> String {
         let mut parts = Vec::new();
         for (name, value) in &self.env {
-            let rendered = if is_secret_env(name) {
+            let rendered = if self.secret_env.contains(name) || is_secret_env(name) {
                 "<redacted>".to_owned()
             } else {
-                shell_quote(value)
+                self.mask(&shell_quote(value))
             };
             parts.push(format!("{}={rendered}", name.to_string_lossy()));
         }
         parts.push(shell_quote(&self.program));
-        parts.extend(self.args.iter().map(|value| shell_quote(value.as_os_str())));
+        parts.extend(
+            self.args
+                .iter()
+                .map(|value| self.mask(&shell_quote(value.as_os_str()))),
+        );
         parts.join(" ")
+    }
+
+    /// Replaces any recorded credential value inside `rendered`. Arguments
+    /// are masked by value because an agent can take a key as an argument,
+    /// where no environment name exists to recognise.
+    fn mask(&self, rendered: &str) -> String {
+        let mut rendered = rendered.to_owned();
+        for secret in &self.secret_values {
+            if rendered.contains(secret.as_str()) {
+                rendered = rendered.replace(secret.as_str(), "<redacted>");
+            }
+        }
+        rendered
     }
 }
 
@@ -129,6 +206,10 @@ pub fn build(
         agent,
         bridge: None,
         file_setup: Vec::new(),
+        model: None,
+        effort: None,
+        secret_env: BTreeSet::new(),
+        secret_values: Vec::new(),
     };
 
     if let Some(override_path) = agent_binary_override(agent) {
@@ -144,11 +225,80 @@ pub fn build(
         passthrough,
         overrides,
     )?;
+
+    // Recorded once here rather than at each builder's own resolution site:
+    // a bridged launch runs on the plan's model, and every other launch on
+    // the override or the profile default, which is what the builders each
+    // computed. Descriptive only - the agent has already been told.
+    spec.model = spec
+        .bridge
+        .as_ref()
+        .map(|plan| plan.model.clone())
+        .or_else(|| overrides.model.clone())
+        .or_else(|| (!provider.model.trim().is_empty()).then(|| provider.model.clone()));
+    spec.effort = overrides.reasoning_effort.or(provider.reasoning_effort);
     Ok(spec)
 }
 
-pub fn execute(mut spec: LaunchSpec) -> Result<u8> {
-    let _bridge = if let Some(plan) = spec.bridge.clone() {
+/// The side effects a running session owns: the Codex bridge child and the
+/// temporary files written for the agent. Both must outlive the agent
+/// process and be torn down when it exits, so they travel together.
+pub(crate) struct SessionGuards {
+    #[allow(
+        dead_code,
+        reason = "held for its Drop; the bridge dies with the session"
+    )]
+    bridge: Option<Bridge>,
+    cleanup: CleanupFiles,
+}
+
+impl SessionGuards {
+    /// Guards for a launch that has nothing to tear down, so tests can build
+    /// a session without a bridge or a temporary file.
+    ///
+    /// Unix only, matching the only tests that build a live session: those
+    /// spawn a real agent under a pty, which this fixture cannot do on
+    /// Windows.
+    #[cfg(all(test, unix))]
+    pub(crate) fn none() -> Self {
+        Self {
+            bridge: None,
+            cleanup: CleanupFiles(Vec::new()),
+        }
+    }
+}
+
+/// A launch resolved down to the point just before spawning.
+pub(crate) struct Prepared {
+    pub program: PathBuf,
+    pub spec: LaunchSpec,
+    pub guards: SessionGuards,
+}
+
+impl Prepared {
+    /// The temporary files this launch wrote that must not outlive it.
+    ///
+    /// Recorded to disk by the hub before the agent starts, so a hub that is
+    /// killed outright does not leave the Kimi builder's plaintext key file
+    /// sitting there - `SessionGuards` only runs on a clean exit.
+    pub(crate) fn cleanup_paths(&self) -> Vec<String> {
+        self.guards
+            .cleanup
+            .0
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect()
+    }
+}
+
+/// Starts the bridge, wires it into `spec`, performs the file setup, and
+/// resolves the program path - everything `execute` used to do inline before
+/// spawning. Splitting it out lets a caller spawn the child itself (under a
+/// pseudo-terminal, say) while keeping the ordering this sequence depends on:
+/// `apply_bridge` must run before `process_file_setup`, because the Pi and
+/// Kimi builders write files whose contents name the bridge's base URL.
+pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
+    let bridge = if let Some(plan) = spec.bridge.clone() {
         let bridge = Bridge::start(&plan)?;
         agents::apply_bridge(&mut spec, &bridge.base_url(), &plan)?;
         Some(bridge)
@@ -157,9 +307,23 @@ pub fn execute(mut spec: LaunchSpec) -> Result<u8> {
     };
 
     // Held until the child exits so a failed launch still cleans up.
-    let _cleanup = CleanupFiles(process_file_setup(&spec)?);
-
+    let cleanup = CleanupFiles(process_file_setup(&spec)?);
     let program = resolve_program(&spec.program, spec.agent)?;
+    Ok(Prepared {
+        program,
+        spec,
+        guards: SessionGuards { bridge, cleanup },
+    })
+}
+
+pub fn execute(spec: LaunchSpec) -> Result<u8> {
+    let prepared = prepare(spec)?;
+    let Prepared {
+        program,
+        spec,
+        guards,
+    } = prepared;
+
     let mut command = Command::new(&program);
     command
         .args(&spec.args)
@@ -171,9 +335,16 @@ pub fn execute(mut spec: LaunchSpec) -> Result<u8> {
         command.env_remove(name);
     }
 
-    let status = command
-        .status()
+    // `spawn` + `wait` rather than `status` so the child has a pid a caller
+    // can report, and so the guards below drop after the agent has exited
+    // rather than at an unspecified point during it.
+    let mut child = command
+        .spawn()
         .with_context(|| format!("failed to launch {}", program.display()))?;
+    let status = child
+        .wait()
+        .context("failed to wait for the coding agent")?;
+    drop(guards);
     Ok(exit_code(status))
 }
 
@@ -227,14 +398,14 @@ pub(crate) fn resolve_codex_effort(provider: &Provider) -> Result<Option<Reasoni
         for path in profile_path.into_iter().chain([home.join("config.toml")]) {
             if let Some(value) = read_codex_preference(&path, "model_reasoning_effort")? {
                 let effort = match value.as_str() {
-                    // The helper currently tops out at max, while newer Codex
-                    // builds may persist the additional ultra tier.
-                    "ultra" => ReasoningEffort::Max,
                     // alc intentionally presents low as its simplest choice.
                     "none" => ReasoningEffort::Low,
+                    // `ultra` parses on its own now; whether it can actually
+                    // be used depends on the transport, and that decision
+                    // belongs at the bridge boundary rather than here.
                     _ => value.parse().with_context(|| {
                         format!(
-                            "invalid model_reasoning_effort in {}; expected low, medium, high, xhigh, or max",
+                            "invalid model_reasoning_effort in {}; expected low, medium, high, xhigh, max, or ultra",
                             path.display()
                         )
                     })?,
@@ -452,7 +623,7 @@ fn bridge_child_env(plan: &BridgePlan) -> BTreeMap<String, String> {
     env
 }
 
-struct Bridge {
+pub(crate) struct Bridge {
     child: Child,
     port: u16,
 }
@@ -714,7 +885,7 @@ fn json_pointer_object_mut<'a>(
 
 /// Deletes the wrapped paths when dropped, so a `WriteTemp { cleanup: true }`
 /// file is removed after the child exits, even if the launch failed.
-struct CleanupFiles(Vec<PathBuf>);
+pub(crate) struct CleanupFiles(Vec<PathBuf>);
 
 impl Drop for CleanupFiles {
     fn drop(&mut self) {
@@ -859,10 +1030,18 @@ mod tests {
             .iter()
             .map(|row| row["model"].as_str().expect("model id"))
             .collect();
-        assert_eq!(ids, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+        assert_eq!(
+            ids,
+            [
+                "gpt-6-astra",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna"
+            ]
+        );
         assert_eq!(
             rows[0]["label"].as_str(),
-            Some("GPT-5.6 Sol"),
+            Some("GPT-6 Astra"),
             "the most capable model is listed first"
         );
         assert_eq!(
@@ -992,7 +1171,9 @@ mod tests {
         assert_eq!(value("ANTHROPIC_DEFAULT_MODEL"), "gpt-5.6-terra");
         assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "gpt-5.6-luna");
         assert_eq!(value("ANTHROPIC_DEFAULT_SONNET_MODEL"), "gpt-5.6-terra");
-        assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "gpt-5.6-sol");
+        // `opus` follows the catalog's most capable model, so a new
+        // generation reaches the alias without another mapping to maintain.
+        assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "gpt-6-astra");
         assert!(
             !spec
                 .env
@@ -1395,18 +1576,126 @@ mod tests {
         );
     }
 
-    fn empty_spec() -> LaunchSpec {
-        LaunchSpec {
-            program: OsString::from("true"),
-            args: Vec::new(),
-            env: BTreeMap::new(),
-            env_remove: Vec::new(),
-            provider_name: "test".to_owned(),
-            provider_kind: ProviderKind::Codex,
-            agent: Agent::Codex,
-            bridge: None,
-            file_setup: Vec::new(),
+    #[test]
+    fn build_records_the_resolved_model_for_every_agent_that_takes_one() {
+        // The remote session card names the model, and it reads it from the
+        // spec rather than re-deriving what each builder already resolved.
+        let mut credentials = Credentials::default();
+        credentials
+            .api_keys
+            .insert("openrouter".into(), "secret".into());
+        let store = store(Config::default(), credentials);
+        let expected = Provider::for_kind(ProviderKind::Openrouter).model;
+
+        let mut checked = 0;
+        for agent in Agent::ALL {
+            if !store.config.providers["openrouter"].supports(agent) {
+                continue;
+            }
+            let spec = build(
+                &store,
+                agent,
+                Some("openrouter"),
+                &[],
+                &LaunchOverrides::default(),
+            )
+            .unwrap();
+            assert_eq!(spec.model.as_deref(), Some(expected.as_str()), "{agent}");
+            checked += 1;
         }
+        assert!(
+            checked >= 6,
+            "expected most agents to support openrouter, got {checked}"
+        );
+    }
+
+    #[test]
+    fn build_records_the_bridge_model_for_a_codex_backed_session() {
+        // A bridged launch runs on the plan's model, not the profile's.
+        let spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Opencode,
+            Some("codex"),
+            &[],
+            &LaunchOverrides {
+                model: Some("gpt-5.6-luna".to_owned()),
+                reasoning_effort: Some(ReasoningEffort::High),
+                ..LaunchOverrides::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            spec.bridge.as_ref().map(|plan| plan.model.as_str()),
+            Some("gpt-5.6-luna")
+        );
+        assert_eq!(spec.model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(spec.effort, Some(ReasoningEffort::High));
+    }
+
+    #[test]
+    fn redacted_command_masks_a_custom_api_key_env_name() {
+        // A provider profile can name any variable through `api_key_env`, so
+        // redaction cannot rely on the conventional spellings alone.
+        let mut spec = empty_spec();
+        spec.set_secret_env("MY_GATEWAY_CREDENTIAL", "never-print-this");
+
+        let rendered = spec.redacted_command();
+        assert!(
+            rendered.contains("MY_GATEWAY_CREDENTIAL=<redacted>"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("never-print-this"), "{rendered}");
+    }
+
+    #[test]
+    fn redacted_command_masks_a_secret_value_that_appears_in_an_argument() {
+        let mut spec = empty_spec();
+        spec.mark_secret_value("never-print-this");
+        spec.args.push(OsString::from("--api-key=never-print-this"));
+
+        let rendered = spec.redacted_command();
+        assert!(rendered.contains("--api-key=<redacted>"), "{rendered}");
+        assert!(!rendered.contains("never-print-this"), "{rendered}");
+    }
+
+    #[test]
+    fn redacted_command_leaves_an_env_name_argument_alone() {
+        // The Codex builder passes the NAME of the variable holding the key
+        // as an argument. A value-based mask must not mistake it for the key.
+        let mut spec = empty_spec();
+        spec.set_secret_env("ALC_PROVIDER_API_KEY", "never-print-this");
+        spec.args.push(OsString::from(
+            "model_providers.alc.env_key=\"ALC_PROVIDER_API_KEY\"",
+        ));
+
+        let rendered = spec.redacted_command();
+        assert!(rendered.contains("ALC_PROVIDER_API_KEY"), "{rendered}");
+        assert!(!rendered.contains("never-print-this"), "{rendered}");
+    }
+
+    #[test]
+    fn mark_secret_value_ignores_placeholders_that_are_not_credentials() {
+        let mut spec = empty_spec();
+        // `alc` is the stand-in the builders pass to servers that want a
+        // non-empty key but authenticate nothing; masking it would redact
+        // unrelated text everywhere the program name appears.
+        spec.mark_secret_value("alc");
+        spec.mark_secret_value("short");
+        assert!(spec.secret_values.is_empty());
+    }
+
+    #[test]
+    fn mark_secret_value_does_not_record_the_same_key_twice() {
+        let mut spec = empty_spec();
+        // OpenCode writes one key under two names.
+        spec.set_secret_env("ALC_PROVIDER_API_KEY", "never-print-this");
+        spec.set_secret_env("OPENAI_API_KEY", "never-print-this");
+        assert_eq!(spec.secret_values.len(), 1);
+    }
+
+    fn empty_spec() -> LaunchSpec {
+        LaunchSpec::for_test()
     }
 
     #[test]

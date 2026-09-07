@@ -19,6 +19,20 @@ jobs:
           components: rustfmt
       - run: cargo fmt -- --check
 
+      # The remote-control page ships inside the binary, so its JavaScript
+      # never meets a bundler that would have caught a syntax error.
+      - name: Check the page's JavaScript parses
+        run: node --check web/app.js
+
+      # xterm.js is committed rather than fetched, so nothing else would
+      # notice it drifting from the version VENDOR.lock names.
+      - name: Verify the vendored browser assets
+        run: |
+          set -euo pipefail
+          grep -vE '^\s*(#|$)' web/vendor/VENDOR.lock | while read -r name _pkg sha _url; do
+            echo "$sha  web/vendor/$name" | sha256sum --check --strict
+          done
+
   test:
     strategy:
       fail-fast: false
