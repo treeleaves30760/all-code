@@ -255,7 +255,11 @@ pub(crate) struct SessionGuards {
 impl SessionGuards {
     /// Guards for a launch that has nothing to tear down, so tests can build
     /// a session without a bridge or a temporary file.
-    #[cfg(test)]
+    ///
+    /// Unix only, matching the only tests that build a live session: those
+    /// spawn a real agent under a pty, which this fixture cannot do on
+    /// Windows.
+    #[cfg(all(test, unix))]
     pub(crate) fn none() -> Self {
         Self {
             bridge: None,
