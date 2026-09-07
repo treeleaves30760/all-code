@@ -281,6 +281,11 @@ alc hub start --foreground
 
 直說，因為之後才發現更糟：
 
+- **目前不支援 Windows。** `alc <agent> --share` 和 `alc hub` 系列指令在 Windows 上
+  會直接拒絕並說明原因。Hub 會啟動一個分離的程序並透過 loopback 控制通道跟它溝通；
+  在 Windows 上那個程序起不來、也不會結束，而發布一個會卡住並留下殘留程序的 `--share`
+  比不發布更糟。alc 的其他功能在 Windows 上都正常。
+
 - **核准提示是終端機文字，不是手機原生對話框。** 你看到的是 agent 自己的提示，用
   快捷鍵列回答。真正的 Approve/Deny 卡片需要每個 agent 的結構化通道，而只有一半的
   agent 有。

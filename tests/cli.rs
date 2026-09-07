@@ -395,6 +395,7 @@ fn remote_status_reports_the_permission_ceiling() {
 
 /// Writes a remote.toml that keeps a test hub off the default port, so two
 /// tests running at once cannot collide and neither can touch a real hub.
+#[cfg(unix)]
 fn ephemeral_remote(temp: &tempfile::TempDir) {
     std::fs::write(
         temp.path().join("remote.toml"),
@@ -405,6 +406,7 @@ fn ephemeral_remote(temp: &tempfile::TempDir) {
 
 /// The link `alc <agent> --share` prints scrolls away the moment the agent
 /// draws its own interface, so it has to be recoverable.
+#[cfg(unix)]
 #[test]
 fn the_page_link_is_recoverable_after_it_scrolls_away() {
     let temp = tempfile::tempdir().unwrap();
@@ -429,6 +431,7 @@ fn the_page_link_is_recoverable_after_it_scrolls_away() {
     alc(&temp).args(["hub", "stop"]).assert().success();
 }
 
+#[cfg(unix)]
 #[test]
 fn a_tunnel_hostname_is_offered_as_a_link_too() {
     let temp = tempfile::tempdir().unwrap();
@@ -507,6 +510,7 @@ fn an_explicit_share_still_refuses_a_scripted_run() {
         .stderr(predicate::str::contains("interactive terminal"));
 }
 
+#[cfg(unix)]
 #[test]
 fn hub_status_says_so_when_nothing_is_running() {
     let temp = tempfile::tempdir().unwrap();
@@ -517,6 +521,7 @@ fn hub_status_says_so_when_nothing_is_running() {
         .stdout(predicate::str::contains("not running"));
 }
 
+#[cfg(unix)]
 #[test]
 fn session_commands_explain_themselves_when_no_hub_is_running() {
     let temp = tempfile::tempdir().unwrap();
@@ -530,6 +535,7 @@ fn session_commands_explain_themselves_when_no_hub_is_running() {
 /// The hub is what makes one page show every session and lets a session
 /// outlive its terminal, so it has to come up, answer, and go away again
 /// without one.
+#[cfg(unix)]
 #[test]
 fn a_hub_starts_answers_and_stops() {
     let temp = tempfile::tempdir().unwrap();
@@ -564,6 +570,7 @@ fn a_hub_starts_answers_and_stops() {
 
 /// Two clients racing to start a hub must end up with one, not with a
 /// spurious error for whichever lost.
+#[cfg(unix)]
 #[test]
 fn concurrent_starts_produce_exactly_one_hub() {
     let temp = tempfile::tempdir().unwrap();
@@ -597,6 +604,7 @@ fn concurrent_starts_produce_exactly_one_hub() {
 
 /// A hub killed outright leaves its record behind; the next one must not
 /// report a dead pid as running.
+#[cfg(unix)]
 #[test]
 fn a_stale_hub_record_is_not_mistaken_for_a_running_hub() {
     let temp = tempfile::tempdir().unwrap();

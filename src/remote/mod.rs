@@ -109,6 +109,7 @@ pub fn share(
         .as_deref()
         .map(str::parse::<caps::SafetyRung>)
         .transpose()?;
+    require_supported_platform()?;
     // Checked before any work: a scripted `alc claude -p … > out.txt` must
     // fail loudly here rather than fill that file with escape sequences.
     require_terminal()?;
@@ -255,7 +256,33 @@ pub fn shares_by_default(store: &Store) -> bool {
 /// Sharing needs a terminal on both ends. `--share` says so loudly when
 /// there is not one; the standing preference just stays out of the way.
 pub fn can_share() -> bool {
-    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+    require_supported_platform().is_ok()
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+}
+
+/// Refuses on a platform where remote control is not known to work.
+///
+/// Windows is not verified. The hub starts a detached process and talks to
+/// it over a loopback control socket, and on Windows CI that process does
+/// not come up and does not go away - it stalls the job rather than failing.
+/// Shipping that would mean a Windows user's `alc claude --share` hangs and
+/// leaves something running, which is worse than not having the feature.
+///
+/// The code is compiled on Windows and its unit tests run there, so this is
+/// a gate to lift rather than a body of work to redo. Everything else alc
+/// does is unaffected.
+fn require_supported_platform() -> Result<()> {
+    #[cfg(not(unix))]
+    {
+        bail!(
+            "remote control is not available on Windows yet - the session hub is unverified \
+             there. Everything else alc does works normally; follow \
+             https://github.com/treeleaves30760/all-code for when this lands."
+        );
+    }
+    #[cfg(unix)]
+    Ok(())
 }
 
 fn require_terminal() -> Result<()> {
@@ -390,6 +417,7 @@ pub enum HubCommand {
 }
 
 pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
+    require_supported_platform()?;
     let secrets = Secrets::load_or_create(&store.dir)?;
     match command {
         HubCommand::Start {

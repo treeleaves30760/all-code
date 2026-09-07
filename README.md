@@ -448,6 +448,9 @@ a phone keyboard does not have (Esc, Tab, Shift+Tab, Ctrl, arrows), and a
 composer that sends a whole prompt as one block instead of fighting a mobile
 keyboard inside a raw terminal.
 
+Remote control needs macOS or Linux for now; on Windows the `--share` and
+`alc hub` commands refuse with a message, and everything else works normally.
+
 ### Reaching it from a phone
 
 Three ways, all supported:

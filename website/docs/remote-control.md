@@ -324,6 +324,13 @@ alc hub start --foreground
 
 Stated plainly, because finding out later is worse:
 
+- **Windows is not supported yet.** `alc <agent> --share` and the `alc hub`
+  commands refuse there with a message. The hub starts a detached process and
+  talks to it over a loopback control socket; on Windows that process does not
+  come up and does not go away, and shipping a `--share` that hangs and leaves
+  something running would be worse than not shipping it. Everything else alc
+  does works normally on Windows.
+
 - **Approval prompts arrive as terminal text, not as mobile dialogs.** You see
   the agent's own prompt and answer it with the key bar. Real Approve/Deny
   cards need a per-agent structured channel, and only half the agents have one.
