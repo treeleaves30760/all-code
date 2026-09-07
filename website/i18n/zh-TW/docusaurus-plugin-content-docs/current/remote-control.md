@@ -114,6 +114,47 @@ alc remote status                           # 目前會回應哪些名字
 操控你的 agent；瀏覽器認為自己在跟誰講話，是它偽造不了的那一部分 —— 所以一個主機名只有
 在你說可以的時候才被允許。
 
+## 找回連結
+
+`alc <agent> --share` 印出的連結，會在 agent 畫出自己的介面那一刻捲走。它是找得回來的：
+
+```sh
+alc remote url        # 只印連結
+alc sessions          # 連結，然後是有哪些在跑
+```
+
+```text
+$ alc sessions
+page  http://192.168.1.42:8787/#k=…
+      https://box.tail1a2b.ts.net/#k=…
+
+claude-7QK2M9XB4T      claude   running   ask        ~/src/all-code
+codex-68B8XMJ6F5       codex    running   plan       ~/src/api
+```
+
+每一個你允許過的名字都會有一行，所以要在手機上開哪一個不用去回想。萬用字元是一個
+樣式而不是一個名字，所以它變不成連結 —— 請用隧道自己印出來的位址。
+
+Token 就在那段輸出裡，這表示它會留在你的 shell 捲動歷史中。那和它第一次被印出來的
+地方是同一個，而一個找不回來的 token 是沒有人能用的功能。
+`alc remote token --rotate` 會讓已經發出去的連結全部失效。
+
+## 每個 session 都自動共享
+
+如果你幾乎總是想要那個頁面，說一次就好：
+
+```sh
+alc remote auto-share on     # `alc claude` 現在等同於 `alc claude --share`
+alc --no-share claude        # 讓單一次啟動不共享
+```
+
+`alc config` 裡也有 —— 從 provider 清單按兩次 Tab 進到 Remote 畫面，共享、預設共享、
+綁定位址、權限上限都可以在那裡改。
+
+腳本式的執行 —— 也就是輸入或輸出被重導向的那種，像 `alc claude -p "…" > out.txt`
+—— 不論這個設定為何都**不會**共享。一個長期偏好不該成為某個 cron job 開始失敗的原因。
+在那種情況下明確傳 `--share` 仍然會大聲失敗，因為那是使用者要求了 alc 做不到的事。
+
 ## 共享實際上授予了什麼
 
 一個能對 coding agent 輸入的網頁，等於你機器上的遠端程式碼執行。這件事值得講清楚。
@@ -269,6 +310,9 @@ alc remote status            # 開/關、如何綁定、檔案在哪
 alc remote on
 alc remote off
 alc remote token --rotate    # 讓已經發出去的連結全部失效
+alc remote url               # 連結捲走之後再拿一次
+alc remote auto-share on     # 每個 session 都共享
+alc remote allow-host <host> # 回應隧道的名字
 
 alc --share --permission plan <agent>   # 以指定模式啟動
 alc confirm <ticket>         # 核准頁面請求的權限變更
@@ -293,6 +337,7 @@ use `alc share claude -- <args>`
 | 鍵 | 預設 | 作用 |
 | --- | --- | --- |
 | `enabled` | `true` | 總開關。`alc remote off` 設定的就是這個。 |
+| `auto_share` | `false` | 每個 session 都共享，不必加 `--share`。`alc remote auto-share on`。 |
 | `bind` | `"loopback"` | `loopback` 或 `lan`。 |
 | `port` | `8787` | `0` 表示隨機連接埠。連接埠被佔用時會自動退回隨機。 |
 | `allowed_hosts` | `[]` | 除了這台機器自己的位址之外，還要回應哪些名字 —— 隧道的主機名，可精確指定或用 `*.example.com`。`alc remote allow-host` 會編輯這一項。 |

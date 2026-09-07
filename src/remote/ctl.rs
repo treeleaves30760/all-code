@@ -154,6 +154,10 @@ pub(crate) struct HubRecord {
     pub port: u16,
     pub instance: String,
     pub alc: String,
+    /// Whether the listener is on the network rather than loopback, so a
+    /// later `alc sessions` can print the address a phone actually opens.
+    #[serde(default)]
+    pub lan: bool,
     #[cfg(not(unix))]
     pub ctl_port: u16,
 }

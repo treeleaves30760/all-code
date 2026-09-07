@@ -85,7 +85,8 @@ impl Hub {
         reap_orphans(config_dir);
 
         let server = Server::bind(config_dir, &settings, &secrets, bind_lan)?;
-        let port = server.address().port();
+        let server_address = server.address();
+        let port = server_address.port();
         let registry = server.registry();
         server.serve();
 
@@ -98,6 +99,7 @@ impl Hub {
             port,
             instance: instance.clone(),
             alc: env!("CARGO_PKG_VERSION").to_owned(),
+            lan: server_address.ip().is_unspecified(),
             #[cfg(not(unix))]
             ctl_port,
         };

@@ -58,6 +58,10 @@ use crate::config::Store;
 use crate::launch::LaunchSpec;
 use crate::remote::permission::EscalationGate;
 use crate::remote::settings::{Bind, RemoteSettings, Secrets};
+
+// Re-exported for the configuration TUI, which edits these directly.
+pub(crate) use crate::remote::caps::SafetyRung;
+pub(crate) use crate::remote::settings::{Bind as RemoteBind, RemoteSettings as Settings};
 use crate::remote::wire::ExitInfo;
 
 /// What `alc remote` was asked to do.
@@ -70,6 +74,12 @@ pub enum RemoteCommand {
     /// Answer to another name, for a tunnel.
     AllowHost {
         host: String,
+    },
+    /// Print the link to the page.
+    Url,
+    /// Turn sharing every session on or off.
+    AutoShare {
+        on: bool,
     },
     /// Report the resolved posture without binding anything.
     DryRun,
@@ -230,6 +240,24 @@ fn exit_code(exit: &ExitInfo) -> u8 {
         .unwrap_or(1)
 }
 
+/// Whether the user has asked for every session to be shared.
+///
+/// Unreadable settings answer `false`: a standing preference is not worth
+/// failing a launch over, and `alc remote status` reports the real error.
+pub fn shares_by_default(store: &Store) -> bool {
+    RemoteSettings::load(&store.dir)
+        .map(|settings| settings.enabled && settings.auto_share)
+        .unwrap_or(false)
+}
+
+/// Whether this invocation is one that CAN be shared.
+///
+/// Sharing needs a terminal on both ends. `--share` says so loudly when
+/// there is not one; the standing preference just stays out of the way.
+pub fn can_share() -> bool {
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
 fn require_terminal() -> Result<()> {
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         return Ok(());
@@ -246,6 +274,7 @@ pub fn run_command(store: &Store, command: RemoteCommand) -> Result<u8> {
             let settings = RemoteSettings::load(&store.dir)?;
             let dir = Secrets::run_dir(&store.dir);
             println!("remote control: {}", on_off(settings.enabled));
+            println!("share by default: {}", on_off(settings.auto_share));
             println!("bind:           {}", settings.bind);
             let hosts = if settings.allowed_hosts.is_empty() {
                 "(loopback only)".to_owned()
@@ -289,6 +318,23 @@ pub fn run_command(store: &Store, command: RemoteCommand) -> Result<u8> {
             let settings = RemoteSettings::allow_host(&store.dir, &host)?;
             println!("now answering to: {}", settings.allowed_hosts.join(", "));
             println!("restart any running hub for this to take effect: alc hub stop --drain");
+            Ok(0)
+        }
+        RemoteCommand::Url => {
+            let secrets = Secrets::load_or_create(&store.dir)?;
+            for url in page_urls(store, &secrets)? {
+                println!("{url}");
+            }
+            Ok(0)
+        }
+        RemoteCommand::AutoShare { on } => {
+            let mut settings = RemoteSettings::load(&store.dir)?;
+            settings.auto_share = on;
+            settings.save(&store.dir)?;
+            println!("share every session: {}", on_off(on));
+            if on {
+                println!("`alc <agent>` now shares without --share; `--no-share` opts one out.");
+            }
             Ok(0)
         }
         RemoteCommand::RotateTokens => {
@@ -401,6 +447,13 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
                 println!("{}", serde_json::to_string_pretty(&sessions)?);
                 return Ok(0);
             }
+            // Printed first and always, because the link `alc <agent>
+            // --share` shows scrolls away the moment the agent draws its
+            // own interface, and this is where a user comes looking for it.
+            for (index, url) in page_urls(store, &secrets)?.iter().enumerate() {
+                println!("{:<6}{url}", if index == 0 { "page" } else { "" });
+            }
+            println!();
             if sessions.is_empty() {
                 println!("no shared sessions; start one with `alc <agent> --share`");
                 return Ok(0);
@@ -469,6 +522,35 @@ fn session_count(store: &Store, secrets: &Secrets) -> usize {
         .unwrap_or(0)
 }
 
+/// Every address the page can be opened at, most useful first.
+///
+/// This exists because the link `alc <agent> --share` prints scrolls away
+/// the instant the agent draws its own interface, and it is the one thing
+/// the user needs. `alc sessions` and `alc remote url` both print it.
+///
+/// The token is included, because a link without it is not a link. That
+/// does mean it lands in shell scrollback - which is the same place it was
+/// printed the first time, and a token that cannot be recovered is a
+/// feature nobody can use.
+pub(crate) fn page_urls(store: &Store, secrets: &Secrets) -> Result<Vec<String>> {
+    let record = ctl::read_hub_record(&store.dir)?
+        .context("no hub is running; start one with `alc <agent> --share`")?;
+    let settings = RemoteSettings::load(&store.dir)?;
+
+    let mut urls = vec![server::page_url(record.port, &secrets.operator, record.lan)];
+    // A tunnel's own name is the useful one when there is a tunnel, and it
+    // is always https: both `tailscale serve` and `cloudflared` terminate
+    // TLS themselves. A wildcard entry is skipped - alc knows the pattern,
+    // not the name the tunnel actually minted.
+    for host in &settings.allowed_hosts {
+        if host.starts_with("*.") {
+            continue;
+        }
+        urls.push(format!("https://{host}/#k={}", secrets.operator));
+    }
+    Ok(urls)
+}
+
 /// Resolves an id prefix, the way git resolves a short hash. Typing ten
 /// random characters to stop a session is not a thing anyone should have to
 /// do.
@@ -508,6 +590,7 @@ pub fn report(store: &Store) -> RemoteReport {
     };
 
     rows.push(("sharing", on_off(settings.enabled).to_owned()));
+    rows.push(("share by default", on_off(settings.auto_share).to_owned()));
     rows.push(("bind", settings.bind.to_string()));
     if !settings.allowed_hosts.is_empty() {
         rows.push(("also answers to", settings.allowed_hosts.join(", ")));

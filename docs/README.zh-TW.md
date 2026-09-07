@@ -464,10 +464,16 @@ alc 只回應你允許過的名字。Loopback 永遠在清單上，`--bind-lan` 
 `alc claude -p … > out.txt` 這種腳本用法行為完全不變。
 
 ```sh
+alc remote url               # 連結捲走之後再拿一次
+alc sessions                 # 連結，然後是有哪些在跑
+alc remote auto-share on     # 每個 session 都共享，不必加 --share
 alc remote status            # 開/關、綁定方式、檔案位置
 alc remote off               # 完全禁止共享
 alc remote token --rotate    # 讓所有連結失效
 ```
+
+`--share` 印出的連結會在 agent 畫出自己的介面時捲走，所以 `alc sessions` 會把它放在
+最前面。預設共享在 `alc config` 的 Remote 畫面裡也能開。
 
 ## 完整設定
 

@@ -493,10 +493,17 @@ is redirected, so a scripted `alc claude -p … > out.txt` keeps behaving
 exactly as it does today.
 
 ```sh
+alc remote url               # the link again, after it scrolled away
+alc sessions                 # the link, then what is running
+alc remote auto-share on     # share every session without --share
 alc remote status            # on/off, bind, where the files are
 alc remote off               # refuse to share sessions at all
 alc remote token --rotate    # invalidate every link
 ```
+
+The link `--share` prints scrolls away as soon as the agent draws its own
+interface, so `alc sessions` leads with it. Sharing by default is also in
+`alc config`, on the Remote screen.
 
 ## Configuration
 

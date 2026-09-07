@@ -129,6 +129,53 @@ That check is not a formality. An attacker's page can point `evil.com` at
 thinks it is talking to is the part it cannot forge, which is why a host is
 allowed only if you said so.
 
+## Finding the link again
+
+The link `alc <agent> --share` prints scrolls away the moment the agent draws
+its own interface. It is recoverable:
+
+```sh
+alc remote url        # just the link
+alc sessions          # the link, then what is running
+```
+
+```text
+$ alc sessions
+page  http://192.168.1.42:8787/#k=…
+      https://box.tail1a2b.ts.net/#k=…
+
+claude-7QK2M9XB4T      claude   running   ask        ~/src/all-code
+codex-68B8XMJ6F5       codex    running   plan       ~/src/api
+```
+
+Every name you allowed gets a line, so the one to open on a phone is there
+without having to remember which. A wildcard entry is a pattern rather than a
+name, so it cannot become a link — use the address the tunnel printed.
+
+The token is in that output, which does mean it lands in your shell
+scrollback. That is the same place it was printed the first time, and a token
+you cannot recover is a feature nobody can use. `alc remote token --rotate`
+invalidates every link handed out so far.
+
+## Sharing every session
+
+If you almost always want the page, say so once:
+
+```sh
+alc remote auto-share on     # `alc claude` now behaves like `alc claude --share`
+alc --no-share claude        # opt one launch out
+```
+
+It is also in `alc config` — Tab twice from the provider list to reach the
+Remote screen, where sharing, share-by-default, the bind address and the
+permission ceiling are all editable.
+
+A scripted run — one with redirected input or output, like
+`alc claude -p "…" > out.txt` — quietly does **not** share, whatever this is
+set to. A standing preference must not be the reason a cron job starts
+failing. An explicit `--share` there still fails loudly, because that is the
+user asking for something alc cannot do.
+
 ## What sharing actually grants
 
 A page that types into a coding agent is remote code execution on your
@@ -310,6 +357,9 @@ alc remote status            # on/off, how it binds, where the files live
 alc remote on
 alc remote off
 alc remote token --rotate    # invalidate every link handed out so far
+alc remote url               # the link again, after it scrolled away
+alc remote auto-share on     # share every session
+alc remote allow-host <host> # answer to a tunnel's name
 
 alc --share --permission plan <agent>   # start in a mode
 alc confirm <ticket>         # approve a change the page asked for
@@ -335,6 +385,7 @@ same file.
 | Key | Default | What it does |
 | --- | --- | --- |
 | `enabled` | `true` | Master switch. `alc remote off` sets this. |
+| `auto_share` | `false` | Share every session without `--share`. `alc remote auto-share on`. |
 | `bind` | `"loopback"` | `loopback` or `lan`. |
 | `port` | `8787` | `0` picks an ephemeral port. A busy port falls back to one. |
 | `allowed_hosts` | `[]` | Names to answer to besides this machine's own — a tunnel's hostname, exactly or as `*.example.com`. `alc remote allow-host` edits this. |

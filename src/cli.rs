@@ -297,6 +297,19 @@ enum RemoteSubcommand {
         /// For example `box.tail1a2b.ts.net` or `*.trycloudflare.com`.
         host: String,
     },
+    /// Print the link to the page, including its token.
+    Url,
+    /// Share every session without passing --share.
+    AutoShare {
+        /// on or off.
+        state: OnOff,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum OnOff {
+    On,
+    Off,
 }
 
 #[derive(Debug, Args)]
@@ -441,6 +454,7 @@ pub fn run() -> Result<u8> {
     let mut store = Store::load(cli.config_dir.clone())?;
     let sharing = Sharing {
         enabled: cli.share && !cli.no_share,
+        forced_off: cli.no_share,
         lan: cli.bind_lan,
         name: cli.name.clone(),
         permission: cli.permission.clone(),
@@ -481,6 +495,7 @@ pub fn run() -> Result<u8> {
         Command::Share(args) => {
             let sharing = Sharing {
                 enabled: !cli.no_share,
+                forced_off: cli.no_share,
                 lan: cli.bind_lan,
                 name: cli.name.clone(),
                 permission: cli.permission.clone(),
@@ -611,6 +626,9 @@ fn provider_selector(cli: &Cli) -> Result<Option<String>> {
 #[derive(Debug, Clone)]
 struct Sharing {
     enabled: bool,
+    /// `--no-share` was passed, so the standing preference is overridden
+    /// for this one launch.
+    forced_off: bool,
     lan: bool,
     /// A name for the session card, when the user gave one.
     name: Option<String>,
@@ -833,6 +851,18 @@ fn run_spec(
     dry_run: bool,
     sharing: Sharing,
 ) -> Result<u8> {
+    // Decided once, so `--dry-run` reports what a real run would actually
+    // do. An explicit `--share` wins, then the standing preference - and
+    // the preference is skipped silently for a scripted run, because it
+    // must not be the reason somebody's `alc claude -p "…" > out.txt`
+    // starts failing. An explicit flag still says so, loudly, because there
+    // the user asked for something alc cannot do.
+    let share_now = if sharing.enabled {
+        true
+    } else {
+        !sharing.forced_off && remote::shares_by_default(store) && remote::can_share()
+    };
+
     if dry_run {
         println!(
             "agent: {}\nprovider: {} ({})\ncommand: {}",
@@ -860,12 +890,12 @@ fn run_spec(
                 }
             }
         }
-        if sharing.enabled {
-            println!("share: would mirror this session to a loopback page");
+        if share_now {
+            println!("share: would mirror this session to a browser page");
         }
         return Ok(0);
     }
-    if sharing.enabled {
+    if share_now {
         return remote::share(store, spec, sharing.lan, sharing.name, sharing.permission);
     }
     launch::execute(spec)
@@ -878,6 +908,10 @@ fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {
         Some(RemoteSubcommand::On) => RemoteCommand::Enable,
         Some(RemoteSubcommand::Off) => RemoteCommand::Disable,
         Some(RemoteSubcommand::AllowHost { host }) => RemoteCommand::AllowHost { host },
+        Some(RemoteSubcommand::Url) => RemoteCommand::Url,
+        Some(RemoteSubcommand::AutoShare { state }) => RemoteCommand::AutoShare {
+            on: state == OnOff::On,
+        },
         Some(RemoteSubcommand::Token(token)) => {
             if !token.rotate {
                 bail!("`alc remote token` needs --rotate; it never prints a token");

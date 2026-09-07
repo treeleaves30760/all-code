@@ -100,6 +100,14 @@ pub(crate) struct RemoteSettings {
     /// user's own terminal untouched; only the listener is skipped.
     pub enabled: bool,
     pub bind: Bind,
+    /// Share every session without being asked, so `alc claude` behaves like
+    /// `alc claude --share`.
+    ///
+    /// A scripted run with redirected input or output silently does NOT
+    /// share, rather than failing the way an explicit `--share` does: this
+    /// setting is a standing preference, and a preference must not break
+    /// `alc claude -p "…" > out.txt` in somebody's cron job.
+    pub auto_share: bool,
 
     /// 0 asks the operating system for an ephemeral port, which is what
     /// several concurrent sessions on one machine (and the tests) want.
@@ -138,6 +146,7 @@ impl Default for RemoteSettings {
         Self {
             enabled: true,
             bind: Bind::Loopback,
+            auto_share: false,
             port: 8787,
             allowed_hosts: Vec::new(),
             scrollback_bytes: 1_048_576,
@@ -495,6 +504,7 @@ mod tests {
         let settings = RemoteSettings {
             enabled: false,
             bind: Bind::Lan,
+            auto_share: true,
             port: 0,
             allowed_hosts: vec![
                 "box.tail1a2b.ts.net".to_owned(),
@@ -510,6 +520,7 @@ mod tests {
         let loaded = RemoteSettings::load(temp.path()).unwrap();
         assert!(!loaded.enabled);
         assert_eq!(loaded.bind, Bind::Lan);
+        assert!(loaded.auto_share);
         assert_eq!(loaded.port, 0);
         assert_eq!(loaded.allowed_hosts, settings.allowed_hosts);
         assert_eq!(loaded.scrollback_bytes, 4096);

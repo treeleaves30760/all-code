@@ -395,6 +395,110 @@ fn ephemeral_remote(temp: &tempfile::TempDir) {
     .expect("write remote.toml");
 }
 
+/// The link `alc <agent> --share` prints scrolls away the moment the agent
+/// draws its own interface, so it has to be recoverable.
+#[test]
+fn the_page_link_is_recoverable_after_it_scrolls_away() {
+    let temp = tempfile::tempdir().unwrap();
+    ephemeral_remote(&temp);
+    alc(&temp).args(["hub", "start"]).assert().success();
+
+    alc(&temp)
+        .args(["remote", "url"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("http://127.0.0.1:"))
+        .stdout(predicate::str::contains("/#k="));
+
+    // And `alc sessions` leads with it, because that is where a user looks.
+    alc(&temp)
+        .args(["sessions"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("page "))
+        .stdout(predicate::str::contains("/#k="));
+
+    alc(&temp).args(["hub", "stop"]).assert().success();
+}
+
+#[test]
+fn a_tunnel_hostname_is_offered_as_a_link_too() {
+    let temp = tempfile::tempdir().unwrap();
+    ephemeral_remote(&temp);
+    alc(&temp)
+        .args(["remote", "allow-host", "box.tail1a2b.ts.net"])
+        .assert()
+        .success();
+    // A wildcard is a pattern, not a name, so it cannot become a link.
+    alc(&temp)
+        .args(["remote", "allow-host", "*.trycloudflare.com"])
+        .assert()
+        .success();
+    alc(&temp).args(["hub", "start"]).assert().success();
+
+    alc(&temp)
+        .args(["remote", "url"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("https://box.tail1a2b.ts.net/#k="))
+        .stdout(predicate::str::contains("trycloudflare").not());
+
+    alc(&temp).args(["hub", "stop"]).assert().success();
+}
+
+#[test]
+fn asking_for_the_link_without_a_hub_says_how_to_get_one() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "url"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--share"));
+}
+
+/// A standing preference must not be the reason a scripted run starts
+/// failing, so a redirected invocation quietly does not share.
+#[test]
+fn sharing_by_default_stays_out_of_the_way_of_a_scripted_run() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "auto-share", "on"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("on"));
+
+    // assert_cmd pipes stdio, which is exactly the scripted case.
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--dry-run", "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("share:").not());
+
+    alc(&temp)
+        .args(["remote", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("share by default: on"));
+}
+
+/// An explicit `--share` still fails loudly, because there the user asked
+/// for something alc cannot do.
+#[test]
+fn an_explicit_share_still_refuses_a_scripted_run() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "auto-share", "on"])
+        .assert()
+        .success();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--share", "opencode"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("interactive terminal"));
+}
+
 #[test]
 fn hub_status_says_so_when_nothing_is_running() {
     let temp = tempfile::tempdir().unwrap();
