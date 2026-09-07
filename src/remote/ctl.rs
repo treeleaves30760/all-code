@@ -158,7 +158,12 @@ pub(crate) struct HubRecord {
     /// later `alc sessions` can print the address a phone actually opens.
     #[serde(default)]
     pub lan: bool,
+    /// Windows has no unix socket here, so the control channel is a
+    /// loopback port instead. Defaulted so a record written by another
+    /// platform - or by an older alc - still parses rather than reading as
+    /// "no hub".
     #[cfg(not(unix))]
+    #[serde(default)]
     pub ctl_port: u16,
 }
 
