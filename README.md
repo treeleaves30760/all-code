@@ -450,22 +450,26 @@ keyboard inside a raw terminal.
 
 ### Reaching it from a phone
 
-The default binds to loopback only, so nothing is exposed until you say so.
-Two ways to get further:
+Three ways, all supported:
 
-- **A tunnel you run** (recommended). With Tailscale: `tailscale serve 8787`,
-  then open the `ts.net` address on your phone. alc never has to be the thing
-  facing the network.
-- **Your LAN**, which needs two switches on purpose — `allow-lan = true` in
-  `remote.toml` *and* `--bind-lan` on the command line:
+```sh
+# Your own Wi-Fi — nothing to install
+alc claude --share --bind-lan          # prints http://192.168.1.42:8787/#k=…
 
-  ```sh
-  alc remote status                    # where the settings live
-  alc --share --bind-lan claude
-  ```
+# Tailscale — alc stays on loopback, HTTPS, no third party
+alc remote allow-host box.tail1a2b.ts.net
+tailscale serve 8787
 
-One switch is too easy to leave on by accident, and what is on the other side
-of that socket is a shell.
+# Cloudflare Tunnel — works over cellular, no VPN
+alc remote allow-host '*.trycloudflare.com'
+cloudflared tunnel --url http://127.0.0.1:8787
+```
+
+alc answers only to names you allowed. Loopback is always allowed, and
+`--bind-lan` adds this machine's own addresses; `alc remote allow-host` adds a
+tunnel's hostname, exactly or as `*.example.com` for a tunnel that renames
+itself every run. A LAN link is plain HTTP, so the token crosses your local
+network in clear — fine at home, use a tunnel on café Wi-Fi.
 
 ### What this actually grants
 

@@ -427,19 +427,25 @@ Ctrl、方向鍵），以及一個把整段提示詞一次送出的輸入框。�
 
 ### 從手機連上
 
-預設只綁 loopback，在你明說之前不會對外開放。兩種方式：
+三種方式都支援：
 
-- **自己跑的隧道**（建議）。Tailscale：`tailscale serve 8787`，然後在手機開那個
-  `ts.net` 位址。alc 永遠不必是面對網路的那一層。
-- **區域網路**，刻意需要兩道開關 —— `remote.toml` 裡的 `allow_lan = true`
-  **以及**命令列上的 `--bind-lan`：
+```sh
+# 自己的 Wi-Fi —— 什麼都不用裝
+alc claude --share --bind-lan          # 印出 http://192.168.1.42:8787/#k=…
 
-  ```sh
-  alc remote status                    # 設定檔位置
-  alc --share --bind-lan claude
-  ```
+# Tailscale —— alc 只綁 loopback，走 HTTPS，中間沒有第三方
+alc remote allow-host box.tail1a2b.ts.net
+tailscale serve 8787
 
-單一開關太容易不小心留著沒關，而那個 socket 的另一端是一個 shell。
+# Cloudflare Tunnel —— 行動網路也能連，不需要 VPN
+alc remote allow-host '*.trycloudflare.com'
+cloudflared tunnel --url http://127.0.0.1:8787
+```
+
+alc 只回應你允許過的名字。Loopback 永遠在清單上，`--bind-lan` 會加上這台機器自己的
+位址；隧道的主機名用 `alc remote allow-host` 加，可以精確指定，也可以用
+`*.example.com` 涵蓋每次都改名的隧道。LAN 連結是純 HTTP，token 會以明文經過你的區域
+網路 —— 在家裡沒問題，在咖啡廳請改用隧道。
 
 ### 共享實際上授予了什麼
 

@@ -48,33 +48,71 @@ alc 啟動的八個 agent 幾乎在每件事上都不一樣：有些提供機器
 
 預設只綁 loopback。在你明說之前，什麼都不會對外開放。
 
-### 自己跑的隧道（建議）
+### Tailscale
 
-兩台裝置都裝 [Tailscale](https://tailscale.com/) 之後：
+兩台裝置都裝 [Tailscale](https://tailscale.com/) 之後，alc 維持只綁 loopback，
+由 Tailscale 負責對外：
 
 ```sh
+alc remote allow-host box.tail1a2b.ts.net   # 你這台機器在 tailnet 上的名字
 tailscale serve 8787
+alc claude --share
 ```
 
-然後在手機上開那個 `ts.net` 位址。alc 永遠不必是面對網路的那一層，中間也沒有第三方
-需要信任。
+在手機上開那個 `ts.net` 位址。中間沒有第三方，而且連線是 HTTPS，token 不會以明文
+出現在網路上。
 
-### 區域網路
+### 自己的 Wi-Fi（LAN）
 
-這需要兩道開關，是刻意的。在 `remote.toml`：
+最直接，而且什麼都不用裝：
+
+```sh
+alc claude --share --bind-lan
+```
+
+alc 會印出這台機器自己的位址 —— `http://192.168.1.42:8787/#k=…` —— 同一個網路上的
+手機直接開就好。也可以設定一次就好：
 
 ```toml
-allow_lan = true
-bind      = "lan"
+# remote.toml
+bind = "lan"
 ```
 
-命令列上：
+要知道的一件事：這是純 HTTP，所以 token 會以未加密的形式經過你的區域網路。在家裡或
+辦公室的網路通常沒問題；在咖啡廳的 Wi-Fi 上請改用隧道。
+
+### Cloudflare Tunnel
+
+不需要 VPN，從任何地方（包含行動網路）都連得到：
 
 ```sh
-alc --share --bind-lan claude
+alc remote allow-host '*.trycloudflare.com'
+cloudflared tunnel --url http://127.0.0.1:8787
+alc claude --share
 ```
 
-單一開關太容易不小心留著沒關，而那個 socket 的另一端是一個 shell。
+`cloudflared` 會印出一個 `https://<三個隨機英文字>.trycloudflare.com` 位址。這裡用
+萬用字元是因為 quick tunnel 每次執行都會產生新的主機名 —— 否則你會在最想趕快連上的
+那一刻被迫回頭改 alc 的設定。如果你用的是具名隧道加自己的網域，就精確允許那個主機名。
+
+Cloudflare 會終結 TLS，所以和另外兩種方式不同，中間有一個第三方看得到流量。如果這對你
+重要，在前面加一層 Cloudflare Access。
+
+### alc 怎麼決定要回應哪些名字
+
+alc 會比對 `Host` 標頭是否在允許清單上，而 `Origin` 則是「它的主機部分在同一份清單上」
+才允許。Loopback 一定在清單上；加了 `--bind-lan` 時這台機器自己的位址也會在；其餘的用
+`alc remote allow-host` 加。
+
+```sh
+alc remote allow-host box.tail1a2b.ts.net   # 精確
+alc remote allow-host '*.trycloudflare.com' # 任意子網域
+alc remote status                           # 目前會回應哪些名字
+```
+
+這個檢查不是形式。攻擊者的網頁可以把 `evil.com` 指向 `127.0.0.1`，用你自己的瀏覽器去
+操控你的 agent；瀏覽器認為自己在跟誰講話，是它偽造不了的那一部分 —— 所以一個主機名只有
+在你說可以的時候才被允許。
 
 ## 共享實際上授予了什麼
 
@@ -256,9 +294,7 @@ use `alc share claude -- <args>`
 | --- | --- | --- |
 | `enabled` | `true` | 總開關。`alc remote off` 設定的就是這個。 |
 | `bind` | `"loopback"` | `loopback` 或 `lan`。 |
-| `allow_lan` | `false` | 必須為 true **且**傳入 `--bind-lan` 才會綁 LAN。 |
 | `port` | `8787` | `0` 表示隨機連接埠。連接埠被佔用時會自動退回隨機。 |
-| `allowed_origins` | `[]` | 額外允許的 origin，給隧道的主機名稱用。 |
-| `extra_hosts` | `[]` | 額外允許的 `Host` 值，含連接埠。 |
+| `allowed_hosts` | `[]` | 除了這台機器自己的位址之外，還要回應哪些名字 —— 隧道的主機名，可精確指定或用 `*.example.com`。`alc remote allow-host` 會編輯這一項。 |
 | `scrollback_bytes` | `1048576` | 重新連線的觀看者最多能被精確補回多少位元組。 |
 | `max_connections` | `64` | 同時服務的連線數。 |

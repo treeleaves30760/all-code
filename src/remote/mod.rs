@@ -61,12 +61,16 @@ use crate::remote::settings::{Bind, RemoteSettings, Secrets};
 use crate::remote::wire::ExitInfo;
 
 /// What `alc remote` was asked to do.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum RemoteCommand {
     Status,
     Enable,
     Disable,
     RotateTokens,
+    /// Answer to another name, for a tunnel.
+    AllowHost {
+        host: String,
+    },
     /// Report the resolved posture without binding anything.
     DryRun,
 }
@@ -95,14 +99,6 @@ pub fn share(
         .as_deref()
         .map(str::parse::<caps::SafetyRung>)
         .transpose()?;
-    if lan_requested && !(settings.allow_lan && settings.bind == Bind::Lan) {
-        bail!(
-            "a LAN bind needs both `allow-lan = true` and `bind = \"lan\"` in {}; \
-             it is deliberately two switches, because what is on the other side of \
-             that socket is a shell",
-            RemoteSettings::path(&store.dir).display()
-        );
-    }
     // Checked before any work: a scripted `alc claude -p … > out.txt` must
     // fail loudly here rather than fill that file with escape sequences.
     require_terminal()?;
@@ -148,8 +144,13 @@ pub fn share(
     println!("alc session {session_id} ({name})");
     println!("  open  {url}");
     println!(
-        "  hub   127.0.0.1:{} (pid {}) · this link grants input",
-        hub.port, hub.pid
+        "  hub   {} (pid {}) · this link grants input; keep it to yourself",
+        if lan_requested || settings.bind == Bind::Lan {
+            format!("0.0.0.0:{} · reachable from this network", hub.port)
+        } else {
+            format!("127.0.0.1:{} · loopback only", hub.port)
+        },
+        hub.pid
     );
     println!("  keys  ctrl-\\ then d detaches; the session keeps running");
     std::io::stdout().flush().ok();
@@ -246,10 +247,12 @@ pub fn run_command(store: &Store, command: RemoteCommand) -> Result<u8> {
             let dir = Secrets::run_dir(&store.dir);
             println!("remote control: {}", on_off(settings.enabled));
             println!("bind:           {}", settings.bind);
-            println!(
-                "lan:            {} (needs `allow-lan = true` and `--bind-lan`)",
-                on_off(settings.allow_lan)
-            );
+            let hosts = if settings.allowed_hosts.is_empty() {
+                "(loopback only)".to_owned()
+            } else {
+                settings.allowed_hosts.join(", ")
+            };
+            println!("also answers to: {hosts}");
             println!(
                 "port:           {}",
                 if settings.port == 0 {
@@ -280,6 +283,12 @@ pub fn run_command(store: &Store, command: RemoteCommand) -> Result<u8> {
             settings.enabled = matches!(command, RemoteCommand::Enable);
             settings.save(&store.dir)?;
             println!("remote control: {}", on_off(settings.enabled));
+            Ok(0)
+        }
+        RemoteCommand::AllowHost { host } => {
+            let settings = RemoteSettings::allow_host(&store.dir, &host)?;
+            println!("now answering to: {}", settings.allowed_hosts.join(", "));
+            println!("restart any running hub for this to take effect: alc hub stop --drain");
             Ok(0)
         }
         RemoteCommand::RotateTokens => {
@@ -499,14 +508,10 @@ pub fn report(store: &Store) -> RemoteReport {
     };
 
     rows.push(("sharing", on_off(settings.enabled).to_owned()));
-    rows.push((
-        "bind",
-        if settings.allow_lan && settings.bind == Bind::Lan {
-            format!("{} (allowed; needs --bind-lan too)", settings.bind)
-        } else {
-            format!("{} only", settings.bind)
-        },
-    ));
+    rows.push(("bind", settings.bind.to_string()));
+    if !settings.allowed_hosts.is_empty() {
+        rows.push(("also answers to", settings.allowed_hosts.join(", ")));
+    }
     rows.push(("ceiling", settings.max_permission.clone()));
 
     match ctl::read_hub_record(&store.dir) {
@@ -521,12 +526,6 @@ pub fn report(store: &Store) -> RemoteReport {
 
     let dir = Secrets::run_dir(&store.dir);
     rows.push(("credentials", dir.display().to_string()));
-
-    // A non-loopback bind with nothing gating it is the one configuration
-    // that would hand a shell to the network, so it is a hard failure.
-    if settings.allow_lan && settings.bind == Bind::Lan && !settings.enabled {
-        rows.push(("note", "lan is configured but sharing is off".to_owned()));
-    }
 
     #[cfg(unix)]
     {

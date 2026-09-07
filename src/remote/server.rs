@@ -28,7 +28,7 @@ use crate::remote::assets;
 use crate::remote::caps::{CAPS, SafetyRung};
 use crate::remote::fanout::Frame;
 use crate::remote::permission::{self, EscalationGate};
-use crate::remote::request::{Denied, Grade, Method, Request, read_request};
+use crate::remote::request::{Denied, Grade, HostPattern, Method, Request, read_request};
 use crate::remote::session::Session;
 use crate::remote::settings::{Bind, RemoteSettings, Secrets};
 use crate::remote::wire::{ClientFrame, Hello, NoticeLevel, ServerFrame};
@@ -123,7 +123,10 @@ impl Server {
         secrets: &Secrets,
         lan_requested: bool,
     ) -> Result<Self> {
-        let lan = lan_requested && settings.allow_lan && settings.bind == Bind::Lan;
+        // Either switch is enough. Binding to the network is the shape of
+        // the request when someone wants a session on their phone, and the
+        // token is what guards the socket either way.
+        let lan = lan_requested || settings.bind == Bind::Lan;
         let host = if lan {
             IpAddr::V4(Ipv4Addr::UNSPECIFIED)
         } else {
@@ -139,7 +142,6 @@ impl Server {
 
         let guard = crate::remote::request::Guard {
             hosts: allowed_hosts(address, settings, lan),
-            origins: allowed_origins(address, settings, lan),
             operator: secrets.operator.clone(),
             viewer: secrets.viewer.clone(),
         };
@@ -207,30 +209,32 @@ impl Server {
     }
 }
 
-/// The `Host` values this server answers to. Exact matches including the
-/// port: that is what makes the check a DNS-rebinding defence rather than a
-/// formality.
-fn allowed_hosts(address: SocketAddr, settings: &RemoteSettings, lan: bool) -> Vec<String> {
+/// Every name this server answers to.
+///
+/// The loopback entries carry the port, which is what makes the check a
+/// DNS-rebinding defence rather than a formality: an attacker's page at
+/// evil.com can be pointed at 127.0.0.1, and the port is the part it cannot
+/// borrow. A tunnel's hostname is added by the user, and is allowed with or
+/// without a port because a tunnel terminating on 443 sends none.
+fn allowed_hosts(address: SocketAddr, settings: &RemoteSettings, lan: bool) -> Vec<HostPattern> {
     let port = address.port();
     let mut hosts = vec![
-        format!("127.0.0.1:{port}"),
-        format!("localhost:{port}"),
-        format!("[::1]:{port}"),
+        HostPattern::Exact(format!("127.0.0.1:{port}")),
+        HostPattern::Exact(format!("localhost:{port}")),
+        HostPattern::Exact(format!("[::1]:{port}")),
     ];
-    if lan && let Some(ip) = local_lan_address() {
-        hosts.push(format!("{ip}:{port}"));
+    if lan {
+        for address in lan_addresses() {
+            hosts.push(HostPattern::Exact(format!("{address}:{port}")));
+        }
     }
-    hosts.extend(settings.extra_hosts.iter().cloned());
+    hosts.extend(
+        settings
+            .allowed_hosts
+            .iter()
+            .map(|entry| HostPattern::parse(entry)),
+    );
     hosts
-}
-
-fn allowed_origins(address: SocketAddr, settings: &RemoteSettings, lan: bool) -> Vec<String> {
-    let mut origins: Vec<String> = allowed_hosts(address, settings, lan)
-        .into_iter()
-        .map(|host| format!("http://{host}"))
-        .collect();
-    origins.extend(settings.allowed_origins.iter().cloned());
-    origins
 }
 
 /// The link a viewer opens.
@@ -251,10 +255,47 @@ pub(crate) fn page_url(port: u16, token: &str, lan: bool) -> String {
 /// table where a packet to a public address would leave from - a UDP
 /// "connect" sends nothing, it only resolves the source address.
 fn local_lan_address() -> Option<String> {
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("192.0.2.1:9").ok()?;
-    let address = socket.local_addr().ok()?.ip();
-    (!address.is_loopback() && !address.is_unspecified()).then(|| address.to_string())
+    lan_addresses().into_iter().next()
+}
+
+/// This machine's non-loopback addresses, for answering to the name a phone
+/// on the same network will use.
+///
+/// Discovered by asking the routing table where a packet to a public address
+/// would leave from - a UDP `connect` sends nothing, it only resolves the
+/// source address - so no interface enumeration is needed and it works the
+/// same on every platform.
+fn lan_addresses() -> Vec<String> {
+    let mut found = Vec::new();
+    for probe in ["192.0.2.1:9", "[2001:db8::1]:9"] {
+        let Ok(socket) = std::net::UdpSocket::bind(if probe.starts_with('[') {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        }) else {
+            continue;
+        };
+        if socket.connect(probe).is_err() {
+            continue;
+        }
+        let Ok(local) = socket.local_addr() else {
+            continue;
+        };
+        let address = local.ip();
+        if address.is_loopback() || address.is_unspecified() {
+            continue;
+        }
+        // An IPv6 literal is bracketed inside a Host header.
+        let rendered = if address.is_ipv6() {
+            format!("[{address}]")
+        } else {
+            address.to_string()
+        };
+        if !found.contains(&rendered) {
+            found.push(rendered);
+        }
+    }
+    found
 }
 
 fn handle(stream: TcpStream, context: &Serving) {
@@ -1109,9 +1150,36 @@ mod tests {
     }
 
     #[test]
-    fn a_loopback_bind_does_not_answer_on_a_lan_address() {
-        // Asking for a LAN bind without turning it on in the settings has to
-        // stay on loopback: one switch is too easy to leave on by accident.
+    fn the_default_bind_stays_on_loopback() {
+        let (_temp, server) = bound(Bind::Loopback, false);
+        assert!(
+            server.address().ip().is_loopback(),
+            "bound to {}",
+            server.address()
+        );
+    }
+
+    /// Either switch is enough. Reaching a session from a phone on the same
+    /// Wi-Fi is the shape of the request, and the token is what guards the
+    /// socket either way - requiring a config edit as well was friction
+    /// with no security to show for it.
+    #[test]
+    fn either_the_flag_or_the_setting_binds_to_the_network() {
+        for (bind, flag) in [
+            (Bind::Loopback, true),
+            (Bind::Lan, false),
+            (Bind::Lan, true),
+        ] {
+            let (_temp, server) = bound(bind, flag);
+            assert!(
+                server.address().ip().is_unspecified(),
+                "bind={bind} flag={flag} stayed on {}",
+                server.address()
+            );
+        }
+    }
+
+    fn bound(bind: Bind, lan_requested: bool) -> (tempfile::TempDir, Server) {
         let secrets = Secrets {
             ctl: "ctl-token-for-tests-only-0000".to_owned(),
             operator: "operator-token-for-tests-0000".to_owned(),
@@ -1119,16 +1187,12 @@ mod tests {
         };
         let settings = RemoteSettings {
             port: 0,
-            allow_lan: false,
+            bind,
             ..RemoteSettings::default()
         };
         let config = tempfile::tempdir().unwrap();
-        let server = Server::bind(config.path(), &settings, &secrets, true).unwrap();
-        assert!(
-            server.address().ip().is_loopback(),
-            "bound to {} despite allow_lan being false",
-            server.address()
-        );
+        let server = Server::bind(config.path(), &settings, &secrets, lan_requested).unwrap();
+        (config, server)
     }
 
     #[test]

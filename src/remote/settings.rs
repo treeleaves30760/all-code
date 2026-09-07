@@ -38,10 +38,12 @@ const ROLES: [(&str, &str); 3] = [
 
 /// Which interface the mirror's listener binds.
 ///
-/// `Lan` is only half of the decision: `RemoteSettings::allow_lan` has to be
-/// set as well, so putting a live terminal on the network takes one deliberate
-/// edit to the settings file *and* one deliberate flag on the command line.
-/// Neither a synced dotfiles repo nor a typo can do it alone.
+/// `Loopback` is the default and is all a tunnel needs - `tailscale serve`
+/// and `cloudflared` both connect to 127.0.0.1 and terminate TLS themselves,
+/// so alc is never the thing facing the network. `Lan` is for reaching a
+/// session from a phone on the same Wi-Fi with nothing else installed; it is
+/// one deliberate flag, because that is the shape of the request, and the
+/// token is what actually guards the socket either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Bind {
@@ -89,7 +91,7 @@ impl std::str::FromStr for Bind {
 ///
 /// Every field is a posture decision rather than a preference, which is why
 /// `load` refuses a file it cannot parse instead of quietly substituting these
-/// defaults: a typo in `allow_lan` must not be the reason a session ends up
+/// defaults: a typo in `bind` must not be the reason a session ends up
 /// answering the network.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -98,19 +100,18 @@ pub(crate) struct RemoteSettings {
     /// user's own terminal untouched; only the listener is skipped.
     pub enabled: bool,
     pub bind: Bind,
-    /// The second half of the LAN decision described on `Bind`.
-    pub allow_lan: bool,
+
     /// 0 asks the operating system for an ephemeral port, which is what
     /// several concurrent sessions on one machine (and the tests) want.
     pub port: u16,
-    /// Extra `Origin` values the handshake accepts on top of the ones the
-    /// server derives from its own address. Needed only behind a proxy or a
-    /// tunnel, where the browser's origin is not the socket's.
-    pub allowed_origins: Vec<String>,
-    /// Extra `Host` values the handshake accepts, for the same reason.
-    /// Separate from `allowed_origins` because a tunnel commonly rewrites one
-    /// header and not the other.
-    pub extra_hosts: Vec<String>,
+    /// Names this server answers to on top of its own address.
+    ///
+    /// Needed behind a tunnel, where the name the browser used is not the
+    /// socket's: `box.tail1a2b.ts.net`, or `*.trycloudflare.com` for a quick
+    /// tunnel that mints a fresh hostname every run. One list serves both the
+    /// `Host` check and the `Origin` check - an origin is allowed exactly
+    /// when its host part is - so the two can never drift apart.
+    pub allowed_hosts: Vec<String>,
     /// How much recent output a newly attached browser is replayed, so a phone
     /// joining mid-session sees context rather than a blank screen. Bounded
     /// because the buffer is held in memory for the life of the session.
@@ -137,10 +138,8 @@ impl Default for RemoteSettings {
         Self {
             enabled: true,
             bind: Bind::Loopback,
-            allow_lan: false,
             port: 8787,
-            allowed_origins: Vec::new(),
-            extra_hosts: Vec::new(),
+            allowed_hosts: Vec::new(),
             scrollback_bytes: 1_048_576,
             max_connections: 64,
             mode_probe: true,
@@ -154,8 +153,8 @@ impl RemoteSettings {
     ///
     /// A malformed file is an error naming the path and is never silently
     /// defaulted: these values are a security posture, and falling back would
-    /// turn an unreadable `allow_lan = flase` into a working, permissive
-    /// config that the user believes says something else.
+    /// turn an unreadable `bind = "loopbcak"` into a working config that
+    /// says something other than what the user believes it says.
     pub(crate) fn load(config_dir: &Path) -> Result<Self> {
         let path = Self::path(config_dir);
         if !path.exists() {
@@ -165,6 +164,25 @@ impl RemoteSettings {
             .with_context(|| format!("failed to read {}", path.display()))?;
         toml::from_str(&text)
             .with_context(|| format!("failed to parse {}; fix or delete it", path.display()))
+    }
+
+    /// Adds a name this server should answer to, and remembers it.
+    ///
+    /// A tunnel hostname is not knowable until the tunnel is up, and for a
+    /// `cloudflared` quick tunnel it changes every run - so this exists to
+    /// be called from the command line rather than requiring a file edit at
+    /// exactly the moment the user is trying to get connected.
+    pub(crate) fn allow_host(config_dir: &Path, entry: &str) -> Result<Self> {
+        let entry = entry.trim().to_ascii_lowercase();
+        if entry.is_empty() || entry.contains('/') || entry.contains(' ') {
+            bail!("'{entry}' is not a host name; expected `host[:port]` or `*.example.com`");
+        }
+        let mut settings = Self::load(config_dir)?;
+        if !settings.allowed_hosts.contains(&entry) {
+            settings.allowed_hosts.push(entry);
+            settings.save(config_dir)?;
+        }
+        Ok(settings)
     }
 
     pub(crate) fn save(&self, config_dir: &Path) -> Result<()> {
@@ -464,10 +482,8 @@ mod tests {
 
         assert!(settings.enabled);
         assert_eq!(settings.bind, Bind::Loopback);
-        assert!(!settings.allow_lan);
         assert_eq!(settings.port, 8787);
-        assert!(settings.allowed_origins.is_empty());
-        assert!(settings.extra_hosts.is_empty());
+        assert!(settings.allowed_hosts.is_empty());
         assert_eq!(settings.scrollback_bytes, 1_048_576);
         assert_eq!(settings.max_connections, 64);
         assert!(settings.mode_probe);
@@ -479,10 +495,11 @@ mod tests {
         let settings = RemoteSettings {
             enabled: false,
             bind: Bind::Lan,
-            allow_lan: true,
             port: 0,
-            allowed_origins: vec!["https://phone.example".to_owned()],
-            extra_hosts: vec!["alc.tail1234.ts.net".to_owned()],
+            allowed_hosts: vec![
+                "box.tail1a2b.ts.net".to_owned(),
+                "*.trycloudflare.com".to_owned(),
+            ],
             scrollback_bytes: 4096,
             max_connections: 2,
             max_permission: "plan".to_owned(),
@@ -493,10 +510,8 @@ mod tests {
         let loaded = RemoteSettings::load(temp.path()).unwrap();
         assert!(!loaded.enabled);
         assert_eq!(loaded.bind, Bind::Lan);
-        assert!(loaded.allow_lan);
         assert_eq!(loaded.port, 0);
-        assert_eq!(loaded.allowed_origins, settings.allowed_origins);
-        assert_eq!(loaded.extra_hosts, settings.extra_hosts);
+        assert_eq!(loaded.allowed_hosts, settings.allowed_hosts);
         assert_eq!(loaded.scrollback_bytes, 4096);
         assert_eq!(loaded.max_connections, 2);
         assert!(!loaded.mode_probe);
@@ -523,7 +538,7 @@ mod tests {
     fn a_malformed_file_is_an_error_naming_the_path() {
         let temp = tempfile::tempdir().unwrap();
         let path = RemoteSettings::path(temp.path());
-        fs::write(&path, "allow_lan = yes please\n").unwrap();
+        fs::write(&path, "bind = yes please\n").unwrap();
 
         let error = RemoteSettings::load(temp.path()).unwrap_err();
         let message = format!("{error:#}");

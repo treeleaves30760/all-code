@@ -93,8 +93,11 @@ struct Cli {
     #[arg(long, global = true, conflicts_with = "share")]
     no_share: bool,
 
-    /// Bind the session page to this machine's LAN address instead of
-    /// loopback. Also needs `allow-lan = true` in remote.toml.
+    /// Bind the session page to this machine's network address instead of
+    /// loopback, so a phone on the same Wi-Fi can reach it directly.
+    ///
+    /// A tunnel does not need this: `tailscale serve` and `cloudflared`
+    /// both connect to loopback themselves.
     #[arg(long = "bind-lan", global = true)]
     bind_lan: bool,
 
@@ -286,6 +289,14 @@ enum RemoteSubcommand {
     Off,
     /// Replace the tokens, invalidating every link handed out so far.
     Token(RemoteTokenArgs),
+    /// Answer to another name, for a tunnel's hostname.
+    ///
+    /// Takes `host[:port]`, or `*.example.com` for a tunnel that mints a
+    /// fresh hostname on every run.
+    AllowHost {
+        /// For example `box.tail1a2b.ts.net` or `*.trycloudflare.com`.
+        host: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -866,6 +877,7 @@ fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {
         None | Some(RemoteSubcommand::Status) => RemoteCommand::Status,
         Some(RemoteSubcommand::On) => RemoteCommand::Enable,
         Some(RemoteSubcommand::Off) => RemoteCommand::Disable,
+        Some(RemoteSubcommand::AllowHost { host }) => RemoteCommand::AllowHost { host },
         Some(RemoteSubcommand::Token(token)) => {
             if !token.rotate {
                 bail!("`alc remote token` needs --rotate; it never prints a token");

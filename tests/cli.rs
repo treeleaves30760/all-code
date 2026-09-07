@@ -266,17 +266,59 @@ fn remote_token_never_prints_a_token() {
         );
 }
 
-/// A LAN bind is deliberately two switches. Passing only the flag has to
-/// fail with the reason, not quietly fall back to loopback.
+/// Reaching a session from a phone on the same Wi-Fi is the shape of the
+/// request, so the flag alone is enough. The token guards the socket either
+/// way; requiring a config edit as well was friction with no security to
+/// show for it.
 #[test]
-fn a_lan_bind_needs_the_setting_as_well_as_the_flag() {
+fn the_bind_lan_flag_is_enough_on_its_own() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
         .env("OPENROUTER_API_KEY", "key-for-this-test-only")
-        .args(["--openrouter", "--share", "--bind-lan", "opencode"])
+        .args([
+            "--openrouter",
+            "--dry-run",
+            "--share",
+            "--bind-lan",
+            "opencode",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("share:"));
+}
+
+/// A tunnel's hostname is not knowable until the tunnel is up, and a
+/// `cloudflared` quick tunnel renames itself every run - so this has to be
+/// reachable from the command line rather than a file edit.
+#[test]
+fn a_tunnel_hostname_can_be_allowed_from_the_command_line() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "allow-host", "box.tail1a2b.ts.net"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("box.tail1a2b.ts.net"));
+    alc(&temp)
+        .args(["remote", "allow-host", "*.trycloudflare.com"])
+        .assert()
+        .success();
+
+    alc(&temp)
+        .args(["remote", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("box.tail1a2b.ts.net"))
+        .stdout(predicate::str::contains("*.trycloudflare.com"));
+}
+
+#[test]
+fn a_host_entry_that_is_not_a_host_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["remote", "allow-host", "https://box.example/path"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("allow-lan"));
+        .stderr(predicate::str::contains("not a host name"));
 }
 
 /// The confirmation for loosening a session's permissions has to come from a

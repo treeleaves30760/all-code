@@ -55,34 +55,79 @@ Traditional Chinese.
 
 The default binds to loopback only. Nothing is exposed until you say so.
 
-### A tunnel you run (recommended)
+### Tailscale
 
-With [Tailscale](https://tailscale.com/) on both devices:
+With [Tailscale](https://tailscale.com/) on both devices, alc stays on
+loopback and Tailscale does the exposing:
 
 ```sh
+alc remote allow-host box.tail1a2b.ts.net   # your machine's tailnet name
 tailscale serve 8787
+alc claude --share
 ```
 
-Then open the `ts.net` address on your phone. alc never has to be the thing
-facing the network, and there is no third party in the middle to trust.
+Open the `ts.net` address on your phone. There is no third party in the
+middle, and the connection is HTTPS, so the token is not on the wire in
+clear.
 
-### Your LAN
+### Your own Wi-Fi (LAN)
 
-This needs two switches, on purpose. In `remote.toml`:
+The most direct option, and it needs nothing installed:
+
+```sh
+alc claude --share --bind-lan
+```
+
+alc prints a link with this machine's own address —
+`http://192.168.1.42:8787/#k=…` — which a phone on the same network opens
+directly. Or set it once:
 
 ```toml
-allow_lan = true
-bind      = "lan"
+# remote.toml
+bind = "lan"
 ```
 
-and on the command line:
+The one thing to know: this is plain HTTP, so the token crosses your local
+network unencrypted. On a home or office network that is usually fine; on
+café Wi-Fi, use a tunnel instead.
+
+### Cloudflare Tunnel
+
+Reaches the session from anywhere, including cellular, with no VPN:
 
 ```sh
-alc --share --bind-lan claude
+alc remote allow-host '*.trycloudflare.com'
+cloudflared tunnel --url http://127.0.0.1:8787
+alc claude --share
 ```
 
-One switch is too easy to leave on by accident, and what is on the other side
-of that socket is a shell.
+`cloudflared` prints a `https://<three-random-words>.trycloudflare.com`
+address. The wildcard is there because a quick tunnel mints a fresh hostname
+every run — otherwise you would be reconfiguring alc at exactly the moment
+you are trying to get connected. With a named tunnel and your own domain,
+allow that hostname exactly instead.
+
+Cloudflare terminates the TLS, so unlike the other two options there is a
+third party that could see the traffic. Put Cloudflare Access in front of it
+if that matters.
+
+### How alc decides what to answer to
+
+alc checks the `Host` header against a list, and allows an `Origin` exactly
+when its host is on that same list. Loopback and, with `--bind-lan`, this
+machine's own addresses are always on it; `alc remote allow-host` adds the
+rest.
+
+```sh
+alc remote allow-host box.tail1a2b.ts.net   # exact
+alc remote allow-host '*.trycloudflare.com' # any subdomain
+alc remote status                           # what it currently answers to
+```
+
+That check is not a formality. An attacker's page can point `evil.com` at
+`127.0.0.1` and have your own browser drive your agent; the name the browser
+thinks it is talking to is the part it cannot forge, which is why a host is
+allowed only if you said so.
 
 ## What sharing actually grants
 
@@ -291,9 +336,7 @@ same file.
 | --- | --- | --- |
 | `enabled` | `true` | Master switch. `alc remote off` sets this. |
 | `bind` | `"loopback"` | `loopback` or `lan`. |
-| `allow_lan` | `false` | Must be true *and* `--bind-lan` passed for a LAN bind. |
 | `port` | `8787` | `0` picks an ephemeral port. A busy port falls back to one. |
-| `allowed_origins` | `[]` | Extra origins, for a tunnel's hostname. |
-| `extra_hosts` | `[]` | Extra `Host` values to answer to, port included. |
+| `allowed_hosts` | `[]` | Names to answer to besides this machine's own — a tunnel's hostname, exactly or as `*.example.com`. `alc remote allow-host` edits this. |
 | `scrollback_bytes` | `1048576` | How far back a reconnecting viewer can be caught up exactly. |
 | `max_connections` | `64` | Connections served at once. |

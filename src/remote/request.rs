@@ -360,13 +360,74 @@ pub(crate) enum Grade {
 /// The one place a request is decided on. Every route goes through
 /// `check`, including the ones that need no token, so adding a route cannot
 /// accidentally add a way past the `Host` and `Origin` checks.
+/// A name this server answers to.
+///
+/// Exact for a fixed address, wildcard for a tunnel that mints a fresh
+/// hostname on every run - `cloudflared`'s quick tunnels do exactly that, so
+/// without a suffix form the user would have to reconfigure alc each time
+/// they opened one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HostPattern {
+    /// `127.0.0.1:8787`, or a bare `box.tail1a2b.ts.net` for a tunnel that
+    /// terminates on a default port and so sends no port at all.
+    Exact(String),
+    /// `*.trycloudflare.com`, stored as the suffix including the dot.
+    Suffix(String),
+}
+
+impl HostPattern {
+    /// Parses one allowlist entry. A leading `*.` makes it a wildcard.
+    pub(crate) fn parse(entry: &str) -> Self {
+        let entry = entry.trim().to_ascii_lowercase();
+        match entry.strip_prefix("*.") {
+            Some(suffix) => Self::Suffix(format!(".{suffix}")),
+            None => Self::Exact(entry),
+        }
+    }
+
+    fn matches(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        match self {
+            Self::Exact(allowed) => allowed == &host,
+            // A wildcard ignores the port: a tunnel's hostname is what is
+            // being vouched for, and the port it happens to arrive on is
+            // the tunnel's business.
+            Self::Suffix(suffix) => {
+                let bare = host.split(':').next().unwrap_or(&host);
+                bare.ends_with(suffix.as_str()) && bare.len() > suffix.len()
+            }
+        }
+    }
+}
+
 pub(crate) struct Guard {
-    /// Every Host value this server answers to, INCLUDING the port.
-    pub hosts: Vec<String>,
-    /// Every allowed Origin, scheme included.
-    pub origins: Vec<String>,
+    /// Every name this server answers to.
+    ///
+    /// One list, used for both the `Host` header and the `Origin` header: an
+    /// origin is allowed exactly when its host part is. Keeping them as two
+    /// lists let them drift, and a request is only safe when the name the
+    /// browser thinks it is talking to and the page that asked for it agree.
+    pub hosts: Vec<HostPattern>,
     pub operator: String,
     pub viewer: String,
+}
+
+impl Guard {
+    fn allows_host(&self, host: &str) -> bool {
+        self.hosts.iter().any(|pattern| pattern.matches(host))
+    }
+
+    /// An origin is `scheme://host[:port]`. Only http and https are ever
+    /// allowed, and the host part has to be on the same list `Host` uses.
+    fn allows_origin(&self, origin: &str) -> bool {
+        let rest = origin
+            .strip_prefix("https://")
+            .or_else(|| origin.strip_prefix("http://"));
+        // A path, query or credentials in an Origin is not an origin.
+        rest.is_some_and(|host| {
+            !host.contains('/') && !host.contains('@') && self.allows_host(host)
+        })
+    }
 }
 
 /// Why a request was refused. Kept apart from `anyhow::Error` because the
@@ -397,20 +458,12 @@ impl Guard {
         // says nothing; the name the browser thinks it is talking to does,
         // and it has to match down to the port.
         let host = request.header("host").ok_or(Denied::Host)?;
-        if !self
-            .hosts
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(host))
-        {
+        if !self.allows_host(host) {
             return Err(Denied::Host);
         }
 
         match request.header("origin") {
-            Some(origin)
-                if self
-                    .origins
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(origin)) => {}
+            Some(origin) if self.allows_origin(origin) => {}
             // A page somewhere else asked the browser to make this request.
             Some(_) => return Err(Denied::Origin),
             // Every browser sends an Origin on a WebSocket handshake, so one
@@ -479,6 +532,109 @@ pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+mod host_pattern_tests {
+    use super::*;
+
+    fn guard(hosts: &[&str]) -> Guard {
+        Guard {
+            hosts: hosts
+                .iter()
+                .map(|entry| HostPattern::parse(entry))
+                .collect(),
+            operator: "operator-token-for-tests-0000".to_owned(),
+            viewer: "viewer-token-for-tests-000000".to_owned(),
+        }
+    }
+
+    #[test]
+    fn an_exact_entry_matches_only_itself() {
+        let guard = guard(&["127.0.0.1:8787"]);
+        assert!(guard.allows_host("127.0.0.1:8787"));
+        // The port is the part an attacker's page cannot borrow, which is
+        // the whole of the DNS-rebinding defence.
+        assert!(!guard.allows_host("127.0.0.1"));
+        assert!(!guard.allows_host("127.0.0.1:9999"));
+        assert!(!guard.allows_host("evil.example:8787"));
+    }
+
+    #[test]
+    fn a_tunnel_hostname_matches_with_or_without_a_port() {
+        // A tunnel terminating on 443 sends no port at all.
+        let guard = guard(&["box.tail1a2b.ts.net"]);
+        assert!(guard.allows_host("box.tail1a2b.ts.net"));
+        assert!(guard.allows_host("BOX.TAIL1A2B.TS.NET"));
+        assert!(!guard.allows_host("other.tail1a2b.ts.net"));
+    }
+
+    #[test]
+    fn a_wildcard_covers_a_tunnel_that_renames_itself_every_run() {
+        // `cloudflared`'s quick tunnels mint a fresh hostname each time; an
+        // exact entry would mean reconfiguring alc at exactly the moment the
+        // user is trying to get connected.
+        let guard = guard(&["*.trycloudflare.com"]);
+        assert!(guard.allows_host("three-random-words.trycloudflare.com"));
+        assert!(guard.allows_host("three-random-words.trycloudflare.com:443"));
+        assert!(!guard.allows_host("trycloudflare.com"));
+        assert!(!guard.allows_host("nottrycloudflare.com"));
+        // The suffix must be a whole label, not a substring.
+        assert!(!guard.allows_host("evil-trycloudflare.com"));
+    }
+
+    #[test]
+    fn a_wildcard_does_not_reach_a_different_domain() {
+        let guard = guard(&["*.trycloudflare.com"]);
+        assert!(!guard.allows_host("trycloudflare.com.evil.example"));
+        assert!(!guard.allows_host("x.trycloudflare.com.evil.example"));
+    }
+
+    /// One list, two uses: an origin is allowed exactly when its host is.
+    /// Two lists could drift, and a request is only safe when the name the
+    /// browser thinks it is talking to and the page that asked for it agree.
+    #[test]
+    fn an_origin_is_allowed_exactly_when_its_host_is() {
+        let guard = guard(&["127.0.0.1:8787", "*.ts.net"]);
+        assert!(guard.allows_origin("http://127.0.0.1:8787"));
+        assert!(guard.allows_origin("https://box.tail1a2b.ts.net"));
+        assert!(!guard.allows_origin("https://evil.example"));
+    }
+
+    #[test]
+    fn only_http_and_https_are_origins() {
+        let guard = guard(&["127.0.0.1:8787"]);
+        for hostile in [
+            "file://127.0.0.1:8787",
+            "null",
+            "127.0.0.1:8787",
+            "javascript:alert(1)",
+        ] {
+            assert!(!guard.allows_origin(hostile), "{hostile} was allowed");
+        }
+    }
+
+    #[test]
+    fn an_origin_carrying_a_path_or_credentials_is_not_an_origin() {
+        // `https://box.ts.net@evil.example` reads as the allowed host to a
+        // careless parser and resolves to the attacker's.
+        let guard = guard(&["box.ts.net"]);
+        assert!(!guard.allows_origin("https://box.ts.net@evil.example"));
+        assert!(!guard.allows_origin("https://box.ts.net/evil"));
+        assert!(!guard.allows_origin("https://evil.example/box.ts.net"));
+    }
+
+    #[test]
+    fn parsing_normalises_case_and_the_wildcard_marker() {
+        assert_eq!(
+            HostPattern::parse("  BOX.Example  "),
+            HostPattern::Exact("box.example".to_owned())
+        );
+        assert_eq!(
+            HostPattern::parse("*.Example.COM"),
+            HostPattern::Suffix(".example.com".to_owned())
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -488,8 +644,10 @@ mod tests {
 
     fn guard() -> Guard {
         Guard {
-            hosts: vec!["127.0.0.1:8787".to_owned(), "alc.example:8787".to_owned()],
-            origins: vec!["http://127.0.0.1:8787".to_owned()],
+            hosts: vec![
+                HostPattern::Exact("127.0.0.1:8787".to_owned()),
+                HostPattern::Exact("alc.example:8787".to_owned()),
+            ],
             operator: "operator-token-0000000000000000".to_owned(),
             viewer: "viewer-token-000000000000000000".to_owned(),
         }
@@ -770,7 +928,6 @@ mod tests {
         // empty string as either grade.
         let guard = Guard {
             hosts: Vec::new(),
-            origins: Vec::new(),
             operator: String::new(),
             viewer: String::new(),
         };
