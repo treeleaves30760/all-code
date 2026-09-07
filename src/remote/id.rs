@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn the_alphabet_omits_the_letters_that_are_read_wrong() {
-        for confusable in [b'I', b'L', b'O', b'U'] {
+        for confusable in *b"ILOU" {
             assert!(
                 !ALPHABET.contains(&confusable),
                 "{} is ambiguous when read aloud",

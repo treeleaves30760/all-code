@@ -188,7 +188,10 @@ fn exit_info(status: &portable_pty::ExitStatus) -> ExitInfo {
     }
 }
 
-#[cfg(test)]
+// Gated as a whole rather than per test: every one of these drives a real
+// pty through `/bin/sh`, so on Windows the module's helpers would be dead
+// code and `-D warnings` fails the build on them.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::ffi::OsString;
@@ -237,7 +240,6 @@ mod tests {
         });
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_agent_runs_in_the_requested_directory_and_sees_a_terminal() {
         // Both halves matter: portable-pty defaults cwd to HOME, and every
@@ -263,7 +265,6 @@ mod tests {
         let _ = host.kill();
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_agent_is_told_the_window_size_and_notices_it_change() {
         // Driven by input rather than by a WINCH trap: what matters is that
@@ -293,7 +294,6 @@ mod tests {
         let _ = host.kill();
     }
 
-    #[cfg(unix)]
     #[test]
     fn input_written_to_the_pty_reaches_the_agent() {
         let temp = tempfile::tempdir().unwrap();
@@ -315,7 +315,6 @@ mod tests {
         let _ = host.kill();
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_signalled_agent_is_reported_as_signalled_not_as_exit_one() {
         let temp = tempfile::tempdir().unwrap();
@@ -332,7 +331,6 @@ mod tests {
         assert!(exit.signal.is_some(), "{exit:?}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_environment_the_builder_asked_for_reaches_the_agent() {
         let temp = tempfile::tempdir().unwrap();

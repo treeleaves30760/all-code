@@ -654,7 +654,7 @@ mod string_payload_tests {
     fn a_string_payload_with_no_escape_cannot_set_a_mode() {
         // A kitty graphics command or a sixel image carries arbitrary bytes.
         // Without a string state these were scanned as ordinary output.
-        for introducer in [b'P', b'X', b'^', b'_'] {
+        for introducer in *b"PX^_" {
             let mut scanner = ModeScanner::new();
             let mut stream = vec![ESC, introducer];
             stream.extend_from_slice(b"Gf=100;[?1049h[?2004h");
