@@ -180,7 +180,7 @@ fn share_refuses_when_stdio_is_redirected() {
         .args(["--openrouter", "--share", "claude", "--print", "hello"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("interactive terminal"));
+        .stderr(predicate::str::contains(refusal()));
 }
 
 /// `trailing_var_arg` hands everything after the first agent argument to the
@@ -395,6 +395,18 @@ fn remote_status_reports_the_permission_ceiling() {
 
 /// Writes a remote.toml that keeps a test hub off the default port, so two
 /// tests running at once cannot collide and neither can touch a real hub.
+/// Why alc turns a `--share` down on this platform.
+///
+/// Both are correct refusals; which one comes first is a property of the
+/// platform, not of the case under test.
+fn refusal() -> &'static str {
+    if cfg!(unix) {
+        "interactive terminal"
+    } else {
+        "not available on Windows"
+    }
+}
+
 #[cfg(unix)]
 fn ephemeral_remote(temp: &tempfile::TempDir) {
     std::fs::write(
@@ -507,7 +519,7 @@ fn an_explicit_share_still_refuses_a_scripted_run() {
         .args(["--openrouter", "--share", "opencode"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("interactive terminal"));
+        .stderr(predicate::str::contains(refusal()));
 }
 
 #[cfg(unix)]
