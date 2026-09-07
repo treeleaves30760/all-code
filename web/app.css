@@ -1,0 +1,373 @@
+/* The remote-control page.
+ *
+ * Sized for a phone first: this is mostly used one-handed, away from the
+ * machine the agent is running on. The terminal gets every pixel that is not
+ * spoken for, and the two things needed to actually drive a session - a key
+ * bar for the keys a touch keyboard does not have, and a composer for text
+ * too long to type into a raw terminal - are pinned above the keyboard. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #fbfbfa;
+  --surface: #ffffff;
+  --line: #e3e1dc;
+  --text: #1a1a19;
+  --muted: #6b6a66;
+  --accent: #b4633a;
+  --danger: #b03030;
+  --term-bg: #16161a;
+  --radius: 10px;
+  --bar: 52px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16161a;
+    --surface: #1e1e23;
+    --line: #33333a;
+    --text: #eceae5;
+    --muted: #9a978f;
+    --accent: #d98b5f;
+    --term-bg: #16161a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#bar {
+  flex: 0 0 auto;
+  height: calc(var(--bar) + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) 12px 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+#title {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+#title strong {
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+#subtitle {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pill {
+  flex: 0 0 auto;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.pill.operator {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:active {
+  background: var(--line);
+}
+
+button.icon {
+  padding: 6px 12px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+main > section {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- session list ---- */
+
+#list {
+  overflow-y: auto;
+  padding: 14px;
+  gap: 10px;
+}
+
+#sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card {
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card .name {
+  font-weight: 600;
+}
+
+.card .meta {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4a9a5a;
+  flex: 0 0 auto;
+}
+
+.dot.exited {
+  background: var(--muted);
+}
+
+.badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.empty,
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 12px 2px;
+}
+
+/* ---- terminal ---- */
+
+#view {
+  background: var(--term-bg);
+}
+
+#terminal {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 4px 0 8px;
+}
+
+.keys {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.keys::-webkit-scrollbar {
+  display: none;
+}
+
+.keys button {
+  flex: 0 0 auto;
+  padding: 7px 11px;
+  font-size: 13px;
+  min-width: 44px;
+}
+
+.keys button.held {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+#composer {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+#compose {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: none;
+  max-height: 30vh;
+  font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 9px 11px;
+}
+
+#compose:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+#send {
+  flex: 0 0 auto;
+}
+
+body.viewer #composer,
+body.viewer .keys {
+  display: none;
+}
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(20px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  max-width: min(92vw, 480px);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+  font-size: 14px;
+  z-index: 20;
+}
+
+#toast.warn {
+  border-color: var(--accent);
+}
+
+#toast.error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+@media (min-width: 900px) {
+  #terminal {
+    padding: 10px 8px 0 14px;
+  }
+}
+
+/* ---- permission control ----
+ *
+ * Rendered as a pure function of /api/caps, so an agent alc cannot drive
+ * shows a disabled control carrying the reason rather than a button that
+ * quietly does nothing. The agent's own word for the mode is always shown
+ * beside alc's, because a shared label alone misleads: `auto` is the most
+ * permissive setting Goose has and a mid-tier one for Claude Code. */
+
+.perm {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.perm::-webkit-scrollbar {
+  display: none;
+}
+
+.perm-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.perm select {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 8px;
+  max-width: 60vw;
+}
+
+.perm select:disabled {
+  opacity: 0.55;
+}
+
+.perm-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.perm-note.warn {
+  color: var(--accent);
+}
+
+.perm-note.danger {
+  color: var(--danger);
+}
+
+.perm.unsandboxed {
+  border-bottom-color: var(--danger);
+}

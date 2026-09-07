@@ -309,11 +309,15 @@ Claude Code 會直接以你儲存的預設值啟動，並把所有模型都放�
 
 | 模型 | 適合的情境 | Codex 預設強度 |
 | --- | --- | --- |
+| `gpt-6-astra` | GPT-6，能力最強，適合複雜且吃重的工作 | `medium` |
 | `gpt-5.6-sol` | 能力最完整，適合架構、困難除錯與大型重構 | `low` |
 | `gpt-5.6-terra` | 速度、能力、成本均衡，建議新手從這個開始 | `medium` |
 | `gpt-5.6-luna` | 速度快、費用低，適合簡單修改與大量例行工作 | `medium` |
 
-清單依能力由強到弱排列，與 Codex 對這個系列公布的分級一致。
+清單依能力由強到弱排列，與 Codex 自己的分級一致。`gpt-6-astra` 與較新的 GPT-5.6
+模型另外提供高於 `max` 的 `ultra` 強度。這一級可以用原生的 `alc codex` 使用，但
+**無法**透過 Codex 橋接：內建 helper 自己的強度範圍到 `max` 為止，所以 alc 會在
+啟動時把它降到 `max` 並明說，而不是讓請求在 session 進行到一半被拒絕。
 
 上游細節可參考 OpenAI 的
 [模型選擇指南](https://developers.openai.com/api/docs/guides/latest-model)、
@@ -384,6 +388,80 @@ alc models --json
 這個轉接器是第三方相容層，不是 OpenAI 或 Anthropic 的官方整合。使用
 訂閱帳號前，請先檢閱 [THIRD_PARTY.md](THIRD_PARTY.md) 與你的 provider
 條款。
+
+## 遠端控制
+
+把執行中的 session 鏡像到網頁，從另一台裝置操作。
+
+```sh
+alc --share claude          # 或：alc share claude
+alc share opencode -- --mini
+```
+
+alc 會印出連結，開啟後就是即時的終端機畫面，任何連得到這台機器的裝置都能用：
+
+```text
+alc session claude-7QK2M9XB4T (claude@all-code)
+  open  http://127.0.0.1:8787/#k=…
+  bind  127.0.0.1:8787 · this link grants input; keep it to yourself
+  pid   48213
+```
+
+你自己的終端機完全照舊 —— 共享是鏡像，不是把 session 拿走。因為被鏡像的是終端機
+本身，所以每個 agent、每個 provider 的行為都一樣。
+
+Session 由背景的 hub 擁有，所以它們會出現在同一個頁面上，而且活得比啟動它的終端機久：
+
+```sh
+# ctrl-\ 然後 d            # 卸離；session 繼續跑
+alc sessions               # 有哪些在跑
+alc attach 7QK2           # 從任何終端機接回去
+alc kill 7QK2
+alc hub status
+alc hub stop --drain
+```
+
+頁面提供 session 清單、即時畫面、手機鍵盤沒有的快捷鍵列（Esc、Tab、Shift+Tab、
+Ctrl、方向鍵），以及一個把整段提示詞一次送出的輸入框。介面會跟隨裝置語言，提供
+繁體中文與英文。
+
+### 從手機連上
+
+預設只綁 loopback，在你明說之前不會對外開放。兩種方式：
+
+- **自己跑的隧道**（建議）。Tailscale：`tailscale serve 8787`，然後在手機開那個
+  `ts.net` 位址。alc 永遠不必是面對網路的那一層。
+- **區域網路**，刻意需要兩道開關 —— `remote.toml` 裡的 `allow_lan = true`
+  **以及**命令列上的 `--bind-lan`：
+
+  ```sh
+  alc remote status                    # 設定檔位置
+  alc --share --bind-lan claude
+  ```
+
+單一開關太容易不小心留著沒關，而那個 socket 的另一端是一個 shell。
+
+### 共享實際上授予了什麼
+
+一個能對 coding agent 輸入的網頁，等於你機器上的遠端程式碼執行，所以值得講清楚：
+
+- 連結的 fragment（`#k=…`）**就是**憑證。拿到的人就能對 session 輸入。它不會送到
+  伺服器、proxy 或存取紀錄 —— 但它在你的剪貼簿裡，把它當密碼看待。
+- alc 比對 `Host` 到連接埠、要求 WebSocket 升級帶 `Origin`、以固定時間比對 token。
+  這是用來阻擋別的來源網頁透過你的瀏覽器操控你的 agent。
+- 共享的 session 就是螢幕分享。alc 會遮蔽**它自己**放進環境變數的 API key，但 agent
+  印出的其他任何東西，觀看者都看得到。
+- `alc remote token --rotate` 會讓已發出的連結全部失效。
+- alc 不讀取工作目錄裡的任何設定，所以被 commit 進 repo 的檔案永遠無法開啟共享。
+
+`--share` 需要兩端都是真正的終端機，輸入或輸出被重導向時會拒絕，所以像
+`alc claude -p … > out.txt` 這種腳本用法行為完全不變。
+
+```sh
+alc remote status            # 開/關、綁定方式、檔案位置
+alc remote off               # 完全禁止共享
+alc remote token --rotate    # 讓所有連結失效
+```
 
 ## 完整設定
 

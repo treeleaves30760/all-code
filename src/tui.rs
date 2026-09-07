@@ -149,10 +149,8 @@ impl App {
                     self.screen = Screen::Edit;
                 }
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
-                if self.selected_provider_name().is_some() {
-                    self.screen = Screen::ConfirmDelete;
-                }
+            KeyCode::Char('d') | KeyCode::Delete if self.selected_provider_name().is_some() => {
+                self.screen = Screen::ConfirmDelete;
             }
             KeyCode::Tab => self.screen = Screen::Defaults,
             KeyCode::Char('s') => self.save(false),

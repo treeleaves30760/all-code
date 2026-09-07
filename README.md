@@ -320,12 +320,17 @@ its own `/model` picker:
 
 | Model | Beginner-friendly use case | Codex default effort |
 | --- | --- | --- |
+| `gpt-6-astra` | GPT-6. Most capable; complex, demanding work | `medium` |
 | `gpt-5.6-sol` | Frontier capability for the hardest professional work | `low` |
 | `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
 | `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
 
 The list is ordered by capability, most capable first, matching Codex's own
-tiers for this family.
+tiers. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` effort
+above `max`. That tier is reachable with native `alc codex`, but **not** through
+the Codex bridge: the bundled helper's own effort range stops at `max`, so alc
+clamps it there and says so at launch rather than letting the request be
+refused mid-session.
 
 See OpenAI's [model selection guide](https://developers.openai.com/api/docs/guides/latest-model),
 [Luna reference](https://developers.openai.com/api/docs/models/gpt-5.6-luna),
@@ -402,6 +407,92 @@ into the `alc` config.
 This adapter is a third-party compatibility layer, not an official OpenAI or
 Anthropic integration. Review [THIRD_PARTY.md](THIRD_PARTY.md) and your provider
 terms before using subscription credentials through it.
+
+## Remote control
+
+Mirror a running session to a web page and drive it from another device.
+
+```sh
+alc --share claude          # or: alc share claude
+alc share opencode -- --mini
+```
+
+alc prints a link. Open it and you get the live terminal, on any device that
+can reach the machine:
+
+```text
+alc session claude-7QK2M9XB4T (claude@all-code)
+  open  http://127.0.0.1:8787/#k=…
+  bind  127.0.0.1:8787 · this link grants input; keep it to yourself
+  pid   48213
+```
+
+Your own terminal keeps working exactly as before — sharing mirrors the
+session, it does not take it away. Every agent and every provider works the
+same way, because what is mirrored is the terminal itself.
+
+Sessions are owned by a background hub, so they all appear on one page and
+they outlive the terminal that started them:
+
+```sh
+# ctrl-\ then d            # detach; the session keeps running
+alc sessions               # what is running
+alc attach 7QK2           # back on it, from any terminal
+alc kill 7QK2
+alc hub status
+alc hub stop --drain
+```
+
+The page gives you the session list, the live screen, a key bar for the keys
+a phone keyboard does not have (Esc, Tab, Shift+Tab, Ctrl, arrows), and a
+composer that sends a whole prompt as one block instead of fighting a mobile
+keyboard inside a raw terminal.
+
+### Reaching it from a phone
+
+The default binds to loopback only, so nothing is exposed until you say so.
+Two ways to get further:
+
+- **A tunnel you run** (recommended). With Tailscale: `tailscale serve 8787`,
+  then open the `ts.net` address on your phone. alc never has to be the thing
+  facing the network.
+- **Your LAN**, which needs two switches on purpose — `allow-lan = true` in
+  `remote.toml` *and* `--bind-lan` on the command line:
+
+  ```sh
+  alc remote status                    # where the settings live
+  alc --share --bind-lan claude
+  ```
+
+One switch is too easy to leave on by accident, and what is on the other side
+of that socket is a shell.
+
+### What this actually grants
+
+A page that types into a coding agent is remote code execution on your
+machine, so it is worth being plain about the model:
+
+- The link's fragment (`#k=…`) **is** the credential. Anyone who has it can
+  type into the session. It never reaches the server, a proxy, or an access
+  log — but it is in your clipboard, so treat it like a password.
+- alc checks the `Host` header down to the port, requires an `Origin` on the
+  WebSocket upgrade, and compares tokens in constant time. That is what stops
+  a page at some other origin from driving your agent through your browser.
+- A shared session is screen sharing. alc masks the API keys **it** put into
+  the environment, but anything else the agent prints, a viewer sees.
+- `alc remote token --rotate` invalidates every link handed out so far.
+- alc reads no configuration from the working repository, so a checked-in
+  file can never turn sharing on.
+
+`--share` needs a real terminal on both ends and refuses when input or output
+is redirected, so a scripted `alc claude -p … > out.txt` keeps behaving
+exactly as it does today.
+
+```sh
+alc remote status            # on/off, bind, where the files are
+alc remote off               # refuse to share sessions at all
+alc remote token --rotate    # invalidate every link
+```
 
 ## Configuration
 

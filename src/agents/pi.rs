@@ -57,8 +57,7 @@ pub(crate) fn build(
         Value::String("alc".to_owned())
     } else {
         let key = key_or_error(profile_name, provider, key)?;
-        spec.env
-            .insert(OsString::from("ALC_PROVIDER_API_KEY"), OsString::from(key));
+        spec.set_secret_env("ALC_PROVIDER_API_KEY", key);
         Value::String("$ALC_PROVIDER_API_KEY".to_owned())
     };
 
@@ -498,7 +497,7 @@ mod tests {
         assert_eq!(value["apiKey"], json!("alc"));
 
         let models = value["models"].as_array().expect("models array");
-        assert_eq!(models.len(), 3);
+        assert_eq!(models.len(), 4);
         for model in models {
             assert_eq!(model["reasoning"], json!(true));
             assert!(model["contextWindow"].is_u64());
@@ -507,7 +506,15 @@ mod tests {
             .iter()
             .map(|model| model["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+        assert_eq!(
+            ids,
+            [
+                "gpt-6-astra",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna"
+            ]
+        );
     }
 
     // (d) agent_dir() honors the override / falls back correctly, and

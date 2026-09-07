@@ -68,10 +68,8 @@ pub(crate) fn build(
                 ProviderKind::Openrouter => "OPENROUTER_API_KEY",
                 _ => "ALC_PROVIDER_API_KEY",
             });
-        spec.env
-            .insert(OsString::from(env_name), OsString::from(key));
-        spec.env
-            .insert(OsString::from("ALC_PROVIDER_API_KEY"), OsString::from(key));
+        spec.set_secret_env(env_name, key.clone());
+        spec.set_secret_env("ALC_PROVIDER_API_KEY", key.clone());
     }
 
     let model = overrides.model.as_deref().unwrap_or(&provider.model);

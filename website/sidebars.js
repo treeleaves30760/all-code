@@ -8,6 +8,7 @@ const sidebars = {
     'providers',
     'agents',
     'configuration',
+    'remote-control',
     'updating',
     'troubleshooting',
   ],

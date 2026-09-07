@@ -52,12 +52,17 @@ in its own `/model` picker:
 
 | Model | Beginner-friendly use case | Codex default effort |
 | --- | --- | --- |
+| `gpt-6-astra` | GPT-6. Most capable; complex, demanding work | `medium` |
 | `gpt-5.6-sol` | Frontier capability for the hardest professional work | `low` |
 | `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
 | `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
 
 The list is ordered by capability, most capable first, matching Codex's own
-tiers for this family. See OpenAI's
+tiers. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` effort
+above `max`. That tier is reachable with native `alc codex`, but **not**
+through the Codex bridge: the bundled helper's own effort range stops at
+`max`, so alc clamps it there and says so at launch rather than letting the
+request be refused mid-session. See OpenAI's
 [model selection guide](https://developers.openai.com/api/docs/guides/latest-model),
 [Luna reference](https://developers.openai.com/api/docs/models/gpt-5.6-luna),
 and [Sol reference](https://developers.openai.com/api/docs/models/gpt-5.6-sol)

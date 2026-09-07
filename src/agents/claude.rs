@@ -101,8 +101,7 @@ pub(crate) fn build(
     match provider.auth {
         AuthStyle::ApiKey => {
             if let Some(key) = key {
-                spec.env
-                    .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::from(key));
+                spec.set_secret_env("ANTHROPIC_API_KEY", key);
                 spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
             } else if provider.kind != ProviderKind::Anthropic {
                 missing_key(profile_name, provider)?;
@@ -115,8 +114,7 @@ pub(crate) fn build(
         }
         AuthStyle::Bearer => {
             let key = key_or_error(profile_name, provider, key)?;
-            spec.env
-                .insert(OsString::from("ANTHROPIC_AUTH_TOKEN"), OsString::from(key));
+            spec.set_secret_env("ANTHROPIC_AUTH_TOKEN", key);
             // Claude Code and OpenRouter both require this to be explicitly empty.
             spec.env
                 .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::new());

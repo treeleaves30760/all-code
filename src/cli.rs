@@ -10,7 +10,8 @@ use crate::config::{
     validate_profile_name,
 };
 use crate::model_catalog::ModelCatalog;
-use crate::{doctor, launch, ollama, tui, update};
+use crate::remote::RemoteCommand;
+use crate::{doctor, launch, ollama, remote, tui, update};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -81,6 +82,31 @@ struct Cli {
     #[arg(long, global = true)]
     dry_run: bool,
 
+    /// Mirror this session to a browser page (see `alc remote`).
+    ///
+    /// Must appear before the agent's own arguments; `alc share <agent> --
+    /// <args>` is the unambiguous form.
+    #[arg(long, global = true, env = "ALC_SHARE")]
+    share: bool,
+
+    /// Never mirror this session, whatever the configuration says.
+    #[arg(long, global = true, conflicts_with = "share")]
+    no_share: bool,
+
+    /// Bind the session page to this machine's LAN address instead of
+    /// loopback. Also needs `allow-lan = true` in remote.toml.
+    #[arg(long = "bind-lan", global = true)]
+    bind_lan: bool,
+
+    /// Name a shared session on the page, instead of `<agent>@<directory>`.
+    #[arg(long, global = true, value_name = "NAME")]
+    name: Option<String>,
+
+    /// Permission mode a shared session starts in: plan, ask, auto-edit,
+    /// auto, or full.
+    #[arg(long, global = true, value_name = "RUNG")]
+    permission: Option<String>,
+
     /// Override the alc config directory (also available as ALC_CONFIG_DIR).
     #[arg(long, global = true, env = "ALC_CONFIG_DIR", hide = true)]
     config_dir: Option<PathBuf>,
@@ -99,6 +125,22 @@ enum Command {
     Models(ModelsArgs),
     /// Check for and install the latest alc release.
     Update(UpdateArgs),
+    /// Launch a coding agent with its session mirrored to a browser.
+    Share(ShareArgs),
+    /// Inspect or change the remote-control settings and credentials.
+    Remote(RemoteArgs),
+    /// Approve a permission change a shared session asked for.
+    Confirm(ConfirmArgs),
+    /// Start, stop, or inspect the process that owns shared sessions.
+    Hub(HubArgs),
+    /// List shared sessions.
+    Sessions(SessionsArgs),
+    /// Put this terminal back on a shared session.
+    Attach(SessionRef),
+    /// Stop a shared session.
+    Kill(SessionRef),
+    /// Rename a shared session's card.
+    Rename(RenameArgs),
     /// Launch Claude Code.
     Claude(ClaudeArgs),
     /// Launch Codex CLI.
@@ -153,6 +195,104 @@ struct ClaudeArgs {
         trailing_var_arg = true
     )]
     args: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+struct ShareArgs {
+    /// claude, codex, opencode, pi, copilot, goose, qwen, or kimi.
+    agent: Agent,
+
+    /// Arguments passed unchanged to the coding agent.
+    #[arg(
+        value_name = "ARGS",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    args: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+struct HubArgs {
+    #[command(subcommand)]
+    command: Option<HubCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum HubCommand {
+    /// Start the hub if it is not already running.
+    Start(HubStartArgs),
+    /// Stop the hub.
+    Stop {
+        /// Stop the sessions it is running too.
+        #[arg(long)]
+        drain: bool,
+    },
+    /// Report whether a hub is running and where its page is.
+    Status,
+}
+
+#[derive(Debug, Args)]
+struct HubStartArgs {
+    /// Run in this terminal instead of detaching. Used by alc itself when
+    /// it starts a hub, and useful for seeing why one will not come up.
+    #[arg(long)]
+    foreground: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionsArgs {
+    /// Print the sessions as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionRef {
+    /// A session id, or an unambiguous prefix of one.
+    id: String,
+}
+
+#[derive(Debug, Args)]
+struct RenameArgs {
+    /// A session id, or an unambiguous prefix of one.
+    id: String,
+    /// The new name.
+    name: String,
+}
+
+#[derive(Debug, Args)]
+struct ConfirmArgs {
+    /// The ticket the page showed.
+    ticket: String,
+}
+
+#[derive(Debug, Args)]
+struct RemoteArgs {
+    #[command(subcommand)]
+    command: Option<RemoteSubcommand>,
+
+    /// Report the resolved posture without binding a socket.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum RemoteSubcommand {
+    /// Show whether remote control is on, how it binds, and where its files live.
+    Status,
+    /// Allow sessions to be shared.
+    On,
+    /// Refuse to share sessions.
+    Off,
+    /// Replace the tokens, invalidating every link handed out so far.
+    Token(RemoteTokenArgs),
+}
+
+#[derive(Debug, Args)]
+struct RemoteTokenArgs {
+    /// Mint fresh tokens.
+    #[arg(long)]
+    rotate: bool,
 }
 
 #[derive(Debug, Args)]
@@ -288,21 +428,90 @@ pub fn run() -> Result<u8> {
         return update::run(args.check, args.force);
     }
     let mut store = Store::load(cli.config_dir.clone())?;
+    let sharing = Sharing {
+        enabled: cli.share && !cli.no_share,
+        lan: cli.bind_lan,
+        name: cli.name.clone(),
+        permission: cli.permission.clone(),
+    };
 
     match cli.command {
         Command::Config(args) => run_config(&mut store, args),
         Command::Doctor => Ok(if doctor::run(&store)? { 0 } else { 1 }),
         Command::Models(args) => run_models(&store, args),
         Command::Update(_) => unreachable!("update is handled before config loading"),
-        Command::Claude(args) => {
-            run_claude(&mut store, requested_provider.as_deref(), args, cli.dry_run)
+        Command::Remote(args) => run_remote(&store, args),
+        Command::Confirm(args) => remote::confirm(&store, &args.ticket),
+        Command::Hub(args) => {
+            let command = match args.command {
+                Some(HubCommand::Start(start)) => remote::HubCommand::Start {
+                    foreground: start.foreground,
+                    bind_lan: cli.bind_lan,
+                },
+                Some(HubCommand::Stop { drain }) => remote::HubCommand::Stop { drain },
+                None | Some(HubCommand::Status) => remote::HubCommand::Status,
+            };
+            remote::run_hub(&store, command)
         }
+        Command::Sessions(args) => {
+            remote::run_hub(&store, remote::HubCommand::List { json: args.json })
+        }
+        Command::Attach(args) => {
+            remote::run_hub(&store, remote::HubCommand::Attach { id: args.id })
+        }
+        Command::Kill(args) => remote::run_hub(&store, remote::HubCommand::Kill { id: args.id }),
+        Command::Rename(args) => remote::run_hub(
+            &store,
+            remote::HubCommand::Rename {
+                id: args.id,
+                name: args.name,
+            },
+        ),
+        Command::Share(args) => {
+            let sharing = Sharing {
+                enabled: !cli.no_share,
+                lan: cli.bind_lan,
+                name: cli.name.clone(),
+                permission: cli.permission.clone(),
+            };
+            match args.agent {
+                Agent::Claude => run_claude(
+                    &mut store,
+                    requested_provider.as_deref(),
+                    ClaudeArgs {
+                        model: None,
+                        effort: None,
+                        no_picker: false,
+                        save: false,
+                        args: args.args,
+                    },
+                    cli.dry_run,
+                    sharing,
+                ),
+                agent => run_agent(
+                    &store,
+                    agent,
+                    requested_provider.as_deref(),
+                    args.args,
+                    cli.dry_run,
+                    sharing,
+                ),
+            }
+        }
+        Command::Claude(args) => run_claude(
+            &mut store,
+            requested_provider.as_deref(),
+            args,
+            cli.dry_run,
+            sharing,
+        ),
         Command::Codex(args) => run_agent(
             &store,
             Agent::Codex,
             requested_provider.as_deref(),
             args.args,
             cli.dry_run,
+            sharing,
         ),
         Command::Opencode(args) => run_agent(
             &store,
@@ -310,6 +519,7 @@ pub fn run() -> Result<u8> {
             requested_provider.as_deref(),
             args.args,
             cli.dry_run,
+            sharing,
         ),
         Command::Pi(args) => run_agent(
             &store,
@@ -317,6 +527,7 @@ pub fn run() -> Result<u8> {
             requested_provider.as_deref(),
             args.args,
             cli.dry_run,
+            sharing,
         ),
         Command::Copilot(args) => run_agent(
             &store,
@@ -324,6 +535,7 @@ pub fn run() -> Result<u8> {
             requested_provider.as_deref(),
             args.args,
             cli.dry_run,
+            sharing,
         ),
         Command::Goose(args) => run_agent(
             &store,
@@ -331,6 +543,7 @@ pub fn run() -> Result<u8> {
             requested_provider.as_deref(),
             args.args,
             cli.dry_run,
+            sharing,
         ),
         Command::Qwen(args) => run_agent(
             &store,
@@ -338,6 +551,7 @@ pub fn run() -> Result<u8> {
             requested_provider.as_deref(),
             args.args,
             cli.dry_run,
+            sharing,
         ),
         Command::Kimi(args) => run_agent(
             &store,
@@ -345,6 +559,7 @@ pub fn run() -> Result<u8> {
             requested_provider.as_deref(),
             args.args,
             cli.dry_run,
+            sharing,
         ),
     }
 }
@@ -381,13 +596,58 @@ fn provider_selector(cli: &Cli) -> Result<Option<String>> {
         .or_else(|| selected.first().map(|name| (*name).to_owned())))
 }
 
+/// Whether this launch is mirrored to a browser, and how it binds.
+#[derive(Debug, Clone)]
+struct Sharing {
+    enabled: bool,
+    lan: bool,
+    /// A name for the session card, when the user gave one.
+    name: Option<String>,
+    /// The permission rung the session starts in, when the user named one.
+    permission: Option<String>,
+}
+
+/// alc's own flags, which `trailing_var_arg` hands to the agent verbatim
+/// once the first passthrough token has been seen.
+///
+/// Appending a flag to a command you already have is the most natural
+/// gesture there is, and without this it silently sends `--share` to the
+/// model as prompt text, or exits with the agent's own unknown-flag error
+/// naming a flag the agent has never heard of.
+const ALC_OWNED_FLAGS: [&str; 5] = [
+    "--share",
+    "--no-share",
+    "--bind-lan",
+    "--name",
+    "--permission",
+];
+
+fn reject_swallowed_flags(args: &[OsString], agent: Agent) -> Result<()> {
+    for argument in args {
+        let Some(text) = argument.to_str() else {
+            continue;
+        };
+        let name = text.split('=').next().unwrap_or(text);
+        if ALC_OWNED_FLAGS.contains(&name) {
+            bail!(
+                "`{name}` is alc's own flag but it came after the agent's arguments, \
+where it would be passed to {agent} instead; put it before the agent name, \
+or use `alc share {agent} -- <args>`"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn run_agent(
     store: &Store,
     agent: Agent,
     requested_provider: Option<&str>,
     args: Vec<OsString>,
     dry_run: bool,
+    sharing: Sharing,
 ) -> Result<u8> {
+    reject_swallowed_flags(&args, agent)?;
     let provider = store.config.resolve(agent, requested_provider)?.1.clone();
     let overrides = if provider.kind == ProviderKind::Codex && agent != Agent::Codex {
         codex_launch_overrides(store, &provider, dry_run)?
@@ -395,7 +655,7 @@ fn run_agent(
         launch::LaunchOverrides::default()
     };
     let spec = launch::build(store, agent, requested_provider, &args, &overrides)?;
-    run_spec(spec, dry_run)
+    run_spec(store, spec, dry_run, sharing)
 }
 
 fn run_claude(
@@ -403,7 +663,9 @@ fn run_claude(
     requested_provider: Option<&str>,
     args: ClaudeArgs,
     dry_run: bool,
+    sharing: Sharing,
 ) -> Result<u8> {
+    reject_swallowed_flags(&args.args, Agent::Claude)?;
     let (profile_name, provider) = {
         let (name, provider) = store.config.resolve(Agent::Claude, requested_provider)?;
         (name.to_owned(), provider.clone())
@@ -435,7 +697,7 @@ fn run_claude(
             &args.args,
             &overrides,
         )?;
-        return run_spec(spec, dry_run);
+        return run_spec(store, spec, dry_run, sharing);
     }
 
     let overrides = if args.model.is_some() || args.effort.is_some() || args.save {
@@ -472,7 +734,7 @@ fn run_claude(
         &args.args,
         &overrides,
     )?;
-    run_spec(spec, dry_run)
+    run_spec(store, spec, dry_run, sharing)
 }
 
 /// The model and reasoning effort a Codex-backed Claude Code session starts
@@ -498,7 +760,31 @@ fn resolve_codex_defaults(
     {
         bail!("model '{model}' does not support reasoning effort '{effort}'");
     }
-    Ok((model, effort))
+    Ok((model, clamp_for_bridge(effort)))
+}
+
+/// The loosest effort the bundled bridge can actually carry.
+///
+/// GPT-6 and the newer GPT-5.6 models accept `ultra`, and the bundled
+/// claude-codex helper does not - its own effort enum stops at `max`, so a
+/// request carrying `ultra` is refused. Every bridged agent's effort reaches
+/// that helper one way or another: pinned through `CCP_CODEX_EFFORT` for the
+/// Responses and Chat clients, and inside each request for Claude Code,
+/// which alc hands `--effort` to directly.
+///
+/// So it is clamped here, at the one point where a bridged session's effort
+/// is decided, and said out loud. Silently downgrading an explicit choice
+/// would be worse, and refusing outright would block a session that works
+/// perfectly well at `max`.
+fn clamp_for_bridge(effort: ReasoningEffort) -> ReasoningEffort {
+    if effort != ReasoningEffort::Ultra {
+        return effort;
+    }
+    eprintln!(
+        "note: the bundled Codex bridge tops out at 'max', so this session uses max rather \
+         than ultra. Native `alc codex` reaches ultra."
+    );
+    ReasoningEffort::Max
 }
 
 /// Loads the Codex model catalog, syncing it in the background unless this
@@ -530,7 +816,12 @@ fn codex_launch_overrides(
     })
 }
 
-fn run_spec(spec: launch::LaunchSpec, dry_run: bool) -> Result<u8> {
+fn run_spec(
+    store: &Store,
+    spec: launch::LaunchSpec,
+    dry_run: bool,
+    sharing: Sharing,
+) -> Result<u8> {
     if dry_run {
         println!(
             "agent: {}\nprovider: {} ({})\ncommand: {}",
@@ -558,9 +849,31 @@ fn run_spec(spec: launch::LaunchSpec, dry_run: bool) -> Result<u8> {
                 }
             }
         }
+        if sharing.enabled {
+            println!("share: would mirror this session to a loopback page");
+        }
         return Ok(0);
     }
+    if sharing.enabled {
+        return remote::share(store, spec, sharing.lan, sharing.name, sharing.permission);
+    }
     launch::execute(spec)
+}
+
+fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {
+    let command = match args.command {
+        None if args.dry_run => RemoteCommand::DryRun,
+        None | Some(RemoteSubcommand::Status) => RemoteCommand::Status,
+        Some(RemoteSubcommand::On) => RemoteCommand::Enable,
+        Some(RemoteSubcommand::Off) => RemoteCommand::Disable,
+        Some(RemoteSubcommand::Token(token)) => {
+            if !token.rotate {
+                bail!("`alc remote token` needs --rotate; it never prints a token");
+            }
+            RemoteCommand::RotateTokens
+        }
+    };
+    remote::run_command(store, command)
 }
 
 fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {
@@ -851,6 +1164,59 @@ mod tests {
             error.to_string().contains("does not support"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn gpt_6_is_offered_with_its_own_top_tier() {
+        let catalog = ModelCatalog::built_in();
+        let astra = catalog
+            .find("gpt-6-astra")
+            .expect("gpt-6-astra in the catalog");
+        assert!(astra.supported_efforts.contains(&ReasoningEffort::Ultra));
+        // Most capable first, so a picker's first row is the best model.
+        assert_eq!(catalog.models[0].id, "gpt-6-astra");
+    }
+
+    #[test]
+    fn a_bridged_session_is_clamped_to_what_the_helper_can_carry() {
+        // The bundled helper's effort enum stops at max; a request carrying
+        // `ultra` is refused, and a refusal mid-session is a far worse way
+        // to learn that than a note at launch.
+        let provider = codex_provider("gpt-6-astra", None);
+        let (model, effort) = resolve_codex_defaults(
+            &provider,
+            &ModelCatalog::built_in(),
+            None,
+            Some(ReasoningEffort::Ultra),
+        )
+        .unwrap();
+        assert_eq!(model, "gpt-6-astra");
+        assert_eq!(effort, ReasoningEffort::Max);
+    }
+
+    #[test]
+    fn every_other_effort_passes_through_untouched() {
+        for effort in ReasoningEffort::ALL {
+            if effort == ReasoningEffort::Ultra {
+                continue;
+            }
+            assert_eq!(clamp_for_bridge(effort), effort);
+        }
+    }
+
+    #[test]
+    fn an_effort_the_model_does_not_have_is_still_refused() {
+        // gpt-5.6-luna has no ultra tier, so asking for one is an error
+        // rather than something to quietly clamp.
+        let provider = codex_provider("gpt-5.6-luna", None);
+        let error = resolve_codex_defaults(
+            &provider,
+            &ModelCatalog::built_in(),
+            None,
+            Some(ReasoningEffort::Ultra),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("does not support"), "{error}");
     }
 
     #[test]

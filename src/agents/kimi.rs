@@ -67,6 +67,9 @@ pub(crate) fn build(
             store.credentials.key_for(profile_name, provider),
         )?
     };
+    // The key reaches Kimi through a temp config file rather than the
+    // environment, so it is marked directly.
+    spec.mark_secret_value(&api_key);
     let model = overrides.model.as_deref().unwrap_or(&provider.model);
 
     let path = queue_config_file(
