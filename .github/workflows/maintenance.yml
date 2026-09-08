@@ -36,19 +36,19 @@ jobs:
           # The bridge is a Cargo dependency now, so the tag in Cargo.toml is
           # the pin that matters; the constant in launch.rs only reports it.
           $manifest = Get-Content -Raw ./Cargo.toml
-          if ($manifest -notmatch 'claude-code-with-codex", tag = "v([^"]+)"') {
-            throw 'Could not read the pinned bridge version from Cargo.toml'
+          # alc builds against its own fork now, pinned by commit, so what
+          # matters is whether upstream has moved past what the fork carries.
+          if ($manifest -notmatch 'claude-code-with-codex", rev = "([0-9a-f]{40})"') {
+            throw 'Could not read the pinned bridge commit from Cargo.toml'
           }
           $pinned = $Matches[1]
-          $source = Get-Content -Raw ./src/launch.rs
-          if ($source -notmatch 'CLAUDE_CODEX_BRIDGE_VERSION: &str = "([^"]+)"') {
+          Write-Host "alc pins the fork at $pinned"
+          $latest = (gh api repos/fcakyon/claude-code-with-codex/releases/latest --jq .tag_name)
+          $reported = (Get-Content -Raw ./src/launch.rs)
+          if ($reported -notmatch 'CLAUDE_CODEX_BRIDGE_VERSION: &str = "([^"]+)"') {
             throw 'Could not read the reported bridge version from src/launch.rs'
           }
-          if ($Matches[1] -ne $pinned) {
-            throw "Cargo.toml pins $pinned but src/launch.rs reports $($Matches[1])"
+          if ("v$($Matches[1])" -ne $latest) {
+            throw "upstream claude-codex $latest is out; alc's fork is based on v$($Matches[1])"
           }
-          $latest = (gh api repos/fcakyon/claude-code-with-codex/releases/latest --jq .tag_name).TrimStart('v')
-          if ($pinned -ne $latest) {
-            throw "claude-codex $latest is available; alc still pins $pinned"
-          }
-          Write-Host "claude-codex $pinned is current"
+          Write-Host "the fork is based on the current upstream $latest"

@@ -5,13 +5,14 @@ download, install, or keep in step with `alc`.
 
 ## claude-codex 0.3.1
 
-- Project: <https://github.com/fcakyon/claude-code-with-codex>
+- Project: <https://github.com/treeleaves30760/claude-code-with-codex>
+  (alc's fork of <https://github.com/fcakyon/claude-code-with-codex>)
 - Based on: <https://github.com/raine/claude-code-proxy>
 - License: MIT
 - Purpose: loopback-only Anthropic Messages / OpenAI Responses / Chat
   Completions translation for the alc Codex bridge (`alc --codex <agent>`)
 
-Pinned in `Cargo.toml` by tag and in `Cargo.lock` by commit, and compiled into
+Pinned in `Cargo.toml` by commit, and compiled into
 `alc` as a library rather than shipped beside it. It is served on a loopback
 port owned by the `alc` process, started only for Codex-backed sessions — of
 any supported agent — and stopped when that session ends. It reads and may

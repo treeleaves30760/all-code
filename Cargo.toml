@@ -1,6 +1,6 @@
 [package]
 name = "all-code"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2024"
 rust-version = "1.88"
 description = "One CLI to configure and launch Claude Code, Codex, OpenCode, Pi, Copilot CLI, Goose, Qwen Code, and Kimi Code CLI with multiple LLM providers"
@@ -23,10 +23,12 @@ avt = "0.18"
 # ships or downloads a second binary, and the two halves can no longer drift
 # out of step.
 #
-# The tag is readable and matches CLAUDE_CODEX_BRIDGE_VERSION; the commit it
-# resolved to is recorded in Cargo.lock, and release builds pass --locked, so
-# a moved tag cannot change what ships.
-claude-codex = { git = "https://github.com/fcakyon/claude-code-with-codex", tag = "v0.3.1" }
+# Pinned to alc's own fork by commit, not to upstream by tag. Upstream's model
+# lists are hard-coded and were a release behind Codex, which is what made
+# gpt-6-astra unusable through the bridge while `codex` itself offered it;
+# owning the pin means that class of problem is a commit away rather than a
+# wait. The commit is immutable, and release builds pass --locked.
+claude-codex = { git = "https://github.com/treeleaves30760/claude-code-with-codex", rev = "c4a80e2934869f9244601df0a8005f9442301c55" }
 clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = "0.29"
 flate2 = "1.1"
