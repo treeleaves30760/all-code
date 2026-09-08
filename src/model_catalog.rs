@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,7 +72,14 @@ impl ModelCatalog {
     /// nothing, so the list is left alone - the same "no opinion" rule as a
     /// bridge that reports nothing at all.
     fn retain_routable(&mut self) {
-        let Some(routable) = crate::launch::bridge_codex_models() else {
+        self.retain_routable_against(crate::launch::bridge_codex_models());
+    }
+
+    /// The filter itself, taking the bridge's answer rather than asking for
+    /// it, so a test can pin one bridge's behaviour without reaching for a
+    /// process-wide environment variable.
+    pub(crate) fn retain_routable_against(&mut self, routable: Option<BTreeSet<String>>) {
+        let Some(routable) = routable else {
             return;
         };
         let kept: Vec<_> = self

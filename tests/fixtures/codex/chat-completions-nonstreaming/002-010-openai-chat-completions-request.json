@@ -1,0 +1,9 @@
+{
+  "messages": [
+    {
+      "content": "Reply with exactly: chat-ok",
+      "role": "user"
+    }
+  ],
+  "model": "gpt-5.6-terra"
+}

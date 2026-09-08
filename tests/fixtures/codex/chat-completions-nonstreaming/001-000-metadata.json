@@ -1,0 +1,20 @@
+{
+  "effort": "medium",
+  "headers": {
+    "accept": "*/*",
+    "content-length": "94",
+    "content-type": "application/json",
+    "host": "127.0.0.1:8961",
+    "user-agent": "curl/8.7.1"
+  },
+  "kind": "chat_completions",
+  "method": "POST",
+  "model": "gpt-5.6-terra",
+  "path": "/v1/chat/completions",
+  "provider": "codex",
+  "query": {},
+  "reqId": "cd2709d6-7abf-4207-88d5-cb953d58b846",
+  "requestedModel": "gpt-5.6-terra",
+  "sessionId": null,
+  "sessionSeq": null
+}

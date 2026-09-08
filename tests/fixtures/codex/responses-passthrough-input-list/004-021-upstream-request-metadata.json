@@ -1,0 +1,22 @@
+{
+  "headers": {
+    "accept": "application/json",
+    "authorization": "[redacted len=1775]",
+    "chatgpt-account-id": "[redacted len=36]",
+    "content-type": "application/json",
+    "openai-beta": "responses=experimental",
+    "originator": "codex_cli_rs",
+    "user-agent": "codex_cli_rs",
+    "x-codex-beta-features": "remote_compaction_v2",
+    "x-openai-internal-codex-responses-lite": "true"
+  },
+  "method": "POST",
+  "provider": "codex",
+  "size": {
+    "bytes": 127,
+    "inputCount": 1,
+    "toolCount": null
+  },
+  "transport": "http",
+  "url": "https://chatgpt.com/backend-api/codex/responses"
+}

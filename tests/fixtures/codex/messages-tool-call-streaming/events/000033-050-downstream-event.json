@@ -1,0 +1,6 @@
+{
+  "data": {
+    "type": "message_stop"
+  },
+  "event": "message_stop"
+}

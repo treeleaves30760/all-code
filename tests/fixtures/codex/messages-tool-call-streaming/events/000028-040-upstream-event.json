@@ -1,0 +1,13 @@
+{
+  "item": {
+    "arguments": "{\"path\":\"/etc/hosts\"}",
+    "call_id": "call_piubHZQo0iWT8WOQgeAzt2tW",
+    "id": "fc_074ace6d50c94121016aa0797f18e887d2814f7297c637283b",
+    "name": "read_file",
+    "status": "completed",
+    "type": "function_call"
+  },
+  "output_index": 0,
+  "sequence_number": 12,
+  "type": "response.output_item.done"
+}

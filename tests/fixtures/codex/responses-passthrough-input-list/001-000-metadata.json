@@ -1,0 +1,19 @@
+{
+  "headers": {
+    "accept": "*/*",
+    "content-length": "127",
+    "content-type": "application/json",
+    "host": "127.0.0.1:8961",
+    "user-agent": "curl/8.7.1"
+  },
+  "kind": "responses",
+  "method": "POST",
+  "model": "gpt-5.6-terra",
+  "path": "/v1/responses",
+  "provider": "codex",
+  "query": {},
+  "reqId": "46d81e23-1c12-48f6-a5b6-c373d2d1e296",
+  "requestedModel": "gpt-5.6-terra",
+  "sessionId": null,
+  "sessionSeq": null
+}

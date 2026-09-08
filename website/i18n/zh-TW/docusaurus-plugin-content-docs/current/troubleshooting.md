@@ -46,8 +46,8 @@ OpenRouter 或 Ollama，或改用
 
 ## `the bundled claude-codex … helper is missing`
 
-從 1.4.0 起不會發生：橋接是編進 `alc` 裡的，不再是旁邊的另一個執行檔。如果你
-是在舊版 `alc` 上看到這個訊息，請用一行安裝器升級。
+從 1.4.0 起不會發生：橋接是 `alc` 的一部分，不再是旁邊的另一個執行檔；從 1.5.0
+起它是 alc 自己的程式碼。如果你是在舊版 `alc` 上看到這個訊息，請用一行安裝器升級。
 
 ## Ollama profile 出現 `API Error: Request timed out`（或 `500`）
 
@@ -104,7 +104,9 @@ alc models --refresh
 ## `the model may not exist or you may not have access to it`
 
 在 `--codex` session 裡看到這句，通常代表模型是真的存在，只是內建的
-`claude-codex` 橋接還不能轉送它 —— Codex 推出新模型，總是比橋接學會服務它早一些。
+橋接還不能轉送它 —— 1.5.0 之前 alc 所依賴的橋接裡有一份寫死的模型清單，可能
+落後 Codex 一個版本。從 1.5.0 起橋接不保留任何清單，所以這種情況不該再發生；
+若真的發生，訊息會列出可用的模型。
 alc 現在會在啟動時就擋下來，並列出橋接真的能轉送的模型，挑一個即可：
 
 ```sh

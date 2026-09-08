@@ -1,4 +1,5 @@
 mod agents;
+mod bridge;
 mod cli;
 mod config;
 mod doctor;

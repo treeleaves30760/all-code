@@ -1,0 +1,12 @@
+{
+  "continuation": {
+    "disabledReason": "disabled",
+    "inputDeltaCount": null,
+    "previousResponseId": null
+  },
+  "pooled": false,
+  "poolingEnabled": false,
+  "provider": "codex",
+  "transport": "websocket",
+  "url": "wss://chatgpt.com/backend-api/codex/responses"
+}

@@ -298,7 +298,7 @@ alc --codex qwen
 alc --codex kimi
 ```
 
-`alc` 會在 loopback port 上啟動內建的 `claude-codex` 轉接器（編進 alc 本身），
+`alc` 會在 loopback port 上啟動內建的 Codex 轉接器（alc 自己的程式碼），
 並只讓啟動
 的那個 agent 行程指向它。轉接器對 Claude Code 說 Anthropic Messages，對
 OpenCode／Pi／Kimi Code CLI 說 OpenAI Responses，對 Copilot CLI／Goose／
@@ -320,10 +320,10 @@ Claude Code 會直接以你儲存的預設值啟動，並把下列模型放進�
 | `gpt-5.6-terra` | 速度、能力、成本均衡，建議新手從這個開始 | `medium` |
 | `gpt-5.6-luna` | 速度快、費用低，適合簡單修改與大量例行工作 | `medium` |
 
-alc 只列出內建 `claude-codex` 橋接真的能轉送的模型。Codex 已經推出、但橋接還沒
-學會的模型，會在啟動時就被擋下並列出可用選項，而不是讓 session 冒出 agent 自己
-那句「模型可能不存在，或你可能沒有存取權」。從 1.4.1 起橋接是 alc 自己的 fork，
-所以補上這種落差是一個 commit 的事，不必等別人。
+alc 列出 Codex 提供的模型，橋接本身不保留任何允許清單：收到什麼 slug 就往上游
+送，由 chatgpt.com 決定。所以模型在 Codex 推出的當天就能用。1.5.0 之前，alc
+所依賴的橋接裡有一份寫死的清單可能落後一個版本，這正是 `gpt-6-astra` 明明
+`codex` 自己能用、透過橋接卻用不了的原因。
 
 清單依能力由強到弱排列，與 Codex 自己的分級一致。`gpt-6-astra` 與較新的 GPT-5.6
 模型另外提供高於 `max` 的 `ultra` 強度。這一級可以用原生的 `alc codex` 使用，但
@@ -390,12 +390,12 @@ alc models --json
 設定傳入，讓 Claude Code 不認得的 GPT ID 依照 Codex 的實際上限壓縮
 對話，而不是用它的通用預設值。
 
-`alc` 直接連結
-[`claude-codex` 0.3.1](https://github.com/fcakyon/claude-code-with-codex)，
-一個 MIT 授權的函式庫，版本由 `Cargo.toml` 的 tag 與 `Cargo.lock` 的 commit
-固定。它跑在 `alc` 行程內、綁在隨機的 `127.0.0.1` port，只讓啟動的那個 agent
-指向它，並在該 session 結束時關閉。它會讀取並可能更新 `~/.codex/auth.json`；
-憑證不會被複製到 `alc` 的設定裡。
+橋接是 alc 自己的程式碼（`src/bridge/`）。它跑在 `alc` 行程內、綁在隨機的
+`127.0.0.1` port，只讓啟動的那個 agent 指向它，並在該 session 結束時關閉。
+它會讀取並可能更新 `~/.codex/auth.json`；憑證不會被複製到 `alc` 的設定裡。
+
+它不保留任何模型清單。收到什麼 slug 就往上游送，由 chatgpt.com 決定要不要拒絕
+—— 這就是為什麼一個模型在 Codex 推出的當天就能用，而不是等 alc 追上。
 
 這個轉接器是第三方相容層，不是 OpenAI 或 Anthropic 的官方整合。使用
 訂閱帳號前，請先檢閱 [THIRD_PARTY.md](THIRD_PARTY.md) 與你的 provider

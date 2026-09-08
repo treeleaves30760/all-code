@@ -1,6 +1,6 @@
 [package]
 name = "all-code"
-version = "1.4.1"
+version = "1.5.0"
 edition = "2024"
 rust-version = "1.88"
 description = "One CLI to configure and launch Claude Code, Codex, OpenCode, Pi, Copilot CLI, Goose, Qwen Code, and Kimi Code CLI with multiple LLM providers"
@@ -19,22 +19,27 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0"
 avt = "0.18"
+# src/bridge only. Versions match what the vendored bridge already pulled in,
+# so adding them as direct dependencies costs no new crates.
+axum = "0.8"
+base64 = "0.22"
+bytes = "1"
 # The Codex bridge, run in-process rather than shelled out to. alc no longer
 # ships or downloads a second binary, and the two halves can no longer drift
 # out of step.
 #
-# Pinned to alc's own fork by commit, not to upstream by tag. Upstream's model
-# lists are hard-coded and were a release behind Codex, which is what made
-# gpt-6-astra unusable through the bridge while `codex` itself offered it;
-# owning the pin means that class of problem is a commit away rather than a
-# wait. The commit is immutable, and release builds pass --locked.
-claude-codex = { git = "https://github.com/treeleaves30760/claude-code-with-codex", rev = "c4a80e2934869f9244601df0a8005f9442301c55" }
 clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = "0.29"
 flate2 = "1.1"
+futures-util = "0.3"
 getrandom = "0.4"
 portable-pty = "0.9"
 ratatui = "0.30"
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls",
+] }
 rpassword = "7.4"
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -43,7 +48,9 @@ sha2 = "0.11"
 tar = "0.4"
 tempfile = "3.14"
 # Only what the bridge's own server needs; alc itself stays synchronous.
-tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+# `sync` and `time` are src/bridge's: a single-flighted token refresh and a
+# stream idle timeout.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"] }
 toml = "1.1"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 ureq = "3.4"
@@ -59,6 +66,9 @@ libc = "0.2"
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
+# Exercises the bridge router without binding a port.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 lto = "thin"

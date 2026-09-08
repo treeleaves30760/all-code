@@ -1,23 +1,22 @@
 # Third-party software
 
-`alc` links the following in at build time. There is no second binary to
-download, install, or keep in step with `alc`.
+## The Codex bridge
 
-## claude-codex 0.3.1
+`alc` translates between what a coding agent speaks and what Codex serves. That
+translation is alc's own code (`src/bridge/`) as of 1.5.0 — there is no bridge
+dependency, no second binary, and no list of models maintained by anyone else.
 
-- Project: <https://github.com/treeleaves30760/claude-code-with-codex>
-  (alc's fork of <https://github.com/fcakyon/claude-code-with-codex>)
-- Based on: <https://github.com/raine/claude-code-proxy>
-- License: MIT
-- Purpose: loopback-only Anthropic Messages / OpenAI Responses / Chat
-  Completions translation for the alc Codex bridge (`alc --codex <agent>`)
+It was written against a captured corpus of real traffic, and its design was
+informed by reading
+[`claude-codex`](https://github.com/fcakyon/claude-code-with-codex) (MIT),
+which alc depended on through 1.4.1. That license is kept in
+`THIRD_PARTY_LICENSES/claude-codex-LICENSE` in acknowledgement of the work it
+made possible.
 
-Pinned in `Cargo.toml` by commit, and compiled into
-`alc` as a library rather than shipped beside it. It is served on a loopback
-port owned by the `alc` process, started only for Codex-backed sessions — of
-any supported agent — and stopped when that session ends. It reads and may
-refresh the current user's Codex CLI credentials. See the bundled license in
-`THIRD_PARTY_LICENSES/claude-codex-LICENSE`.
+The bridge reads and may refresh the Codex CLI's own `~/.codex/auth.json`. It
+runs inside the `alc` process on a loopback port, serves only the agent that
+launch started, and stops when that session ends. Credentials are never copied
+into the alc configuration.
 
 # Vendored browser assets
 

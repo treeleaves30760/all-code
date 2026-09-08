@@ -47,9 +47,9 @@ Run `codex login`, then retry. `alc doctor` reports the login state under
 
 ## `the bundled claude-codex … helper is missing`
 
-It cannot be, from 1.4.0 on: the bridge is compiled into `alc` rather than
-shipped beside it. If you are seeing this from an older `alc`, upgrade with
-the one-line installer.
+It cannot be, from 1.4.0 on: the bridge is part of `alc` rather than shipped
+beside it, and from 1.5.0 it is alc's own code. If you are seeing this from an
+older `alc`, upgrade with the one-line installer.
 
 ## `API Error: Request timed out` (or `500`) with an Ollama profile
 
@@ -112,7 +112,10 @@ default only when both are on. Turn on the `sharing` row above it, or run
 ## `the model may not exist or you may not have access to it`
 
 From a `--codex` session, this usually means the model is real but the bundled
-`claude-codex` bridge cannot route it yet — Codex ships a model some time
+bridge could not route it — before 1.5.0 the bridge alc depended on kept a
+hard-coded model list that could be a release behind Codex. From 1.5.0 the
+bridge keeps no list at all, so this should no longer happen; if it does, the
+message names the models that do work.
 before the bridge learns to serve it. alc now refuses that launch up front and
 lists the models the bridge does route; pick one of those:
 
