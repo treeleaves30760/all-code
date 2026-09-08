@@ -47,8 +47,8 @@ reasoning effort — at launch, using its own mechanism instead of a picker.
 
 ## Claude Code
 
-Claude Code starts immediately on your saved default and offers every model
-in its own `/model` picker:
+Claude Code starts immediately on your saved default and offers these in its
+own `/model` picker:
 
 | Model | Beginner-friendly use case | Codex default effort |
 | --- | --- | --- |
@@ -56,6 +56,14 @@ in its own `/model` picker:
 | `gpt-5.6-sol` | Frontier capability for the hardest professional work | `low` |
 | `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
 | `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
+
+`gpt-6-astra` is the one entry that may not be offered: alc lists only the
+models the bundled `claude-codex` bridge can actually route, and the bridge
+learns a new Codex model some time after Codex itself ships it. While that is
+true, `alc --codex claude` refuses the model at launch and names the ones that
+work, instead of letting the session fail with the agent's own "the model may
+not exist or you may not have access to it". Native `alc codex` is unaffected.
+The model reappears on its own once a bridge that routes it is installed.
 
 The list is ordered by capability, most capable first, matching Codex's own
 tiers. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` effort

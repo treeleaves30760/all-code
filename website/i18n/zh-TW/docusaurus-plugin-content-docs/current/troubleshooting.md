@@ -100,3 +100,16 @@ alc models --refresh
 
 如果那一列顯示 `on (inactive)`，代表共享本身是關的：一個 session 要兩者都開才會
 預設共享。把上面那列的 `sharing` 打開，或執行 `alc remote on`。
+
+## `the model may not exist or you may not have access to it`
+
+在 `--codex` session 裡看到這句，通常代表模型是真的存在，只是內建的
+`claude-codex` 橋接還不能轉送它 —— Codex 推出新模型，總是比橋接學會服務它早一些。
+alc 現在會在啟動時就擋下來，並列出橋接真的能轉送的模型，挑一個即可：
+
+```sh
+alc config upsert codex --model gpt-5.6-terra
+```
+
+如果 codex profile 的 model 是空的，它會改用 Codex CLI 自己的 `model` 設定，
+而那通常正是不能轉送的那個來源。原生的 `alc codex` 不受影響。

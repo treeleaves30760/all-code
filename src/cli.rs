@@ -9,7 +9,7 @@ use crate::config::{
     Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
     validate_profile_name,
 };
-use crate::model_catalog::ModelCatalog;
+use crate::model_catalog::{ModelCatalog, ModelInfo};
 use crate::remote::RemoteCommand;
 use crate::{doctor, launch, ollama, remote, tui, update};
 
@@ -756,7 +756,7 @@ fn run_claude(
             model: Some(model),
             reasoning_effort: Some(effort),
             context_window,
-            model_options: catalog.models.clone(),
+            model_options: routable_model_options(&catalog),
         }
     } else {
         codex_launch_overrides(store, &provider, dry_run)?
@@ -846,8 +846,31 @@ fn codex_launch_overrides(
         model: Some(model),
         reasoning_effort: Some(effort),
         context_window,
-        model_options: catalog.models.clone(),
+        model_options: routable_model_options(&catalog),
     })
+}
+
+/// The catalog entries the bundled bridge can actually route.
+///
+/// These become the agent's own in-session picker, and the catalog on disk
+/// can be a day older than the bridge: an entry the bridge cannot route
+/// would fail mid-conversation, which is a worse place to find out than at
+/// launch. Every path that builds a picker goes through here, because a
+/// filter applied on only some of them is the same bug with a narrower
+/// trigger. No answer from the bridge means "no opinion" and leaves the
+/// list alone.
+fn routable_model_options(catalog: &ModelCatalog) -> Vec<ModelInfo> {
+    let routable = launch::bridge_codex_models();
+    catalog
+        .models
+        .iter()
+        .filter(|entry| {
+            routable
+                .as_ref()
+                .is_none_or(|routable| routable.contains(&entry.id))
+        })
+        .cloned()
+        .collect()
 }
 
 fn run_spec(
@@ -876,11 +899,20 @@ fn run_spec(
             spec.provider_kind,
             spec.redacted_command()
         );
-        if spec.bridge.is_some() {
+        if let Some(plan) = &spec.bridge {
             println!(
                 "adapter: bundled claude-codex {} on an ephemeral loopback port",
                 launch::CLAUDE_CODEX_HELPER_VERSION
             );
+            // A dry run exists to report what a real run would do, so it has
+            // to admit the launch it is describing would be refused.
+            if launch::bridge_codex_models().is_some_and(|routable| !routable.contains(&plan.model))
+            {
+                println!(
+                    "adapter: WOULD FAIL - the bridge cannot route '{}'; run without --dry-run for the models it does",
+                    plan.model
+                );
+            }
         }
         for entry in &spec.file_setup {
             match entry {

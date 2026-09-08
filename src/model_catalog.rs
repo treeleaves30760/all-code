@@ -80,11 +80,28 @@ impl ModelCatalog {
 
         let raw: DebugCatalog = serde_json::from_slice(&output.stdout)
             .context("Codex returned an invalid model catalog")?;
+        // Codex knowing a model is only half the requirement: the session
+        // reaches it through the bundled bridge, and a model the bridge
+        // cannot route fails inside the agent with a message about the
+        // account rather than about the bridge. Offering it would be
+        // offering something that cannot work.
+        let routable = crate::launch::bridge_codex_models();
         let mut models = Vec::new();
+        let mut dropped_by_bridge = Vec::new();
         for target in TARGET_MODELS {
             let Some(model) = raw.models.iter().find(|model| model.slug == target) else {
                 continue;
             };
+            // Codex knowing the model is checked first, so the two failures
+            // stay tellable apart: "Codex does not offer it" and "the bridge
+            // cannot route it" send the user to different places.
+            if routable
+                .as_ref()
+                .is_some_and(|routable| !routable.contains(target))
+            {
+                dropped_by_bridge.push(target);
+                continue;
+            }
             let supported_efforts: Vec<_> = model
                 .supported_reasoning_levels
                 .iter()
@@ -109,6 +126,15 @@ impl ModelCatalog {
             });
         }
         if models.is_empty() {
+            // Blaming Codex when the bridge is what rejected everything sends
+            // the user to reinstall the wrong half.
+            if !dropped_by_bridge.is_empty() {
+                bail!(
+                    "the bundled claude-codex bridge routes none of the models alc offers \
+                     ({}); keeping the previous catalog",
+                    dropped_by_bridge.join(", ")
+                );
+            }
             bail!(
                 "the installed Codex reported none of the models alc offers; keeping the previous catalog"
             );

@@ -108,3 +108,18 @@ status` and `alc doctor` report it, and `alc config show` prints it under
 If the row reads `on (inactive)`, sharing itself is off: a session shares by
 default only when both are on. Turn on the `sharing` row above it, or run
 `alc remote on`.
+
+## `the model may not exist or you may not have access to it`
+
+From a `--codex` session, this usually means the model is real but the bundled
+`claude-codex` bridge cannot route it yet — Codex ships a model some time
+before the bridge learns to serve it. alc now refuses that launch up front and
+lists the models the bridge does route; pick one of those:
+
+```sh
+alc config upsert codex --model gpt-5.6-terra
+```
+
+A codex profile whose model is empty follows the Codex CLI's own `model`
+setting instead, which is where an unroutable one usually comes from. Native
+`alc codex` is unaffected.

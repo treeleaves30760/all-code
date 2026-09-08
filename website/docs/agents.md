@@ -36,7 +36,8 @@ with a single `codex login`; see that page for how the bridge itself works.
   reports in `CLAUDE_CODE_MAX_CONTEXT_TOKENS` — see
   [Claude Code on a local Ollama model](./providers.md#claude-code-on-a-local-ollama-model).
 - Through the bridge, Claude Code is the one agent with in-session switching:
-  every GPT model appears in its own `/model` picker, and `/model`/`/effort`
+  every GPT model the bundled bridge can route appears in its own `/model`
+  picker, and `/model`/`/effort`
   change the running session — see [Codex bridge](./codex-to-claude.md) for
   the full walkthrough.
 

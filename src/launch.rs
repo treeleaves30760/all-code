@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -631,6 +632,7 @@ pub(crate) struct Bridge {
 impl Bridge {
     fn start(plan: &BridgePlan) -> Result<Self> {
         let helper = find_helper()?;
+        require_routable_model(&plan.model)?;
         let auth_file = codex_auth_file()?;
         if !auth_file.is_file() {
             bail!(
@@ -747,6 +749,79 @@ fn find_helper() -> Result<PathBuf> {
     }
     bail!(
         "the bundled claude-codex {CLAUDE_CODEX_HELPER_VERSION} helper is missing; reinstall alc with the one-line installer or install `claude-codex` on PATH"
+    )
+}
+
+/// The Codex model slugs the bundled bridge can actually route.
+///
+/// `codex debug models` answers a different question: what the account can
+/// reach. The bridge only knows the slugs it shipped with, and the two do not
+/// move together — a Codex release adds a model months before the bridge
+/// learns to serve it. Asking the bridge itself is the only honest source.
+///
+/// `None` means the question could not be answered: no helper on disk, a
+/// command that failed, or output in a shape this does not recognise. Every
+/// caller treats that as "no opinion", because a bridge that changes how it
+/// prints must not become an alc that refuses every model.
+/// Memoised: a launch asks twice (once to filter the in-session picker, once
+/// to check the model it is starting on) and a catalog refresh asks again,
+/// while the answer cannot change inside one process.
+pub(crate) fn bridge_codex_models() -> Option<BTreeSet<String>> {
+    static CACHED: OnceLock<Option<BTreeSet<String>>> = OnceLock::new();
+    CACHED.get_or_init(query_bridge_codex_models).clone()
+}
+
+fn query_bridge_codex_models() -> Option<BTreeSet<String>> {
+    let helper = find_helper().ok()?;
+    let output = Command::new(&helper).arg("models").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_bridge_models(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Reads the `codex:` line out of `claude-codex models`.
+///
+/// One line per backend, and some of them carry trailing prose after a `;`,
+/// so the slugs stop there rather than at the end of the line.
+fn parse_bridge_models(listing: &str) -> Option<BTreeSet<String>> {
+    let line = listing
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("codex:"))?;
+    let models: BTreeSet<String> = line
+        .split(';')
+        .next()
+        .unwrap_or(line)
+        .split(',')
+        .map(|slug| slug.trim().to_owned())
+        .filter(|slug| !slug.is_empty())
+        .collect();
+    (!models.is_empty()).then_some(models)
+}
+
+/// Refuses a model the bridge would reject, before anything is launched.
+///
+/// Left to itself the refusal arrives from inside the agent — Claude Code
+/// says the model "may not exist or you may not have access to it" — which
+/// sends the user to check their subscription when the actual cause is that
+/// alc's bridge is a version behind Codex. Saying it here costs one fast
+/// subprocess and names the models that would have worked.
+fn require_routable_model(model: &str) -> Result<()> {
+    let Some(supported) = bridge_codex_models() else {
+        return Ok(());
+    };
+    if supported.contains(model) {
+        return Ok(());
+    }
+    bail!(
+        "the bundled claude-codex {CLAUDE_CODEX_HELPER_VERSION} bridge cannot route '{model}'.\n\
+         Codex itself may well offer it; the bridge is the half that has not caught up.\n\
+         It does route: {}\n\
+         Choose one in `alc config` on the provider screen, or with \
+         `alc config upsert codex --model <id>`. A codex profile with an empty model \
+         follows the Codex CLI's own `model` setting instead, which is where an \
+         unroutable one usually comes from.",
+        supported.iter().cloned().collect::<Vec<_>>().join(", ")
     )
 }
 
@@ -902,6 +977,41 @@ mod tests {
 
     use crate::config::{Config, Credentials};
     use crate::model_catalog::ModelCatalog;
+
+    /// Verbatim `claude-codex 0.3.1 models` output, trailing prose included.
+    const BRIDGE_LISTING: &str = "\
+codex: gpt-5.5, gpt-5.6-luna, gpt-5.6-terra
+kimi: k2.6, k3
+cursor: composer-2.5, cursor-plan; 0 cursor model aliases run `claude-codex models --full` for all aliases
+";
+
+    #[test]
+    fn the_bridge_listing_yields_only_its_codex_slugs() {
+        let models = parse_bridge_models(BRIDGE_LISTING).expect("a codex line");
+        assert_eq!(
+            models.iter().cloned().collect::<Vec<_>>(),
+            ["gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra"]
+        );
+    }
+
+    /// The prose after `;` on the cursor line must not become a model, or a
+    /// model check would accept nonsense and reject the real slugs.
+    #[test]
+    fn trailing_prose_never_becomes_a_model() {
+        let models = parse_bridge_models("codex: gpt-5.5; and some prose, with commas\n")
+            .expect("a codex line");
+        assert_eq!(models.iter().cloned().collect::<Vec<_>>(), ["gpt-5.5"]);
+    }
+
+    /// Output this does not recognise has to mean "no opinion". Answering
+    /// with an empty set would turn a reworded bridge into an alc that
+    /// refuses every model.
+    #[test]
+    fn unrecognised_output_declines_to_answer() {
+        assert!(parse_bridge_models("").is_none());
+        assert!(parse_bridge_models("kimi: k3\n").is_none());
+        assert!(parse_bridge_models("codex:\n").is_none());
+    }
 
     fn store(config: Config, credentials: Credentials) -> Store {
         Store {
