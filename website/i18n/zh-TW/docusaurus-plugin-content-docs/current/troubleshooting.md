@@ -88,3 +88,15 @@ alc models --refresh
 
 `alc --dry-run` 會遮蔽 API key 與 auth token；`alc config show` 不會印出憑證內容，
 只會顯示每個 profile 有沒有設定。
+
+## 在 `alc config` 裡找不到共享設定
+
+它在第三個畫面。`alc config` 的標題列會列出三個畫面 —— `1 Providers`、
+`2 Agent defaults`、`3 Sharing & remote` —— 用 `Tab`、`Shift+Tab` 或直接按數字鍵
+就能切換。預設共享、綁定位址與權限上限都在第三個畫面裡。
+
+在 TUI 之外，`alc remote auto-share on` 設定的是同一個值，`alc remote status`
+與 `alc doctor` 都會顯示它，`alc config show` 則會印在 `# Remote control` 底下。
+
+如果那一列顯示 `on (inactive)`，代表共享本身是關的：一個 session 要兩者都開才會
+預設共享。把上面那列的 `sharing` 打開，或執行 `alc remote on`。

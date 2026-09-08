@@ -120,7 +120,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Open the provider configuration TUI or use a scripting subcommand.
+    /// Open the configuration TUI or use a scripting subcommand.
+    ///
+    /// The TUI has three screens, named across its header: provider
+    /// profiles, per-agent defaults, and sharing & remote control - which is
+    /// where share-by-default, the bind address and the permission ceiling
+    /// live.
     Config(ConfigArgs),
     /// Check agent binaries, credentials, defaults, and compatibility.
     Doctor,
@@ -1154,6 +1159,29 @@ fn print_config(store: &Store) -> Result<()> {
             "missing"
         };
         println!("# {name}: {status}");
+    }
+
+    // Sharing is the one thing people go looking for in `alc config` and do
+    // not find, because it lives in remote.toml rather than in the dump
+    // above. Printed as comments, and attributed to its own file, so the
+    // TOML half of this output still round-trips as config.toml.
+    println!("\n# Remote control (remote.toml; `alc config` → Sharing & remote)");
+    match remote::Settings::load(&store.dir) {
+        Ok(settings) => {
+            // The stored values, not the effective ones: this command reports
+            // what is in the files it names, and printing `off` for a file
+            // that says `auto_share = true` would misdescribe it. The
+            // dependency between the two gets its own line instead.
+            println!("# sharing: {}", remote::on_off(settings.enabled));
+            println!(
+                "# share by default: {}",
+                remote::on_off(settings.auto_share)
+            );
+            if settings.auto_share && !settings.enabled {
+                println!("# note: sharing is off, so nothing shares by default yet");
+            }
+        }
+        Err(error) => println!("# unreadable: {error}"),
     }
     Ok(())
 }

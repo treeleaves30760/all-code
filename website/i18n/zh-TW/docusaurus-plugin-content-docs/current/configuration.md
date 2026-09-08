@@ -35,7 +35,9 @@ alc config
 每個畫面底部都會顯示可用按鍵，主要操作如下：
 
 - `a`、`e`/Enter、`d`：新增、編輯、刪除 provider。
-- `Tab`：在 provider 清單與 agent 預設值之間切換。
+- `Tab`／`Shift+Tab`，或直接按 `1`／`2`／`3`：在標題列列出的三個畫面之間切換
+  —— Providers、Agent defaults、Sharing & remote。最後一個畫面可以設定
+  「預設共享」、綁定位址與權限上限。
 - 方向鍵：移動欄位與切換選項，包含推理強度。
 - 在 Codex profile 上，把游標移到 Model 欄位並按 `←`/`→`，會開啟模型與推理強度的
   選擇畫面，選好即成為 `alc --codex claude` 的啟動預設值。

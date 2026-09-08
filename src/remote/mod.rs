@@ -301,7 +301,13 @@ pub fn run_command(store: &Store, command: RemoteCommand) -> Result<u8> {
             let settings = RemoteSettings::load(&store.dir)?;
             let dir = Secrets::run_dir(&store.dir);
             println!("remote control: {}", on_off(settings.enabled));
-            println!("share by default: {}", on_off(settings.auto_share));
+            print!("share by default: {}", on_off(settings.auto_share));
+            // Sharing off makes the preference a no-op; saying so here keeps
+            // this block, `alc doctor` and the config screen telling one story.
+            if settings.auto_share && !settings.enabled {
+                print!(" (inactive; remote control is off)");
+            }
+            println!();
             println!("bind:           {}", settings.bind);
             let hosts = if settings.allowed_hosts.is_empty() {
                 "(loopback only)".to_owned()
@@ -359,7 +365,15 @@ pub fn run_command(store: &Store, command: RemoteCommand) -> Result<u8> {
             settings.auto_share = on;
             settings.save(&store.dir)?;
             println!("share every session: {}", on_off(on));
-            if on {
+            // `shares_by_default` is `enabled && auto_share`, so promising a
+            // shared session here while remote control is off would be a
+            // straight untruth - and the user would go looking for the
+            // reason in the wrong place.
+            if on && !settings.enabled {
+                println!(
+                    "remote control is off, so nothing shares yet; turn it on with `alc remote on`."
+                );
+            } else if on {
                 println!("`alc <agent>` now shares without --share; `--no-share` opts one out.");
             }
             Ok(0)
@@ -618,7 +632,16 @@ pub fn report(store: &Store) -> RemoteReport {
     };
 
     rows.push(("sharing", on_off(settings.enabled).to_owned()));
-    rows.push(("share by default", on_off(settings.auto_share).to_owned()));
+    // Reported as what a launch would actually do rather than as the raw
+    // field: with sharing off, `auto_share = true` shares nothing, and a
+    // bare "on" here would send the reader hunting for a different cause.
+    rows.push((
+        "share by default",
+        match (settings.enabled, settings.auto_share) {
+            (false, true) => "on (inactive; sharing is off)".to_owned(),
+            (_, auto_share) => on_off(auto_share).to_owned(),
+        },
+    ));
     rows.push(("bind", settings.bind.to_string()));
     if !settings.allowed_hosts.is_empty() {
         rows.push(("also answers to", settings.allowed_hosts.join(", ")));
@@ -634,6 +657,16 @@ pub fn report(store: &Store) -> RemoteReport {
         }
         _ => rows.push(("hub", "not running".to_owned())),
     }
+
+    // Where to change any of the above. Without it `alc doctor` reports the
+    // sharing posture and leaves the reader with no next step.
+    rows.push((
+        "settings",
+        format!(
+            "{} (or `alc config`)",
+            RemoteSettings::path(&store.dir).display()
+        ),
+    ));
 
     let dir = Secrets::run_dir(&store.dir);
     rows.push(("credentials", dir.display().to_string()));
@@ -673,6 +706,6 @@ pub fn report(store: &Store) -> RemoteReport {
     RemoteReport { rows, issues }
 }
 
-fn on_off(value: bool) -> &'static str {
+pub(crate) fn on_off(value: bool) -> &'static str {
     if value { "on" } else { "off" }
 }

@@ -22,7 +22,7 @@ use crate::config::{
 };
 use crate::model_catalog::ModelCatalog;
 use crate::model_picker::{PickerApp, PickerRequest};
-use crate::remote::{RemoteBind as Bind, SafetyRung, Settings as RemoteSettings};
+use crate::remote::{RemoteBind as Bind, SafetyRung, Settings as RemoteSettings, on_off};
 
 type Backend = CrosstermBackend<Stdout>;
 
@@ -85,6 +85,36 @@ enum Screen {
     Edit,
     Model,
     ConfirmDelete,
+}
+
+impl Screen {
+    /// The screens the tab strip names, in the order Tab visits them.
+    ///
+    /// Edit, Model and ConfirmDelete are overlays on one of these rather
+    /// than destinations, so they are not listed — but they still render the
+    /// strip, and `tab` keeps it pointing at where the user actually is.
+    const TABS: [Self; 3] = [Self::Providers, Self::Defaults, Self::Remote];
+
+    fn tab(self) -> Self {
+        match self {
+            Self::Defaults => Self::Defaults,
+            Self::Remote => Self::Remote,
+            Self::Providers | Self::Edit | Self::Model | Self::ConfirmDelete => Self::Providers,
+        }
+    }
+
+    /// The strip's label for this tab.
+    ///
+    /// The third one says "Sharing" rather than "Remote" because that is the
+    /// word someone hunting for share-by-default is scanning for; `alc
+    /// remote` is the name of the command, not of the thing being looked up.
+    fn title(self) -> &'static str {
+        match self.tab() {
+            Self::Defaults => "Agent defaults",
+            Self::Remote => "Sharing & remote",
+            _ => "Providers",
+        }
+    }
 }
 
 /// One toggleable remote-control setting, in the order the screen lists it.
@@ -179,11 +209,46 @@ impl App {
             KeyCode::Char('d') | KeyCode::Delete if self.selected_provider_name().is_some() => {
                 self.screen = Screen::ConfirmDelete;
             }
-            KeyCode::Tab => self.screen = Screen::Defaults,
+            KeyCode::Tab => self.switch_tab(1),
+            KeyCode::BackTab => self.switch_tab(-1),
+            KeyCode::Char(digit) if self.jump_to_tab(digit) => {}
             KeyCode::Char('s') => self.save(false),
             KeyCode::Char('q') => self.save(true),
             _ => {}
         }
+    }
+
+    /// Moves to the next or previous tab, wrapping.
+    ///
+    /// Tab used to be a one-way trip announced only by the footer of the
+    /// screen you were already on, so the sharing settings sat two blind
+    /// keypresses from the opening screen and were repeatedly reported as
+    /// missing from `alc config`. The strip names them; this makes the
+    /// journey reversible.
+    fn switch_tab(&mut self, delta: isize) {
+        let tabs = Screen::TABS;
+        let at = tabs
+            .iter()
+            .position(|screen| *screen == self.screen.tab())
+            .unwrap_or(0);
+        let next = (at as isize + delta).rem_euclid(tabs.len() as isize) as usize;
+        self.screen = tabs[next];
+    }
+
+    /// Jumps straight to the numbered tab, if that digit names one.
+    ///
+    /// The strip prints the numbers, so this is a key the screen has already
+    /// taught. Bound only on the tab screens: the provider form types digits
+    /// into its fields, and the delete prompt answers y/n.
+    fn jump_to_tab(&mut self, digit: char) -> bool {
+        let Some(index) = digit.to_digit(10).and_then(|n| (n as usize).checked_sub(1)) else {
+            return false;
+        };
+        let Some(screen) = Screen::TABS.get(index) else {
+            return false;
+        };
+        self.screen = *screen;
+        true
     }
 
     fn handle_defaults(&mut self, key: KeyEvent) {
@@ -196,7 +261,9 @@ impl App {
             }
             KeyCode::Left | KeyCode::Char('h') => self.cycle_default(-1),
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => self.cycle_default(1),
-            KeyCode::Tab => self.screen = Screen::Remote,
+            KeyCode::Tab => self.switch_tab(1),
+            KeyCode::BackTab => self.switch_tab(-1),
+            KeyCode::Char(digit) if self.jump_to_tab(digit) => {}
             KeyCode::Esc => self.screen = Screen::Providers,
             KeyCode::Char('s') => self.save(false),
             KeyCode::Char('q') => self.save(true),
@@ -215,7 +282,10 @@ impl App {
             KeyCode::Left | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
                 self.cycle_remote(matches!(key.code, KeyCode::Left));
             }
-            KeyCode::Tab | KeyCode::Esc => self.screen = Screen::Providers,
+            KeyCode::Tab => self.switch_tab(1),
+            KeyCode::BackTab => self.switch_tab(-1),
+            KeyCode::Char(digit) if self.jump_to_tab(digit) => {}
+            KeyCode::Esc => self.screen = Screen::Providers,
             KeyCode::Char('s') => self.save(false),
             KeyCode::Char('q') => self.save(true),
             _ => {}
@@ -499,8 +569,17 @@ impl App {
         match self.store.save() {
             Ok(()) => {
                 self.dirty = false;
+                // Sharing lives in the sidecar, so naming only config.toml
+                // told anyone who had just changed it that alc had written
+                // a file which does not contain the setting. An unreadable
+                // sidecar was not written, and must not be claimed.
+                let sidecar = if self.remote.is_some() {
+                    " and remote.toml"
+                } else {
+                    ""
+                };
                 self.set_status(
-                    format!("Saved {}.", self.store.config_path().display()),
+                    format!("Saved {}{sidecar}.", self.store.config_path().display()),
                     false,
                 );
                 if exit_after {
@@ -747,7 +826,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Min(8),
             Constraint::Length(2),
             Constraint::Length(2),
@@ -766,6 +845,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             ),
             Span::styled(dirty, Style::default().fg(Color::Yellow)),
         ]),
+        tab_strip(app.screen),
         Line::from(format!(" {}", app.store.config_path().display())),
     ])
     .block(Block::default().borders(Borders::BOTTOM));
@@ -792,14 +872,17 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     );
 
     let help = match app.screen {
+        // The tab strip carries the Tab/⇧Tab hint, so these stay short
+        // enough to survive an 80-column terminal: the Paragraph does not
+        // wrap, and the old provider line was already 93 characters.
         Screen::Providers | Screen::ConfirmDelete => {
-            " ↑↓ select  Enter/e edit  a add  d delete  Tab defaults  s save  q save+quit  Ctrl+C cancel"
+            " ↑↓ select  Enter/e edit  a add  d delete  s save  q save+quit  Ctrl+C cancel"
         }
         Screen::Defaults => {
-            " ↑↓ agent  ←→ provider  Tab remote  Esc providers  s save  q save+quit  Ctrl+C cancel"
+            " ↑↓ agent  ←→ provider  Esc providers  s save  q save+quit  Ctrl+C cancel"
         }
         Screen::Remote => {
-            " ↑↓ setting  ←→/Enter change  Tab/Esc providers  s save  q save+quit  Ctrl+C cancel"
+            " ↑↓ setting  ←→/Enter change  Esc providers  s save  q save+quit  Ctrl+C cancel"
         }
         Screen::Edit => {
             " ↑↓/Tab field  ←→ choice  type/backspace edit  Ctrl+U clear  Enter apply  Esc cancel"
@@ -829,6 +912,42 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             area,
         );
     }
+}
+
+/// Every screen `alc config` has, named on every frame.
+///
+/// The screens were only ever announced by the footer of the one you were
+/// standing on — "Tab defaults" on the provider list, and nothing about
+/// sharing until you had already pressed Tab once. Users concluded, reasonably,
+/// that `alc config` configured providers and nothing else, and reported the
+/// share-by-default setting as missing when it was two keypresses away.
+fn tab_strip(current: Screen) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    for (index, tab) in Screen::TABS.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+        }
+        let style = if tab == current.tab() {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        // Numbered, because the number is also the key that jumps here -
+        // the strip teaches its own shortcut instead of hiding it in a
+        // footer nobody reads.
+        spans.push(Span::styled(
+            format!(" {} {} ", index + 1, tab.title()),
+            style,
+        ));
+    }
+    spans.push(Span::styled(
+        "  Tab / ⇧Tab",
+        Style::default().fg(Color::DarkGray),
+    ));
+    Line::from(spans)
 }
 
 fn draw_providers(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
@@ -922,11 +1041,26 @@ fn draw_remote(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
                         on_off(settings.enabled).to_owned(),
                         "Whether `--share` works at all.",
                     ),
-                    RemoteRow::AutoShare => (
-                        "share by default",
-                        on_off(settings.auto_share).to_owned(),
-                        "Share every session without passing --share.",
-                    ),
+                    RemoteRow::AutoShare => {
+                        // A launch shares by default only when sharing is on
+                        // AND this is, so the two rows read together or not
+                        // at all: a bare "on" here would promise something
+                        // the next `alc claude` will not do.
+                        let stranded = settings.auto_share && !settings.enabled;
+                        (
+                            "share by default",
+                            if stranded {
+                                "on (inactive)".to_owned()
+                            } else {
+                                on_off(settings.auto_share).to_owned()
+                            },
+                            if stranded {
+                                "Turn sharing on above before this does anything."
+                            } else {
+                                "Share every session without passing --share."
+                            },
+                        )
+                    }
                     RemoteRow::Bind => (
                         "bind",
                         settings.bind.to_string(),
@@ -970,10 +1104,6 @@ fn draw_remote(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     .highlight_symbol("› ");
     let mut state = TableState::default().with_selected(Some(app.remote_selected));
     frame.render_stateful_widget(table, area, &mut state);
-}
-
-fn on_off(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
 }
 
 fn draw_defaults(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
@@ -1098,6 +1228,7 @@ mod tests {
     use super::*;
     use crate::config::{Config, Credentials};
     use crate::model_catalog::ModelCatalog;
+    use ratatui::backend::TestBackend;
     use std::path::PathBuf;
 
     fn app_editing_codex(model: &str) -> App {
@@ -1118,6 +1249,24 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// Shift+Tab reaches crossterm as `BackTab` carrying the shift modifier,
+    /// which `press` cannot express.
+    fn shift_tab(app: &mut App) {
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    }
+
+    fn rendered(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(96, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
     }
 
     fn app_on_remote_screen(dir: &std::path::Path) -> App {
@@ -1188,6 +1337,114 @@ mod tests {
         for rung in SafetyRung::ALL {
             assert!(seen.contains(&rung.as_str().to_owned()), "missed {rung}");
         }
+    }
+
+    /// The complaint this screen kept generating was "`alc config` only
+    /// configures models" — true of everything the opening frame showed.
+    /// Whatever else changes here, the first thing a user sees must name the
+    /// screen that owns sharing.
+    #[test]
+    fn the_opening_frame_advertises_the_sharing_screen() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.screen = Screen::Providers;
+
+        let screen = rendered(&mut app);
+        assert!(
+            screen.contains("Sharing"),
+            "the provider screen never names the sharing tab:\n{screen}"
+        );
+        assert!(
+            screen.contains("Agent defaults"),
+            "the provider screen never names the defaults tab:\n{screen}"
+        );
+    }
+
+    /// Tab and Esc used to share one match arm on this screen. Splitting
+    /// them so Tab could cycle is the one edit here that could silently
+    /// change behaviour, and nothing pinned Esc before.
+    #[test]
+    fn esc_still_returns_to_the_provider_list_from_remote() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Providers);
+    }
+
+    #[test]
+    fn the_numbers_in_the_strip_jump_to_the_screen_they_label() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.screen = Screen::Providers;
+
+        press(&mut app, KeyCode::Char('3'));
+        assert_eq!(app.screen, Screen::Remote);
+        press(&mut app, KeyCode::Char('1'));
+        assert_eq!(app.screen, Screen::Providers);
+
+        // Digits that name no tab must fall through to the existing keys
+        // rather than moving anywhere.
+        press(&mut app, KeyCode::Char('0'));
+        assert_eq!(app.screen, Screen::Providers);
+        press(&mut app, KeyCode::Char('4'));
+        assert_eq!(app.screen, Screen::Providers);
+    }
+
+    /// The provider form types digits into its fields, so the jump must not
+    /// reach it — `alc config` has to stay able to enter a port or a model
+    /// name containing a number.
+    #[test]
+    fn digits_are_still_text_inside_the_provider_form() {
+        let mut app = app_editing_codex("gpt-5.6-luna");
+        press(&mut app, KeyCode::Char('3'));
+
+        assert_eq!(app.screen, Screen::Edit);
+        assert!(
+            app.edit.as_ref().unwrap().provider.model.ends_with('3'),
+            "the digit was swallowed instead of typed"
+        );
+    }
+
+    #[test]
+    fn shift_tab_walks_the_screens_backwards() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.screen = Screen::Providers;
+
+        shift_tab(&mut app);
+        assert_eq!(app.screen, Screen::Remote);
+        shift_tab(&mut app);
+        assert_eq!(app.screen, Screen::Defaults);
+        shift_tab(&mut app);
+        assert_eq!(app.screen, Screen::Providers);
+    }
+
+    /// Editing a provider is a detour from the provider list, not a fourth
+    /// screen, so the strip must not go blank while the form is open.
+    #[test]
+    fn an_overlay_keeps_the_strip_on_the_tab_it_belongs_to() {
+        for screen in [Screen::Edit, Screen::Model, Screen::ConfirmDelete] {
+            assert_eq!(screen.tab(), Screen::Providers, "{screen:?}");
+        }
+    }
+
+    /// `shares_by_default` is `enabled && auto_share`. A row that says "on"
+    /// while sharing is off promises a mirrored session the next launch will
+    /// not produce.
+    #[test]
+    fn share_by_default_reads_as_inactive_while_sharing_is_off() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        let settings = app.remote.as_mut().unwrap();
+        settings.enabled = false;
+        settings.auto_share = true;
+
+        let screen = rendered(&mut app);
+        assert!(
+            screen.contains("on (inactive)"),
+            "share-by-default did not admit it is doing nothing:\n{screen}"
+        );
     }
 
     #[test]

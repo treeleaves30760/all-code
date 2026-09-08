@@ -93,3 +93,18 @@ alc models --refresh
 
 `alc --dry-run` redacts API keys and auth tokens, and `alc config show` never
 prints credential values — only whether each profile has one.
+
+## I cannot find the sharing setting in `alc config`
+
+It is on the third screen. `alc config` names all three across its header —
+`1 Providers`, `2 Agent defaults`, `3 Sharing & remote` — and `Tab`,
+`Shift+Tab` or the number key moves between them. Share-by-default, the bind
+address and the permission ceiling all live on the third one.
+
+Outside the TUI, `alc remote auto-share on` sets the same thing, `alc remote
+status` and `alc doctor` report it, and `alc config show` prints it under
+`# Remote control`.
+
+If the row reads `on (inactive)`, sharing itself is off: a session shares by
+default only when both are on. Turn on the `sharing` row above it, or run
+`alc remote on`.

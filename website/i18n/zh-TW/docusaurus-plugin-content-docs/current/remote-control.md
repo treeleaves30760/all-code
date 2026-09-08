@@ -148,8 +148,8 @@ alc remote auto-share on     # `alc claude` 現在等同於 `alc claude --share`
 alc --no-share claude        # 讓單一次啟動不共享
 ```
 
-`alc config` 裡也有 —— 從 provider 清單按兩次 Tab 進到 Remote 畫面，共享、預設共享、
-綁定位址、權限上限都可以在那裡改。
+`alc config` 裡也有 —— 標題列會列出三個畫面，用 `Tab`／`Shift+Tab` 切到
+**Sharing & remote**，共享、預設共享、綁定位址、權限上限都可以在那裡改。
 
 腳本式的執行 —— 也就是輸入或輸出被重導向的那種，像 `alc claude -p "…" > out.txt`
 —— 不論這個設定為何都**不會**共享。一個長期偏好不該成為某個 cron job 開始失敗的原因。
@@ -342,7 +342,7 @@ use `alc share claude -- <args>`
 | 鍵 | 預設 | 作用 |
 | --- | --- | --- |
 | `enabled` | `true` | 總開關。`alc remote off` 設定的就是這個。 |
-| `auto_share` | `false` | 每個 session 都共享，不必加 `--share`。`alc remote auto-share on`。 |
+| `auto_share` | `false` | 每個 session 都共享，不必加 `--share`；需要 `enabled` 也是開的才生效。`alc remote auto-share on`。 |
 | `bind` | `"loopback"` | `loopback` 或 `lan`。 |
 | `port` | `8787` | `0` 表示隨機連接埠。連接埠被佔用時會自動退回隨機。 |
 | `allowed_hosts` | `[]` | 除了這台機器自己的位址之外，還要回應哪些名字 —— 隧道的主機名，可精確指定或用 `*.example.com`。`alc remote allow-host` 會編輯這一項。 |

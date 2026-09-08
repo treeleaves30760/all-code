@@ -166,9 +166,9 @@ alc remote auto-share on     # `alc claude` now behaves like `alc claude --share
 alc --no-share claude        # opt one launch out
 ```
 
-It is also in `alc config` — Tab twice from the provider list to reach the
-Remote screen, where sharing, share-by-default, the bind address and the
-permission ceiling are all editable.
+It is also in `alc config`, on the **Sharing & remote** screen named in the
+header — `Tab`/`Shift+Tab` moves between screens. Sharing, share-by-default,
+the bind address and the permission ceiling are all editable there.
 
 A scripted run — one with redirected input or output, like
 `alc claude -p "…" > out.txt` — quietly does **not** share, whatever this is
@@ -392,7 +392,7 @@ same file.
 | Key | Default | What it does |
 | --- | --- | --- |
 | `enabled` | `true` | Master switch. `alc remote off` sets this. |
-| `auto_share` | `false` | Share every session without `--share`. `alc remote auto-share on`. |
+| `auto_share` | `false` | Share every session without `--share`, when `enabled` is also on. `alc remote auto-share on`. |
 | `bind` | `"loopback"` | `loopback` or `lan`. |
 | `port` | `8787` | `0` picks an ephemeral port. A busy port falls back to one. |
 | `allowed_hosts` | `[]` | Names to answer to besides this machine's own — a tunnel's hostname, exactly or as `*.example.com`. `alc remote allow-host` edits this. |

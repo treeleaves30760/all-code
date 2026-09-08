@@ -506,7 +506,7 @@ alc remote token --rotate    # invalidate every link
 
 The link `--share` prints scrolls away as soon as the agent draws its own
 interface, so `alc sessions` leads with it. Sharing by default is also in
-`alc config`, on the Remote screen.
+`alc config`, on the **Sharing & remote** screen — the header names all three.
 
 ## Configuration
 
@@ -539,7 +539,9 @@ alc config remove work
 The TUI keys are shown at the bottom of every screen. The primary controls are:
 
 - `a`, `e`/Enter, `d`: add, edit, or delete a provider.
-- `Tab`: switch between provider profiles and agent defaults.
+- `Tab`/`Shift+Tab`, or `1`/`2`/`3`: move between the three screens named in
+  the header — Providers, Agent defaults, and Sharing & remote. The last one
+  holds share-by-default, the bind address and the permission ceiling.
 - Arrow keys: navigate fields and cycle choices, including reasoning effort.
 - On a Codex profile, `←`/`→` on the Model field opens the guided GPT model and
   effort chooser, which writes the launch defaults for `alc --codex claude`.
