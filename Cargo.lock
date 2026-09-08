@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "all-code"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -451,7 +451,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 [[package]]
 name = "claude-codex"
 version = "0.3.1"
-source = "git+https://github.com/fcakyon/claude-code-with-codex?tag=v0.3.1#2c34184e910e9de2e302f16b6d8f9c0e68c91a48"
+source = "git+https://github.com/treeleaves30760/claude-code-with-codex?rev=c4a80e2934869f9244601df0a8005f9442301c55#c4a80e2934869f9244601df0a8005f9442301c55"
 dependencies = [
  "anyhow",
  "async-trait",

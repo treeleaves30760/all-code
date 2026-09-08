@@ -751,6 +751,7 @@ fn run_claude(
             println!("Saved {model} / {effort} as the default for '{profile_name}'.");
         }
 
+        let catalog = codex_catalog_for(store, catalog, &model, dry_run);
         let context_window = catalog.find(&model).map(|entry| entry.context_window);
         launch::LaunchOverrides {
             model: Some(model),
@@ -831,6 +832,28 @@ fn load_codex_catalog(store: &Store, dry_run: bool) -> ModelCatalog {
     }
 }
 
+/// The catalog, refreshed early when it has never heard of the model this
+/// launch is about to use.
+///
+/// The catalog is what tells the agent how large the model's context window
+/// is, and a cache can be a day older than the model - or, after a release
+/// that changed what the catalog keeps, simply missing an entry it used to
+/// drop. Launching anyway is not neutral: Claude Code falls back to assuming
+/// 200k and starts compacting a 272k session three quarters of the way in,
+/// without saying so. Waiting for one `codex debug models` is the cheaper
+/// mistake, and only happens when the model really is unknown.
+fn codex_catalog_for(
+    store: &Store,
+    catalog: ModelCatalog,
+    model: &str,
+    dry_run: bool,
+) -> ModelCatalog {
+    if dry_run || catalog.find(model).is_some() {
+        return catalog;
+    }
+    ModelCatalog::refresh(&store.dir).unwrap_or(catalog)
+}
+
 /// The catalog-backed defaults a Codex-bridged session starts on for any
 /// agent: no CLI overrides applied. `run_claude` layers `--model`/`--effort`/
 /// `--save` on top of this for Claude Code specifically.
@@ -841,6 +864,7 @@ fn codex_launch_overrides(
 ) -> Result<launch::LaunchOverrides> {
     let catalog = load_codex_catalog(store, dry_run);
     let (model, effort) = resolve_codex_defaults(provider, &catalog, None, None)?;
+    let catalog = codex_catalog_for(store, catalog, &model, dry_run);
     let context_window = catalog.find(&model).map(|entry| entry.context_window);
     Ok(launch::LaunchOverrides {
         model: Some(model),

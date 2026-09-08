@@ -57,14 +57,12 @@ own `/model` picker:
 | `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
 | `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
 
-`gpt-6-astra` is the one entry that may not be offered: alc lists only the
-models the built-in `claude-codex` bridge can actually route, and the bridge
-learns a new Codex model some time after Codex itself ships it. While that is
-true, `alc --codex claude` refuses the model at launch and names the ones that
-work, instead of letting the session fail with the agent's own "the model may
-not exist or you may not have access to it". Native `alc codex` is unaffected.
-The model reappears on its own once alc is built against a bridge that
-routes it.
+alc lists only the models the built-in `claude-codex` bridge can actually
+route. A model Codex has shipped but the bridge has not learned is refused at
+launch, naming the ones that work, rather than failing inside the session with
+the agent's own "the model may not exist or you may not have access to it".
+Since 1.4.1 the bridge is alc's own fork, so closing that gap is a commit
+rather than a wait.
 
 The list is ordered by capability, most capable first, matching Codex's own
 tiers. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` effort
