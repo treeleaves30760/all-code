@@ -92,7 +92,7 @@ impl BridgeState {
 
 /// Serves the bridge on an already-bound listener until `shutdown` resolves.
 ///
-/// Mirrors the vendored `claude_codex::server::serve_listener` so
+/// Shaped like the vendored bridge's own `serve_listener` was, so
 /// `launch::Bridge::start` can pick between them without restructuring: the
 /// port is reserved by the caller with the standard library, so the agent's
 /// base URL is known before any runtime exists.

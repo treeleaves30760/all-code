@@ -605,6 +605,21 @@ fn shell_quote(value: &OsStr) -> String {
     }
 }
 
+/// What the bridge needs to serve this one plan.
+///
+/// Claude Code is the exception every field here is shaped around: it sends
+/// its own model and effort on every request, so pinning either would freeze
+/// a slider the user can see. Every other agent chooses once at launch.
+/// Pure, so the distinction stays asserted rather than assumed.
+fn bridge_config(auth_file: PathBuf, plan: &BridgePlan) -> BridgeConfig {
+    let per_request = plan.api == BridgeApi::Messages;
+    BridgeConfig {
+        auth_file,
+        effort: (!per_request).then_some(plan.effort).flatten(),
+        responses_api: !per_request,
+    }
+}
+
 pub(crate) struct Bridge {
     port: u16,
     /// Dropped to tell the server to stop; the runtime thread ends with it.
@@ -624,13 +639,7 @@ impl Bridge {
                 auth_file.display()
             );
         }
-        let native = BridgeConfig {
-            auth_file,
-            effort: (plan.api != BridgeApi::Messages)
-                .then_some(plan.effort)
-                .flatten(),
-            responses_api: plan.api != BridgeApi::Messages,
-        };
+        let native = bridge_config(auth_file, plan);
 
         // Bound with the standard library, so the port is known before the
         // runtime exists and `base_url` can be handed to the agent builders
@@ -943,41 +952,24 @@ mod tests {
     use crate::config::{Config, Credentials};
     use crate::model_catalog::ModelCatalog;
 
-    /// The vendored bridge is linked in, so this is the same list the request
-    /// path will check against - not a guess parsed out of another program.
+    /// The bridge holds no model list, which is why a model Codex has just
+    /// shipped reaches it. Every caller reads `None` as "no opinion" and
+    /// offers its own catalog unfiltered, so this one assertion is what keeps
+    /// a stale allowlist from creeping back in — the bug this code exists to
+    /// remove.
     #[test]
-    fn the_vendored_bridge_reports_the_codex_models_it_routes() {
-        let models = bridge_codex_models_for(BridgeKind::Vendored)
-            .expect("the linked bridge always knows its models");
-        assert!(models.contains("gpt-5.6-terra"), "{models:?}");
-        // Anthropic aliases are routed to Claude, not through Codex; asking
-        // as the codex alias provider would fold them in here.
-        for alias in ["sonnet", "opus", "haiku", "claude-opus-4-8"] {
-            assert!(!models.contains(alias), "{alias} is not a Codex model");
-        }
+    fn the_bridge_keeps_no_model_list_at_all() {
+        assert!(bridge_codex_models().is_none());
     }
 
-    /// The native bridge holds no list, which is why `gpt-6-astra` reaches it.
-    /// Every caller reads `None` as "no opinion" and offers its own catalog
-    /// unfiltered, so this one assertion is what puts the model back in the
-    /// pickers the vendored bridge's stale allowlist emptied it out of.
+    /// `gpt-6-astra` is the model that proved the point: Codex offered it,
+    /// the bridge alc used to depend on refused it, and no catalog filtering
+    /// should be able to take it away again.
     #[test]
-    fn the_native_bridge_keeps_no_model_list_at_all() {
-        assert!(bridge_codex_models_for(BridgeKind::Native).is_none());
-    }
-
-    #[test]
-    fn a_model_the_vendored_bridge_refuses_is_offered_by_the_native_one() {
-        let vendored = bridge_codex_models_for(BridgeKind::Vendored).expect("a vendored list");
+    fn the_catalog_keeps_gpt_6_astra() {
         let mut catalog = ModelCatalog::built_in();
-        assert!(
-            catalog.models.iter().any(|model| model.id == "gpt-6-astra"),
-            "the bundled catalog is where the slug has to start"
-        );
-        // Not a fixture: the vendored crate really does refuse this slug, and
-        // that refusal is what `ALC_BRIDGE=native` exists to get past.
-        assert!(!vendored.contains("gpt-6-astra"));
-        catalog.retain_routable_against(bridge_codex_models_for(BridgeKind::Native));
+        assert!(catalog.models.iter().any(|model| model.id == "gpt-6-astra"));
+        catalog.retain_routable_against(bridge_codex_models());
         assert!(catalog.models.iter().any(|model| model.id == "gpt-6-astra"));
     }
 
@@ -1546,32 +1538,20 @@ mod tests {
             options: Vec::new(),
             api: BridgeApi::Responses,
         };
-        let env = bridge_child_env(&plan);
-        assert_eq!(
-            env.get("CCP_CODEX_TRANSPORT").map(String::as_str),
-            Some("auto")
-        );
-        assert_eq!(
-            env.get("CCP_CODEX_RESPONSES_API").map(String::as_str),
-            Some("1")
-        );
-        assert_eq!(
-            env.get("CCP_CODEX_EFFORT").map(String::as_str),
-            Some("high")
-        );
+        let config = bridge_config(PathBuf::from("auth.json"), &plan);
+        assert!(config.responses_api);
+        assert_eq!(config.effort, Some(ReasoningEffort::High));
 
+        // Claude Code sends model and effort per request, so pinning either
+        // would freeze a control the user can see in the session.
         let claude = BridgePlan {
             api: BridgeApi::Messages,
-            effort: None,
+            effort: Some(ReasoningEffort::High),
             ..plan
         };
-        let env = bridge_child_env(&claude);
-        assert_eq!(
-            env.get("CCP_CODEX_TRANSPORT").map(String::as_str),
-            Some("auto")
-        );
-        assert!(!env.contains_key("CCP_CODEX_RESPONSES_API"));
-        assert!(!env.contains_key("CCP_CODEX_EFFORT"));
+        let config = bridge_config(PathBuf::from("auth.json"), &claude);
+        assert!(!config.responses_api);
+        assert_eq!(config.effort, None);
     }
 
     #[test]

@@ -15,7 +15,7 @@ keywords:
 # Codex bridge
 
 One `codex login` serves every agent alc launches. `alc --codex <agent>`
-starts its built-in `claude-codex` adapter on a loopback port and points that
+starts its built-in Codex adapter on a loopback port and points that
 one agent's session at it — no separate login for OpenCode, Pi, Copilot CLI,
 Goose, Qwen Code, or Kimi Code CLI.
 
@@ -57,12 +57,11 @@ own `/model` picker:
 | `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
 | `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
 
-alc lists only the models the built-in `claude-codex` bridge can actually
-route. A model Codex has shipped but the bridge has not learned is refused at
-launch, naming the ones that work, rather than failing inside the session with
-the agent's own "the model may not exist or you may not have access to it".
-Since 1.4.1 the bridge is alc's own fork, so closing that gap is a commit
-rather than a wait.
+alc offers the models Codex lists, and the bridge keeps no allowlist of its
+own: whatever slug it is handed goes upstream, and chatgpt.com decides. A
+model is therefore usable on the day Codex ships it. Before 1.5.0 a
+hard-coded list in the bridge alc depended on could be a release behind,
+which is what made `gpt-6-astra` unreachable while `codex` itself served it.
 
 The list is ordered by capability, most capable first, matching Codex's own
 tiers. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` effort
@@ -163,13 +162,14 @@ capable one.
 
 ## How the bridge works
 
-`alc` links in
-[`claude-codex` 0.3.1](https://github.com/fcakyon/claude-code-with-codex), an
-MIT-licensed library, pinned by tag in `Cargo.toml` and by commit in
-`Cargo.lock`. It runs inside the `alc` process on a random `127.0.0.1` port,
-points only the launched agent at it, and stops when that session ends. It
-reads and may refresh `~/.codex/auth.json`; credentials are never copied into
-the alc configuration.
+The bridge is alc's own code (`src/bridge/`). It runs inside the `alc`
+process on a random `127.0.0.1` port, points only the launched agent at it,
+and stops when that session ends. It reads and may refresh
+`~/.codex/auth.json`; credentials are never copied into the alc configuration.
+
+It keeps no list of models. Whatever slug it is handed goes upstream, and
+chatgpt.com is the party that refuses an unknown one — which is why a model
+reaches you on the day Codex ships it rather than on the day alc catches up.
 
 :::caution Third-party compatibility layer
 
