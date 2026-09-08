@@ -11,6 +11,13 @@ keywords:
 
 # 更新 alc
 
+:::warning 從 1.3.x 升級
+1.4.0 把 Codex 橋接編進 `alc` 裡，發行包不再有第二個執行檔 —— 從 1.3.x 執行
+`alc update` 會失敗，訊息是 `release archive does not contain claude-codex`。
+請重跑一次一行安裝器，它會換掉 `alc` 並移除舊的 helper。1.4.0 之後 `alc update`
+就恢復正常。
+:::
+
 檢查是否有新版本，或直接更新 `alc`：
 
 ```sh
@@ -19,7 +26,7 @@ alc update
 ```
 
 `alc update` 會挑選符合目前作業系統與 CPU 的發行包、核對 GitHub Release 公布的
-SHA-256、確認包內版本，再一起替換兩個執行檔。
+SHA-256、確認包內版本，再替換 `alc`。
 
 - **Linux 與 macOS** 會立即完成替換。
 - **Windows** 會先完成下載與驗證，等目前的 `alc.exe` 結束後立刻替換；稍候再用

@@ -28,16 +28,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Verify bundled helper is still current
+      - name: Verify the linked bridge is still current
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $source = Get-Content -Raw ./src/launch.rs
-          if ($source -notmatch 'CLAUDE_CODEX_HELPER_VERSION: &str = "([^"]+)"') {
-            throw 'Could not read the pinned helper version from src/launch.rs'
+          # The bridge is a Cargo dependency now, so the tag in Cargo.toml is
+          # the pin that matters; the constant in launch.rs only reports it.
+          $manifest = Get-Content -Raw ./Cargo.toml
+          if ($manifest -notmatch 'claude-code-with-codex", tag = "v([^"]+)"') {
+            throw 'Could not read the pinned bridge version from Cargo.toml'
           }
           $pinned = $Matches[1]
+          $source = Get-Content -Raw ./src/launch.rs
+          if ($source -notmatch 'CLAUDE_CODEX_BRIDGE_VERSION: &str = "([^"]+)"') {
+            throw 'Could not read the reported bridge version from src/launch.rs'
+          }
+          if ($Matches[1] -ne $pinned) {
+            throw "Cargo.toml pins $pinned but src/launch.rs reports $($Matches[1])"
+          }
           $latest = (gh api repos/fcakyon/claude-code-with-codex/releases/latest --jq .tag_name).TrimStart('v')
           if ($pinned -ne $latest) {
             throw "claude-codex $latest is available; alc still pins $pinned"

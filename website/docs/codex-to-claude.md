@@ -63,7 +63,8 @@ learns a new Codex model some time after Codex itself ships it. While that is
 true, `alc --codex claude` refuses the model at launch and names the ones that
 work, instead of letting the session fail with the agent's own "the model may
 not exist or you may not have access to it". Native `alc codex` is unaffected.
-The model reappears on its own once a bridge that routes it is installed.
+The model reappears on its own once alc is built against a bridge that
+routes it.
 
 The list is ordered by capability, most capable first, matching Codex's own
 tiers. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` effort

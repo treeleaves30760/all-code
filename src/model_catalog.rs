@@ -52,7 +52,37 @@ impl ModelCatalog {
     }
 
     pub fn load(config_dir: &Path) -> Self {
-        read_cache(config_dir).unwrap_or_else(Self::built_in)
+        let mut catalog = read_cache(config_dir).unwrap_or_else(Self::built_in);
+        catalog.retain_routable();
+        catalog
+    }
+
+    /// Drops entries the built-in bridge cannot route.
+    ///
+    /// `refresh` filters what it writes, but neither catalog that reaches a
+    /// screen without going through it does: the bundled fallback is
+    /// `models/codex.json` verbatim, and a cache written by an older alc was
+    /// filtered by nothing. Both feed the `alc config` model picker and
+    /// `alc models` - which is exactly where a launch refused for an
+    /// unroutable model tells the user to go.
+    ///
+    /// An empty result would mean the bridge disagrees with every model alc
+    /// offers, which is a broken build rather than a reason to show the user
+    /// nothing, so the list is left alone - the same "no opinion" rule as a
+    /// bridge that reports nothing at all.
+    fn retain_routable(&mut self) {
+        let Some(routable) = crate::launch::bridge_codex_models() else {
+            return;
+        };
+        let kept: Vec<_> = self
+            .models
+            .iter()
+            .filter(|model| routable.contains(&model.id))
+            .cloned()
+            .collect();
+        if !kept.is_empty() {
+            self.models = kept;
+        }
     }
 
     pub fn load_and_refresh_if_due(config_dir: &Path) -> Self {

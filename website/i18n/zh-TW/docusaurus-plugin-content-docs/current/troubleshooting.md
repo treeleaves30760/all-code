@@ -44,7 +44,7 @@ OpenRouter 或 Ollama，或改用
 執行 `codex login` 後再試一次。登入狀態會顯示在 `alc doctor` 輸出的
 **Codex bridge** 底下。
 
-## 找不到 Codex 轉接器
+## `the bundled claude-codex … helper is missing`
 
 從 1.4.0 起不會發生：橋接是編進 `alc` 裡的，不再是旁邊的另一個執行檔。如果你
 是在舊版 `alc` 上看到這個訊息，請用一行安裝器升級。

@@ -26,7 +26,7 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
 ```
 
-The installer puts `alc` and its Codex-to-Claude loopback helper in
+The installer puts `alc` in
 `~/.local/bin` (Windows: `%USERPROFILE%\.local\bin`) and adds that directory to
 your user PATH when needed. On macOS and Linux, restart the terminal or source
 the profile named by the installer. PowerShell updates the current session and

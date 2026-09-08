@@ -25,7 +25,7 @@ Windows PowerShell：
 irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
 ```
 
-安裝器會把 `alc` 與 Codex-to-Claude 的 loopback helper 放進 `~/.local/bin`
+安裝器會把 `alc` 放進 `~/.local/bin`
 （Windows 為 `%USERPROFILE%\.local\bin`），必要時會把該目錄加入你的 User PATH。
 macOS 與 Linux 請依畫面提示重開終端機或 `source` 對應的設定檔；PowerShell 會同時
 更新目前工作階段與 User PATH。如果系統不允許修改 PATH，安裝器會明確印出需要手動

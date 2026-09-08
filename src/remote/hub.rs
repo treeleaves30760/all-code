@@ -60,12 +60,14 @@ pub(crate) struct Hub {
     secrets: Secrets,
     instance: String,
     port: u16,
-    /// Serialises spawning.
+    /// Serialises the part of a launch that touches process-global state.
     ///
-    /// `Bridge::start` reserves a loopback port and then drops the listener
-    /// before the helper binds it - harmless for one launch at a time, a
-    /// real collision when a hub starts several Codex-backed sessions at
-    /// once, and those helpers would also be refreshing the same
+    /// The bridge runs in this process and configures itself through this
+    /// process's environment, which `configure_bridge` writes with
+    /// `set_var` - sound only while nothing else is reading it. The hub
+    /// serves each control connection on its own thread, so two Codex-backed
+    /// creates arriving together would otherwise interleave one's write with
+    /// the other's read, and both bridges would be refreshing the same
     /// `~/.codex/auth.json` concurrently.
     spawning: Mutex<()>,
     stop: AtomicBool,
@@ -396,8 +398,8 @@ impl Hub {
         let id = id::generate(agent)?;
 
         // Held across `prepare`, not only across the spawn: the bridge it
-        // may start reserves a port and drops the listener before its helper
-        // binds it.
+        // may start configures itself through this process's environment,
+        // which every other session the hub is starting shares.
         let prepared = {
             let _serialised = self
                 .spawning

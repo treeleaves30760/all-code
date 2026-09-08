@@ -213,8 +213,13 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
         // Resolving says nothing about whether the bridge can serve it. A
         // green tick against a model every launch refuses sends the reader
         // looking for the problem somewhere it is not.
-        let unroutable =
-            crate::launch::bridge_codex_models().is_some_and(|routable| !routable.contains(&model));
+        //
+        // Only asked when a model was actually resolved: `<unresolved>` is a
+        // placeholder, not a slug, and reporting that the bridge cannot route
+        // it would be true of every string that is not a model.
+        let unroutable = status != Status::Warn
+            && crate::launch::bridge_codex_models()
+                .is_some_and(|routable| !routable.contains(&model));
         if unroutable {
             status = Status::Bad;
             issues.push(Issue::new(

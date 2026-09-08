@@ -83,6 +83,7 @@
       // would keep failing every poll for the life of the tab.
       core.forgetToken(window.sessionStorage);
       token.value = null;
+      renderRows([]);
       throw new Error('denied');
     }
     if (!response.ok) throw new Error(`http ${response.status}`);
@@ -92,6 +93,14 @@
   /* ------------------------------------------------------- session list */
 
   let listTimer = 0;
+  /* The last payload the server sent, kept whole.
+   *
+   * Deliberately not the rendered rows: those have already had expired cards
+   * filtered out, and feeding them back would tell the store the session had
+   * gone away, which resets its exit clock. The next poll would then show it
+   * again for another full grace period. */
+  let lastCards = [];
+
   let expiryTimer = 0;
   let lastListError = '';
 
@@ -115,6 +124,7 @@
       }
       return;
     }
+    lastCards = cards;
     rows.value = store.reconcile(cards, Date.now());
     scheduleExpiry();
   }
@@ -130,10 +140,6 @@
       scheduleExpiry();
     }, Math.max(250, due + 50));
   }
-
-  // The cards behind the current rows, so the expiry timer can re-run the
-  // reconciliation without waiting for the next poll.
-  let lastCards = [];
 
   /* Keyed in place: the row a finger is on must not be replaced under it,
    * and a full replaceChildren() on every poll made the list flicker and
@@ -155,7 +161,7 @@
       updateRow(node, row);
       // Move into place only when it is not already there, so untouched
       // rows keep their DOM identity (and their focus).
-      const expected = previous ? previous.nextSibling : el.sessions.firstChild;
+      const expected = previous ? previous.li.nextSibling : el.sessions.firstChild;
       if (expected !== node.li) el.sessions.insertBefore(node.li, expected);
       previous = node;
     }
@@ -166,7 +172,20 @@
       built.delete(id);
     }
 
-    el.empty.hidden = !loaded || list.length > 0;
+    // A page with no token shows why, and what to run: it used to show
+    // nothing at all, because the only mention of the refusal was a toast
+    // that had already faded.
+    const denied = !token.value;
+    if (denied) {
+      setText(el.emptyTitle, T.deniedTitle);
+      setText(el.emptyHow, T.deniedHow);
+      setText(el.emptyCommand, T.deniedCommand);
+    } else {
+      setText(el.emptyTitle, T.empty);
+      setText(el.emptyHow, T.emptyHow);
+      setText(el.emptyCommand, T.emptyCommand);
+    }
+    el.empty.hidden = !denied && (!loaded || list.length > 0);
   }
 
   function buildRow() {
@@ -240,14 +259,11 @@
     if (node.textContent !== value) node.textContent = value;
   }
 
-  rows.subscribe((list) => {
-    lastCards = list.map((row) => row.card);
-    renderRows(list);
-  });
+  rows.subscribe(renderRows);
 
   el.emptyCommand.addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText(T.emptyCommand);
+      await navigator.clipboard.writeText(el.emptyCommand.textContent);
       toast(T.copied);
     } catch {
       // No clipboard permission (or no clipboard): the command is on screen

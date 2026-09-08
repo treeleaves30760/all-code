@@ -45,7 +45,7 @@ in the profile's `api_key_env` field.
 Run `codex login`, then retry. `alc doctor` reports the login state under
 **Codex bridge**.
 
-## The Codex adapter is missing
+## `the bundled claude-codex … helper is missing`
 
 It cannot be, from 1.4.0 on: the bridge is compiled into `alc` rather than
 shipped beside it. If you are seeing this from an older `alc`, upgrade with

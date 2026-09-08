@@ -3,7 +3,7 @@ id: codex-to-claude
 title: Codex 橋接
 sidebar_label: Codex 橋接
 sidebar_position: 4
-description: 透過隨附的橋接，一次 codex login 就能讓全部八個 coding agent 使用你的 Codex／ChatGPT 登入 —— Claude Code 有工作階段內的 GPT 模型選單，其他每個 agent 則是每個工作階段使用一個橋接模型。
+description: 透過內建的橋接，一次 codex login 就能讓全部八個 coding agent 使用你的 Codex／ChatGPT 登入 —— Claude Code 有工作階段內的 GPT 模型選單，其他每個 agent 則是每個工作階段使用一個橋接模型。
 keywords:
   - claude code 用 gpt
   - codex 訂閱
@@ -60,7 +60,7 @@ Claude Code 會直接以你儲存的預設值啟動，並把下列模型放進�
 真的能轉送的模型，而橋接學會新的 Codex 模型，總是比 Codex 本身推出得晚一些。
 在那之前，`alc --codex claude` 會在啟動時就拒絕這個模型並列出可用的選項，而不是
 讓 session 冒出 agent 自己那句「模型可能不存在，或你可能沒有存取權」。原生的
-`alc codex` 不受影響；等到裝上支援它的橋接版本，這個模型就會自己回到清單裡。
+`alc codex` 不受影響；等到 alc 換上支援它的橋接版本，這個模型就會自己回到清單裡。
 
 清單依能力由強到弱排列，與 Codex 自己的分級一致。`gpt-6-astra` 與較新的 GPT-5.6
 模型另外提供高於 `max` 的 `ultra` 強度。這一級可以用原生的 `alc codex` 使用，但

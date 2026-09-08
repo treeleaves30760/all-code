@@ -91,10 +91,15 @@ alc update
 ```
 
 `alc update` 會挑選符合目前作業系統與 CPU 的發行包、核對 GitHub Release
-公布的 SHA-256、確認包內版本，再一起替換兩個執行檔。Linux 與 macOS 會
+公布的 SHA-256、確認包內版本，再替換 `alc`。Linux 與 macOS 會
 立即完成替換。Windows 會先完成下載與驗證，等目前的 `alc.exe` 結束後立刻
 替換；稍候再用 `alc --version` 確認。`alc update --force` 可以重新安裝
 目前的最新版本。
+
+> **從 1.3.x 升級：**1.4.0 把 Codex 橋接編進 `alc` 裡，發行包不再有第二個
+> 執行檔，所以從 1.3.x 執行 `alc update` 會失敗，訊息是 `release archive
+> does not contain claude-codex`。請重跑一次一行安裝器，它會換掉 `alc` 並
+> 移除舊的 helper。1.4.0 之後 `alc update` 就恢復正常。
 
 `alc` 只負責啟動已經安裝好的 coding agent，請自行安裝你要用的：
 
@@ -319,7 +324,7 @@ Claude Code 會直接以你儲存的預設值啟動，並把下列模型放進�
 真的能轉送的模型，而橋接學會新的 Codex 模型，總是比 Codex 本身推出得晚一些。
 在那之前，`alc --codex claude` 會在啟動時就拒絕這個模型並列出可用的選項，而不是
 讓 session 冒出 agent 自己那句「模型可能不存在，或你可能沒有存取權」。原生的
-`alc codex` 不受影響；等到裝上支援它的橋接版本，這個模型就會自己回到清單裡。
+`alc codex` 不受影響；等到 alc 換上支援它的橋接版本，這個模型就會自己回到清單裡。
 
 清單依能力由強到弱排列，與 Codex 自己的分級一致。`gpt-6-astra` 與較新的 GPT-5.6
 模型另外提供高於 `max` 的 `ultra` 強度。這一級可以用原生的 `alc codex` 使用，但

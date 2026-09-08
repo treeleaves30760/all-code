@@ -357,3 +357,17 @@ test('the connection states are distinguishable in every locale', () => {
     assert.equal(new Set(labels).size, labels.length, `${locale}: ${labels.join(' / ')}`);
   }
 });
+
+/* The page must keep feeding the store the server's whole payload. Feeding
+ * back the *rendered* rows hid the expired card from the store, which then
+ * forgot its exit time — and the next poll showed it again for another full
+ * grace period. Exited sessions came back from the dead. */
+test('a card stays expired while the server keeps reporting it', () => {
+  const store = core.createSessionStore({ graceMs: 1000 });
+  const cards = [card('a', 'exited', 10)];
+
+  assert.equal(store.reconcile(cards, 0).length, 1);
+  assert.equal(store.reconcile(cards, 1500).length, 0, 'gone once the grace is up');
+  assert.equal(store.reconcile(cards, 2000).length, 0, 'and it stays gone');
+  assert.equal(store.reconcile(cards, 9000).length, 0);
+});

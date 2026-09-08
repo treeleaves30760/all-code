@@ -245,7 +245,7 @@ pub fn build(
     Ok(spec)
 }
 
-/// The side effects a running session owns: the Codex bridge child and the
+/// The side effects a running session owns: the Codex bridge and the
 /// temporary files written for the agent. Both must outlive the agent
 /// process and be torn down when it exits, so they travel together.
 pub(crate) struct SessionGuards {
@@ -611,9 +611,9 @@ fn shell_quote(value: &OsStr) -> String {
     }
 }
 
-/// Conditional environment additions the bridge child process needs on top
-/// of the constant `PORT`/`CCP_LOG_STDERR`/`CCP_CODEX_AUTH_FILE` envs. Pure
-/// and side-effect-free so it can be unit tested directly.
+/// Conditional environment additions the bridge needs on top of the constant
+/// `CCP_LOG_STDERR`/`CCP_CODEX_AUTH_FILE` ones. Pure and side-effect-free so
+/// it can be unit tested directly.
 fn bridge_child_env(plan: &BridgePlan) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     // UltraCode can open several bridge sessions concurrently. If Codex rejects
@@ -836,8 +836,9 @@ pub(crate) fn bridge_codex_models() -> Option<BTreeSet<String>> {
 /// Left to itself the refusal arrives from inside the agent — Claude Code
 /// says the model "may not exist or you may not have access to it" — which
 /// sends the user to check their subscription when the actual cause is that
-/// alc's bridge is a version behind Codex. Saying it here costs one fast
-/// subprocess and names the models that would have worked.
+/// alc's bridge is a version behind Codex. Saying it here costs a lookup
+/// against the linked-in bridge's own registry, and names the models that
+/// would have worked.
 fn require_routable_model(model: &str) -> Result<()> {
     let Some(supported) = bridge_codex_models() else {
         return Ok(());
