@@ -14,6 +14,10 @@ const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 fn alc(temp: &tempfile::TempDir) -> Command {
     let mut command = Command::cargo_bin("alc").expect("alc binary");
     command.env("ALC_CONFIG_DIR", temp.path());
+    // Which bridge a run uses changes the models it offers and what it calls
+    // its adapter, so a developer who has been exercising the native one must
+    // not see different results from CI.
+    command.env_remove("ALC_BRIDGE");
     command.timeout(COMMAND_TIMEOUT);
     command
 }
@@ -783,6 +787,55 @@ fn codex_to_claude_offers_every_gpt_model_inside_claude_code() {
         .stdout(predicate::str::contains("\"model\":\"gpt-5.6-terra\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-5.6-sol\""))
         .stdout(predicate::str::contains("\"replaceBuiltInOptions\":true"));
+}
+
+/// The whole point of `ALC_BRIDGE=native`: the vendored bridge refuses
+/// `gpt-6-astra`, so alc hides it everywhere, and the native one has no such
+/// list. The same command with and without the variable is the clearest
+/// statement of the difference.
+#[test]
+fn the_native_bridge_offers_the_model_the_vendored_one_refuses() {
+    let temp = tempfile::tempdir().unwrap();
+    // The in-session picker is the observable list, so it is what is asserted
+    // on; the resolved `--model` comes from the installed Codex CLI and is not
+    // alc's to predict.
+    alc(&temp)
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude-codex"))
+        .stdout(predicate::str::contains("\"model\":\"gpt-5.6-terra\""))
+        .stdout(predicate::str::contains("\"model\":\"gpt-6-astra\"").not());
+
+    alc(&temp)
+        .env("ALC_BRIDGE", "native")
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("adapter: built in (alc native)"))
+        .stdout(predicate::str::contains("\"model\":\"gpt-6-astra\""))
+        .stdout(predicate::str::contains("WOULD FAIL").not());
+}
+
+/// A typo must not silently downgrade a session that asked for the new
+/// bridge, and must not silently upgrade one that did not.
+#[test]
+fn only_the_exact_word_native_selects_the_new_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    for value in ["", "1", "true", "vendored", "nativ"] {
+        alc(&temp)
+            .env("ALC_BRIDGE", value)
+            .args(["--codex", "--dry-run", "claude"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("claude-codex"));
+    }
+    alc(&temp)
+        .env("ALC_BRIDGE", " NATIVE ")
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alc native"));
 }
 
 #[test]

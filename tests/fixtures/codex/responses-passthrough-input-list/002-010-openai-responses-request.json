@@ -1,0 +1,14 @@
+{
+  "input": [
+    {
+      "content": [
+        {
+          "text": "Reply with exactly: responses-ok",
+          "type": "input_text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-5.6-terra"
+}

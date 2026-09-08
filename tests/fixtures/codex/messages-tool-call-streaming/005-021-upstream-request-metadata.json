@@ -1,0 +1,19 @@
+{
+  "headers": {
+    "authorization": "[redacted len=1775]",
+    "chatgpt-account-id": "[redacted len=36]",
+    "openai-beta": "responses_websockets=2026-02-06",
+    "originator": "codex_cli_rs",
+    "sec-websocket-key": "[redacted]",
+    "user-agent": "codex_cli_rs",
+    "x-codex-beta-features": "remote_compaction_v2",
+    "x-openai-internal-codex-responses-lite": "true"
+  },
+  "provider": "codex",
+  "size": {
+    "bytes": 680,
+    "inputCount": 3,
+    "toolCount": null
+  },
+  "transport": "websocket"
+}

@@ -107,10 +107,7 @@ fn binaries(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
             "built in{}",
             theme.paint(
                 Tone::Dim,
-                &format!(
-                    "{GUTTER}(claude-codex {})",
-                    crate::launch::CLAUDE_CODEX_BRIDGE_VERSION
-                )
+                &format!("{GUTTER}({})", crate::launch::bridge_label())
             )
         ),
     ));

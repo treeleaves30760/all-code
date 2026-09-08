@@ -1,0 +1,19 @@
+{
+  "data": {
+    "message": {
+      "content": [],
+      "id": "msg_9b489cc15a4745779ab22cbcbb732d8f",
+      "model": "gpt-5.6-terra",
+      "role": "assistant",
+      "stop_reason": null,
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+        "input_tokens": 73,
+        "output_tokens": 0
+      }
+    },
+    "type": "message_start"
+  },
+  "event": "message_start"
+}

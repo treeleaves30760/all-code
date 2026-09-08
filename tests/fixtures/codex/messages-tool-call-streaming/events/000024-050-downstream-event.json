@@ -1,0 +1,11 @@
+{
+  "data": {
+    "delta": {
+      "partial_json": "hosts",
+      "type": "input_json_delta"
+    },
+    "index": 0,
+    "type": "content_block_delta"
+  },
+  "event": "content_block_delta"
+}

@@ -12,17 +12,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 
 use crate::agents;
+use crate::bridge::BridgeConfig;
 use crate::config::{
     Agent, Protocol, Provider, ProviderKind, ReasoningEffort, Store, atomic_write,
 };
 use crate::model_catalog::ModelInfo;
-
-/// The bridge version alc is built against.
-///
-/// It is a Cargo dependency now rather than a binary beside alc, so this is
-/// what the linker actually used - there is no second artefact that could be
-/// a different version.
-pub const CLAUDE_CODEX_BRIDGE_VERSION: &str = "0.3.1";
 
 #[derive(Debug, Clone, Default)]
 pub struct LaunchOverrides {
@@ -611,36 +605,8 @@ fn shell_quote(value: &OsStr) -> String {
     }
 }
 
-/// Conditional environment additions the bridge needs on top of the constant
-/// `CCP_LOG_STDERR`/`CCP_CODEX_AUTH_FILE` ones. Pure and side-effect-free so
-/// it can be unit tested directly.
-fn bridge_child_env(plan: &BridgePlan) -> BTreeMap<String, String> {
-    let mut env = BTreeMap::new();
-    // UltraCode can open several bridge sessions concurrently. If Codex rejects
-    // a WebSocket upgrade, auto transport retries the request over HTTP.
-    env.insert("CCP_CODEX_TRANSPORT".to_owned(), "auto".to_owned());
-    if plan.api != BridgeApi::Messages {
-        env.insert("CCP_CODEX_RESPONSES_API".to_owned(), "1".to_owned());
-        if let Some(effort) = plan.effort {
-            env.insert("CCP_CODEX_EFFORT".to_owned(), effort.as_str().to_owned());
-        }
-    }
-    env
-}
-
-/// The Codex bridge, running inside this process.
-///
-/// It used to be a second binary alc downloaded, shipped and spawned. It is
-/// now a library, served on a loopback port by a runtime owned here: nothing
-/// to install beside alc, no version that can drift out of step with it, and
-/// no child to leak if alc dies badly. The agent still talks to it over HTTP,
-/// because that is the interface the agent has.
 pub(crate) struct Bridge {
     port: u16,
-    /// Held for the bridge's lifetime. As a child process its log went to
-    /// /dev/null; in-process it would land in the middle of the agent's own
-    /// output, and in `alc claude -p …` in the middle of the answer.
-    _quiet: claude_codex::logging::StderrSuppressionGuard,
     /// Dropped to tell the server to stop; the runtime thread ends with it.
     shutdown: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
@@ -648,7 +614,9 @@ pub(crate) struct Bridge {
 
 impl Bridge {
     fn start(plan: &BridgePlan) -> Result<Self> {
-        require_routable_model(&plan.model)?;
+        // No model allowlist, on purpose: a stale one is the whole reason
+        // this code exists. Upstream decides what it will serve, and says so
+        // in terms the agent can show the user.
         let auth_file = codex_auth_file()?;
         if !auth_file.is_file() {
             bail!(
@@ -656,7 +624,13 @@ impl Bridge {
                 auth_file.display()
             );
         }
-        configure_bridge(&auth_file, plan);
+        let native = BridgeConfig {
+            auth_file,
+            effort: (plan.api != BridgeApi::Messages)
+                .then_some(plan.effort)
+                .flatten(),
+            responses_api: plan.api != BridgeApi::Messages,
+        };
 
         // Bound with the standard library, so the port is known before the
         // runtime exists and `base_url` can be handed to the agent builders
@@ -693,16 +667,26 @@ impl Bridge {
                             return;
                         }
                     };
+                    // Built before readiness is announced, so a failure here
+                    // reaches the user as itself rather than as the health
+                    // check's "did not become ready" ten seconds later.
+                    let state = match crate::bridge::BridgeState::new(native) {
+                        Ok(state) => std::sync::Arc::new(state),
+                        Err(error) => {
+                            let _ = ready.send(Err(format!("{error:#}")));
+                            return;
+                        }
+                    };
                     let _ = ready.send(Ok(()));
                     // The sender is held by `Bridge`, so this resolves when
                     // the bridge is dropped - which is when the session ends.
                     let stopped = tokio::task::spawn_blocking(move || {
                         let _ = stop.recv();
                     });
-                    let _ = claude_codex::server::serve_listener(listener, None, async {
+                    let shutdown = async {
                         let _ = stopped.await;
-                    })
-                    .await;
+                    };
+                    let _ = crate::bridge::serve(listener, state, shutdown).await;
                 });
             })
             .context("failed to start the Codex adapter thread")?;
@@ -715,7 +699,6 @@ impl Bridge {
 
         let bridge = Self {
             port,
-            _quiet: claude_codex::logging::suppress_stderr(),
             shutdown: Some(shutdown),
             thread: Some(thread),
         };
@@ -761,32 +744,6 @@ impl Drop for Bridge {
     }
 }
 
-/// Points the in-process bridge at the right credentials and transport.
-///
-/// The bridge reads these from the environment, which was free when it was a
-/// child process and is a constraint now that it is not: `set_var` is only
-/// sound while nothing else is reading the environment concurrently. It is
-/// called here, on the launch path, before the bridge's own runtime exists
-/// and before the agent is spawned.
-fn configure_bridge(auth_file: &Path, plan: &BridgePlan) {
-    let mut settings: BTreeMap<String, String> = BTreeMap::new();
-    settings.insert("CCP_LOG_STDERR".to_owned(), "0".to_owned());
-    // The bridge's own fallback does not use USERPROFILE on Windows, so it
-    // is given the same Codex home resolution the official CLI uses.
-    settings.insert(
-        "CCP_CODEX_AUTH_FILE".to_owned(),
-        auth_file.display().to_string(),
-    );
-    settings.extend(bridge_child_env(plan));
-
-    for (key, value) in settings {
-        // SAFETY: alc sets these once, on the way into a launch, and never
-        // again. No other thread in this process reads the environment
-        // between here and the runtime that will.
-        unsafe { env::set_var(key, value) };
-    }
-}
-
 fn codex_auth_file() -> Result<PathBuf> {
     resolve_codex_auth_file(
         env::var_os("CCP_CODEX_AUTH_FILE"),
@@ -811,51 +768,26 @@ fn resolve_codex_auth_file(
         .context("could not resolve the Codex auth path; set CODEX_HOME")
 }
 
-/// The Codex model slugs the bridge can actually route.
+/// The Codex model slugs the bridge will only serve, or `None` when it holds
+/// no opinion — which is always, now.
 ///
-/// `codex debug models` answers a different question: what the account can
-/// reach. The bridge only knows the slugs it was built with, and the two do
-/// not move together - a Codex release adds a model months before the bridge
-/// learns to serve it. Asking the bridge itself is the only honest source,
-/// and since it is linked in rather than shelled out to, asking is a function
-/// call against the same code that will refuse the request.
+/// The bridge keeps no model list at all. It translates whatever slug it is
+/// handed and lets chatgpt.com be the party that refuses an unknown one,
+/// which is what makes a model reachable on the day Codex ships it rather
+/// than on the day alc catches up. A hard-coded list one release behind Codex
+/// is the entire reason this code exists, so keeping one here would be a
+/// fresh copy of the mistake it was written to remove.
+///
+/// Kept as a function returning `None` rather than deleted: every caller
+/// already treats `None` as "no opinion" and leaves its list alone, and the
+/// day a real reason to filter appears, it appears here.
 pub(crate) fn bridge_codex_models() -> Option<BTreeSet<String>> {
-    // Asked as the Anthropic alias provider on purpose: asking as Codex
-    // folds `sonnet`/`opus`/`haiku` into the answer, which this bridge
-    // routes to Claude rather than through Codex at all.
-    let models: BTreeSet<String> =
-        claude_codex::registry::Registry::new(claude_codex::config::AliasProvider::Anthropic)
-            .supported_models_for("codex")
-            .into_iter()
-            .collect();
-    (!models.is_empty()).then_some(models)
+    None
 }
 
-/// Refuses a model the bridge would reject, before anything is launched.
-///
-/// Left to itself the refusal arrives from inside the agent — Claude Code
-/// says the model "may not exist or you may not have access to it" — which
-/// sends the user to check their subscription when the actual cause is that
-/// alc's bridge is a version behind Codex. Saying it here costs a lookup
-/// against the linked-in bridge's own registry, and names the models that
-/// would have worked.
-fn require_routable_model(model: &str) -> Result<()> {
-    let Some(supported) = bridge_codex_models() else {
-        return Ok(());
-    };
-    if supported.contains(model) {
-        return Ok(());
-    }
-    bail!(
-        "the built-in claude-codex {CLAUDE_CODEX_BRIDGE_VERSION} bridge cannot route '{model}'.\n\
-         Codex itself may well offer it; the bridge is the half that has not caught up.\n\
-         It does route: {}\n\
-         Choose one in `alc config` on the provider screen, or with \
-         `alc config upsert codex --model <id>`. A codex profile with an empty model \
-         follows the Codex CLI's own `model` setting instead, which is where an \
-         unroutable one usually comes from.",
-        supported.iter().cloned().collect::<Vec<_>>().join(", ")
-    )
+/// How to name the bridge, for `alc doctor` and `--dry-run`.
+pub(crate) fn bridge_label() -> String {
+    "alc native".to_owned()
 }
 
 fn health_check(address: SocketAddr) -> bool {
@@ -1011,17 +943,42 @@ mod tests {
     use crate::config::{Config, Credentials};
     use crate::model_catalog::ModelCatalog;
 
-    /// The bridge is linked in, so this is the same list the request path
-    /// will check against - not a guess parsed out of another program.
+    /// The vendored bridge is linked in, so this is the same list the request
+    /// path will check against - not a guess parsed out of another program.
     #[test]
-    fn the_bridge_reports_the_codex_models_it_routes() {
-        let models = bridge_codex_models().expect("the linked bridge always knows its models");
+    fn the_vendored_bridge_reports_the_codex_models_it_routes() {
+        let models = bridge_codex_models_for(BridgeKind::Vendored)
+            .expect("the linked bridge always knows its models");
         assert!(models.contains("gpt-5.6-terra"), "{models:?}");
         // Anthropic aliases are routed to Claude, not through Codex; asking
         // as the codex alias provider would fold them in here.
         for alias in ["sonnet", "opus", "haiku", "claude-opus-4-8"] {
             assert!(!models.contains(alias), "{alias} is not a Codex model");
         }
+    }
+
+    /// The native bridge holds no list, which is why `gpt-6-astra` reaches it.
+    /// Every caller reads `None` as "no opinion" and offers its own catalog
+    /// unfiltered, so this one assertion is what puts the model back in the
+    /// pickers the vendored bridge's stale allowlist emptied it out of.
+    #[test]
+    fn the_native_bridge_keeps_no_model_list_at_all() {
+        assert!(bridge_codex_models_for(BridgeKind::Native).is_none());
+    }
+
+    #[test]
+    fn a_model_the_vendored_bridge_refuses_is_offered_by_the_native_one() {
+        let vendored = bridge_codex_models_for(BridgeKind::Vendored).expect("a vendored list");
+        let mut catalog = ModelCatalog::built_in();
+        assert!(
+            catalog.models.iter().any(|model| model.id == "gpt-6-astra"),
+            "the bundled catalog is where the slug has to start"
+        );
+        // Not a fixture: the vendored crate really does refuse this slug, and
+        // that refusal is what `ALC_BRIDGE=native` exists to get past.
+        assert!(!vendored.contains("gpt-6-astra"));
+        catalog.retain_routable_against(bridge_codex_models_for(BridgeKind::Native));
+        assert!(catalog.models.iter().any(|model| model.id == "gpt-6-astra"));
     }
 
     fn store(config: Config, credentials: Credentials) -> Store {

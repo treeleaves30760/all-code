@@ -1,0 +1,11 @@
+{
+  "capturedBytes": 39,
+  "capturedEventBytes": 39,
+  "capturedEvents": 1,
+  "inputTokens": null,
+  "outcome": "complete",
+  "outputTokens": null,
+  "pendingFrameTruncated": false,
+  "truncatedBytes": 0,
+  "truncatedEvents": 0
+}

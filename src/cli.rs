@@ -925,8 +925,8 @@ fn run_spec(
         );
         if let Some(plan) = &spec.bridge {
             println!(
-                "adapter: claude-codex {} built in, on an ephemeral loopback port",
-                launch::CLAUDE_CODEX_BRIDGE_VERSION
+                "adapter: built in ({}), on an ephemeral loopback port",
+                launch::bridge_label()
             );
             // A dry run exists to report what a real run would do, so it has
             // to admit the launch it is describing would be refused.

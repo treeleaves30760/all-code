@@ -1,0 +1,13 @@
+{
+  "data": {
+    "content_block": {
+      "id": "call_piubHZQo0iWT8WOQgeAzt2tW",
+      "input": {},
+      "name": "read_file",
+      "type": "tool_use"
+    },
+    "index": 0,
+    "type": "content_block_start"
+  },
+  "event": "content_block_start"
+}

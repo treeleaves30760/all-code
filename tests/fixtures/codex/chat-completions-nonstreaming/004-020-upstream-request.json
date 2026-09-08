@@ -1,0 +1,28 @@
+{
+  "client_metadata": {
+    "lite": "true"
+  },
+  "input": [
+    {
+      "content": [
+        {
+          "text": "Reply with exactly: chat-ok",
+          "type": "input_text"
+        }
+      ],
+      "role": "user",
+      "type": "message"
+    }
+  ],
+  "model": "gpt-5.6-terra",
+  "parallel_tool_calls": false,
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium"
+  },
+  "store": false,
+  "stream": true,
+  "text": {
+    "verbosity": "low"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "client_metadata": {
+    "ws_request_header_x_openai_internal_codex_responses_lite": "true"
+  },
+  "input": [
+    {
+      "role": "developer",
+      "tools": [
+        {
+          "description": "Read a file",
+          "name": "read_file",
+          "parameters": {
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "strict": false,
+          "type": "function"
+        }
+      ],
+      "type": "additional_tools"
+    },
+    {
+      "content": [
+        {
+          "text": "Be terse.",
+          "type": "input_text"
+        }
+      ],
+      "role": "developer",
+      "type": "message"
+    },
+    {
+      "content": [
+        {
+          "text": "Read /etc/hosts using the tool.",
+          "type": "input_text"
+        }
+      ],
+      "role": "user",
+      "type": "message"
+    }
+  ],
+  "model": "gpt-5.6-terra",
+  "parallel_tool_calls": false,
+  "reasoning": {
+    "context": "all_turns"
+  },
+  "store": false,
+  "text": {
+    "verbosity": "low"
+  },
+  "type": "response.create"
+}

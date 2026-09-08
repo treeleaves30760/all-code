@@ -1,0 +1,9 @@
+{
+  "headers": {
+    "x-codex-safety-buffering-enabled": "true",
+    "x-codex-safety-buffering-faster-model": "gpt-5.6-luna",
+    "x-codex-turn-state": "[redacted]",
+    "x-models-etag": "W/\"337c22b0035c88b7cac9debc72ccd812\""
+  },
+  "type": "codex.response.metadata"
+}
