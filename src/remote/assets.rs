@@ -21,7 +21,7 @@ const HTML: &str = "text/html; charset=utf-8";
 const JS: &str = "text/javascript; charset=utf-8";
 const CSS: &str = "text/css; charset=utf-8";
 
-pub(crate) const ASSETS: [Asset; 6] = [
+pub(crate) const ASSETS: [Asset; 7] = [
     Asset {
         path: "/",
         content_type: HTML,
@@ -31,6 +31,11 @@ pub(crate) const ASSETS: [Asset; 6] = [
         path: "/assets/app.js",
         content_type: JS,
         gzipped: asset!("app.js"),
+    },
+    Asset {
+        path: "/assets/core.js",
+        content_type: JS,
+        gzipped: asset!("core.js"),
     },
     Asset {
         path: "/assets/app.css",

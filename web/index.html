@@ -6,46 +6,77 @@
     <meta name="referrer" content="no-referrer" />
     <meta name="color-scheme" content="light dark" />
     <title>alc</title>
+    <!-- Inline, so the browser's automatic /favicon.ico request never
+         happens: that route needs a token, and every page load was logging
+         a 401 for it. `img-src 'self' data:` in the CSP allows this. -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%23d98b5f'/%3E%3C/svg%3E"
+    />
     <link rel="stylesheet" href="/assets/xterm.css" />
     <link rel="stylesheet" href="/assets/app.css" />
   </head>
-  <body>
+  <body data-pane="list">
     <header id="bar">
-      <button id="back" class="icon" hidden>&#8592;</button>
+      <button id="back" class="icon" type="button" hidden aria-label="Back">
+        <span aria-hidden="true">&#8592;</span>
+      </button>
+
       <div id="title">
-        <strong data-i18n="appName">alc</strong>
+        <strong>alc</strong>
         <span id="subtitle"></span>
       </div>
+
+      <!-- Connection state is a light, not a sentence. It is always on
+           screen while attached, so it cannot be missed the way a toast
+           that has already faded can. -->
+      <span id="link" class="status" hidden>
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="linkLabel"></span>
+      </span>
       <span id="grade" class="pill" hidden></span>
-      <span id="link" class="pill" hidden></span>
     </header>
 
     <main>
-      <section id="list">
-        <p id="empty" class="empty" data-i18n="noSessions"></p>
+      <section id="list" aria-label="Sessions">
         <ul id="sessions"></ul>
-        <p class="hint" data-i18n="listHint"></p>
+
+        <!-- Shown only when there is nothing to list. The command is the
+             whole message: there is no session because none was started. -->
+        <div id="empty" class="empty" hidden>
+          <span class="empty-mark" aria-hidden="true"></span>
+          <p id="emptyTitle" class="empty-title"></p>
+          <p id="emptyHow" class="empty-how"></p>
+          <button type="button" id="emptyCommand" class="command"></button>
+        </div>
       </section>
 
-      <section id="view" hidden>
+      <!-- Which pane is on screen is decided by body[data-pane] alone, so
+           there is exactly one thing to get right. `hidden` is left for
+           elements that are genuinely absent rather than laid out. -->
+      <section id="view" aria-label="Terminal">
         <div id="perm" class="perm" hidden>
           <span id="permLabel" class="perm-label"></span>
-          <select id="permPick" aria-label="permission"></select>
+          <select id="permPick" aria-label="Permission mode"></select>
           <button type="button" id="permCycle" hidden></button>
           <span id="permNote" class="perm-note"></span>
         </div>
+
         <div id="terminal"></div>
-        <div id="keys" class="keys"></div>
+
+        <div id="keys" class="keys" role="group" aria-label="Terminal keys"></div>
+
         <form id="composer">
           <textarea
             id="compose"
             rows="1"
+            aria-label="Prompt"
             autocapitalize="off"
             autocomplete="off"
             autocorrect="off"
             spellcheck="false"
           ></textarea>
-          <button type="submit" id="send" data-i18n="send"></button>
+          <button type="submit" id="send"></button>
         </form>
       </section>
     </main>
@@ -54,6 +85,7 @@
 
     <script src="/assets/xterm.js"></script>
     <script src="/assets/addon-fit.js"></script>
+    <script src="/assets/core.js"></script>
     <script src="/assets/app.js"></script>
   </body>
 </html>
