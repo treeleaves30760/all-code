@@ -11,7 +11,7 @@ keywords:
 
 # Updating alc
 
-Check for a new release, or update both `alc` and its bundled helper:
+Check for a new release, or update `alc` in place:
 
 ```sh
 alc update --check

@@ -152,11 +152,12 @@ Claude Code 的內建別名也一併留在 Codex 上：選單的 Default 一列�
 
 ## 橋接如何運作
 
-發行包會附帶
+`alc` 直接連結
 [`claude-codex` 0.3.1](https://github.com/fcakyon/claude-code-with-codex)，
-一個 MIT 授權的 helper。`alc` 會把它綁在隨機的 `127.0.0.1` port 上，只讓
-啟動的那個 agent 行程指向它，並在該行程結束時關閉。Helper 會讀取並可能
-更新 `~/.codex/auth.json`；憑證不會被複製到 alc 的設定裡。
+一個 MIT 授權的函式庫，版本由 `Cargo.toml` 的 tag 與 `Cargo.lock` 的 commit
+固定。它跑在 `alc` 行程內、綁在隨機的 `127.0.0.1` port 上，只讓啟動的那個
+agent 指向它，並在該 session 結束時關閉。它會讀取並可能更新
+`~/.codex/auth.json`；憑證不會被複製到 alc 的設定裡。
 
 :::caution 這是第三方相容層
 

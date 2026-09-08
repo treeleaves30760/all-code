@@ -17,38 +17,32 @@ jobs:
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-musl
             os: linux
-            helper_arch: amd64
             archive: alc-linux-x86_64.tar.gz
             cross: true
           - runner: ubuntu-latest
             target: aarch64-unknown-linux-musl
             os: linux
-            helper_arch: arm64
             archive: alc-linux-aarch64.tar.gz
             cross: true
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             os: darwin
-            helper_arch: amd64
             archive: alc-darwin-x86_64.tar.gz
             cross: false
           - runner: macos-14
             target: aarch64-apple-darwin
             os: darwin
-            helper_arch: arm64
             archive: alc-darwin-aarch64.tar.gz
             cross: false
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
             os: windows
-            helper_arch: amd64
             msvc_arch: amd64
             archive: alc-windows-x86_64.zip
             cross: false
           - runner: windows-latest
             target: aarch64-pc-windows-msvc
             os: windows
-            helper_arch: arm64
             msvc_arch: amd64_arm64
             archive: alc-windows-aarch64.zip
             cross: false
@@ -77,13 +71,12 @@ jobs:
           command: build
           target: ${{ matrix.target }}
           args: '--locked --release'
-      - name: Bundle alc and pinned helper
+      - name: Package the release archive
         shell: pwsh
         run: >-
           ./scripts/package-release.ps1
           -Target '${{ matrix.target }}'
           -Os '${{ matrix.os }}'
-          -HelperArch '${{ matrix.helper_arch }}'
           -ArchiveName '${{ matrix.archive }}'
       - uses: actions/upload-artifact@v7
         with:

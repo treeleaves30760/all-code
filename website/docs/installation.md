@@ -51,9 +51,9 @@ Rust 1.88 or newer:
 cargo build --release --locked
 ```
 
-The source build produces only `alc`. To use `alc --codex claude`, put a
-compatible `claude-codex` binary on PATH or set `ALC_CLAUDE_CODEX_BIN`.
-Official release archives already bundle the pinned helper.
+The Codex bridge is a pinned Cargo dependency compiled into `alc`, so a source
+build is a complete one — `alc --codex claude` works with nothing else
+installed. Release archives contain only `alc` for the same reason.
 
 Useful development checks:
 
@@ -65,6 +65,6 @@ cargo test --all-targets
 
 ## Uninstall
 
-Remove `alc` and `claude-codex` from the install directory, then optionally
+Remove `alc` from the install directory, then optionally
 remove the configuration directory listed by `alc config path`. Removing the
 configuration also deletes locally saved API keys and cannot be undone.

@@ -45,11 +45,11 @@ in the profile's `api_key_env` field.
 Run `codex login`, then retry. `alc doctor` reports the login state under
 **Codex bridge**.
 
-## `the bundled claude-codex … helper is missing`
+## The Codex adapter is missing
 
-Source builds do not include the adapter. Reinstall with the one-line
-installer, put a compatible `claude-codex` on PATH, or set
-`ALC_CLAUDE_CODEX_BIN`.
+It cannot be, from 1.4.0 on: the bridge is compiled into `alc` rather than
+shipped beside it. If you are seeing this from an older `alc`, upgrade with
+the one-line installer.
 
 ## `API Error: Request timed out` (or `500`) with an Ollama profile
 

@@ -130,7 +130,7 @@ impl ModelCatalog {
             // the user to reinstall the wrong half.
             if !dropped_by_bridge.is_empty() {
                 bail!(
-                    "the bundled claude-codex bridge routes none of the models alc offers \
+                    "the built-in claude-codex bridge routes none of the models alc offers \
                      ({}); keeping the previous catalog",
                     dropped_by_bridge.join(", ")
                 );

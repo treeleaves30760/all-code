@@ -68,7 +68,7 @@ Windows PowerShell：
 irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
 ```
 
-安裝器會把 `alc` 與它的 Codex 橋接 helper 放進 `~/.local/bin`（Windows 為
+安裝器會把 `alc` 放進 `~/.local/bin`（Windows 為
 `%USERPROFILE%\.local\bin`），必要時會把該目錄加入你的 User PATH。macOS／
 Linux 請重開終端機，或 `source` 安裝器提示的設定檔；PowerShell 會同時更新
 目前工作階段與 User PATH。如果系統不允許修改 PATH，安裝器會明確印出需要
@@ -83,7 +83,7 @@ PATH；需要手動設定時安裝器會告訴你。設定 `ALC_NO_PATH_UPDATE=1
 
 ## 更新
 
-檢查是否有新版本，或直接更新 `alc` 與隨附的 helper：
+檢查是否有新版本，或直接更新 `alc`：
 
 ```sh
 alc update --check
@@ -293,7 +293,8 @@ alc --codex qwen
 alc --codex kimi
 ```
 
-`alc` 會在 loopback port 上啟動內建的 `claude-codex` 轉接器，並只讓啟動
+`alc` 會在 loopback port 上啟動內建的 `claude-codex` 轉接器（編進 alc 本身），
+並只讓啟動
 的那個 agent 行程指向它。轉接器對 Claude Code 說 Anthropic Messages，對
 OpenCode／Pi／Kimi Code CLI 說 OpenAI Responses，對 Copilot CLI／Goose／
 Qwen Code 說 OpenAI Chat Completions —— 三種不同的 wire protocol，背後
@@ -385,11 +386,12 @@ alc models --json
 設定傳入，讓 Claude Code 不認得的 GPT ID 依照 Codex 的實際上限壓縮
 對話，而不是用它的通用預設值。
 
-發行包會附帶
+`alc` 直接連結
 [`claude-codex` 0.3.1](https://github.com/fcakyon/claude-code-with-codex)，
-一個 MIT 授權的 helper。`alc` 會把它綁在隨機的 `127.0.0.1` port，只讓
-啟動的那個 agent 行程指向它，並在該行程結束時關閉。Helper 會讀取並
-可能更新 `~/.codex/auth.json`；憑證不會被複製到 `alc` 的設定裡。
+一個 MIT 授權的函式庫，版本由 `Cargo.toml` 的 tag 與 `Cargo.lock` 的 commit
+固定。它跑在 `alc` 行程內、綁在隨機的 `127.0.0.1` port，只讓啟動的那個 agent
+指向它，並在該 session 結束時關閉。它會讀取並可能更新 `~/.codex/auth.json`；
+憑證不會被複製到 `alc` 的設定裡。
 
 這個轉接器是第三方相容層，不是 OpenAI 或 Anthropic 的官方整合。使用
 訂閱帳號前，請先檢閱 [THIRD_PARTY.md](THIRD_PARTY.md) 與你的 provider
@@ -531,9 +533,9 @@ alc config remove work
 cargo build --release --locked
 ```
 
-從原始碼建置只會產生 `alc`。要使用 `alc --codex <agent>`，請把相容的
-`claude-codex` 執行檔放到 PATH，或設定 `ALC_CLAUDE_CODEX_BIN`。官方的
-`alc` 發行包已經附帶固定版本的 helper。
+Codex 橋接是固定版本的 Cargo 依賴，直接編進 `alc` 裡，所以從原始碼建置就是
+完整的建置 —— 不必再裝任何東西，`alc --codex <agent>` 就能用。發行包裡也
+因此只有 `alc` 一個檔案。
 
 常用的開發檢查：
 
@@ -545,7 +547,7 @@ cargo test --all-targets
 
 ## 解除安裝
 
-把 `alc` 與 `claude-codex` 從安裝目錄移除，需要的話再刪掉 `alc config
+把 `alc` 從安裝目錄移除，需要的話再刪掉 `alc config
 path` 顯示的設定目錄。刪除設定目錄同時會刪掉本機儲存的 API key，且
 無法復原。
 

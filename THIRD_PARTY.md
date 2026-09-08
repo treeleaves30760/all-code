@@ -1,7 +1,7 @@
 # Third-party software
 
-Official `alc` release archives bundle the following helper next to the main
-binary. Building `alc` from source does not download or compile this helper.
+`alc` links the following in at build time. There is no second binary to
+download, install, or keep in step with `alc`.
 
 ## claude-codex 0.3.1
 
@@ -11,9 +11,11 @@ binary. Building `alc` from source does not download or compile this helper.
 - Purpose: loopback-only Anthropic Messages / OpenAI Responses / Chat
   Completions translation for the alc Codex bridge (`alc --codex <agent>`)
 
-The helper reads and may refresh the current user's Codex CLI credentials. It
-is started only for Codex-backed sessions — of any supported agent — and is
-terminated when that session exits. See the bundled license in
+Pinned in `Cargo.toml` by tag and in `Cargo.lock` by commit, and compiled into
+`alc` as a library rather than shipped beside it. It is served on a loopback
+port owned by the `alc` process, started only for Codex-backed sessions — of
+any supported agent — and stopped when that session ends. It reads and may
+refresh the current user's Codex CLI credentials. See the bundled license in
 `THIRD_PARTY_LICENSES/claude-codex-LICENSE`.
 
 # Vendored browser assets

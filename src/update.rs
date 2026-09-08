@@ -31,12 +31,6 @@ struct ReleaseAsset {
     browser_download_url: String,
 }
 
-#[derive(Debug)]
-struct ExtractedBinaries {
-    alc: PathBuf,
-    helper: PathBuf,
-}
-
 pub fn run(check_only: bool, force: bool) -> Result<u8> {
     let current = Version::parse(env!("CARGO_PKG_VERSION"))
         .context("the installed alc version is not valid semantic versioning")?;
@@ -86,7 +80,7 @@ pub fn run(check_only: bool, force: bool) -> Result<u8> {
 
     let temp = tempfile::tempdir().context("could not create a temporary update directory")?;
     let extracted = extract_binaries(&archive, &asset_name, temp.path())?;
-    let packaged = packaged_version(&extracted.alc)?;
+    let packaged = packaged_version(&extracted)?;
     ensure!(
         packaged == latest,
         "release metadata says {latest}, but the downloaded binary is {packaged}"
@@ -200,39 +194,28 @@ fn verify_checksum(bytes: &[u8], expected: &str, asset_name: &str) -> Result<()>
     Ok(())
 }
 
-fn extract_binaries(
-    archive: &[u8],
-    asset_name: &str,
-    destination: &Path,
-) -> Result<ExtractedBinaries> {
+fn extract_binaries(archive: &[u8], asset_name: &str, destination: &Path) -> Result<PathBuf> {
     let suffix = if asset_name.ends_with(".zip") {
         ".exe"
     } else {
         ""
     };
     let alc = destination.join(format!("alc{suffix}"));
-    let helper = destination.join(format!("claude-codex{suffix}"));
 
     if asset_name.ends_with(".zip") {
         let mut zip = zip::ZipArchive::new(Cursor::new(archive))
             .context("the downloaded release is not a valid ZIP archive")?;
         extract_zip_file(&mut zip, &format!("alc{suffix}"), &alc)?;
-        extract_zip_file(&mut zip, &format!("claude-codex{suffix}"), &helper)?;
     } else {
-        extract_tar_files(archive, &alc, &helper)?;
+        extract_tar_files(archive, &alc)?;
     }
 
     ensure!(
         alc.is_file(),
         "release archive does not contain alc{suffix}"
     );
-    ensure!(
-        helper.is_file(),
-        "release archive does not contain claude-codex{suffix}"
-    );
     make_executable(&alc)?;
-    make_executable(&helper)?;
-    Ok(ExtractedBinaries { alc, helper })
+    Ok(alc)
 }
 
 fn extract_zip_file(
@@ -253,11 +236,10 @@ fn extract_zip_file(
     Ok(())
 }
 
-fn extract_tar_files(archive: &[u8], alc: &Path, helper: &Path) -> Result<()> {
+fn extract_tar_files(archive: &[u8], alc: &Path) -> Result<()> {
     let decoder = GzDecoder::new(Cursor::new(archive));
     let mut tar = tar::Archive::new(decoder);
     let mut found_alc = false;
-    let mut found_helper = false;
 
     for entry in tar
         .entries()
@@ -281,10 +263,6 @@ fn extract_tar_files(archive: &[u8], alc: &Path, helper: &Path) -> Result<()> {
             "alc" if !found_alc => {
                 found_alc = true;
                 alc
-            }
-            "claude-codex" if !found_helper => {
-                found_helper = true;
-                helper
             }
             _ => continue,
         };
@@ -345,7 +323,7 @@ fn parse_binary_version(output: &str) -> Result<Version> {
 
 fn install(
     current_exe: &Path,
-    extracted: &ExtractedBinaries,
+    extracted: &Path,
     current: &Version,
     latest: &Version,
 ) -> Result<()> {
@@ -362,33 +340,24 @@ fn install(
     );
     let executable_suffix = env::consts::EXE_SUFFIX;
     let staged_alc = install_dir.join(format!(".alc-update-{nonce}{executable_suffix}"));
-    let staged_helper =
-        install_dir.join(format!(".claude-codex-update-{nonce}{executable_suffix}"));
-    copy_new(&extracted.alc, &staged_alc)?;
-    if let Err(error) = copy_new(&extracted.helper, &staged_helper) {
+    copy_new(extracted, &staged_alc)?;
+    if let Err(error) = make_executable(&staged_alc) {
         let _ = fs::remove_file(&staged_alc);
-        return Err(error);
-    }
-    if let Err(error) = make_executable(&staged_alc).and_then(|()| make_executable(&staged_helper))
-    {
-        let _ = fs::remove_file(&staged_alc);
-        let _ = fs::remove_file(&staged_helper);
         return Err(error);
     }
 
-    let helper_target = install_dir.join(format!("claude-codex{executable_suffix}"));
-    let result = install_platform(
-        current_exe,
-        &helper_target,
-        &staged_alc,
-        &staged_helper,
-        &nonce,
-        current,
-        latest,
-    );
+    let result = install_platform(current_exe, &staged_alc, &nonce, current, latest);
     if result.is_err() {
         let _ = fs::remove_file(&staged_alc);
-        let _ = fs::remove_file(&staged_helper);
+        return result;
+    }
+
+    // Versions before 1.4.0 installed a claude-codex binary beside alc. The
+    // bridge is linked in now, so that copy is dead weight - and a stale one
+    // on PATH would answer `claude-codex` for anyone who still calls it.
+    let stale = install_dir.join(format!("claude-codex{executable_suffix}"));
+    if stale.is_file() {
+        let _ = fs::remove_file(&stale);
     }
     result
 }
@@ -415,37 +384,24 @@ fn copy_new(source: &Path, destination: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-#[allow(clippy::too_many_arguments)]
 fn install_platform(
     current_exe: &Path,
-    helper_target: &Path,
     staged_alc: &Path,
-    staged_helper: &Path,
     nonce: &str,
     current: &Version,
     latest: &Version,
 ) -> Result<()> {
-    let helper_backup = helper_target.with_file_name(format!(".claude-codex-backup-{nonce}"));
-    let had_helper = helper_target.exists();
-    if had_helper {
-        fs::rename(helper_target, &helper_backup)
-            .with_context(|| format!("could not back up {}", helper_target.display()))?;
-    }
-
-    if let Err(error) = fs::rename(staged_helper, helper_target) {
-        if had_helper {
-            let _ = fs::rename(&helper_backup, helper_target);
-        }
-        let _ = fs::remove_file(staged_alc);
-        return Err(error).context("could not install the updated claude-codex helper");
+    let backup = current_exe.with_file_name(format!(".alc-backup-{nonce}"));
+    let had_alc = current_exe.exists();
+    if had_alc {
+        fs::rename(current_exe, &backup)
+            .with_context(|| format!("could not back up {}", current_exe.display()))?;
     }
 
     if let Err(error) = fs::rename(staged_alc, current_exe) {
-        let _ = fs::remove_file(helper_target);
-        if had_helper {
-            let _ = fs::rename(&helper_backup, helper_target);
+        if had_alc {
+            let _ = fs::rename(&backup, current_exe);
         }
-        let _ = fs::remove_file(staged_alc);
         return Err(error).with_context(|| {
             format!(
                 "could not replace {}; use the one-line installer if this location is managed by an administrator",
@@ -454,20 +410,17 @@ fn install_platform(
         });
     }
 
-    if had_helper {
-        let _ = fs::remove_file(helper_backup);
+    if had_alc {
+        let _ = fs::remove_file(backup);
     }
     println!("Updated alc {current} -> {latest}.");
     Ok(())
 }
 
 #[cfg(windows)]
-#[allow(clippy::too_many_arguments)]
 fn install_platform(
     current_exe: &Path,
-    helper_target: &Path,
     staged_alc: &Path,
-    staged_helper: &Path,
     nonce: &str,
     current: &Version,
     latest: &Version,
@@ -475,52 +428,44 @@ fn install_platform(
     use std::os::windows::process::CommandExt;
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // A running executable cannot replace itself on Windows, so the swap is
+    // handed to a script that waits for this process to exit. It also clears
+    // the claude-codex binary versions before 1.4.0 installed beside alc:
+    // the bridge is linked in now, and a stale copy on PATH would answer for
+    // anyone still calling it.
     const SCRIPT: &str = r#"param(
     [int]$ParentProcessId,
     [string]$CurrentAlc,
-    [string]$CurrentHelper,
     [string]$StagedAlc,
-    [string]$StagedHelper,
     [string]$AlcBackup,
-    [string]$HelperBackup,
+    [string]$StaleHelper,
     [string]$LogPath,
     [string]$ScriptPath
 )
 $ErrorActionPreference = 'Stop'
 $alcInstalled = $false
-$helperInstalled = $false
 try {
     Wait-Process -Id $ParentProcessId -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 150
     if (Test-Path -LiteralPath $CurrentAlc) {
         Move-Item -LiteralPath $CurrentAlc -Destination $AlcBackup
     }
-    if (Test-Path -LiteralPath $CurrentHelper) {
-        Move-Item -LiteralPath $CurrentHelper -Destination $HelperBackup
-    }
-    Move-Item -LiteralPath $StagedHelper -Destination $CurrentHelper
-    $helperInstalled = $true
     Move-Item -LiteralPath $StagedAlc -Destination $CurrentAlc
     $alcInstalled = $true
-    Remove-Item -Force -LiteralPath $AlcBackup, $HelperBackup -ErrorAction SilentlyContinue
+    Remove-Item -Force -LiteralPath $AlcBackup -ErrorAction SilentlyContinue
+    Remove-Item -Force -LiteralPath $StaleHelper -ErrorAction SilentlyContinue
     Remove-Item -Force -LiteralPath $LogPath -ErrorAction SilentlyContinue
 } catch {
     $failure = $_ | Out-String
     if ($alcInstalled) {
         Remove-Item -Force -LiteralPath $CurrentAlc -ErrorAction SilentlyContinue
     }
-    if ($helperInstalled) {
-        Remove-Item -Force -LiteralPath $CurrentHelper -ErrorAction SilentlyContinue
-    }
     if (Test-Path -LiteralPath $AlcBackup) {
         Move-Item -Force -LiteralPath $AlcBackup -Destination $CurrentAlc -ErrorAction SilentlyContinue
     }
-    if (Test-Path -LiteralPath $HelperBackup) {
-        Move-Item -Force -LiteralPath $HelperBackup -Destination $CurrentHelper -ErrorAction SilentlyContinue
-    }
     Set-Content -LiteralPath $LogPath -Value $failure
 } finally {
-    Remove-Item -Force -LiteralPath $StagedAlc, $StagedHelper -ErrorAction SilentlyContinue
+    Remove-Item -Force -LiteralPath $StagedAlc -ErrorAction SilentlyContinue
     Remove-Item -Force -LiteralPath $ScriptPath -ErrorAction SilentlyContinue
 }
 "#;
@@ -530,7 +475,7 @@ try {
         .context("the running alc executable has no parent directory")?;
     let script_path = install_dir.join(format!(".alc-update-{nonce}.ps1"));
     let alc_backup = install_dir.join(format!(".alc-backup-{nonce}.exe"));
-    let helper_backup = install_dir.join(format!(".claude-codex-backup-{nonce}.exe"));
+    let stale_helper = install_dir.join("claude-codex.exe");
     let log_path = install_dir.join("alc-update.log");
     fs::write(&script_path, SCRIPT)
         .with_context(|| format!("could not create {}", script_path.display()))?;
@@ -549,11 +494,9 @@ try {
         .arg(&script_path)
         .arg(std::process::id().to_string())
         .arg(current_exe)
-        .arg(helper_target)
         .arg(staged_alc)
-        .arg(staged_helper)
         .arg(&alc_backup)
-        .arg(&helper_backup)
+        .arg(&stale_helper)
         .arg(&log_path)
         .arg(&script_path)
         .creation_flags(CREATE_NO_WINDOW)
@@ -561,7 +504,6 @@ try {
     if let Err(error) = spawn {
         let _ = fs::remove_file(&script_path);
         let _ = fs::remove_file(staged_alc);
-        let _ = fs::remove_file(staged_helper);
         return Err(error).context("could not start the Windows update finalizer");
     }
 

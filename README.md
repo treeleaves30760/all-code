@@ -67,7 +67,7 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
 ```
 
-The installer puts `alc` and its Codex bridge helper in `~/.local/bin`
+The installer puts `alc` in `~/.local/bin`
 (Windows: `%USERPROFILE%\.local\bin`) and adds that directory to your user
 PATH when needed. On macOS/Linux, restart the terminal or source the profile
 named by the installer. PowerShell updates the current session and your
@@ -83,7 +83,7 @@ needed. Set `ALC_NO_PATH_UPDATE=1` to disable automatic PATH changes explicitly.
 
 ## Update
 
-Check for a new release or update both `alc` and its bundled helper:
+Check for a new release, or update `alc` in place:
 
 ```sh
 alc update --check
@@ -304,7 +304,7 @@ alc --codex qwen
 alc --codex kimi
 ```
 
-`alc` starts the bundled `claude-codex` adapter on a loopback port and points
+`alc` starts its built-in `claude-codex` adapter on a loopback port and points
 only the launched agent's process at it. The adapter speaks Anthropic Messages
 for Claude Code, OpenAI Responses for OpenCode/Pi/Kimi Code CLI, and OpenAI
 Chat Completions for Copilot CLI/Goose/Qwen Code — three different wire
@@ -326,7 +326,7 @@ own `/model` picker:
 | `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
 
 `gpt-6-astra` is the one entry that may not be offered: alc lists only the
-models the bundled `claude-codex` bridge can actually route, and the bridge
+models the built-in `claude-codex` bridge can actually route, and the bridge
 learns a new Codex model some time after Codex itself ships it. While that is
 true, `alc --codex claude` refuses the model at launch and names the ones that
 work, instead of letting the session fail with the agent's own "the model may
@@ -336,7 +336,7 @@ The model reappears on its own once a bridge that routes it is installed.
 The list is ordered by capability, most capable first, matching Codex's own
 tiers. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` effort
 above `max`. That tier is reachable with native `alc codex`, but **not** through
-the Codex bridge: the bundled helper's own effort range stops at `max`, so alc
+the Codex bridge: the built-in helper's own effort range stops at `max`, so alc
 clamps it there and says so at launch rather than letting the request be
 refused mid-session.
 
@@ -405,12 +405,13 @@ its documented
 gateway setting, so unknown GPT IDs compact at the correct Codex limit instead
 of Claude's generic fallback.
 
-The release archive bundles
+`alc` links in
 [`claude-codex` 0.3.1](https://github.com/fcakyon/claude-code-with-codex), an
-MIT-licensed helper. `alc` starts it on a random `127.0.0.1` port, points only
-the launched agent's process at it, and stops it when that process exits. The
-helper reads and may refresh `~/.codex/auth.json`; credentials are never copied
-into the `alc` config.
+MIT-licensed library, pinned by tag in `Cargo.toml` and by commit in
+`Cargo.lock`. It runs inside the `alc` process on a random `127.0.0.1` port,
+points only the launched agent at it, and stops when that session ends. It
+reads and may refresh `~/.codex/auth.json`; credentials are never copied into
+the `alc` config.
 
 This adapter is a third-party compatibility layer, not an official OpenAI or
 Anthropic integration. Review [THIRD_PARTY.md](THIRD_PARTY.md) and your provider
@@ -563,9 +564,9 @@ Rust 1.88 or newer:
 cargo build --release --locked
 ```
 
-The source build produces only `alc`. To use `alc --codex <agent>`, put a
-compatible `claude-codex` binary on PATH or set `ALC_CLAUDE_CODEX_BIN`. Official
-`alc` release archives already bundle the pinned helper.
+The Codex bridge is a pinned Cargo dependency compiled into `alc`, so a source
+build is a complete one — `alc --codex <agent>` works with nothing else
+installed. Release archives contain only `alc` for the same reason.
 
 Useful development checks:
 
@@ -577,7 +578,7 @@ cargo test --all-targets
 
 ## Uninstall
 
-Remove `alc` and `claude-codex` from the install directory, then optionally
+Remove `alc` from the install directory, then optionally
 remove the config directory listed by `alc config path`. Removing the config
 also deletes locally saved API keys and cannot be undone.
 

@@ -44,10 +44,10 @@ OpenRouter 或 Ollama，或改用
 執行 `codex login` 後再試一次。登入狀態會顯示在 `alc doctor` 輸出的
 **Codex bridge** 底下。
 
-## `the bundled claude-codex … helper is missing`
+## 找不到 Codex 轉接器
 
-從原始碼建置不會包含轉接器。請改用一行安裝器重新安裝、把相容的 `claude-codex`
-放進 PATH，或設定 `ALC_CLAUDE_CODEX_BIN`。
+從 1.4.0 起不會發生：橋接是編進 `alc` 裡的，不再是旁邊的另一個執行檔。如果你
+是在舊版 `alc` 上看到這個訊息，請用一行安裝器升級。
 
 ## Ollama profile 出現 `API Error: Request timed out`（或 `500`）
 

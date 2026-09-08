@@ -11,7 +11,7 @@ keywords:
 
 # 更新 alc
 
-檢查是否有新版本，或直接更新 `alc` 與隨附的 helper：
+檢查是否有新版本，或直接更新 `alc`：
 
 ```sh
 alc update --check

@@ -15,7 +15,7 @@ keywords:
 # Codex bridge
 
 One `codex login` serves every agent alc launches. `alc --codex <agent>`
-starts the bundled `claude-codex` adapter on a loopback port and points that
+starts its built-in `claude-codex` adapter on a loopback port and points that
 one agent's session at it — no separate login for OpenCode, Pi, Copilot CLI,
 Goose, Qwen Code, or Kimi Code CLI.
 
@@ -58,7 +58,7 @@ own `/model` picker:
 | `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
 
 `gpt-6-astra` is the one entry that may not be offered: alc lists only the
-models the bundled `claude-codex` bridge can actually route, and the bridge
+models the built-in `claude-codex` bridge can actually route, and the bridge
 learns a new Codex model some time after Codex itself ships it. While that is
 true, `alc --codex claude` refuses the model at launch and names the ones that
 work, instead of letting the session fail with the agent's own "the model may
@@ -68,7 +68,7 @@ The model reappears on its own once a bridge that routes it is installed.
 The list is ordered by capability, most capable first, matching Codex's own
 tiers. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` effort
 above `max`. That tier is reachable with native `alc codex`, but **not**
-through the Codex bridge: the bundled helper's own effort range stops at
+through the Codex bridge: the built-in helper's own effort range stops at
 `max`, so alc clamps it there and says so at launch rather than letting the
 request be refused mid-session. See OpenAI's
 [model selection guide](https://developers.openai.com/api/docs/guides/latest-model),
@@ -164,12 +164,13 @@ capable one.
 
 ## How the bridge works
 
-The release archive bundles
+`alc` links in
 [`claude-codex` 0.3.1](https://github.com/fcakyon/claude-code-with-codex), an
-MIT-licensed helper. `alc` starts it on a random `127.0.0.1` port, points only
-the launched agent's process at it, and stops it when that process exits. The
-helper reads and may refresh `~/.codex/auth.json`; credentials are never
-copied into the alc configuration.
+MIT-licensed library, pinned by tag in `Cargo.toml` and by commit in
+`Cargo.lock`. It runs inside the `alc` process on a random `127.0.0.1` port,
+points only the launched agent at it, and stops when that session ends. It
+reads and may refresh `~/.codex/auth.json`; credentials are never copied into
+the alc configuration.
 
 :::caution Third-party compatibility layer
 
