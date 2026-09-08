@@ -108,17 +108,17 @@ try {
     $extractDir = Join-Path $tempDir 'extract'
     Expand-Archive -LiteralPath $archive -DestinationPath $extractDir
     $alcSource = Join-Path $extractDir 'alc.exe'
-    $helperSource = Join-Path $extractDir 'claude-codex.exe'
     if (-not (Test-Path -LiteralPath $alcSource -PathType Leaf)) {
         throw 'Release archive does not contain alc.exe'
-    }
-    if (-not (Test-Path -LiteralPath $helperSource -PathType Leaf)) {
-        throw 'Release archive does not contain claude-codex.exe'
     }
 
     New-Item -ItemType Directory -Force -Path $installDir | Out-Null
     Copy-Item -Force -LiteralPath $alcSource -Destination (Join-Path $installDir 'alc.exe')
-    Copy-Item -Force -LiteralPath $helperSource -Destination (Join-Path $installDir 'claude-codex.exe')
+
+    # The Codex bridge is built into alc from 1.4.0 on. An older install left
+    # a separate claude-codex.exe here; removing it keeps a stale copy from
+    # answering for anyone who still calls it directly.
+    Remove-Item -Force -LiteralPath (Join-Path $installDir 'claude-codex.exe') -ErrorAction SilentlyContinue
 
     $normalizedInstallDir = [IO.Path]::GetFullPath($installDir).TrimEnd('\')
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')

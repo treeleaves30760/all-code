@@ -48,8 +48,10 @@ try {
     $helper = Join-Path $testDir 'claude-codex.exe'
     Assert-True -Condition (Test-Path -LiteralPath $alc -PathType Leaf) `
         -Message 'The installer did not install alc.exe.'
-    Assert-True -Condition (Test-Path -LiteralPath $helper -PathType Leaf) `
-        -Message 'The installer did not install claude-codex.exe.'
+    # The bridge is linked into alc from 1.4.0 on: a second binary here would
+    # be a stale copy answering for anyone who still calls it directly.
+    Assert-True -Condition (-not (Test-Path -LiteralPath $helper)) `
+        -Message 'The installer left a claude-codex.exe behind.'
 
     $versionOutput = (& $alc --version 2>&1 | Out-String).Trim()
     Assert-True -Condition ($LASTEXITCODE -eq 0) `

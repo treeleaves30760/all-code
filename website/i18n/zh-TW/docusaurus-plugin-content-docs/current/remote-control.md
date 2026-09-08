@@ -33,14 +33,19 @@ alc 啟動的八個 agent 幾乎在每件事上都不一樣：有些提供機器
 
 ## 頁面上有什麼
 
-- **Session 清單**：agent、provider、模型、工作目錄。
+- **Session 清單**：agent、provider、模型、工作目錄、已執行多久、有幾個人在看。
+  亮著的圓點代表執行中；結束的 session 會變灰、顯示它是怎麼結束的，然後自己從
+  清單上消失。
 - **即時畫面**：由真正的終端機模擬器繪製，所以全螢幕 TUI 看起來跟本機一樣。
 - **快捷鍵列**：手機鍵盤沒有的那些鍵 —— Esc、Tab、Shift+Tab、Ctrl（黏著式，先按
   Ctrl 再按字母）、方向鍵。Claude Code 就是用 Shift+Tab 切換權限模式的。
 - **輸入框**：把整段提示詞當成一次貼上送出。在手機上直接對著原始終端機打長提示詞
   等於跟自己的輸入法對抗 —— 輸入法會重寫它已經送出的字，而原始終端機收不回來。
-- **重新連線不會失去位置**：關掉分頁、走進隧道、再回來 —— 頁面會要求它剛好漏掉的
-  那些位元組；離開太久的話，改為直接取得目前畫面。
+- **重新連線不會失去位置**：走進隧道再回來 —— 頁面會要求它剛好漏掉的那些位元組；
+  離開太久的話，改為直接取得目前畫面。標題列的燈號會顯示目前是連線中、重新連線中
+  還是已結束。
+- **重新整理不會弄丟清單**：連結裡的 token 會保留到分頁關閉為止，所以按 F5 仍然
+  是登入狀態。關掉分頁就會失效，請用 `alc sessions` 取得新的連結。
 
 頁面會跟隨裝置語言，提供繁體中文與英文。
 
@@ -148,8 +153,8 @@ alc remote auto-share on     # `alc claude` 現在等同於 `alc claude --share`
 alc --no-share claude        # 讓單一次啟動不共享
 ```
 
-`alc config` 裡也有 —— 從 provider 清單按兩次 Tab 進到 Remote 畫面，共享、預設共享、
-綁定位址、權限上限都可以在那裡改。
+`alc config` 裡也有 —— 標題列會列出三個畫面，用 `Tab`／`Shift+Tab` 切到
+**Sharing & remote**，共享、預設共享、綁定位址、權限上限都可以在那裡改。
 
 腳本式的執行 —— 也就是輸入或輸出被重導向的那種，像 `alc claude -p "…" > out.txt`
 —— 不論這個設定為何都**不會**共享。一個長期偏好不該成為某個 cron job 開始失敗的原因。
@@ -342,7 +347,7 @@ use `alc share claude -- <args>`
 | 鍵 | 預設 | 作用 |
 | --- | --- | --- |
 | `enabled` | `true` | 總開關。`alc remote off` 設定的就是這個。 |
-| `auto_share` | `false` | 每個 session 都共享，不必加 `--share`。`alc remote auto-share on`。 |
+| `auto_share` | `false` | 每個 session 都共享，不必加 `--share`；需要 `enabled` 也是開的才生效。`alc remote auto-share on`。 |
 | `bind` | `"loopback"` | `loopback` 或 `lan`。 |
 | `port` | `8787` | `0` 表示隨機連接埠。連接埠被佔用時會自動退回隨機。 |
 | `allowed_hosts` | `[]` | 除了這台機器自己的位址之外，還要回應哪些名字 —— 隧道的主機名，可精確指定或用 `*.example.com`。`alc remote allow-host` 會編輯這一項。 |

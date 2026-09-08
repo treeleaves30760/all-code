@@ -1,7 +1,7 @@
 # Third-party software
 
-Official `alc` release archives bundle the following helper next to the main
-binary. Building `alc` from source does not download or compile this helper.
+`alc` links the following in at build time. There is no second binary to
+download, install, or keep in step with `alc`.
 
 ## claude-codex 0.3.1
 
@@ -11,9 +11,11 @@ binary. Building `alc` from source does not download or compile this helper.
 - Purpose: loopback-only Anthropic Messages / OpenAI Responses / Chat
   Completions translation for the alc Codex bridge (`alc --codex <agent>`)
 
-The helper reads and may refresh the current user's Codex CLI credentials. It
-is started only for Codex-backed sessions — of any supported agent — and is
-terminated when that session exits. See the bundled license in
+Pinned in `Cargo.toml` by tag and in `Cargo.lock` by commit, and compiled into
+`alc` as a library rather than shipped beside it. It is served on a loopback
+port owned by the `alc` process, started only for Codex-backed sessions — of
+any supported agent — and stopped when that session ends. It reads and may
+refresh the current user's Codex CLI credentials. See the bundled license in
 `THIRD_PARTY_LICENSES/claude-codex-LICENSE`.
 
 # Vendored browser assets
@@ -39,12 +41,20 @@ and compressed into the binary at build time.
 
 # Rust dependencies under Apache-2.0
 
-Most of alc's dependencies are dual MIT/Apache-2.0. These two are
-Apache-2.0 only, and are noted here because that license carries attribution
-obligations the MIT license does not.
+Most of alc's dependencies are dual MIT/Apache-2.0. These are Apache-2.0
+only, and are noted here because that license carries attribution obligations
+the MIT license does not. Regenerate the list with:
+
+```sh
+cargo tree --prefix none --format '{p} :: {l}' | grep ':: Apache-2.0$' | sort -u
+```
 
 - `avt` — <https://github.com/asciinema/avt> — the terminal emulator that
   tracks what a mirrored session's screen currently looks like, so a viewer
   joining late is sent a screen rather than a backlog.
-- `rpassword` — <https://github.com/conradkleinespel/rpassword> — the hidden
-  prompt `alc config key` reads an API key with.
+- `rpassword`, `rtoolbox` — <https://github.com/conradkleinespel/rpassword> —
+  the hidden prompt `alc config key` reads an API key with.
+- `normalize-line-endings`, `zopfli` — build-time helpers for the compressed
+  page assets.
+- `prost`, `prost-derive`, `sync_wrapper` — reached through the Codex bridge's
+  HTTP stack.

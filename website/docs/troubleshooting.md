@@ -47,9 +47,9 @@ Run `codex login`, then retry. `alc doctor` reports the login state under
 
 ## `the bundled claude-codex … helper is missing`
 
-Source builds do not include the adapter. Reinstall with the one-line
-installer, put a compatible `claude-codex` on PATH, or set
-`ALC_CLAUDE_CODEX_BIN`.
+It cannot be, from 1.4.0 on: the bridge is compiled into `alc` rather than
+shipped beside it. If you are seeing this from an older `alc`, upgrade with
+the one-line installer.
 
 ## `API Error: Request timed out` (or `500`) with an Ollama profile
 
@@ -93,3 +93,33 @@ alc models --refresh
 
 `alc --dry-run` redacts API keys and auth tokens, and `alc config show` never
 prints credential values — only whether each profile has one.
+
+## I cannot find the sharing setting in `alc config`
+
+It is on the third screen. `alc config` names all three across its header —
+`1 Providers`, `2 Agent defaults`, `3 Sharing & remote` — and `Tab`,
+`Shift+Tab` or the number key moves between them. Share-by-default, the bind
+address and the permission ceiling all live on the third one.
+
+Outside the TUI, `alc remote auto-share on` sets the same thing, `alc remote
+status` and `alc doctor` report it, and `alc config show` prints it under
+`# Remote control`.
+
+If the row reads `on (inactive)`, sharing itself is off: a session shares by
+default only when both are on. Turn on the `sharing` row above it, or run
+`alc remote on`.
+
+## `the model may not exist or you may not have access to it`
+
+From a `--codex` session, this usually means the model is real but the bundled
+`claude-codex` bridge cannot route it yet — Codex ships a model some time
+before the bridge learns to serve it. alc now refuses that launch up front and
+lists the models the bridge does route; pick one of those:
+
+```sh
+alc config upsert codex --model gpt-5.6-terra
+```
+
+A codex profile whose model is empty follows the Codex CLI's own `model`
+setting instead, which is where an unroutable one usually comes from. Native
+`alc codex` is unaffected.

@@ -134,7 +134,7 @@ MacBook Air 上，`gemma4:12b` 讀完 22k tokens 的第一個請求要約六分�
 | `anthropic-messages` | Anthropic Messages API |
 | `openai-responses` | OpenAI Responses API |
 | `openai-chat` | 只支援 Chat Completions |
-| `codex-native` | Codex CLI 登入，透過隨附的橋接使用 |
+| `codex-native` | Codex CLI 登入，透過內建的橋接使用 |
 | `dual` | 同時提供 Anthropic Messages 與 OpenAI Responses |
 
 執行 `alc doctor` 可以印出你自己設定的相容性矩陣 —— 每個 provider profile

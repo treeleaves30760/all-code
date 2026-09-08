@@ -25,7 +25,7 @@ pub fn run(store: &Store) -> Result<bool> {
 
     println!("{}", theme.paint(Tone::Head, "alc doctor"));
     environment(store, &theme, &mut issues);
-    binaries(store, &theme, codex_bridge_enabled, &mut issues);
+    binaries(store, &theme, &mut issues);
     profiles(store, &theme, &mut issues);
     defaults(store, &theme);
     if codex_bridge_enabled {
@@ -63,7 +63,7 @@ fn environment(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     ]);
 }
 
-fn binaries(store: &Store, theme: &Theme, codex_bridge_enabled: bool, issues: &mut Vec<Issue>) {
+fn binaries(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     heading(theme, "Agent binaries");
     let mut rows = Vec::new();
 
@@ -98,40 +98,22 @@ fn binaries(store: &Store, theme: &Theme, codex_bridge_enabled: bool, issues: &m
         }
     }
 
-    match helper_path() {
-        Some(path) => rows.push(Row::new(
-            Status::Good,
-            "adapter",
-            format!(
-                "{}{}",
-                path.display(),
-                theme.paint(
-                    Tone::Dim,
-                    &format!(
-                        "{GUTTER}(claude-codex {})",
-                        crate::launch::CLAUDE_CODEX_HELPER_VERSION
-                    )
+    // The bridge is linked into this binary, so there is nothing to find
+    // and nothing that can be a different version from alc.
+    rows.push(Row::new(
+        Status::Good,
+        "adapter",
+        format!(
+            "built in{}",
+            theme.paint(
+                Tone::Dim,
+                &format!(
+                    "{GUTTER}(claude-codex {})",
+                    crate::launch::CLAUDE_CODEX_BRIDGE_VERSION
                 )
-            ),
-        )),
-        None if codex_bridge_enabled => {
-            rows.push(Row::new(
-                Status::Bad,
-                "adapter",
-                theme.paint(Tone::Bad, "claude-codex not installed"),
-            ));
-            issues.push(Issue::new(
-                "adapter",
-                "claude-codex is required by the Codex bridge".to_owned(),
-                Some("reinstall alc, or put `claude-codex` on PATH".to_owned()),
-            ));
-        }
-        None => rows.push(Row::new(
-            Status::Off,
-            "adapter",
-            theme.paint(Tone::Dim, "optional helper not installed"),
-        )),
-    }
+            )
+        ),
+    ));
 
     marked(theme, &rows);
 }
@@ -224,19 +206,45 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
         if !provider.enabled || provider.kind != ProviderKind::Codex {
             continue;
         }
-        let (status, model) = match crate::launch::resolve_codex_model(provider) {
+        let (mut status, model) = match crate::launch::resolve_codex_model(provider) {
             Ok(model) => (Status::Good, model),
             Err(_) => (Status::Warn, "<unresolved>".to_owned()),
         };
+        // Resolving says nothing about whether the bridge can serve it. A
+        // green tick against a model every launch refuses sends the reader
+        // looking for the problem somewhere it is not.
+        //
+        // Only asked when a model was actually resolved: `<unresolved>` is a
+        // placeholder, not a slug, and reporting that the bridge cannot route
+        // it would be true of every string that is not a model.
+        let unroutable = status != Status::Warn
+            && crate::launch::bridge_codex_models()
+                .is_some_and(|routable| !routable.contains(&model));
+        if unroutable {
+            status = Status::Bad;
+            issues.push(Issue::new(
+                name.clone(),
+                format!("the bridge cannot route '{model}'"),
+                Some(format!("alc config upsert {name} --model gpt-5.6-terra")),
+            ));
+        }
         let effort = crate::launch::resolve_codex_effort(provider)
             .ok()
             .flatten()
             .or_else(|| catalog.find(&model).map(|entry| entry.default_effort))
             .unwrap_or(ReasoningEffort::Medium);
+        let note = if unroutable {
+            theme.paint(Tone::Bad, "  bridge cannot route this")
+        } else {
+            String::new()
+        };
         rows.push(Row::new(
             status,
             name.clone(),
-            format!("{model}{}", theme.paint(Tone::Dim, &format!(" / {effort}"))),
+            format!(
+                "{model}{}{note}",
+                theme.paint(Tone::Dim, &format!(" / {effort}"))
+            ),
         ));
     }
 
@@ -833,26 +841,6 @@ fn resolve(binary: &std::ffi::OsStr) -> Option<PathBuf> {
         return path.is_file().then_some(path);
     }
     which::which(binary).ok()
-}
-
-fn helper_path() -> Option<PathBuf> {
-    if let Some(path) = env::var_os("ALC_CLAUDE_CODEX_BIN") {
-        return resolve(&path);
-    }
-    let file_name = if cfg!(windows) {
-        "claude-codex.exe"
-    } else {
-        "claude-codex"
-    };
-    if let Ok(current) = env::current_exe()
-        && let Some(parent) = current.parent()
-    {
-        let sibling = parent.join(file_name);
-        if sibling.is_file() {
-            return Some(sibling);
-        }
-    }
-    which::which("claude-codex").ok()
 }
 
 fn codex_login_status() -> Option<bool> {

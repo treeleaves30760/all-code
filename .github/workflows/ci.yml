@@ -22,7 +22,14 @@ jobs:
       # The remote-control page ships inside the binary, so its JavaScript
       # never meets a bundler that would have caught a syntax error.
       - name: Check the page's JavaScript parses
-        run: node --check web/app.js
+        run: |
+          node --check web/app.js
+          node --check web/core.js
+
+      # Everything the page decides lives in core.js precisely so it can be
+      # tested without a browser.
+      - name: Test the page's logic
+        run: node --test 'web/*.test.js'
 
       # xterm.js is committed rather than fetched, so nothing else would
       # notice it drifting from the version VENDOR.lock names.

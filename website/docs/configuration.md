@@ -35,7 +35,9 @@ alc config
 The keys are shown at the bottom of every screen. The primary controls are:
 
 - `a`, `e`/Enter, `d`: add, edit, or delete a provider.
-- `Tab`: switch between provider profiles and agent defaults.
+- `Tab`/`Shift+Tab`, or `1`/`2`/`3`: move between the three screens named in
+  the header — Providers, Agent defaults, and Sharing & remote. The last one
+  holds share-by-default, the bind address and the permission ceiling.
 - Arrow keys: navigate fields and cycle choices, including reasoning effort.
 - On a Codex profile, `←`/`→` on the Model field opens the guided GPT model and
   effort chooser, which writes the launch defaults for `alc --codex claude`.

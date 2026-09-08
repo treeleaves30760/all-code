@@ -4,36 +4,59 @@
  * machine the agent is running on. The terminal gets every pixel that is not
  * spoken for, and the two things needed to actually drive a session - a key
  * bar for the keys a touch keyboard does not have, and a composer for text
- * too long to type into a raw terminal - are pinned above the keyboard. */
+ * too long to type into a raw terminal - are pinned above the keyboard.
+ *
+ * State is shown, not narrated: a running session is a lit dot, a lost
+ * connection is an amber light in the header, an agent that has exited is a
+ * greyed row that then leaves. Prose is the fallback for things that have no
+ * shape, not the default.
+ */
 
 :root {
   color-scheme: light dark;
   --bg: #fbfbfa;
   --surface: #ffffff;
+  --raised: #f4f3f0;
   --line: #e3e1dc;
   --text: #1a1a19;
-  --muted: #6b6a66;
-  --accent: #b4633a;
-  --danger: #b03030;
+  --muted: #5f5e5a;
+  --accent: #a1522c;
+  --ok: #2f7d51;
+  --warn: #a86a1f;
+  --danger: #a52a2a;
   --term-bg: #16161a;
   --radius: 10px;
   --bar: 52px;
+  --rail: 320px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #16161a;
     --surface: #1e1e23;
+    --raised: #26262c;
     --line: #33333a;
     --text: #eceae5;
-    --muted: #9a978f;
+    --muted: #a5a29a;
     --accent: #d98b5f;
+    --ok: #6cc08b;
+    --warn: #e0a458;
+    --danger: #e07a7a;
     --term-bg: #16161a;
   }
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* The UA stylesheet's `[hidden] { display: none }` loses to any author rule
+ * that sets `display`, and this file sets it on almost everything. Without
+ * this, `hidden` silently did nothing: the session list and the terminal
+ * were laid out side by side permanently, each fighting the other for width
+ * on every terminal resize. */
+[hidden] {
+  display: none !important;
 }
 
 html,
@@ -51,10 +74,13 @@ body {
   overflow: hidden;
 }
 
+/* ---- header ---- */
+
 #bar {
   flex: 0 0 auto;
   height: calc(var(--bar) + env(safe-area-inset-top));
-  padding: env(safe-area-inset-top) 12px 0;
+  padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0
+    max(12px, env(safe-area-inset-left));
   display: flex;
   align-items: center;
   gap: 10px;
@@ -71,11 +97,13 @@ body {
 }
 
 #title strong {
+  flex: 0 0 auto;
   font-weight: 650;
   letter-spacing: 0.02em;
 }
 
 #subtitle {
+  min-width: 0;
   color: var(--muted);
   font-size: 13px;
   white-space: nowrap;
@@ -99,6 +127,60 @@ body {
   border-color: var(--accent);
 }
 
+/* The connection light. Colour and motion carry the state; the word beside
+ * it is there for anyone who cannot use colour to read it. */
+.status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.status[data-state="live"] {
+  color: var(--ok);
+}
+.status[data-state="live"] .status-dot {
+  background: var(--ok);
+}
+
+.status[data-state="connecting"],
+.status[data-state="reconnecting"] {
+  color: var(--warn);
+}
+.status[data-state="connecting"] .status-dot,
+.status[data-state="reconnecting"] .status-dot {
+  background: var(--warn);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.status[data-state="ended"] {
+  color: var(--danger);
+}
+.status[data-state="ended"] .status-dot {
+  background: var(--danger);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot {
+    animation: none !important;
+  }
+}
+
 button {
   font: inherit;
   color: inherit;
@@ -115,10 +197,24 @@ button:active {
 }
 
 button.icon {
+  flex: 0 0 auto;
   padding: 6px 12px;
   font-size: 18px;
   line-height: 1;
 }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- panes ----
+ *
+ * One source of truth: body[data-pane]. A phone shows one pane at a time
+ * with a back button; a wide screen keeps the list as a fixed rail beside
+ * the terminal. The terminal pane carries min-width:0 so its own measured
+ * width can never feed back into the flex basis and creep wider each time
+ * the FitAddon runs. */
 
 main {
   flex: 1 1 auto;
@@ -127,19 +223,44 @@ main {
 }
 
 main > section {
-  flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
 
-/* ---- session list ---- */
-
 #list {
+  flex: 1 1 auto;
   overflow-y: auto;
-  padding: 14px;
-  gap: 10px;
+  overscroll-behavior: contain;
+  padding: 14px max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom))
+    max(14px, env(safe-area-inset-left));
 }
+
+#view {
+  flex: 1 1 0%;
+  background: var(--term-bg);
+}
+
+body[data-pane="list"] #view {
+  display: none;
+}
+
+body[data-pane="view"] #list {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  /* Both panes at once, and the rail keeps a fixed width so switching
+   * sessions cannot change the split. */
+  body[data-pane="view"] #list {
+    display: flex;
+    flex: 0 0 var(--rail);
+    border-right: 1px solid var(--line);
+  }
+}
+
+/* ---- session list ---- */
 
 #sessions {
   list-style: none;
@@ -153,65 +274,145 @@ main > section {
 .card {
   width: 100%;
   text-align: left;
-  padding: 12px 14px;
+  padding: 11px 13px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
+  transition: opacity 0.4s ease;
+}
+
+.card[aria-current="true"] {
+  border-color: var(--accent);
+}
+
+/* An exited session is on its way out: it greys, then fades, then goes. */
+.card.exited {
+  opacity: 0.6;
+}
+
+.card.fading {
+  opacity: 0.25;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    transition: none;
+  }
 }
 
 .card .row {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.card .name {
-  font-weight: 600;
-}
-
-.card .meta {
-  color: var(--muted);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  word-break: break-all;
+  min-width: 0;
 }
 
 .dot {
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #4a9a5a;
-  flex: 0 0 auto;
+  background: var(--ok);
 }
 
 .dot.exited {
   background: var(--muted);
 }
 
-.badge {
-  font-size: 11px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--danger);
-  color: var(--danger);
+.name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.empty,
-.hint {
+.age {
+  flex: 0 0 auto;
+  font-size: 12px;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* What the session is, as chips rather than a run-on sentence. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--raised);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+.chip.warn {
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid var(--danger);
+}
+
+.cwd {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- empty state ----
+ *
+ * There is nothing to show, so the page says the one thing that changes
+ * that: the command. Explaining what a session is, to someone who has just
+ * opened alc's own page, is words nobody reads. */
+
+.empty {
+  margin: auto;
+  padding: 32px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.empty-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2px dashed var(--line);
+  margin-bottom: 4px;
+}
+
+.empty-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.empty-how {
+  margin: 0;
   font-size: 13px;
-  margin: 12px 2px;
+  color: var(--muted);
+}
+
+.command {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  background: var(--raised);
+  padding: 7px 12px;
 }
 
 /* ---- terminal ---- */
 
-#view {
-  background: var(--term-bg);
-}
-
 #terminal {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   padding: 6px 4px 0 8px;
 }
 
@@ -238,16 +439,17 @@ main > section {
 }
 
 .keys button.held {
-  background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--accent);
 }
 
 #composer {
   flex: 0 0 auto;
   display: flex;
   gap: 8px;
-  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  align-items: flex-end;
+  padding: 8px max(8px, env(safe-area-inset-right))
+    max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   background: var(--surface);
   border-top: 1px solid var(--line);
 }
@@ -256,57 +458,60 @@ main > section {
   flex: 1 1 auto;
   min-width: 0;
   resize: none;
-  max-height: 30vh;
-  font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: inherit;
+  /* 16px keeps iOS Safari from zooming the whole page on focus. */
+  font-size: 16px;
   color: inherit;
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 9px 11px;
-}
-
-#compose:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
+  padding: 8px 10px;
+  max-height: 30vh;
 }
 
 #send {
   flex: 0 0 auto;
 }
 
+/* A read-only link cannot type, so the controls that would are gone rather
+ * than present and inert. */
 body.viewer #composer,
 body.viewer .keys {
   display: none;
 }
 
+/* ---- toast ----
+ *
+ * For things that happen, not for things that are. Anything that is a state
+ * lives in the header light or on the row itself, because a toast that has
+ * already faded is information the user cannot get back. */
+
 #toast {
   position: fixed;
   left: 50%;
-  bottom: calc(20px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
-  max-width: min(92vw, 480px);
-  padding: 10px 14px;
+  /* Anchored below the header rather than above the composer: the bottom of
+   * this page is where the keys and the prompt box live, and a toast landing
+   * on the send button is a toast in the way of the one thing being done. */
+  top: calc(var(--bar) + env(safe-area-inset-top) + 10px);
+  z-index: 10;
+  max-width: min(92vw, 520px);
+  padding: 9px 14px;
   border-radius: var(--radius);
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
-  font-size: 14px;
-  z-index: 20;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+  font-size: 13px;
 }
 
 #toast.warn {
-  border-color: var(--accent);
+  border-color: var(--warn);
+  color: var(--warn);
 }
 
 #toast.error {
   border-color: var(--danger);
   color: var(--danger);
-}
-
-@media (min-width: 900px) {
-  #terminal {
-    padding: 10px 8px 0 14px;
-  }
 }
 
 /* ---- permission control ----
@@ -361,7 +566,7 @@ body.viewer .keys {
 }
 
 .perm-note.warn {
-  color: var(--accent);
+  color: var(--warn);
 }
 
 .perm-note.danger {
@@ -370,4 +575,10 @@ body.viewer .keys {
 
 .perm.unsandboxed {
   border-bottom-color: var(--danger);
+}
+
+@media (min-width: 900px) {
+  #terminal {
+    padding: 10px 8px 0 14px;
+  }
 }

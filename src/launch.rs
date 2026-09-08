@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,7 +17,12 @@ use crate::config::{
 };
 use crate::model_catalog::ModelInfo;
 
-pub const CLAUDE_CODEX_HELPER_VERSION: &str = "0.3.1";
+/// The bridge version alc is built against.
+///
+/// It is a Cargo dependency now rather than a binary beside alc, so this is
+/// what the linker actually used - there is no second artefact that could be
+/// a different version.
+pub const CLAUDE_CODEX_BRIDGE_VERSION: &str = "0.3.1";
 
 #[derive(Debug, Clone, Default)]
 pub struct LaunchOverrides {
@@ -240,7 +245,7 @@ pub fn build(
     Ok(spec)
 }
 
-/// The side effects a running session owns: the Codex bridge child and the
+/// The side effects a running session owns: the Codex bridge and the
 /// temporary files written for the agent. Both must outlive the agent
 /// process and be torn down when it exits, so they travel together.
 pub(crate) struct SessionGuards {
@@ -606,9 +611,9 @@ fn shell_quote(value: &OsStr) -> String {
     }
 }
 
-/// Conditional environment additions the bridge child process needs on top
-/// of the constant `PORT`/`CCP_LOG_STDERR`/`CCP_CODEX_AUTH_FILE` envs. Pure
-/// and side-effect-free so it can be unit tested directly.
+/// Conditional environment additions the bridge needs on top of the constant
+/// `CCP_LOG_STDERR`/`CCP_CODEX_AUTH_FILE` ones. Pure and side-effect-free so
+/// it can be unit tested directly.
 fn bridge_child_env(plan: &BridgePlan) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     // UltraCode can open several bridge sessions concurrently. If Codex rejects
@@ -623,14 +628,27 @@ fn bridge_child_env(plan: &BridgePlan) -> BTreeMap<String, String> {
     env
 }
 
+/// The Codex bridge, running inside this process.
+///
+/// It used to be a second binary alc downloaded, shipped and spawned. It is
+/// now a library, served on a loopback port by a runtime owned here: nothing
+/// to install beside alc, no version that can drift out of step with it, and
+/// no child to leak if alc dies badly. The agent still talks to it over HTTP,
+/// because that is the interface the agent has.
 pub(crate) struct Bridge {
-    child: Child,
     port: u16,
+    /// Held for the bridge's lifetime. As a child process its log went to
+    /// /dev/null; in-process it would land in the middle of the agent's own
+    /// output, and in `alc claude -p …` in the middle of the answer.
+    _quiet: claude_codex::logging::StderrSuppressionGuard,
+    /// Dropped to tell the server to stop; the runtime thread ends with it.
+    shutdown: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Bridge {
     fn start(plan: &BridgePlan) -> Result<Self> {
-        let helper = find_helper()?;
+        require_routable_model(&plan.model)?;
         let auth_file = codex_auth_file()?;
         if !auth_file.is_file() {
             bail!(
@@ -638,25 +656,69 @@ impl Bridge {
                 auth_file.display()
             );
         }
+        configure_bridge(&auth_file, plan);
+
+        // Bound with the standard library, so the port is known before the
+        // runtime exists and `base_url` can be handed to the agent builders
+        // without waiting for anything to start.
         let listener = TcpListener::bind("127.0.0.1:0")
             .context("failed to reserve a loopback port for the Codex adapter")?;
         let port = listener.local_addr()?.port();
-        drop(listener);
+        listener
+            .set_nonblocking(true)
+            .context("failed to prepare the Codex adapter's listener")?;
 
-        let child = Command::new(&helper)
-            .arg("serve")
-            .env("PORT", port.to_string())
-            .env("CCP_LOG_STDERR", "0")
-            // The helper's fallback does not use USERPROFILE on Windows, so
-            // pass the same Codex home resolution used by the official CLI.
-            .env("CCP_CODEX_AUTH_FILE", auth_file)
-            .envs(bridge_child_env(plan))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .with_context(|| format!("failed to start {}", helper.display()))?;
-        let mut bridge = Self { child, port };
+        let (shutdown, stop) = std::sync::mpsc::channel::<()>();
+        let (ready, started) = std::sync::mpsc::channel::<Result<(), String>>();
+
+        let thread = thread::Builder::new()
+            .name("codex-bridge".to_owned())
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _ = ready.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+                runtime.block_on(async move {
+                    let listener = match tokio::net::TcpListener::from_std(listener) {
+                        Ok(listener) => listener,
+                        Err(error) => {
+                            let _ = ready.send(Err(error.to_string()));
+                            return;
+                        }
+                    };
+                    let _ = ready.send(Ok(()));
+                    // The sender is held by `Bridge`, so this resolves when
+                    // the bridge is dropped - which is when the session ends.
+                    let stopped = tokio::task::spawn_blocking(move || {
+                        let _ = stop.recv();
+                    });
+                    let _ = claude_codex::server::serve_listener(listener, None, async {
+                        let _ = stopped.await;
+                    })
+                    .await;
+                });
+            })
+            .context("failed to start the Codex adapter thread")?;
+
+        match started.recv_timeout(Duration::from_secs(10)) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => bail!("the Codex adapter could not start: {error}"),
+            Err(_) => bail!("the Codex adapter did not start within 10 seconds"),
+        }
+
+        let bridge = Self {
+            port,
+            _quiet: claude_codex::logging::suppress_stderr(),
+            shutdown: Some(shutdown),
+            thread: Some(thread),
+        };
         bridge.wait_until_ready()?;
         Ok(bridge)
     }
@@ -665,24 +727,63 @@ impl Bridge {
         format!("http://127.0.0.1:{}", self.port)
     }
 
-    fn wait_until_ready(&mut self) -> Result<()> {
+    fn wait_until_ready(&self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let address = SocketAddr::from(([127, 0, 0, 1], self.port));
         while Instant::now() < deadline {
-            if let Some(status) = self.child.try_wait()? {
-                bail!(
-                    "Codex adapter exited before it became ready (status {status}); run `codex login` and `alc doctor`"
-                );
-            }
             if health_check(address) {
                 return Ok(());
             }
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(50));
         }
         bail!(
             "Codex adapter did not become ready on 127.0.0.1:{} within 10 seconds",
             self.port
         )
+    }
+}
+
+impl Drop for Bridge {
+    fn drop(&mut self) {
+        // Dropping the sender wakes the shutdown future; the join is bounded
+        // by the fact that the server stops accepting immediately, and a
+        // wedged runtime must not hold up the user's shell.
+        self.shutdown.take();
+        if let Some(thread) = self.thread.take() {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !thread.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            if thread.is_finished() {
+                let _ = thread.join();
+            }
+        }
+    }
+}
+
+/// Points the in-process bridge at the right credentials and transport.
+///
+/// The bridge reads these from the environment, which was free when it was a
+/// child process and is a constraint now that it is not: `set_var` is only
+/// sound while nothing else is reading the environment concurrently. It is
+/// called here, on the launch path, before the bridge's own runtime exists
+/// and before the agent is spawned.
+fn configure_bridge(auth_file: &Path, plan: &BridgePlan) {
+    let mut settings: BTreeMap<String, String> = BTreeMap::new();
+    settings.insert("CCP_LOG_STDERR".to_owned(), "0".to_owned());
+    // The bridge's own fallback does not use USERPROFILE on Windows, so it
+    // is given the same Codex home resolution the official CLI uses.
+    settings.insert(
+        "CCP_CODEX_AUTH_FILE".to_owned(),
+        auth_file.display().to_string(),
+    );
+    settings.extend(bridge_child_env(plan));
+
+    for (key, value) in settings {
+        // SAFETY: alc sets these once, on the way into a launch, and never
+        // again. No other thread in this process reads the environment
+        // between here and the runtime that will.
+        unsafe { env::set_var(key, value) };
     }
 }
 
@@ -710,43 +811,50 @@ fn resolve_codex_auth_file(
         .context("could not resolve the Codex auth path; set CODEX_HOME")
 }
 
-impl Drop for Bridge {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+/// The Codex model slugs the bridge can actually route.
+///
+/// `codex debug models` answers a different question: what the account can
+/// reach. The bridge only knows the slugs it was built with, and the two do
+/// not move together - a Codex release adds a model months before the bridge
+/// learns to serve it. Asking the bridge itself is the only honest source,
+/// and since it is linked in rather than shelled out to, asking is a function
+/// call against the same code that will refuse the request.
+pub(crate) fn bridge_codex_models() -> Option<BTreeSet<String>> {
+    // Asked as the Anthropic alias provider on purpose: asking as Codex
+    // folds `sonnet`/`opus`/`haiku` into the answer, which this bridge
+    // routes to Claude rather than through Codex at all.
+    let models: BTreeSet<String> =
+        claude_codex::registry::Registry::new(claude_codex::config::AliasProvider::Anthropic)
+            .supported_models_for("codex")
+            .into_iter()
+            .collect();
+    (!models.is_empty()).then_some(models)
 }
 
-fn find_helper() -> Result<PathBuf> {
-    if let Some(path) = env::var_os("ALC_CLAUDE_CODEX_BIN").filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(path);
-        if path.exists() {
-            return Ok(path);
-        }
-        bail!(
-            "ALC_CLAUDE_CODEX_BIN points to a missing file: {}",
-            path.display()
-        );
-    }
-
-    let file_name = if cfg!(windows) {
-        "claude-codex.exe"
-    } else {
-        "claude-codex"
+/// Refuses a model the bridge would reject, before anything is launched.
+///
+/// Left to itself the refusal arrives from inside the agent — Claude Code
+/// says the model "may not exist or you may not have access to it" — which
+/// sends the user to check their subscription when the actual cause is that
+/// alc's bridge is a version behind Codex. Saying it here costs a lookup
+/// against the linked-in bridge's own registry, and names the models that
+/// would have worked.
+fn require_routable_model(model: &str) -> Result<()> {
+    let Some(supported) = bridge_codex_models() else {
+        return Ok(());
     };
-    if let Ok(current) = env::current_exe()
-        && let Some(parent) = current.parent()
-    {
-        let sibling = parent.join(file_name);
-        if sibling.is_file() {
-            return Ok(sibling);
-        }
-    }
-    if let Ok(path) = which::which("claude-codex") {
-        return Ok(path);
+    if supported.contains(model) {
+        return Ok(());
     }
     bail!(
-        "the bundled claude-codex {CLAUDE_CODEX_HELPER_VERSION} helper is missing; reinstall alc with the one-line installer or install `claude-codex` on PATH"
+        "the built-in claude-codex {CLAUDE_CODEX_BRIDGE_VERSION} bridge cannot route '{model}'.\n\
+         Codex itself may well offer it; the bridge is the half that has not caught up.\n\
+         It does route: {}\n\
+         Choose one in `alc config` on the provider screen, or with \
+         `alc config upsert codex --model <id>`. A codex profile with an empty model \
+         follows the Codex CLI's own `model` setting instead, which is where an \
+         unroutable one usually comes from.",
+        supported.iter().cloned().collect::<Vec<_>>().join(", ")
     )
 }
 
@@ -902,6 +1010,19 @@ mod tests {
 
     use crate::config::{Config, Credentials};
     use crate::model_catalog::ModelCatalog;
+
+    /// The bridge is linked in, so this is the same list the request path
+    /// will check against - not a guess parsed out of another program.
+    #[test]
+    fn the_bridge_reports_the_codex_models_it_routes() {
+        let models = bridge_codex_models().expect("the linked bridge always knows its models");
+        assert!(models.contains("gpt-5.6-terra"), "{models:?}");
+        // Anthropic aliases are routed to Claude, not through Codex; asking
+        // as the codex alias provider would fold them in here.
+        for alias in ["sonnet", "opus", "haiku", "claude-opus-4-8"] {
+            assert!(!models.contains(alias), "{alias} is not a Codex model");
+        }
+    }
 
     fn store(config: Config, credentials: Credentials) -> Store {
         Store {

@@ -3,7 +3,7 @@ id: codex-to-claude
 title: Codex 橋接
 sidebar_label: Codex 橋接
 sidebar_position: 4
-description: 透過隨附的橋接，一次 codex login 就能讓全部八個 coding agent 使用你的 Codex／ChatGPT 登入 —— Claude Code 有工作階段內的 GPT 模型選單，其他每個 agent 則是每個工作階段使用一個橋接模型。
+description: 透過內建的橋接，一次 codex login 就能讓全部八個 coding agent 使用你的 Codex／ChatGPT 登入 —— Claude Code 有工作階段內的 GPT 模型選單，其他每個 agent 則是每個工作階段使用一個橋接模型。
 keywords:
   - claude code 用 gpt
   - codex 訂閱
@@ -46,7 +46,7 @@ Claude Code 是唯一能在工作階段中切換的 agent：因為它每次請�
 
 ## Claude Code
 
-Claude Code 會直接以你儲存的預設值啟動，並把所有模型都放進它自己的 `/model`
+Claude Code 會直接以你儲存的預設值啟動，並把下列模型放進它自己的 `/model`
 選單：
 
 | 模型 | 適合的情境 | Codex 預設強度 |
@@ -55,6 +55,12 @@ Claude Code 會直接以你儲存的預設值啟動，並把所有模型都放�
 | `gpt-5.6-sol` | 能力最完整，適合架構、困難除錯與大型重構 | `low` |
 | `gpt-5.6-terra` | 速度、能力、成本均衡，建議新手從這個開始 | `medium` |
 | `gpt-5.6-luna` | 速度快、費用低，適合簡單修改與大量例行工作 | `medium` |
+
+`gpt-6-astra` 是唯一可能不會出現的項目：alc 只列出內建 `claude-codex` 橋接
+真的能轉送的模型，而橋接學會新的 Codex 模型，總是比 Codex 本身推出得晚一些。
+在那之前，`alc --codex claude` 會在啟動時就拒絕這個模型並列出可用的選項，而不是
+讓 session 冒出 agent 自己那句「模型可能不存在，或你可能沒有存取權」。原生的
+`alc codex` 不受影響；等到 alc 換上支援它的橋接版本，這個模型就會自己回到清單裡。
 
 清單依能力由強到弱排列，與 Codex 自己的分級一致。`gpt-6-astra` 與較新的 GPT-5.6
 模型另外提供高於 `max` 的 `ultra` 強度。這一級可以用原生的 `alc codex` 使用，但
@@ -146,11 +152,12 @@ Claude Code 的內建別名也一併留在 Codex 上：選單的 Default 一列�
 
 ## 橋接如何運作
 
-發行包會附帶
+`alc` 直接連結
 [`claude-codex` 0.3.1](https://github.com/fcakyon/claude-code-with-codex)，
-一個 MIT 授權的 helper。`alc` 會把它綁在隨機的 `127.0.0.1` port 上，只讓
-啟動的那個 agent 行程指向它，並在該行程結束時關閉。Helper 會讀取並可能
-更新 `~/.codex/auth.json`；憑證不會被複製到 alc 的設定裡。
+一個 MIT 授權的函式庫，版本由 `Cargo.toml` 的 tag 與 `Cargo.lock` 的 commit
+固定。它跑在 `alc` 行程內、綁在隨機的 `127.0.0.1` port 上，只讓啟動的那個
+agent 指向它，並在該 session 結束時關閉。它會讀取並可能更新
+`~/.codex/auth.json`；憑證不會被複製到 alc 的設定裡。
 
 :::caution 這是第三方相容層
 

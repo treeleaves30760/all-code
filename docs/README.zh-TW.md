@@ -68,7 +68,7 @@ Windows PowerShell：
 irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
 ```
 
-安裝器會把 `alc` 與它的 Codex 橋接 helper 放進 `~/.local/bin`（Windows 為
+安裝器會把 `alc` 放進 `~/.local/bin`（Windows 為
 `%USERPROFILE%\.local\bin`），必要時會把該目錄加入你的 User PATH。macOS／
 Linux 請重開終端機，或 `source` 安裝器提示的設定檔；PowerShell 會同時更新
 目前工作階段與 User PATH。如果系統不允許修改 PATH，安裝器會明確印出需要
@@ -83,7 +83,7 @@ PATH；需要手動設定時安裝器會告訴你。設定 `ALC_NO_PATH_UPDATE=1
 
 ## 更新
 
-檢查是否有新版本，或直接更新 `alc` 與隨附的 helper：
+檢查是否有新版本，或直接更新 `alc`：
 
 ```sh
 alc update --check
@@ -91,10 +91,15 @@ alc update
 ```
 
 `alc update` 會挑選符合目前作業系統與 CPU 的發行包、核對 GitHub Release
-公布的 SHA-256、確認包內版本，再一起替換兩個執行檔。Linux 與 macOS 會
+公布的 SHA-256、確認包內版本，再替換 `alc`。Linux 與 macOS 會
 立即完成替換。Windows 會先完成下載與驗證，等目前的 `alc.exe` 結束後立刻
 替換；稍候再用 `alc --version` 確認。`alc update --force` 可以重新安裝
 目前的最新版本。
+
+> **從 1.3.x 升級：**1.4.0 把 Codex 橋接編進 `alc` 裡，發行包不再有第二個
+> 執行檔，所以從 1.3.x 執行 `alc update` 會失敗，訊息是 `release archive
+> does not contain claude-codex`。請重跑一次一行安裝器，它會換掉 `alc` 並
+> 移除舊的 helper。1.4.0 之後 `alc update` 就恢復正常。
 
 `alc` 只負責啟動已經安裝好的 coding agent，請自行安裝你要用的：
 
@@ -293,7 +298,8 @@ alc --codex qwen
 alc --codex kimi
 ```
 
-`alc` 會在 loopback port 上啟動內建的 `claude-codex` 轉接器，並只讓啟動
+`alc` 會在 loopback port 上啟動內建的 `claude-codex` 轉接器（編進 alc 本身），
+並只讓啟動
 的那個 agent 行程指向它。轉接器對 Claude Code 說 Anthropic Messages，對
 OpenCode／Pi／Kimi Code CLI 說 OpenAI Responses，對 Copilot CLI／Goose／
 Qwen Code 說 OpenAI Chat Completions —— 三種不同的 wire protocol，背後
@@ -304,7 +310,7 @@ Qwen Code 說 OpenAI Chat Completions —— 三種不同的 wire protocol，背
 
 ### Claude Code
 
-Claude Code 會直接以你儲存的預設值啟動，並把所有模型都放進它自己的
+Claude Code 會直接以你儲存的預設值啟動，並把下列模型放進它自己的
 `/model` 選單：
 
 | 模型 | 適合的情境 | Codex 預設強度 |
@@ -313,6 +319,12 @@ Claude Code 會直接以你儲存的預設值啟動，並把所有模型都放�
 | `gpt-5.6-sol` | 能力最完整，適合架構、困難除錯與大型重構 | `low` |
 | `gpt-5.6-terra` | 速度、能力、成本均衡，建議新手從這個開始 | `medium` |
 | `gpt-5.6-luna` | 速度快、費用低，適合簡單修改與大量例行工作 | `medium` |
+
+`gpt-6-astra` 是唯一可能不會出現的項目：alc 只列出內建 `claude-codex` 橋接
+真的能轉送的模型，而橋接學會新的 Codex 模型，總是比 Codex 本身推出得晚一些。
+在那之前，`alc --codex claude` 會在啟動時就拒絕這個模型並列出可用的選項，而不是
+讓 session 冒出 agent 自己那句「模型可能不存在，或你可能沒有存取權」。原生的
+`alc codex` 不受影響；等到 alc 換上支援它的橋接版本，這個模型就會自己回到清單裡。
 
 清單依能力由強到弱排列，與 Codex 自己的分級一致。`gpt-6-astra` 與較新的 GPT-5.6
 模型另外提供高於 `max` 的 `ultra` 強度。這一級可以用原生的 `alc codex` 使用，但
@@ -379,11 +391,12 @@ alc models --json
 設定傳入，讓 Claude Code 不認得的 GPT ID 依照 Codex 的實際上限壓縮
 對話，而不是用它的通用預設值。
 
-發行包會附帶
+`alc` 直接連結
 [`claude-codex` 0.3.1](https://github.com/fcakyon/claude-code-with-codex)，
-一個 MIT 授權的 helper。`alc` 會把它綁在隨機的 `127.0.0.1` port，只讓
-啟動的那個 agent 行程指向它，並在該行程結束時關閉。Helper 會讀取並
-可能更新 `~/.codex/auth.json`；憑證不會被複製到 `alc` 的設定裡。
+一個 MIT 授權的函式庫，版本由 `Cargo.toml` 的 tag 與 `Cargo.lock` 的 commit
+固定。它跑在 `alc` 行程內、綁在隨機的 `127.0.0.1` port，只讓啟動的那個 agent
+指向它，並在該 session 結束時關閉。它會讀取並可能更新 `~/.codex/auth.json`；
+憑證不會被複製到 `alc` 的設定裡。
 
 這個轉接器是第三方相容層，不是 OpenAI 或 Anthropic 的官方整合。使用
 訂閱帳號前，請先檢閱 [THIRD_PARTY.md](THIRD_PARTY.md) 與你的 provider
@@ -476,7 +489,7 @@ alc remote token --rotate    # 讓所有連結失效
 ```
 
 `--share` 印出的連結會在 agent 畫出自己的介面時捲走，所以 `alc sessions` 會把它放在
-最前面。預設共享在 `alc config` 的 Remote 畫面裡也能開。
+最前面。預設共享在 `alc config` 的 **Sharing & remote** 畫面裡也能開，標題列會列出三個畫面。
 
 ## 完整設定
 
@@ -509,7 +522,9 @@ alc config remove work
 每個畫面底部都會顯示可用按鍵，主要操作如下：
 
 - `a`、`e`/Enter、`d`：新增、編輯、刪除 provider。
-- `Tab`：在 provider 清單與 agent 預設值之間切換。
+- `Tab`／`Shift+Tab`，或直接按 `1`／`2`／`3`：在標題列列出的三個畫面之間切換
+  —— Providers、Agent defaults、Sharing & remote。最後一個畫面可以設定
+  「預設共享」、綁定位址與權限上限。
 - 方向鍵：移動欄位與切換選項，包含推理強度。
 - 在 Codex profile 上，把游標移到 Model 欄位並按 `←`/`→`，會開啟引導式的
   GPT 模型與推理強度選擇畫面，寫入 `alc --codex claude` 的啟動預設值。
@@ -523,9 +538,9 @@ alc config remove work
 cargo build --release --locked
 ```
 
-從原始碼建置只會產生 `alc`。要使用 `alc --codex <agent>`，請把相容的
-`claude-codex` 執行檔放到 PATH，或設定 `ALC_CLAUDE_CODEX_BIN`。官方的
-`alc` 發行包已經附帶固定版本的 helper。
+Codex 橋接是固定版本的 Cargo 依賴，直接編進 `alc` 裡，所以從原始碼建置就是
+完整的建置 —— 不必再裝任何東西，`alc --codex <agent>` 就能用。發行包裡也
+因此只有 `alc` 一個檔案。
 
 常用的開發檢查：
 
@@ -537,7 +552,7 @@ cargo test --all-targets
 
 ## 解除安裝
 
-把 `alc` 與 `claude-codex` 從安裝目錄移除，需要的話再刪掉 `alc config
+把 `alc` 從安裝目錄移除，需要的話再刪掉 `alc config
 path` 顯示的設定目錄。刪除設定目錄同時會刪掉本機儲存的 API key，且
 無法復原。
 

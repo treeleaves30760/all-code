@@ -85,18 +85,20 @@ extract_dir="$tmp_dir/extract"
 mkdir -p "$extract_dir"
 tar -xzf "$archive" -C "$extract_dir"
 [ -f "$extract_dir/alc" ] || die "release archive does not contain alc"
-[ -f "$extract_dir/claude-codex" ] || die "release archive does not contain claude-codex"
 
 mkdir -p "$install_dir"
 install_dir="$(cd "$install_dir" && pwd -P)"
 if command_exists install; then
   install -m 0755 "$extract_dir/alc" "$install_dir/alc"
-  install -m 0755 "$extract_dir/claude-codex" "$install_dir/claude-codex"
 else
   cp "$extract_dir/alc" "$install_dir/alc"
-  cp "$extract_dir/claude-codex" "$install_dir/claude-codex"
-  chmod 0755 "$install_dir/alc" "$install_dir/claude-codex"
+  chmod 0755 "$install_dir/alc"
 fi
+
+# The Codex bridge is built into alc from 1.4.0 on. An older install left a
+# separate claude-codex here; removing it keeps a stale copy from answering
+# for anyone who still calls it directly.
+rm -f "$install_dir/claude-codex"
 
 path_status="present"
 profile=""

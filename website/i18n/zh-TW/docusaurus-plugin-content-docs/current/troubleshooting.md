@@ -46,8 +46,8 @@ OpenRouter 或 Ollama，或改用
 
 ## `the bundled claude-codex … helper is missing`
 
-從原始碼建置不會包含轉接器。請改用一行安裝器重新安裝、把相容的 `claude-codex`
-放進 PATH，或設定 `ALC_CLAUDE_CODEX_BIN`。
+從 1.4.0 起不會發生：橋接是編進 `alc` 裡的，不再是旁邊的另一個執行檔。如果你
+是在舊版 `alc` 上看到這個訊息，請用一行安裝器升級。
 
 ## Ollama profile 出現 `API Error: Request timed out`（或 `500`）
 
@@ -88,3 +88,28 @@ alc models --refresh
 
 `alc --dry-run` 會遮蔽 API key 與 auth token；`alc config show` 不會印出憑證內容，
 只會顯示每個 profile 有沒有設定。
+
+## 在 `alc config` 裡找不到共享設定
+
+它在第三個畫面。`alc config` 的標題列會列出三個畫面 —— `1 Providers`、
+`2 Agent defaults`、`3 Sharing & remote` —— 用 `Tab`、`Shift+Tab` 或直接按數字鍵
+就能切換。預設共享、綁定位址與權限上限都在第三個畫面裡。
+
+在 TUI 之外，`alc remote auto-share on` 設定的是同一個值，`alc remote status`
+與 `alc doctor` 都會顯示它，`alc config show` 則會印在 `# Remote control` 底下。
+
+如果那一列顯示 `on (inactive)`，代表共享本身是關的：一個 session 要兩者都開才會
+預設共享。把上面那列的 `sharing` 打開，或執行 `alc remote on`。
+
+## `the model may not exist or you may not have access to it`
+
+在 `--codex` session 裡看到這句，通常代表模型是真的存在，只是內建的
+`claude-codex` 橋接還不能轉送它 —— Codex 推出新模型，總是比橋接學會服務它早一些。
+alc 現在會在啟動時就擋下來，並列出橋接真的能轉送的模型，挑一個即可：
+
+```sh
+alc config upsert codex --model gpt-5.6-terra
+```
+
+如果 codex profile 的 model 是空的，它會改用 Codex CLI 自己的 `model` 設定，
+而那通常正是不能轉送的那個來源。原生的 `alc codex` 不受影響。

@@ -25,7 +25,7 @@ Windows PowerShell：
 irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
 ```
 
-安裝器會把 `alc` 與 Codex-to-Claude 的 loopback helper 放進 `~/.local/bin`
+安裝器會把 `alc` 放進 `~/.local/bin`
 （Windows 為 `%USERPROFILE%\.local\bin`），必要時會把該目錄加入你的 User PATH。
 macOS 與 Linux 請依畫面提示重開終端機或 `source` 對應的設定檔；PowerShell 會同時
 更新目前工作階段與 User PATH。如果系統不允許修改 PATH，安裝器會明確印出需要手動
@@ -47,9 +47,9 @@ Windows 上執行的 32 位元 PowerShell。
 cargo build --release --locked
 ```
 
-從原始碼建置只會產生 `alc`。要使用 `alc --codex claude`，請把相容的
-`claude-codex` 執行檔放到 PATH，或設定 `ALC_CLAUDE_CODEX_BIN`。官方發行包已經
-附帶固定版本的 helper。
+Codex 橋接是固定版本的 Cargo 依賴，直接編進 `alc` 裡，所以從原始碼建置就是
+完整的建置 —— 不必再裝任何東西，`alc --codex claude` 就能用。發行包裡也因此
+只有 `alc` 一個檔案。
 
 常用的開發檢查：
 
@@ -61,5 +61,5 @@ cargo test --all-targets
 
 ## 解除安裝
 
-把 `alc` 與 `claude-codex` 從安裝目錄移除，需要的話再刪掉 `alc config path`
+把 `alc` 從安裝目錄移除，需要的話再刪掉 `alc config path`
 顯示的設定目錄。刪除設定目錄同時會刪掉本機儲存的 API key，且無法復原。
