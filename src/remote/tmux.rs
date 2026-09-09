@@ -658,18 +658,22 @@ impl Tmux {
 
     /// Asks the agent to stop, the way a hangup on its terminal would.
     ///
-    /// Signalling the agent rather than destroying the session, so
-    /// `remain-on-exit` still catches how it ended and the card can say
-    /// "signal HUP" instead of shrugging - which is what `alc kill` reported
-    /// before tmux, and what the page shows a viewer who stopped a session.
-    /// `Session::kill` escalates to `stop` when the agent ignores it.
-    pub(crate) fn hangup(&self, binary: &Path) -> Result<()> {
-        let output = self.run(binary, &["kill-pane", "-t", &self.pane])?;
-        if !output.status.success() {
-            bail!(
-                "tmux would not stop the agent: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
+    /// A signal to the agent's own process, not a tmux command, and that is
+    /// the only thing that works here. `kill-pane` destroys the pane, which
+    /// takes `remain-on-exit`'s record of how the agent died with it - so
+    /// the card would shrug at a session the user deliberately stopped,
+    /// where before tmux it said "signal HUP". Signalling leaves the pane to
+    /// die on its own terms and the watcher to read the answer.
+    ///
+    /// `Session::kill` escalates to `stop` for an agent that ignores it.
+    #[cfg(unix)]
+    pub(crate) fn hangup(&self, pid: u32) -> Result<()> {
+        let pid = i32::try_from(pid).context("the agent's process id does not fit a pid")?;
+        // SAFETY: a plain `kill(2)`. The pid is one tmux reported for this
+        // session's own pane, and SIGHUP is what a terminal closing sends -
+        // the same signal `PtyHost::kill` delivers to an unwrapped agent.
+        if unsafe { libc::kill(pid, libc::SIGHUP) } != 0 {
+            return Err(std::io::Error::last_os_error()).context("failed to stop the agent");
         }
         Ok(())
     }
@@ -790,6 +794,22 @@ mod live {
         let exit = wait_for_exit(&live).unwrap();
         assert_eq!(exit.code, None);
         assert!(exit.signal.is_some(), "{exit:?}");
+    }
+
+    /// `alc kill` has to leave an answer behind. Destroying the pane would
+    /// stop the agent just as well and take `remain-on-exit`'s record of how
+    /// it died with it, so the card would shrug at a session the user
+    /// deliberately stopped.
+    #[test]
+    fn asking_the_agent_to_stop_leaves_the_reason_it_stopped() {
+        let Some(found) = tmux() else { return };
+        let live = start(&found, "claude-LIVEHANGUP", &["-c", "sleep 60"], 80, 24);
+        let pid = live.tmux.probe(&found.binary).unwrap().pane_pid.unwrap();
+
+        live.tmux.hangup(pid).unwrap();
+        let exit = wait_for_exit(&live).expect("the agent never stopped");
+        assert_eq!(exit.code, None);
+        assert_eq!(exit.signal.as_deref(), Some("hup"), "{exit:?}");
     }
 
     /// Signalling the pty's child only detaches the mirror, so `alc kill`,

@@ -278,6 +278,15 @@ impl Session {
                     }
                 }
                 None => {
+                    // A stop that was asked for and cannot be confirmed is
+                    // still a stop: the pane may be gone with the server
+                    // behind it, or tmux may simply not be answering, and
+                    // either way leaving the agent running is the one
+                    // outcome `kill` must not produce.
+                    if self.killing.load(Ordering::Acquire) {
+                        let _ = host.tmux.stop(&host.binary);
+                        return;
+                    }
                     unanswered += 1;
                     if unanswered >= UNANSWERED_PROBES {
                         // The server is gone - `alc kill`, or someone
@@ -728,10 +737,13 @@ impl Session {
             return self.pty.kill();
         };
         self.killing.store(true, Ordering::Release);
-        if host.tmux.hangup(&host.binary).is_err() {
-            return host.tmux.stop(&host.binary);
+        #[cfg(unix)]
+        if let Some(pid) = self.tmux_pid.lock().ok().and_then(|pid| *pid)
+            && host.tmux.hangup(pid).is_ok()
+        {
+            return Ok(());
         }
-        Ok(())
+        host.tmux.stop(&host.binary)
     }
 
     pub(crate) fn has_exited(&self) -> bool {
