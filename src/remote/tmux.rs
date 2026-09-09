@@ -93,6 +93,7 @@ use crate::remote::wire::ExitInfo;
 /// would have cost those users the feature and bought nothing. tmux's
 /// default of `off` also keeps it swallowing OSC 52, which is alc's own
 /// policy anyway.
+#[cfg(unix)]
 pub(crate) const MIN_VERSION: (u32, u32) = (3, 2);
 
 /// How the pane's own process is started.
@@ -177,6 +178,28 @@ pub(crate) struct Snapshot {
     pub pane_pid: Option<u32>,
 }
 
+/// tmux's name for a signal, from whatever it gave us.
+///
+/// It reports a name where the platform can supply one and the number where
+/// it cannot, so the same stopped agent reads as `hup` on one machine and
+/// `1` on another - measured, macOS against Ubuntu's tmux on CI. A session
+/// card is read by a person, so the number is turned back into the name for
+/// the signals a coding agent actually dies of, and anything else is passed
+/// through rather than guessed at.
+fn signal_name(signal: &str) -> String {
+    let named = match signal.trim() {
+        "1" => "hup",
+        "2" => "int",
+        "3" => "quit",
+        "6" => "abrt",
+        "9" => "kill",
+        "13" => "pipe",
+        "15" => "term",
+        other => return other.to_ascii_lowercase(),
+    };
+    named.to_owned()
+}
+
 impl Snapshot {
     fn parse(line: &str) -> Option<Self> {
         let fields: Vec<&str> = line.trim().split('|').collect();
@@ -204,7 +227,7 @@ impl Snapshot {
             } else {
                 ExitInfo {
                     code: None,
-                    signal: Some((*signal).to_owned()),
+                    signal: Some(signal_name(signal)),
                 }
             }
         });
@@ -287,10 +310,12 @@ fn find_unix() -> Result<Found> {
 
 /// Parses `tmux -V`, which prints `tmux 3.4` or `tmux 3.7b`.
 ///
+///
 /// The trailing letter is a patch release and is dropped: 3.1c is 3.1 for
 /// every purpose alc has. An unparseable line is an error rather than an
 /// optimistic pass, because the alternative is failing later with tmux's own
 /// message about an option this build has never heard of.
+#[cfg(unix)]
 fn read_version(binary: &Path) -> Result<(u32, u32)> {
     let output = Command::new(binary)
         .arg("-V")
@@ -307,6 +332,7 @@ fn read_version(binary: &Path) -> Result<(u32, u32)> {
     })
 }
 
+#[cfg(unix)]
 fn parse_version(text: &str) -> Option<(u32, u32)> {
     let digits = text
         .trim()
@@ -809,6 +835,7 @@ mod live {
         live.tmux.hangup(pid).unwrap();
         let exit = wait_for_exit(&live).expect("the agent never stopped");
         assert_eq!(exit.code, None);
+        // Named whichever way this tmux reports it; see `signal_name`.
         assert_eq!(exit.signal.as_deref(), Some("hup"), "{exit:?}");
     }
 
@@ -939,7 +966,7 @@ mod live {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -1045,7 +1072,20 @@ mod tests {
         let snapshot = Snapshot::parse("1|1|TERM|80|24|4242").unwrap();
         let exit = snapshot.exit.unwrap();
         assert_eq!(exit.code, None);
-        assert_eq!(exit.signal.as_deref(), Some("TERM"));
+        assert_eq!(exit.signal.as_deref(), Some("term"));
+    }
+
+    #[test]
+    fn a_numbered_signal_reads_the_same_as_a_named_one() {
+        // tmux names a signal where the platform can and numbers it where it
+        // cannot, so without this the same stopped agent reads as `hup` on
+        // one machine and `1` on another.
+        assert_eq!(signal_name("1"), "hup");
+        assert_eq!(signal_name("HUP"), "hup");
+        assert_eq!(signal_name("15"), "term");
+        // Not in the table, and not worth guessing at.
+        assert_eq!(signal_name("31"), "31");
+        assert_eq!(signal_name("WINCH"), "winch");
     }
 
     #[test]
