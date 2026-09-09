@@ -953,6 +953,15 @@ fn run_spec(
         }
         if share_now {
             println!("share: would mirror this session to a browser page");
+            // Which process does the work is not a detail here: a shared
+            // launch is performed by the hub, from this spec sent over the
+            // control socket, and a spec that arrives there incomplete is
+            // how a Codex session once ran with no adapter at all. A dry
+            // run that named neither would leave a reader debugging the
+            // wrong process.
+            if spec.bridge.is_some() || !spec.file_setup.is_empty() {
+                println!("share: the hub performs the launch, adapter and setup included");
+            }
         }
         return Ok(0);
     }

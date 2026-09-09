@@ -1,5 +1,7 @@
 use std::env;
 use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -267,6 +269,58 @@ pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgeP
     Ok(())
 }
 
+/// Claude Code's own user-level settings file, which is not alc's to write.
+///
+/// `CLAUDE_CONFIG_DIR` moves it, and Claude Code requires that to be
+/// absolute; anything else is ignored rather than guessed at, because a
+/// relative path here would have alc reading some file inside the current
+/// repository and calling it the user's settings.
+pub(crate) fn user_settings_path() -> Option<PathBuf> {
+    resolve_user_settings_path(env::var_os("CLAUDE_CONFIG_DIR"), crate::launch::home_dir())
+}
+
+/// The resolution itself, taking its inputs rather than reading them, so a
+/// test can pin one arrangement without a process-wide environment variable
+/// that every other test in the binary shares.
+fn resolve_user_settings_path(
+    config_dir: Option<OsString>,
+    user_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let dir = match config_dir.filter(|value| !value.is_empty()) {
+        Some(value) => {
+            let path = PathBuf::from(value);
+            path.is_absolute().then_some(path)?
+        }
+        None => user_home?.join(".claude"),
+    };
+    Some(dir.join("settings.json"))
+}
+
+/// The model Claude Code will start every session on when nothing overrides
+/// it, read from `settings.json`.
+///
+/// Worth reading because of where that value comes from: picking a model in
+/// `/model` writes it there as "your default for new sessions", so a GPT
+/// model chosen inside `alc --codex claude` becomes the default for plain
+/// `claude` too - and plain `claude` has no bridge, so the next session
+/// outside alc asks api.anthropic.com for a model it has never heard of and
+/// is told so. alc cannot stop Claude Code writing its own settings, so
+/// `alc doctor` reads them and says what happened.
+///
+/// A file that is missing, unreadable, or not JSON reads as "no opinion":
+/// this is a diagnostic, and a parse error in somebody else's config is not
+/// alc's to report.
+pub(crate) fn pinned_model(settings: &Path) -> Option<String> {
+    let text = fs::read_to_string(settings).ok()?;
+    let document: Value = serde_json::from_str(&text).ok()?;
+    document
+        .get("model")?
+        .as_str()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned)
+}
+
 fn clear_cloud_provider_env(spec: &mut LaunchSpec) {
     for name in [
         "CLAUDE_CODE_USE_BEDROCK",
@@ -301,6 +355,61 @@ mod tests {
                 ("API_TIMEOUT_MS", "1800000")
             ]
         );
+    }
+
+    #[test]
+    fn the_settings_file_follows_claude_codes_own_rules() {
+        // Built rather than spelled: `/work/claude` is an absolute path on
+        // unix and a relative one on Windows, which would make this test
+        // assert the opposite of itself on one of the two platforms.
+        let home = env::temp_dir().join("ada");
+        let elsewhere = env::temp_dir().join("work-claude");
+        assert!(home.is_absolute() && elsewhere.is_absolute());
+
+        assert_eq!(
+            resolve_user_settings_path(None, Some(home.clone())),
+            Some(home.join(".claude").join("settings.json"))
+        );
+        assert_eq!(
+            resolve_user_settings_path(
+                Some(elsewhere.clone().into_os_string()),
+                Some(home.clone())
+            ),
+            Some(elsewhere.join("settings.json"))
+        );
+        // Claude Code requires an absolute CLAUDE_CONFIG_DIR and ignores
+        // anything else; guessing would have alc reading a file inside
+        // whatever repository it happens to be standing in.
+        assert_eq!(
+            resolve_user_settings_path(Some(OsString::from("relative/claude")), Some(home.clone())),
+            None
+        );
+        assert_eq!(resolve_user_settings_path(None, None), None);
+    }
+
+    #[test]
+    fn a_pinned_model_is_read_and_anything_unreadable_is_no_opinion() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+
+        assert_eq!(pinned_model(&settings), None, "a file that is not there");
+
+        fs::write(
+            &settings,
+            r#"{"model": "gpt-5.6-sol", "tui": "fullscreen"}"#,
+        )
+        .unwrap();
+        assert_eq!(pinned_model(&settings), Some("gpt-5.6-sol".to_owned()));
+
+        fs::write(&settings, r#"{"tui": "fullscreen"}"#).unwrap();
+        assert_eq!(pinned_model(&settings), None, "no model key");
+
+        fs::write(&settings, r#"{"model": "   "}"#).unwrap();
+        assert_eq!(pinned_model(&settings), None, "blank is not a model");
+
+        // Someone else's malformed config is not alc's to report.
+        fs::write(&settings, "{not json").unwrap();
+        assert_eq!(pinned_model(&settings), None);
     }
 
     #[test]

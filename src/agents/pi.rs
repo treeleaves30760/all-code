@@ -74,7 +74,7 @@ pub(crate) fn build(
     let provider_id = format!("alc-{profile_name}");
     spec.file_setup.push(FileSetup::UpsertJson {
         path: agent_dir().join("models.json"),
-        pointer: "providers",
+        pointer: "providers".to_owned(),
         key: provider_id.clone(),
         value,
     });
@@ -108,7 +108,7 @@ pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgeP
     });
     spec.file_setup.push(FileSetup::UpsertJson {
         path: agent_dir().join("models.json"),
-        pointer: "providers",
+        pointer: "providers".to_owned(),
         key: "alc-codex".to_owned(),
         value,
     });
@@ -230,7 +230,7 @@ mod tests {
 
     /// Panics unless `spec` queued exactly one `UpsertJson` entry; returns its
     /// `(path, pointer, key, value)` for the caller to assert against.
-    fn only_upsert(spec: &LaunchSpec) -> (PathBuf, &'static str, String, Value) {
+    fn only_upsert(spec: &LaunchSpec) -> (PathBuf, String, String, Value) {
         match spec.file_setup.as_slice() {
             [
                 FileSetup::UpsertJson {
@@ -239,7 +239,7 @@ mod tests {
                     key,
                     value,
                 },
-            ] => (path.clone(), pointer, key.clone(), value.clone()),
+            ] => (path.clone(), pointer.clone(), key.clone(), value.clone()),
             other => panic!("expected exactly one UpsertJson entry, got {other:?}"),
         }
     }

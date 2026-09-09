@@ -31,6 +31,7 @@ pub fn run(store: &Store) -> Result<bool> {
     if codex_bridge_enabled {
         codex_bridge(store, &theme, &mut issues);
     }
+    claude_code_default_model(store, &theme, &mut issues);
     local_models(store, &theme, &mut issues);
     remote(store, &theme, &mut issues);
     summary(&theme, &issues);
@@ -188,6 +189,74 @@ fn defaults(store: &Store, theme: &Theme) {
         }
     });
     marked(theme, &rows);
+}
+
+/// Reports a Codex-only model left pinned as Claude Code's own default.
+///
+/// alc teaches Claude Code's `/model` picker the models the bridge serves, so
+/// they can be switched mid-session. Claude Code saves that pick to its
+/// user-level `settings.json` as "your default for new sessions", and that
+/// file is read by every Claude Code session on the machine - including the
+/// ones alc did not start, which have no bridge in front of them. Those ask
+/// api.anthropic.com for a GPT model and are told, correctly, that it does
+/// not exist.
+///
+/// alc will not edit another tool's settings behind the user's back, so this
+/// is a report, with the one line that undoes it.
+///
+/// Reported whether or not a Codex profile is still configured. The pin is a
+/// machine-global side effect that outlives the profile that produced it, and
+/// somebody who tried `alc --codex claude` once and then removed the profile
+/// is exactly the person with no other way to find out.
+fn claude_code_default_model(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
+    let Some(settings) = crate::agents::claude::user_settings_path() else {
+        return;
+    };
+    let Some(model) = crate::agents::claude::pinned_model(&settings) else {
+        return;
+    };
+    if !bridge_only_model(&ModelCatalog::load(&store.dir), &model) {
+        return;
+    }
+    heading(theme, "Claude Code settings");
+    marked(
+        theme,
+        &[Row::new(
+            Status::Warn,
+            "default model",
+            format!(
+                "{model}{}",
+                theme.paint(
+                    Tone::Warn,
+                    "  plain `claude` cannot reach this; only `alc --codex claude` can"
+                )
+            ),
+        )],
+    );
+    issues.push(Issue::new(
+        "claude settings",
+        format!(
+            "{} pins model '{model}', which only the Codex bridge serves",
+            settings.display()
+        ),
+        Some(format!(
+            "remove the \"model\" line from {}; alc passes the model itself",
+            settings.display()
+        )),
+    ));
+}
+
+/// Whether `model` is one only alc's Codex adapter can serve.
+///
+/// The catalog is the precise answer - those are the ids alc itself put in
+/// Claude Code's picker - but it is a cache refreshed at most daily, and a
+/// cache that had gone stale against a Codex release is how `gpt-6-astra`
+/// became unreachable in the first place. So a `gpt-` prefix answers for the
+/// models a fresher Codex has and this catalog does not: api.anthropic.com
+/// serves none of them either way, and the only thing at stake here is
+/// whether a warning is printed.
+fn bridge_only_model(catalog: &ModelCatalog, model: &str) -> bool {
+    catalog.find(model).is_some() || model.starts_with("gpt-")
 }
 
 fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {

@@ -81,6 +81,16 @@ pub(crate) enum CtlRequest {
 /// edited the first one's. Both travel with every request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CreateRequest {
+    /// The alc that built `spec`.
+    ///
+    /// The client refuses a hub of another version before it gets this far
+    /// (`hub::spawn_or_join`), which covers the common case of a hub left
+    /// running across an upgrade. This covers the other one: two alc
+    /// installs on the same machine, where the older client does not know to
+    /// check. It arrives empty from a client that predates the field, which
+    /// is itself a mismatch and refused the same way.
+    #[serde(default)]
+    pub alc: String,
     pub spec: WireSpec,
     pub cwd: String,
     pub environ: Vec<(String, String)>,
@@ -98,6 +108,15 @@ pub(crate) struct CreateRequest {
 /// represented as UTF-8 is refused loudly rather than lossily converted -
 /// silently mangling a path in an agent's arguments would be far worse than
 /// declining to share that one session.
+///
+/// Every field of [`LaunchSpec`](crate::launch::LaunchSpec) has to appear
+/// here. The two that once did not - `bridge` and `file_setup` - were
+/// reconstructed as `None` and `vec![]` on the hub side, so a shared
+/// `alc --codex claude` reached Claude Code with the Codex model picker in
+/// its arguments and no bridge behind it: the agent asked
+/// api.anthropic.com for `gpt-6-astra` and was told, correctly, that no such
+/// model exists. `hub::to_wire` now destructures the spec exhaustively so a
+/// field added later cannot go missing the same silent way.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct WireSpec {
     pub program: String,
@@ -107,6 +126,27 @@ pub(crate) struct WireSpec {
     pub provider_name: String,
     pub provider_kind: String,
     pub agent: String,
+    /// The Codex bridge this session runs against, if any. The hub is the
+    /// process that starts it, so the plan has to reach the hub.
+    ///
+    /// `default` only covers the easy direction, an older client talking to
+    /// this hub. The dangerous direction is the other one - a hub still
+    /// running yesterday's binary drops a field it has never heard of in
+    /// silence, which is how this bug worked in the first place - and no
+    /// serde attribute here can catch that, because the attribute would be
+    /// on the old build. `hub::spawn_or_join` refuses such a hub instead.
+    #[serde(default)]
+    pub bridge: Option<crate::launch::BridgePlan>,
+    /// The Codex `auth.json` the client resolved in its own shell, so the
+    /// hub does not go looking for one in the environment it happens to
+    /// have. A path, never a credential.
+    #[serde(default)]
+    pub codex_auth_file: Option<String>,
+    /// Files the launch must write before the agent starts. Carries the Kimi
+    /// builder's merged config, which holds an API key - no worse than this
+    /// message's `env` and `secret_values`, which already do.
+    #[serde(default)]
+    pub file_setup: Vec<crate::launch::FileSetup>,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub secret_values: Vec<String>,

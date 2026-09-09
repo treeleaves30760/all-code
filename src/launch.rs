@@ -10,6 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 
 use crate::agents;
 use crate::bridge::BridgeConfig;
@@ -31,7 +32,8 @@ pub struct LaunchOverrides {
 ///
 /// `Messages` (Claude Code) and `Responses` (OpenCode, Pi) are constructed
 /// today; `Chat` is produced by the Copilot builder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BridgeApi {
     Messages,
     Responses,
@@ -42,7 +44,10 @@ pub enum BridgeApi {
 /// Claude Code the model is only the starting point: it switches models and
 /// reasoning effort per request, so neither is pinned on the bridge. Every
 /// other agent picks one model/effort at launch, which the bridge pins.
-#[derive(Debug, Clone)]
+///
+/// Serialisable because a shared session's plan is carried to the hub, which
+/// is the process that actually starts the bridge ([`crate::remote::hub`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BridgePlan {
     pub model: String,
     /// Pinned via CCP_CODEX_EFFORT for non-Messages clients; ALWAYS None for Claude.
@@ -60,13 +65,19 @@ pub struct BridgePlan {
 /// is constructed by the Pi builder to merge a provider entry into
 /// `models.json`; `WriteTemp` is constructed by the Kimi builder to write a
 /// merged `--config-file` document to a fresh temp path.
-#[derive(Debug, Clone)]
+///
+/// Serialisable for the same reason as [`BridgePlan`]: a shared session is
+/// performed by the hub, so the work has to travel there. `pointer` gives up
+/// `&'static str` for an owned `String` rather than the enum giving up
+/// `Deserialize` - the alternative was leaving the hub to launch Kimi against
+/// a config file nobody ever wrote.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FileSetup {
     /// Merge `value` under root[pointer][key] of a JSON file, creating it if
     /// absent; refuses to touch a file that fails to parse.
     UpsertJson {
         path: PathBuf,
-        pointer: &'static str,
+        pointer: String,
         key: String,
         value: serde_json::Value,
     },
@@ -80,7 +91,7 @@ pub enum FileSetup {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LaunchSpec {
     pub program: OsString,
     pub args: Vec<OsString>,
@@ -90,6 +101,19 @@ pub struct LaunchSpec {
     pub provider_kind: ProviderKind,
     pub agent: Agent,
     pub bridge: Option<BridgePlan>,
+    /// Where this launch's Codex credentials live, resolved once here in the
+    /// environment of the shell the user actually typed into.
+    ///
+    /// `Bridge::start` used to work this out for itself, which is right while
+    /// the bridge and the shell are the same process. A shared session's
+    /// bridge runs in the hub - a daemon that inherited its environment from
+    /// whichever shell happened to start it first, possibly days ago - so a
+    /// `CODEX_HOME` set for this project would otherwise be invisible and the
+    /// session would go looking for somebody else's `auth.json`. `None` when
+    /// there is no bridge, or when the path could not be resolved at all;
+    /// `Bridge::start` then falls back to resolving it itself and reports the
+    /// same error it always did.
+    pub codex_auth_file: Option<PathBuf>,
     pub file_setup: Vec<FileSetup>,
     /// The model this session starts on, once the builder has resolved it.
     /// Descriptive only: the agent was already told through args or env.
@@ -104,7 +128,9 @@ pub struct LaunchSpec {
     /// pattern that a custom profile can walk straight past.
     pub secret_env: BTreeSet<OsString>,
     /// The literal credential strings this launch handled, so output that
-    /// echoes one back can be masked. Never serialised, never logged.
+    /// echoes one back can be masked. Never logged, and never written to a
+    /// file; it does cross the hub's control socket, because the scrubber
+    /// that needs it runs there.
     pub secret_values: Vec<String>,
 }
 
@@ -133,6 +159,55 @@ impl LaunchSpec {
         }
     }
 
+    /// A spec in which no field holds a value that a dropped field could
+    /// also produce - no `None`, no empty collection, nothing defaulted.
+    ///
+    /// That is the whole point of it. `for_test` below has `bridge: None`
+    /// and an empty `file_setup`, so the wire round-trip test built on it
+    /// round-tripped two absences and stayed green for the entire life of the
+    /// bug that dropped exactly those two fields. A fixture that is empty
+    /// nowhere cannot do that.
+    #[cfg(test)]
+    pub(crate) fn saturated() -> Self {
+        let mut spec = Self {
+            program: OsString::from("claude"),
+            args: vec![OsString::from("--model"), OsString::from("gpt-6-astra")],
+            env: BTreeMap::from([(OsString::from("ALC_TEST"), OsString::from("1"))]),
+            env_remove: vec![OsString::from("ANTHROPIC_API_KEY")],
+            provider_name: "codex".to_owned(),
+            provider_kind: ProviderKind::Codex,
+            agent: Agent::Claude,
+            bridge: Some(BridgePlan {
+                model: "gpt-6-astra".to_owned(),
+                effort: Some(ReasoningEffort::Max),
+                context_window: Some(272_000),
+                options: crate::model_catalog::ModelCatalog::built_in().models,
+                api: BridgeApi::Messages,
+            }),
+            codex_auth_file: Some(PathBuf::from("/work/codex/auth.json")),
+            file_setup: vec![
+                FileSetup::UpsertJson {
+                    path: PathBuf::from("/tmp/alc-models.json"),
+                    pointer: "providers".to_owned(),
+                    key: "alc-codex".to_owned(),
+                    value: serde_json::json!({ "baseUrl": "http://127.0.0.1:1/v1" }),
+                },
+                FileSetup::WriteTemp {
+                    path: PathBuf::from("/tmp/alc-kimi.toml"),
+                    contents: "api_key = \"never-print-this-value\"".to_owned(),
+                    secret: true,
+                    cleanup: true,
+                },
+            ],
+            model: Some("gpt-6-astra".to_owned()),
+            effort: Some(ReasoningEffort::Max),
+            secret_env: BTreeSet::new(),
+            secret_values: Vec::new(),
+        };
+        spec.set_secret_env("ALC_PROVIDER_API_KEY", "never-print-this-value");
+        spec
+    }
+
     /// A minimal spec for tests in this crate. Kept beside the real
     /// fields so a new one cannot be forgotten here.
     #[cfg(test)]
@@ -146,6 +221,7 @@ impl LaunchSpec {
             provider_kind: ProviderKind::Codex,
             agent: Agent::Codex,
             bridge: None,
+            codex_auth_file: None,
             file_setup: Vec::new(),
             model: None,
             effort: None,
@@ -204,6 +280,7 @@ pub fn build(
         provider_kind: provider.kind,
         agent,
         bridge: None,
+        codex_auth_file: None,
         file_setup: Vec::new(),
         model: None,
         effort: None,
@@ -224,6 +301,13 @@ pub fn build(
         passthrough,
         overrides,
     )?;
+
+    // Resolved here, where the user's shell is, rather than wherever the
+    // bridge ends up being started, and reported here too - a `CODEX_HOME`
+    // that resolves to nothing is worth saying in the shell that set it.
+    if spec.bridge.is_some() {
+        spec.codex_auth_file = Some(codex_auth_file()?);
+    }
 
     // Recorded once here rather than at each builder's own resolution site:
     // a bridged launch runs on the plan's model, and every other launch on
@@ -290,6 +374,33 @@ impl Prepared {
     }
 }
 
+/// Refuses a launch that is supposed to run on the Codex adapter and has no
+/// plan to start one.
+///
+/// Every agent but Codex itself reaches a `ProviderKind::Codex` profile
+/// through the adapter, so on that combination the plan is not optional - it
+/// is the launch. Without it the agent still carries the model id and the
+/// picker the builder put in its arguments, and takes them to whichever
+/// vendor it would have used anyway: a Codex model id posted to
+/// api.anthropic.com, answered with a 404 that reads like the user's account
+/// is at fault. That is not a hypothetical - it is what a shared session did,
+/// because the plan was dropped between the client and the hub - and the
+/// invariant is checked here, at the point of harm, so the next route that
+/// loses it stops rather than mis-launches.
+fn needs_an_adapter_and_has_one(spec: &LaunchSpec) -> Result<()> {
+    let needed = spec.provider_kind == ProviderKind::Codex && spec.agent != Agent::Codex;
+    if needed && spec.bridge.is_none() {
+        bail!(
+            "this {} launch runs on the Codex adapter, but the launch reached the point of \
+             spawning without one; refusing rather than starting {} against a model it cannot \
+             reach. This is an alc bug - please report it",
+            spec.agent,
+            spec.agent
+        );
+    }
+    Ok(())
+}
+
 /// Starts the bridge, wires it into `spec`, performs the file setup, and
 /// resolves the program path - everything `execute` used to do inline before
 /// spawning. Splitting it out lets a caller spawn the child itself (under a
@@ -297,8 +408,9 @@ impl Prepared {
 /// `apply_bridge` must run before `process_file_setup`, because the Pi and
 /// Kimi builders write files whose contents name the bridge's base URL.
 pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
+    needs_an_adapter_and_has_one(&spec)?;
     let bridge = if let Some(plan) = spec.bridge.clone() {
-        let bridge = Bridge::start(&plan)?;
+        let bridge = Bridge::start(&plan, spec.codex_auth_file.clone())?;
         agents::apply_bridge(&mut spec, &bridge.base_url(), &plan)?;
         Some(bridge)
     } else {
@@ -628,11 +740,23 @@ pub(crate) struct Bridge {
 }
 
 impl Bridge {
-    fn start(plan: &BridgePlan) -> Result<Self> {
+    /// `auth_file` is the path the launch resolved in the user's own shell.
+    /// Resolving it here instead would read the environment of whichever
+    /// process is starting the bridge, which on the shared path is the hub.
+    fn start(plan: &BridgePlan, auth_file: Option<PathBuf>) -> Result<Self> {
         // No model allowlist, on purpose: a stale one is the whole reason
         // this code exists. Upstream decides what it will serve, and says so
         // in terms the agent can show the user.
-        let auth_file = codex_auth_file()?;
+        // No fallback to resolving it here. `build` resolves it in the
+        // user's shell, and a launch that arrives without one has lost it
+        // somewhere - re-deriving it from whatever process this happens to
+        // be would answer with the hub's environment and quietly read, and
+        // rotate, a different `auth.json` than the user meant.
+        let auth_file = auth_file.context(
+            "this launch reached the Codex adapter without a credential path; \
+             it was resolved when the launch was built and has been lost since. \
+             This is an alc bug - please report it",
+        )?;
         if !auth_file.is_file() {
             bail!(
                 "Codex credentials were not found at {}; run `codex login` and retry",
@@ -1756,6 +1880,40 @@ mod tests {
         LaunchSpec::for_test()
     }
 
+    /// The last line of defence for the bug this check was written after: a
+    /// Codex-backed agent must not be spawned with its plan missing, however
+    /// it went missing.
+    #[test]
+    fn a_codex_launch_without_an_adapter_is_refused_at_the_point_of_spawning() {
+        let mut spec = empty_spec();
+        spec.provider_kind = ProviderKind::Codex;
+        spec.agent = Agent::Claude;
+
+        let error = needs_an_adapter_and_has_one(&spec).unwrap_err().to_string();
+        assert!(error.contains("Codex adapter"), "{error}");
+
+        spec.bridge = Some(BridgePlan {
+            model: "gpt-5.6-terra".to_owned(),
+            effort: None,
+            context_window: None,
+            options: Vec::new(),
+            api: BridgeApi::Messages,
+        });
+        assert!(needs_an_adapter_and_has_one(&spec).is_ok());
+
+        // `alc codex` on the same profile talks to Codex directly, and a
+        // plain provider needs no adapter at all.
+        let mut native = empty_spec();
+        native.provider_kind = ProviderKind::Codex;
+        native.agent = Agent::Codex;
+        assert!(needs_an_adapter_and_has_one(&native).is_ok());
+
+        let mut plain = empty_spec();
+        plain.provider_kind = ProviderKind::Openrouter;
+        plain.agent = Agent::Claude;
+        assert!(needs_an_adapter_and_has_one(&plain).is_ok());
+    }
+
     #[test]
     fn process_file_setup_applies_both_variants_and_only_flags_write_temp_for_cleanup() {
         let temp = tempfile::tempdir().unwrap();
@@ -1766,7 +1924,7 @@ mod tests {
         spec.file_setup = vec![
             FileSetup::UpsertJson {
                 path: json_path.clone(),
-                pointer: "/mcpServers",
+                pointer: "/mcpServers".to_owned(),
                 key: "alc".to_owned(),
                 value: json!({"url": "http://127.0.0.1:1"}),
             },
@@ -1835,7 +1993,7 @@ mod tests {
             },
             FileSetup::UpsertJson {
                 path: broken_json_path.clone(),
-                pointer: "/servers",
+                pointer: "/servers".to_owned(),
                 key: "alc".to_owned(),
                 value: json!({"url": "http://x"}),
             },

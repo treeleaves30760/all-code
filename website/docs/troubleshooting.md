@@ -111,13 +111,37 @@ default only when both are on. Turn on the `sharing` row above it, or run
 
 ## `the model may not exist or you may not have access to it`
 
-From a `--codex` session, this usually means the model is real but the bundled
-bridge could not route it — before 1.5.0 the bridge alc depended on kept a
-hard-coded model list that could be a release behind Codex. From 1.5.0 the
-bridge keeps no list at all, so this should no longer happen; if it does, the
-message names the models that do work.
-before the bridge learns to serve it. alc now refuses that launch up front and
-lists the models the bridge does route; pick one of those:
+There are three causes, and they are told apart by where the session came from.
+
+**A shared session started before 1.6.0.** Between 1.3.0 and 1.5.0, a session
+that went through the hub — `--share`, or any session while `share by default`
+was on — lost its Codex adapter on the way there: the agent was launched with
+the GPT model in its arguments and nothing behind it, so it asked its own
+vendor for a model that vendor has never heard of. Upgrade to 1.6.0, then stop
+the hub that is still running the old build:
+
+```sh
+alc hub stop
+```
+
+A hub outlives terminals by design, so it also outlives an upgrade. From 1.6.0
+alc refuses to hand a bridged session to a hub of another version rather than
+letting it run without one, and `alc doctor` names a hub that is behind.
+
+**Claude Code's own saved default.** Picking a GPT model in Claude Code's
+`/model` also writes it to `~/.claude/settings.json` as your default for new
+sessions — Claude Code says so on the confirmation line. Every later `claude`
+that alc did not start reads that file, and those have no adapter. Delete the
+`model` line; alc passes the model itself:
+
+```sh
+alc doctor   # names the file and the line when it finds one
+```
+
+**A model the bridge cannot route.** Before 1.5.0 the bridge alc depended on
+kept a hard-coded model list that could be a release behind Codex. From 1.5.0
+the bridge keeps no list at all and chatgpt.com decides, so this should no
+longer happen; if it does, the message names the models that do work:
 
 ```sh
 alc config upsert codex --model gpt-5.6-terra

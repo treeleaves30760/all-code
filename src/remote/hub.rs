@@ -16,6 +16,16 @@
 //! directory and full environment travel with every request and are applied
 //! to the child.
 //!
+//! The client's environment is layered ON the hub's rather than replacing it:
+//! the hub is spawned with `Command::new` and no `env_clear`, and the pty's
+//! base environment is this process's. That is fine for the child, whose
+//! every meaningful variable is overridden by name - but it means anything
+//! the hub itself resolves out of `std::env` while preparing a launch reads
+//! the wrong shell's answer. What a launch needs from the user's environment
+//! is therefore resolved client-side and carried: the agent's binary
+//! override, the Codex `auth.json`, the model and effort. Anything added
+//! later has to travel the same way.
+//!
 //! # What a hub crash leaves behind
 //!
 //! On unix a pty child is its own session leader, so `kill -9` on the hub
@@ -26,7 +36,7 @@
 //! next hub to start reaps whatever the last one left.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -60,15 +70,19 @@ pub(crate) struct Hub {
     secrets: Secrets,
     instance: String,
     port: u16,
-    /// Serialises the part of a launch that touches process-global state.
+    /// Serialises the part of a launch that touches shared state outside the
+    /// hub's own memory.
     ///
-    /// The bridge runs in this process and configures itself through this
-    /// process's environment, which `configure_bridge` writes with
-    /// `set_var` - sound only while nothing else is reading it. The hub
-    /// serves each control connection on its own thread, so two Codex-backed
-    /// creates arriving together would otherwise interleave one's write with
-    /// the other's read, and both bridges would be refreshing the same
-    /// `~/.codex/auth.json` concurrently.
+    /// The hub serves each control connection on its own thread, and
+    /// `launch::prepare` is where a session's bridge is started and its
+    /// temporary files are written. Two Codex-backed creates arriving
+    /// together would otherwise be reading and rotating the same
+    /// `~/.codex/auth.json` from two threads with nothing between them.
+    ///
+    /// (The bridge no longer configures itself through this process's
+    /// environment - it takes a `BridgeConfig` by value - so the lock is
+    /// narrower than it once was, and the environment it used to guard is
+    /// the reason the comment said `set_var`.)
     spawning: Mutex<()>,
     stop: AtomicBool,
 }
@@ -139,10 +153,13 @@ impl Hub {
                 .ok();
         }
 
-        // The guards ran as each session ended, so the records describe
-        // files that are already gone. Leaving them would make the next hub
-        // try to delete paths that may since belong to something else.
-        let _ = std::fs::remove_dir_all(OrphanRecord::dir(config_dir));
+        // The per-session records are deliberately NOT swept here. Some
+        // sessions are still live at this point, and their records are the
+        // only note of the temporary files they hold - including the Kimi
+        // builder's plaintext key file. Each record is removed when its own
+        // session is reaped, and whatever is left after a hub dies badly is
+        // reaped by the next hub's `reap_orphans`, which is what the records
+        // exist for.
         let _ = std::fs::remove_file(ctl::hub_record_path(config_dir));
         let _ = std::fs::remove_file(ctl::socket_path(config_dir));
         Ok(0)
@@ -351,6 +368,7 @@ impl Hub {
     /// Spawns an agent on a client's behalf.
     fn create(&self, request: CreateRequest) -> Result<String> {
         let CreateRequest {
+            alc,
             spec,
             cwd,
             environ,
@@ -360,6 +378,24 @@ impl Hub {
             scrollback_bytes,
             permission,
         } = request;
+        // Refused rather than served on a best-effort basis: a spec this hub
+        // and that client do not describe identically is one where a field
+        // either side has never heard of is dropped in silence, and a
+        // launch missing a field it needed is how a Codex session came to
+        // run with no adapter in front of it.
+        if alc != env!("CARGO_PKG_VERSION") {
+            let named = if alc.is_empty() {
+                "an alc too old to say which".to_owned()
+            } else {
+                format!("alc {alc}")
+            };
+            bail!(
+                "this hub is alc {}, and the request came from {named}; run `alc hub stop` and \
+                 retry so both halves are the same build",
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+
         let cwd = PathBuf::from(cwd);
         if !cwd.is_dir() {
             bail!("{} is not a directory on this machine", cwd.display());
@@ -394,7 +430,7 @@ impl Hub {
             );
         }
 
-        let spec = from_wire(spec, agent, &environ)?;
+        let spec = from_wire(spec, &environ)?;
         let id = id::generate(agent)?;
 
         // Held across `prepare`, not only across the spawn: the bridge it
@@ -527,40 +563,72 @@ fn reap_orphans(config_dir: &Path) {
 }
 
 /// Rebuilds a `LaunchSpec` on the hub side.
-fn from_wire(spec: WireSpec, agent: Agent, environ: &[(String, String)]) -> Result<LaunchSpec> {
+///
+/// Destructured for the same reason [`to_wire`] is, and in the other
+/// direction: a field added to `WireSpec` that nobody remembers to read here
+/// would arrive on the socket and go nowhere. Between the two, a field can
+/// only be lost by writing code that says so.
+fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec> {
+    let WireSpec {
+        program,
+        args,
+        env: launch_env,
+        env_remove,
+        provider_name,
+        provider_kind,
+        agent,
+        bridge,
+        codex_auth_file,
+        file_setup,
+        model,
+        effort,
+        secret_values,
+        secret_env,
+    } = spec;
+
+    // Parsed here rather than taken from the caller, so the agent this spec
+    // launches and the agent named on the wire cannot be two values that
+    // merely happen to agree - and so no field of `WireSpec` is bound to `_`
+    // in a destructure whose whole purpose is that none can go unread.
+    let agent: Agent = agent.parse()?;
+
     let mut env: BTreeMap<OsString, OsString> = environ
         .iter()
         .map(|(name, value)| (OsString::from(name), OsString::from(value)))
         .collect();
     // The launch's own environment wins over the client's ambient one: the
     // builder put provider credentials there deliberately.
-    for (name, value) in &spec.env {
+    for (name, value) in &launch_env {
         env.insert(OsString::from(name), OsString::from(value));
     }
 
     Ok(LaunchSpec {
-        program: OsString::from(spec.program),
-        args: spec.args.into_iter().map(OsString::from).collect(),
+        program: OsString::from(program),
+        args: args.into_iter().map(OsString::from).collect(),
         env,
-        env_remove: spec.env_remove.into_iter().map(OsString::from).collect(),
-        provider_name: spec.provider_name,
-        provider_kind: spec.provider_kind.parse().unwrap_or(ProviderKind::Custom),
+        env_remove: env_remove.into_iter().map(OsString::from).collect(),
+        provider_name,
+        provider_kind: provider_kind.parse().unwrap_or(ProviderKind::Custom),
         agent,
-        bridge: None,
-        file_setup: Vec::new(),
-        model: spec.model,
-        effort: spec
-            .effort
+        // Carried, not dropped. `launch::prepare` starts the bridge from
+        // this and hands the session a `SessionGuards` that stops it again,
+        // so a shared Codex session gets the same adapter an unshared one
+        // does instead of talking straight to the model vendor.
+        bridge,
+        codex_auth_file: codex_auth_file.map(PathBuf::from),
+        file_setup,
+        model,
+        effort: effort
             .as_deref()
             .and_then(|effort| effort.parse::<ReasoningEffort>().ok()),
-        secret_env: spec.secret_env.into_iter().map(OsString::from).collect(),
-        secret_values: spec.secret_values,
+        secret_env: secret_env.into_iter().map(OsString::from).collect(),
+        secret_values,
     })
 }
 
 /// Turns a resolved launch into something that survives a socket.
 pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
-    fn text(value: &OsString, what: &str) -> Result<String> {
+    fn text(value: &OsStr, what: &str) -> Result<String> {
         value.to_str().map(str::to_owned).with_context(|| {
             format!(
                 "this launch has a {what} that is not valid UTF-8, which alc cannot hand to the hub"
@@ -568,31 +636,55 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         })
     }
 
+    // Destructured rather than read field by field, so adding a field to
+    // `LaunchSpec` fails to compile here instead of quietly not crossing the
+    // wire. `bridge` and `file_setup` were dropped exactly that way, and the
+    // session that reached the user was an agent pointed at a model only the
+    // missing bridge could serve.
+    let LaunchSpec {
+        program,
+        args,
+        env,
+        env_remove,
+        provider_name,
+        provider_kind,
+        agent,
+        bridge,
+        codex_auth_file,
+        file_setup,
+        model,
+        effort,
+        secret_env,
+        secret_values,
+    } = spec;
+
     Ok(WireSpec {
-        program: text(&spec.program, "program path")?,
-        args: spec
-            .args
+        program: text(program, "program path")?,
+        args: args
             .iter()
             .map(|arg| text(arg, "argument"))
             .collect::<Result<_>>()?,
-        env: spec
-            .env
+        env: env
             .iter()
             .map(|(name, value)| Ok((text(name, "variable name")?, text(value, "variable")?)))
             .collect::<Result<_>>()?,
-        env_remove: spec
-            .env_remove
+        env_remove: env_remove
             .iter()
             .map(|name| text(name, "variable name"))
             .collect::<Result<_>>()?,
-        provider_name: spec.provider_name.clone(),
-        provider_kind: spec.provider_kind.to_string(),
-        agent: spec.agent.as_str().to_owned(),
-        model: spec.model.clone(),
-        effort: spec.effort.map(|effort| effort.to_string()),
-        secret_values: spec.secret_values.clone(),
-        secret_env: spec
-            .secret_env
+        provider_name: provider_name.clone(),
+        provider_kind: provider_kind.to_string(),
+        agent: agent.as_str().to_owned(),
+        bridge: bridge.clone(),
+        codex_auth_file: codex_auth_file
+            .as_ref()
+            .map(|path| text(path.as_os_str(), "Codex credential path"))
+            .transpose()?,
+        file_setup: file_setup.clone(),
+        model: model.clone(),
+        effort: effort.map(|effort| effort.to_string()),
+        secret_values: secret_values.clone(),
+        secret_env: secret_env
             .iter()
             .map(|name| text(name, "variable name"))
             .collect::<Result<_>>()?,
@@ -651,14 +743,58 @@ pub(crate) fn spawn_or_join(
 /// Asks whatever is listening whether it is a hub, and whether it is the one
 /// this record describes. A stale `hub.json` from a crashed hub answers
 /// nothing, and a different program on the port answers wrongly.
+///
+/// The version comes from the live reply rather than the record, because the
+/// record was written when that hub started and `alc update` replaces the
+/// binary underneath it without stopping it.
 fn probe(config_dir: &Path, secrets: &Secrets) -> Option<HubRecord> {
     let record = ctl::read_hub_record(config_dir).ok().flatten()?;
     match ctl::request(config_dir, &secrets.ctl, &CtlRequest::Hello) {
-        Ok(CtlReply::Hello { instance, port, .. }) if instance == record.instance => {
-            Some(HubRecord { port, ..record })
-        }
+        Ok(CtlReply::Hello {
+            alc,
+            instance,
+            port,
+            ..
+        }) if instance == record.instance => Some(HubRecord {
+            port,
+            alc,
+            ..record
+        }),
         _ => None,
     }
+}
+
+/// Why a hub already running some other version of alc cannot carry this
+/// launch, if it cannot.
+///
+/// The session is launched by the hub's binary, from a request this one
+/// serialised, and the two only agree about that request while they are the
+/// same build. The cost of getting it wrong is not a parse error: a
+/// `WireSpec` field the older hub has never heard of is dropped in silence by
+/// serde, which is exactly how a shared `alc --codex claude` came to run with
+/// no bridge - so an upgrade that left yesterday's hub listening would have
+/// gone on reproducing the bug it fixed.
+///
+/// Scoped to launches that actually carry something a version apart can lose.
+/// A plain `alc --openrouter opencode --share` is fully described by fields
+/// every version has had, and refusing it would turn a patch release into an
+/// outage for sessions it serves perfectly well.
+///
+/// Pure and parameterised so the four cases are asserted rather than assumed.
+pub(crate) fn hub_cannot_carry(hub_alc: &str, hub_pid: u32, spec: &LaunchSpec) -> Option<String> {
+    let ours = env!("CARGO_PKG_VERSION");
+    if hub_alc == ours {
+        return None;
+    }
+    if spec.bridge.is_none() && spec.file_setup.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "this session needs the Codex adapter, and the hub that would run it is alc {hub_alc} \
+         (pid {hub_pid}) while this is alc {ours}; an older hub drops what it does not recognise \
+         and would launch the agent with no adapter behind it. Run `alc hub stop` and retry, or \
+         `--no-share` to run this one outside the hub"
+    ))
 }
 
 /// Starts a hub that outlives this process.
@@ -756,7 +892,7 @@ mod tests {
         spec.model = Some("gpt-5.6-terra".to_owned());
 
         let wire = to_wire(&spec).unwrap();
-        let back = from_wire(wire, Agent::Codex, &[]).unwrap();
+        let back = from_wire(wire, &[]).unwrap();
 
         assert_eq!(back.args, spec.args);
         assert_eq!(back.model, spec.model);
@@ -765,6 +901,85 @@ mod tests {
             back.env.get(&OsString::from("ALC_PROVIDER_API_KEY")),
             Some(&OsString::from("never-print-this-value"))
         );
+    }
+
+    /// The property the two named tests below are instances of: a launch
+    /// that crosses the socket is the same launch on the other side.
+    ///
+    /// Whole-struct equality against a fixture that is empty nowhere, rather
+    /// than a list of fields somebody remembered to assert - the previous
+    /// round trip checked four of thirteen fields, and the two it did not
+    /// check are the two that were being dropped.
+    #[test]
+    fn every_field_of_a_launch_survives_the_wire() {
+        let spec = LaunchSpec::saturated();
+        let back = from_wire(to_wire(&spec).unwrap(), &[]).unwrap();
+        assert_eq!(back, spec);
+    }
+
+    /// The other half: a field that crosses as a placeholder passes the
+    /// equality test above only if the fixture had that placeholder too, so
+    /// the fixture's own non-emptiness is checked rather than assumed.
+    #[test]
+    fn nothing_in_the_saturated_fixture_is_empty() {
+        let wire = serde_json::to_value(to_wire(&LaunchSpec::saturated()).unwrap()).unwrap();
+        let object = wire.as_object().expect("a JSON object");
+        assert!(!object.is_empty());
+        for (name, value) in object {
+            let empty = value.is_null()
+                || value.as_str() == Some("")
+                || value.as_array().is_some_and(Vec::is_empty)
+                || value.as_object().is_some_and(serde_json::Map::is_empty);
+            assert!(!empty, "`{name}` is empty, so it proves nothing: {value}");
+        }
+    }
+
+    /// The regression this file exists to not repeat.
+    ///
+    /// A shared `alc --codex claude` reached Claude Code with the Codex model
+    /// picker in its arguments and `bridge: None` behind it, so the agent
+    /// asked api.anthropic.com for `gpt-6-astra` and was told - correctly -
+    /// that no such model exists. The plan and the file setup have to survive
+    /// the socket, because the hub is the process that acts on them.
+    #[test]
+    fn a_bridged_launch_keeps_its_bridge_and_its_file_setup() {
+        let mut spec = LaunchSpec::for_test();
+        spec.bridge = Some(crate::launch::BridgePlan {
+            model: "gpt-6-astra".to_owned(),
+            effort: None,
+            context_window: Some(272_000),
+            options: crate::model_catalog::ModelCatalog::built_in().models,
+            api: crate::launch::BridgeApi::Messages,
+        });
+        spec.codex_auth_file = Some(PathBuf::from("/work/codex/auth.json"));
+        spec.file_setup = vec![crate::launch::FileSetup::WriteTemp {
+            path: PathBuf::from("/tmp/alc-kimi.json"),
+            contents: "{\"apiKey\":\"never-print-this-value\"}".to_owned(),
+            secret: true,
+            cleanup: true,
+        }];
+
+        let back = from_wire(to_wire(&spec).unwrap(), &[]).unwrap();
+
+        // The client's CODEX_HOME, not the hub's: the hub's belongs to
+        // whichever shell started it, which may have been another project
+        // days ago.
+        assert_eq!(
+            back.codex_auth_file,
+            Some(PathBuf::from("/work/codex/auth.json"))
+        );
+        let plan = back.bridge.expect("the bridge plan crossed the wire");
+        assert_eq!(plan.model, "gpt-6-astra");
+        assert_eq!(plan.api, crate::launch::BridgeApi::Messages);
+        assert_eq!(plan.context_window, Some(272_000));
+        assert_eq!(plan.options.len(), 4);
+        match back.file_setup.as_slice() {
+            [crate::launch::FileSetup::WriteTemp { path, secret, .. }] => {
+                assert_eq!(path, &PathBuf::from("/tmp/alc-kimi.json"));
+                assert!(secret, "a secret file stays marked secret on the hub side");
+            }
+            other => panic!("the file setup did not survive the wire: {other:?}"),
+        }
     }
 
     #[test]
@@ -781,7 +996,7 @@ mod tests {
             ("PATH".to_owned(), "/client/bin".to_owned()),
             ("ANTHROPIC_API_KEY".to_owned(), "an-ambient-key".to_owned()),
         ];
-        let back = from_wire(wire, Agent::Claude, &environ).unwrap();
+        let back = from_wire(wire, &environ).unwrap();
 
         assert_eq!(
             back.env.get(&OsString::from("PATH")),
@@ -791,6 +1006,38 @@ mod tests {
             back.env.get(&OsString::from("ANTHROPIC_API_KEY")),
             Some(&OsString::from("the-resolved-provider-key"))
         );
+    }
+
+    /// The upgrade path this bug's fix would otherwise not survive: a hub
+    /// left running from the build that had the bug drops the new wire
+    /// fields in silence, so joining it would go on shipping the same
+    /// broken session from a binary that believes it is fixed.
+    #[test]
+    fn a_hub_running_another_version_of_alc_is_refused_only_for_what_it_could_lose() {
+        let plain = LaunchSpec::for_test();
+        let mut bridged = LaunchSpec::for_test();
+        bridged.bridge = Some(crate::launch::BridgePlan {
+            model: "gpt-6-astra".to_owned(),
+            effort: None,
+            context_window: None,
+            options: Vec::new(),
+            api: crate::launch::BridgeApi::Messages,
+        });
+
+        // A version apart plus something it can drop: refused, by name.
+        let refusal = hub_cannot_carry("1.4.1", 4321, &bridged).expect("refused");
+        assert!(refusal.contains("1.4.1"), "{refusal}");
+        assert!(refusal.contains("4321"), "{refusal}");
+        assert!(refusal.contains("alc hub stop"), "{refusal}");
+
+        // A version apart, but nothing an older hub could lose: a patch
+        // release must not take every plain shared session down with it.
+        assert_eq!(hub_cannot_carry("1.4.1", 4321, &plain), None);
+
+        // The same build: never in the way.
+        let ours = env!("CARGO_PKG_VERSION");
+        assert_eq!(hub_cannot_carry(ours, 4321, &bridged), None);
+        assert_eq!(hub_cannot_carry(ours, 4321, &plain), None);
     }
 
     #[test]

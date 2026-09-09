@@ -103,11 +103,33 @@ alc models --refresh
 
 ## `the model may not exist or you may not have access to it`
 
-在 `--codex` session 裡看到這句，通常代表模型是真的存在，只是內建的
-橋接還不能轉送它 —— 1.5.0 之前 alc 所依賴的橋接裡有一份寫死的模型清單，可能
-落後 Codex 一個版本。從 1.5.0 起橋接不保留任何清單，所以這種情況不該再發生；
-若真的發生，訊息會列出可用的模型。
-alc 現在會在啟動時就擋下來，並列出橋接真的能轉送的模型，挑一個即可：
+有三種成因，看這個 session 從哪裡來就能分辨。
+
+**1.6.0 之前的共享 session。** 在 1.3.0 到 1.5.0 之間，經過 hub 的 session
+（`--share`，或在「預設共享」開啟時的任何 session）會在傳送途中丟掉 Codex
+轉接器：agent 帶著 GPT 模型名稱被啟動，後面卻什麼都沒有，於是它向自己原本的
+廠商要一個那個廠商從沒聽過的模型。請升級到 1.6.0，然後把還在跑舊版的 hub 停掉：
+
+```sh
+alc hub stop
+```
+
+hub 的設計本來就是比終端機活得久，所以它也會比升級活得久。從 1.6.0 起，alc
+寧可拒絕把需要轉接器的 session 交給版本不同的 hub，也不會讓它在沒有轉接器的
+情況下跑；`alc doctor` 也會指出落後的 hub。
+
+**Claude Code 自己存下的預設值。** 在 Claude Code 的 `/model` 裡選 GPT 模型時，
+它同時會把該模型寫進 `~/.claude/settings.json`，當成之後每個新 session 的預設值
+（確認訊息上就這麼寫）。之後每一個不是 alc 啟動的 `claude` 都會讀到那個檔案，
+而那些前面沒有轉接器。把 `model` 那一行刪掉即可 —— alc 自己會帶模型參數：
+
+```sh
+alc doctor   # 找到時會指出那個檔案與那一行
+```
+
+**橋接無法轉送的模型。** 1.5.0 之前 alc 所依賴的橋接裡有一份寫死的模型清單，
+可能落後 Codex 一個版本。從 1.5.0 起橋接不保留任何清單，改由 chatgpt.com 決定，
+所以這種情況不該再發生；若真的發生，訊息會列出可用的模型：
 
 ```sh
 alc config upsert codex --model gpt-5.6-terra

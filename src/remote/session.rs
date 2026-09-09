@@ -87,13 +87,19 @@ pub(crate) struct Session {
     /// once the reader has reached EOF - see the note on that method.
     exit: Mutex<Option<ExitInfo>>,
 
-    /// Held for its `Drop`: the Codex bridge child and any temporary config
-    /// written for this launch die exactly when the session does.
-    #[allow(
-        dead_code,
-        reason = "held for its Drop; the bridge and temp files outlive nothing else"
-    )]
-    guards: SessionGuards,
+    /// Held for its `Drop`: the Codex bridge and any temporary config written
+    /// for this launch.
+    ///
+    /// Released by the pump the moment the pty reaches EOF, not when the
+    /// session is finally dropped. An exited session's card lingers on the
+    /// page for fifteen minutes so a launch that failed can still be read,
+    /// and holding these that long would mean a bridge listening on a
+    /// loopback port with nothing to serve and - worse - the Kimi builder's
+    /// plaintext key file sitting in the temp directory for a quarter of an
+    /// hour after the agent that needed it exited. The unshared path
+    /// (`launch::execute`) drops them the instant the child is reaped, and
+    /// this is the same promise.
+    guards: Mutex<Option<SessionGuards>>,
 }
 
 impl Session {
@@ -151,7 +157,7 @@ impl Session {
             seq: AtomicU64::new(0),
             warned_clipboard: AtomicBool::new(false),
             exit: Mutex::new(None),
-            guards,
+            guards: Mutex::new(Some(guards)),
         });
 
         let pump = Arc::clone(&session);
@@ -279,6 +285,15 @@ impl Session {
             self.fanout.broadcast(Frame::Text(rendered));
         }
         self.fanout.broadcast(Frame::Close);
+
+        // Torn down only after every viewer has been told the session ended.
+        // `Bridge::drop` waits up to two seconds for its runtime thread, and
+        // doing that first would make each viewer sit through it before
+        // learning what they were waiting for. Taken under the lock and
+        // dropped outside it, so that wait is not held over a lock a viewer
+        // may want.
+        let guards = self.guards.lock().ok().and_then(|mut held| held.take());
+        drop(guards);
     }
 
     pub(crate) fn id(&self) -> &str {

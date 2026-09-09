@@ -368,6 +368,15 @@ Claude Code 的內建別名也一併留在 Codex 上：選單的 Default 一列�
 `alc --codex claude` 會再從 alc provider 的預設值開始，所以 `alc config`
 仍然是唯一的真實來源。
 
+有一件事要知道，因為那個選單是 Claude Code 的、不是 alc 的：在裡面選模型
+的同時，Claude Code 會把它寫進 `~/.claude/settings.json`，當成之後每個新
+工作階段的預設值（確認訊息上就這麼寫）。那個檔案會被這台機器上每一個
+Claude Code 工作階段讀到，包含不是 alc 啟動的那些，而那些前面沒有轉接器。
+之後直接執行 `claude` 就會向 Anthropic 要一個 GPT 模型，然後被告知它不存
+在。想只套用在這次工作階段，請用選單裡的「use this session only」；已經寫
+進去的，把 `~/.claude/settings.json` 裡的 `model` 那一行刪掉即可 —— alc 自
+己會帶模型參數，不需要它。`alc doctor` 發現時會指出那個檔案與那一行。
+
 ### 其他每個 agent
 
 OpenCode、Pi、Kimi Code CLI 會直接使用轉接器的 OpenAI Responses 介面；
