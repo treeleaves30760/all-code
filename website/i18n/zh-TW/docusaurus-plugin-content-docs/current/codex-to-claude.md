@@ -100,6 +100,21 @@ alc --codex claude --model gpt-5.6-terra --effort medium --save
 `alc --codex claude` 會再從 alc provider 的預設值開始，所以
 [`alc config`](./configuration.md) 仍然是唯一的真實來源。
 
+### `/model` 還會寫下什麼
+
+那個選單是 Claude Code 的、不是 alc 的。在裡面選模型時，它會把該模型寫進
+`~/.claude/settings.json`，當成之後每個新工作階段的預設值（確認訊息上就這麼
+寫）。那個檔案會被這台機器上每一個 Claude Code 工作階段讀到，包含不是 alc
+啟動的那些 —— 而那些前面沒有轉接器：之後直接執行 `claude` 就會向 Anthropic
+要一個 GPT 模型，然後被告知它不存在。
+
+想只套用在這一次，請用選單裡的「use this session only」。已經寫進去的，把
+`~/.claude/settings.json` 裡的 `model` 那一行刪掉即可 —— alc 自己會帶模型參數，
+不需要它。`alc doctor` 發現時會指出那個檔案與那一行。
+
+不要用 `CLAUDE_CONFIG_DIR` 去隔離它：那會搬走 Claude Code 的整個設定家目錄，
+連登入資訊也一起搬走。
+
 ## OpenCode、Pi、Kimi Code CLI
 
 這三個 agent 會直接使用轉接器的 OpenAI Responses 介面。每一個都會在啟動時

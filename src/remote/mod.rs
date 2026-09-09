@@ -85,6 +85,21 @@ pub enum RemoteCommand {
     DryRun,
 }
 
+/// The pid and alc version of a hub currently listening for `config_dir`.
+///
+/// Read from the record the hub writes at startup rather than by asking it,
+/// so a caller that only wants to mention the hub in passing - `alc update`,
+/// say - does not open a socket to do it.
+///
+/// Unix only, matching the platforms that can have a hub at all.
+#[cfg(unix)]
+pub fn running_hub(config_dir: &std::path::Path) -> Option<(u32, String)> {
+    ctl::read_hub_record(config_dir)
+        .ok()
+        .flatten()
+        .map(|record| (record.pid, record.alc))
+}
+
 /// Runs the agent under a pty, mirrors it to this terminal and to a loopback
 /// web server, and returns the agent's exit code.
 ///
@@ -130,7 +145,11 @@ pub fn share(
     // The hub owns the session, so it survives this terminal closing and
     // shares one page with every other session on the machine.
     let hub = hub::spawn_or_join(&store.dir, &secrets, lan_requested)?;
+    if let Some(refusal) = hub::hub_cannot_carry(&hub.alc, hub.pid, &spec) {
+        bail!("{refusal}");
+    }
     let create = ctl::CreateRequest {
+        alc: env!("CARGO_PKG_VERSION").to_owned(),
         spec: hub::to_wire(&spec)?,
         cwd: cwd.display().to_string(),
         // The agent must run in the environment of the shell that asked for
@@ -652,8 +671,28 @@ pub fn report(store: &Store) -> RemoteReport {
         Ok(Some(record)) => {
             rows.push((
                 "hub",
-                format!("pid {} · http://127.0.0.1:{}/", record.pid, record.port),
+                format!(
+                    "pid {} · alc {} · http://127.0.0.1:{}/",
+                    record.pid, record.alc, record.port
+                ),
             ));
+            // A hub outlives the binary that started it, and `alc update`
+            // replaces that binary without stopping it. The hub is what
+            // actually launches a shared session, from a request this build
+            // serialised, so a version apart is a launch neither half fully
+            // understands - and the half that loses is the newer one, whose
+            // added fields the older hub drops in silence.
+            if record.alc != env!("CARGO_PKG_VERSION") {
+                issues.push((
+                    "hub",
+                    format!(
+                        "it is alc {}, but this is alc {}; it would launch a shared session from the older build",
+                        record.alc,
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    "alc hub stop".to_owned(),
+                ));
+            }
         }
         _ => rows.push(("hub", "not running".to_owned())),
     }

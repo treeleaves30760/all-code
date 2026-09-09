@@ -384,6 +384,17 @@ A model chosen with `/model` applies to that Claude Code session. The next
 `alc --codex claude` starts from the alc provider default again, so `alc config`
 stays the source of truth.
 
+One thing to know about that picker, because it is Claude Code's and not
+alc's: selecting a model there also writes it to `~/.claude/settings.json` as
+your default for new sessions — Claude Code says so on the confirmation line.
+That file is read by every Claude Code session on the machine, including the
+ones alc did not start, and those have no adapter in front of them. A plain
+`claude` afterwards will ask Anthropic for a GPT model and be told it does not
+exist. To keep the pick for this session only, use the picker's
+"use this session only" option; to undo one already saved, delete the `model`
+line from `~/.claude/settings.json` — alc passes the model itself and does not
+need it. `alc doctor` reports the file and the line when it finds one.
+
 ### Every other agent
 
 OpenCode, Pi, and Kimi Code CLI speak the adapter's OpenAI Responses surface

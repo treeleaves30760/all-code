@@ -35,7 +35,7 @@ pub struct ModelCatalog {
     pub models: Vec<ModelInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelInfo {
     pub id: String,

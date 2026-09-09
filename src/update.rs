@@ -414,7 +414,37 @@ fn install_platform(
         let _ = fs::remove_file(backup);
     }
     println!("Updated alc {current} -> {latest}.");
+    #[cfg(unix)]
+    warn_about_a_hub_left_behind(&latest.to_string());
     Ok(())
+}
+
+/// Says so when a hub from the version just replaced is still listening.
+///
+/// The hub is designed to outlive terminals, so it outlives an update too -
+/// and it is the process that actually launches every shared session, from a
+/// request the new binary serialises. alc refuses that pairing rather than
+/// mis-serving it, so without this line the next `alc --share` fails with a
+/// message the user has no reason to expect. Never stopped automatically:
+/// somebody's session is probably running in it.
+///
+/// Unix only, because a hub is: `remote::share` refuses outright on every
+/// other platform, so there is never one to be left behind.
+#[cfg(unix)]
+fn warn_about_a_hub_left_behind(installed: &str) {
+    let Ok(config_dir) = crate::config::config_dir() else {
+        return;
+    };
+    let Some((pid, version)) = crate::remote::running_hub(&config_dir) else {
+        return;
+    };
+    if version == installed {
+        return;
+    }
+    println!(
+        "A hub from alc {version} is still running (pid {pid}); shared sessions are refused \
+         until it is replaced. Run `alc hub stop` when its sessions are done."
+    );
 }
 
 #[cfg(windows)]
