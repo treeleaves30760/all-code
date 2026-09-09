@@ -127,6 +127,26 @@
     lastCards = cards;
     rows.value = store.reconcile(cards, Date.now());
     scheduleExpiry();
+    followSessionSize(cards);
+  }
+
+  /* A `--tmux` session's size is the local terminal's, and it changes
+   * whenever that terminal does. Nothing tells the page over the socket -
+   * the server's control frames are notices, exits and keepalives, none of
+   * which carries a size - so this poll is what notices, and the terminal is
+   * refitted to match. Five seconds late is a redraw, not a wrong one: the
+   * stream never assumes more columns than the window has, so the worst case
+   * in between is a screen drawn narrower than the space it has. */
+  function followSessionSize(cards) {
+    const card = attached.value;
+    if (!card || !card.tmux) return;
+    const fresh = cards.find((row) => row.id === card.id);
+    if (!fresh || (fresh.cols === card.cols && fresh.rows === card.rows)) return;
+    // A fresh object rather than two fields written into the old one: every
+    // other writer of this signal assigns a whole card, and a subscriber
+    // that compared identities would never see an in-place edit.
+    attached.value = { ...card, cols: fresh.cols, rows: fresh.rows };
+    refit();
   }
 
   /* An exited row leaves on its own schedule rather than on the poll's, so
@@ -520,12 +540,17 @@
     // the real agent's pty down to a couple of columns.
     if (document.body.dataset.pane !== 'view') return;
 
-    // A read-only link cannot resize the pty, so fitting to its own window
-    // would render the mirrored screen at a width the agent is not drawing
-    // for - wrapped lines in the wrong places, boxes that do not meet. It
-    // matches the session's real geometry instead.
+    // Two cases cannot move the session's own size, and fitting to this
+    // window would then render the mirrored screen at a width the agent is
+    // not drawing for - wrapped lines in the wrong places, boxes that do not
+    // meet. Both match the session's real geometry instead.
+    //
+    // A read-only link is the obvious one. The other is a `--tmux` session,
+    // where the size is the local terminal's and the page follows it: that
+    // is the trade `--tmux` makes, and it is what stops tmux re-emitting the
+    // pane row by row into a mirror wider than the window.
     const card = attached.value;
-    if (!operator.value) {
+    if (!operator.value || (card && card.tmux)) {
       if (card && card.cols && card.rows) term.resize(card.cols, card.rows);
       return;
     }

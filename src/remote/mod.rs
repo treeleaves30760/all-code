@@ -44,6 +44,7 @@ mod scrub;
 mod server;
 mod session;
 mod settings;
+mod tmux;
 mod utf8;
 mod wire;
 
@@ -113,6 +114,7 @@ pub fn share(
     lan_requested: bool,
     name: Option<String>,
     permission: Option<String>,
+    wants_tmux: bool,
 ) -> Result<u8> {
     let settings = RemoteSettings::load(&store.dir)?;
     if !settings.enabled {
@@ -128,6 +130,12 @@ pub fn share(
     // Checked before any work: a scripted `alc claude -p … > out.txt` must
     // fail loudly here rather than fill that file with escape sequences.
     require_terminal()?;
+    // Resolved here rather than in the hub, even though the hub is what
+    // starts the session: a missing or too-old tmux is the user's own
+    // machine answering, and they should hear it from the command they
+    // typed rather than as a failure relayed back over a control socket
+    // from a daemon they did not know they had started.
+    let tmux = wants_tmux.then(tmux::find).transpose()?;
 
     let permission = permission::arm_at_launch(&mut spec, requested);
     let secrets = Secrets::load_or_create(&store.dir)?;
@@ -160,6 +168,7 @@ pub fn share(
         rows,
         scrollback_bytes: settings.scrollback_bytes,
         permission,
+        tmux: wants_tmux,
     };
     let session_id = match ctl::request(
         &store.dir,
@@ -182,7 +191,19 @@ pub fn share(
         },
         hub.pid
     );
-    println!("  keys  ctrl-\\ then d detaches; the session keeps running");
+    match &tmux {
+        // tmux owns the keyboard now, so the key alc would otherwise name is
+        // not the one that works: `ctrl-\ then d` here would send the user's
+        // first detach attempt straight into the agent. `ctrl-b` and not
+        // "your prefix" because alc's server reads no configuration file, so
+        // the prefix is tmux's own default whatever the user has bound in
+        // their own.
+        Some(found) => println!(
+            "  keys  ctrl-b then d detaches ({}); the session keeps running",
+            found.label()
+        ),
+        None => println!("  keys  ctrl-\\ then d detaches; the session keeps running"),
+    }
     std::io::stdout().flush().ok();
 
     attach(store, &secrets, &session_id, cols, rows)
@@ -200,6 +221,15 @@ pub(crate) fn attach(
     cols: u16,
     rows: u16,
 ) -> Result<u8> {
+    // A tmux session is not relayed. The whole point of `--tmux` is that
+    // this terminal becomes a second, independent tmux client with a size of
+    // its own, so it runs one rather than reading the mirror's bytes.
+    if let Some(card) = card_for(store, secrets, session_id)
+        && let Some(host) = card.tmux
+    {
+        return attach_tmux(store, secrets, session_id, &host);
+    }
+
     let stream = hub::attach_stream(&store.dir, &secrets.ctl, session_id, cols, rows)?;
     let terminal = local::TerminalGuard::acquire()?;
 
@@ -252,12 +282,100 @@ pub(crate) fn attach(
     Ok(code)
 }
 
+/// Puts this terminal on a tmux session the hub owns, as a client in its own
+/// right.
+///
+/// Nothing about the mirror changes: the hub still holds its own client, and
+/// the page still shows what the agent draws. What changes is that the two
+/// clients hold their own sizes, which is the whole reason `--tmux` exists.
+///
+/// The exit code still comes from the card afterwards, for the same reason
+/// the relay path reads it there - tmux's own client exits 0 whether the
+/// agent finished or failed, so asking the hub is the only honest answer.
+fn attach_tmux(
+    store: &Store,
+    secrets: &Secrets,
+    session_id: &str,
+    host: &tmux::Tmux,
+) -> Result<u8> {
+    // Resolved again rather than carried from `share`: `alc attach` reaches
+    // here without having been through it, and a terminal that cannot run
+    // tmux should hear that here rather than fail obscurely one line later.
+    let found = tmux::find()?;
+    let mut command = std::process::Command::new(&found.binary);
+    command.args(host.attach_argv(tmux::Sizing::Drive));
+    // A shell already inside tmux exports the address of ITS server, and a
+    // client that inherits it refuses to attach - "sessions should be nested
+    // with care". alc's server is a different one, so nesting is safe; the
+    // note below is so the user is not surprised by needing their outer
+    // prefix first.
+    if env::var_os("TMUX").is_some() {
+        println!(
+            "this terminal is already inside tmux; alc's session runs on its own server, so \
+             reach it with your outer prefix first"
+        );
+    }
+    command.env_remove("TMUX");
+    command.env_remove("TMUX_PANE");
+
+    let status = command
+        .status()
+        .with_context(|| format!("failed to run {}", found.binary.display()))?;
+
+    // The client's own status cannot answer this on its own. A clean detach
+    // exits 0, but so does nothing else: when the agent ends, alc stops the
+    // tmux server to release every client, and a client whose server went
+    // away exits 1 - which would report a session that finished perfectly
+    // well as a failure to attach. So the hub is asked what happened, and
+    // the client's status is only consulted for the case the hub cannot
+    // describe: the session is still there and this terminal never got on
+    // it.
+    match card_for(store, secrets, session_id) {
+        Some(card) => match card.exit.as_ref() {
+            Some(exit) => Ok(exit_code(exit)),
+            None if status.success() => {
+                println!("detached; the session is still running.");
+                println!("reattach with `alc attach {session_id}`");
+                Ok(0)
+            }
+            None => bail!(
+                "tmux could not put this terminal on session {session_id}; the session is still \
+                 running, so try `alc attach {session_id}` again"
+            ),
+        },
+        None => Ok(0),
+    }
+}
+
+/// One session's card, by id, or `None` when no hub can say.
+///
+/// Errors are folded into `None` on purpose: both callers are asking a
+/// question they have a sensible answer for either way - "is this a tmux
+/// session" and "did the agent exit" - and a hub that has gone away between
+/// the attach and this call should not turn a clean detach into a failure.
+fn card_for(store: &Store, secrets: &Secrets, session_id: &str) -> Option<wire::SessionCard> {
+    list(store, secrets)
+        .ok()?
+        .into_iter()
+        .find(|card| card.id == session_id)
+}
+
 /// A signalled agent is reported as failing, matching what a shell reports
 /// for the same death and what `launch::execute` already returns.
 fn exit_code(exit: &ExitInfo) -> u8 {
     exit.code
         .and_then(|code| u8::try_from(code).ok())
         .unwrap_or(1)
+}
+
+/// What `--tmux` would do on this machine: the tmux it found, or why it
+/// could not use one.
+///
+/// Exists for `--dry-run`, which has to be able to admit that the launch it
+/// is describing would be refused - the same promise the adapter check makes
+/// a few lines above it.
+pub fn tmux_status() -> Result<String> {
+    tmux::find().map(|found| found.label())
 }
 
 /// Whether the user has asked for every session to be shared.
@@ -525,7 +643,7 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
                     wire::SessionState::Exited => "exited",
                 };
                 println!(
-                    "{:<22} {:<8} {:<9} {:<10} {}",
+                    "{:<22} {:<8} {:<9} {:<10} {:<6} {}",
                     card.id,
                     card.agent,
                     state,
@@ -533,6 +651,10 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
                         .rung
                         .map(|rung| rung.to_string())
                         .unwrap_or_else(|| "-".to_owned()),
+                    // Said here because it changes what `alc attach` does
+                    // and which key detaches, and a user should learn that
+                    // before they are inside the session rather than after.
+                    if card.tmux.is_some() { "tmux" } else { "-" },
                     card.cwd
                 );
             }
@@ -666,6 +788,20 @@ pub fn report(store: &Store) -> RemoteReport {
         rows.push(("also answers to", settings.allowed_hosts.join(", ")));
     }
     rows.push(("ceiling", settings.max_permission.clone()));
+    // A row, never an issue. `--tmux` is opt-in, so a user who never types
+    // it must not start seeing a failing `alc doctor` because the feature
+    // exists - the same rule the agent binaries and the local models follow.
+    rows.push((
+        "tmux",
+        match tmux::find() {
+            Ok(found) => format!("{} · `--tmux` available", found.label()),
+            // A row says what is there, not what a launch would be told: the
+            // refusal names the install command and what the user loses,
+            // which is the right length for the moment they typed the flag
+            // and the wrong length for a status line they did not ask for.
+            Err(_) => "not found · `--tmux` needs tmux 3.2 or newer".to_owned(),
+        },
+    ));
 
     match ctl::read_hub_record(&store.dir) {
         Ok(Some(record)) => {

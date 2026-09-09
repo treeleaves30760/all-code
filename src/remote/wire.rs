@@ -100,7 +100,7 @@ pub(crate) enum SessionState {
 /// How a session ended. A signalled death and a plain `exit 1` are the same
 /// byte in a process exit code, and a card that cannot tell them apart
 /// reports a killed agent as a failing one.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ExitInfo {
     pub code: Option<i32>,
     pub signal: Option<String>,
@@ -133,6 +133,18 @@ pub(crate) struct SessionCard {
     /// exists for.
     pub unsandboxed: bool,
     pub permission: crate::remote::permission::PermState,
+    /// The tmux session the agent runs in, when the launch asked for one.
+    ///
+    /// On the card rather than kept in the hub because it is what a terminal
+    /// needs in order to attach as its own tmux client - which is the entire
+    /// point of `--tmux`, and something only the client can do for itself.
+    /// It also lets `alc sessions` mark which sessions detach with tmux's
+    /// prefix rather than with alc's own key, before the user is inside one.
+    ///
+    /// The socket is a unix socket in the user's own 0700 directory, so the
+    /// browser it is also sent to can do nothing with it.
+    #[serde(default)]
+    pub tmux: Option<crate::remote::tmux::Tmux>,
 }
 
 /// Encodes a binary output frame: opcode, sequence, then the payload.

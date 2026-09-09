@@ -52,10 +52,11 @@ use crate::launch::{self, LaunchSpec};
 use crate::remote::ctl::{
     self, CreateRequest, CtlReply, CtlRequest, CtlStream, HubRecord, WireSpec,
 };
+use crate::remote::pty::PtyCommand;
 use crate::remote::server::{Registry, Server};
-use crate::remote::session::{Session, SessionSpec};
+use crate::remote::session::{Session, SessionSpec, TmuxHost};
 use crate::remote::settings::{RemoteSettings, Secrets};
-use crate::remote::{id, wire};
+use crate::remote::{id, tmux, wire};
 
 /// How long a client waits for a hub it just started to publish itself.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -377,6 +378,7 @@ impl Hub {
             rows,
             scrollback_bytes,
             permission,
+            tmux: wants_tmux,
         } = request;
         // Refused rather than served on a best-effort basis: a spec this hub
         // and that client do not describe identically is one where a field
@@ -450,6 +452,67 @@ impl Hub {
         };
         record.write(&self.config_dir).ok();
 
+        // The agent is started here, not by `Session::start`, when it runs
+        // in tmux: the pty then hosts a `tmux attach-session` client, and the
+        // agent lives in a pane on the other side of the server.
+        //
+        // `prepared.spec` is what reaches the pane, untouched - the same
+        // argv, the same environment, the permission flag
+        // `permission::arm_at_launch` put at the front of it. Only the socket
+        // and session names reach the attach client. Getting that backwards
+        // would arm the gate on tmux and leave the agent running in whatever
+        // mode it defaults to, while the card reported the rung the user
+        // asked for at the highest confidence alc has.
+        // Kept alongside `tmux` because `Session::start` takes ownership of
+        // it, and the failure path below still has to reach the server.
+        let mut orphan: Option<(tmux::Tmux, PathBuf)> = None;
+        let (command, tmux) = match wants_tmux {
+            true => {
+                let found = tmux::find()?;
+                let mut session = tmux::Tmux::for_session(&id)?;
+                // A failed `create` can still have left a server running -
+                // it refuses a launch whose credentials it could not take
+                // back out of that server's environment, which is a check
+                // made after the agent has started.
+                session
+                    .create(
+                        &found.binary,
+                        &prepared.program,
+                        &prepared.spec,
+                        &cwd,
+                        cols,
+                        rows,
+                    )
+                    .inspect_err(|_| {
+                        let _ = session.stop(&found.binary);
+                    })?;
+                let command = PtyCommand {
+                    program: found.binary.clone(),
+                    args: session.attach_argv(tmux::Sizing::Abstain),
+                    // Deliberately not the launch's environment. The attach
+                    // client only needs to talk to a socket, and giving it
+                    // the provider key would put that key in a second
+                    // process for no reason at all.
+                    env: BTreeMap::new(),
+                    env_remove: vec![OsString::from("TMUX"), OsString::from("TMUX_PANE")],
+                };
+                orphan = Some((session.clone(), found.binary.clone()));
+                let host = TmuxHost {
+                    tmux: session,
+                    binary: found.binary,
+                };
+                (command, Some(host))
+            }
+            false => (PtyCommand::agent(&prepared.program, &prepared.spec), None),
+        };
+
+        // A failure from here on has to take the tmux server with it. The
+        // agent is already running in a pane at this point, with the
+        // launch's credentials in its environment, and nothing else knows
+        // the socket: the session that would have carried it never existed,
+        // so `Session::kill` cannot reach it, `alc sessions` cannot list it,
+        // and `reap_orphans` would delete the temporary config it is still
+        // reading while the agent itself carried on.
         let session = Session::start(
             SessionSpec {
                 id: id.clone(),
@@ -459,11 +522,17 @@ impl Hub {
                 scrollback_bytes,
                 permission,
             },
-            &prepared.program,
+            command,
             prepared.spec,
             &cwd,
             prepared.guards,
-        )?;
+            tmux,
+        )
+        .inspect_err(|_| {
+            if let Some(host) = &orphan {
+                let _ = host.0.stop(&host.1);
+            }
+        })?;
         self.registry.insert(session);
         Ok(id)
     }

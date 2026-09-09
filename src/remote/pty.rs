@@ -15,9 +15,10 @@
 //!   dropped after the spawn or the reader never sees EOF when the agent
 //!   exits - the session would hang instead of closing.
 
-use std::ffi::OsStr;
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
@@ -25,6 +26,36 @@ use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, nativ
 
 use crate::launch::LaunchSpec;
 use crate::remote::wire::ExitInfo;
+
+/// What to run under the pty.
+///
+/// Separate from `LaunchSpec` because the two stopped being the same thing
+/// when `--tmux` landed: an ordinary session runs the agent here, but a tmux
+/// session runs a `tmux attach-session` client, and the agent - with the
+/// launch's environment, credentials included - lives in a pane on the other
+/// side of the tmux server. Handing the attach client the agent's
+/// environment would put the provider key in a process that has no use for
+/// it, so the two are built separately and this is what they have in common.
+#[derive(Debug, Clone)]
+pub(crate) struct PtyCommand {
+    pub program: PathBuf,
+    pub args: Vec<OsString>,
+    pub env: BTreeMap<OsString, OsString>,
+    pub env_remove: Vec<OsString>,
+}
+
+impl PtyCommand {
+    /// The agent itself, run directly - what every session did before
+    /// `--tmux`, and what one still does without it.
+    pub(crate) fn agent(program: &Path, spec: &LaunchSpec) -> Self {
+        Self {
+            program: program.to_path_buf(),
+            args: spec.args.clone(),
+            env: spec.env.clone(),
+            env_remove: spec.env_remove.clone(),
+        }
+    }
+}
 
 /// A live agent process and its pty master.
 pub(crate) struct PtyHost {
@@ -44,12 +75,12 @@ impl PtyHost {
     ///
     /// `cwd` is required rather than optional: see the module note.
     pub(crate) fn spawn(
-        program: &Path,
-        spec: &LaunchSpec,
+        command: &PtyCommand,
         cwd: &Path,
         cols: u16,
         rows: u16,
     ) -> Result<(Self, Box<dyn Read + Send>)> {
+        let program = command.program.as_path();
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize {
@@ -60,28 +91,28 @@ impl PtyHost {
             })
             .context("failed to open a pseudo-terminal for the session")?;
 
-        let mut command = CommandBuilder::new(program);
-        command.args(&spec.args);
-        for (name, value) in &spec.env {
-            command.env(name, value);
+        let mut builder = CommandBuilder::new(program);
+        builder.args(&command.args);
+        for (name, value) in &command.env {
+            builder.env(name, value);
         }
-        for name in &spec.env_remove {
-            command.env_remove(name);
+        for name in &command.env_remove {
+            builder.env_remove(name);
         }
-        command.cwd(cwd);
+        builder.cwd(cwd);
         // Agents ask the terminal what it can do before they draw. Without
         // these they fall back to a monochrome, seven-bit rendering that
         // looks broken next to the same agent run directly.
-        if !spec.env.contains_key(OsStr::new("TERM")) {
-            command.env("TERM", "xterm-256color");
+        if !command.env.contains_key(OsStr::new("TERM")) {
+            builder.env("TERM", "xterm-256color");
         }
-        if !spec.env.contains_key(OsStr::new("COLORTERM")) {
-            command.env("COLORTERM", "truecolor");
+        if !command.env.contains_key(OsStr::new("COLORTERM")) {
+            builder.env("COLORTERM", "truecolor");
         }
 
         let child = pair
             .slave
-            .spawn_command(command)
+            .spawn_command(builder)
             .with_context(|| format!("failed to launch {} under a pty", program.display()))?;
         // The parent's copy of the slave must go before the reader can ever
         // see EOF; holding it would keep the pty open past the agent's exit.
@@ -206,6 +237,12 @@ mod tests {
         spec
     }
 
+    /// The tests drive `/bin/sh` rather than a real agent, so they build the
+    /// pty command the way `Session::start` does for an unwrapped launch.
+    fn shell(spec: &LaunchSpec) -> PtyCommand {
+        PtyCommand::agent(Path::new("/bin/sh"), spec)
+    }
+
     /// Reads until `needle` appears, or the reader ends.
     ///
     /// A read on a pty blocks until the agent writes something, and a deadline
@@ -252,7 +289,7 @@ mod tests {
             OsString::from("pwd; test -t 1 && echo IS_TTY"),
         ];
 
-        let (host, reader) = PtyHost::spawn(Path::new("/bin/sh"), &spec, &dir, 120, 30).unwrap();
+        let (host, reader) = PtyHost::spawn(&shell(&spec), &dir, 120, 30).unwrap();
         let host = Arc::new(host);
         watchdog(Arc::clone(&host), 20);
         let mut reader = std::io::BufReader::new(reader);
@@ -278,8 +315,7 @@ mod tests {
             OsString::from("while read line; do stty size; done"),
         ];
 
-        let (host, reader) =
-            PtyHost::spawn(Path::new("/bin/sh"), &spec, temp.path(), 120, 30).unwrap();
+        let (host, reader) = PtyHost::spawn(&shell(&spec), temp.path(), 120, 30).unwrap();
         let host = Arc::new(host);
         watchdog(Arc::clone(&host), 20);
         let mut reader = std::io::BufReader::new(reader);
@@ -303,8 +339,7 @@ mod tests {
             OsString::from("read line; echo \"GOT:$line\""),
         ];
 
-        let (host, reader) =
-            PtyHost::spawn(Path::new("/bin/sh"), &spec, temp.path(), 80, 24).unwrap();
+        let (host, reader) = PtyHost::spawn(&shell(&spec), temp.path(), 80, 24).unwrap();
         let host = Arc::new(host);
         watchdog(Arc::clone(&host), 20);
         let mut reader = std::io::BufReader::new(reader);
@@ -321,8 +356,7 @@ mod tests {
         let mut spec = spec();
         spec.args = vec![OsString::from("-c"), OsString::from("kill -TERM $$")];
 
-        let (host, _reader) =
-            PtyHost::spawn(Path::new("/bin/sh"), &spec, temp.path(), 80, 24).unwrap();
+        let (host, _reader) = PtyHost::spawn(&shell(&spec), temp.path(), 80, 24).unwrap();
         let host = Arc::new(host);
         watchdog(Arc::clone(&host), 20);
         let exit = host.wait().unwrap();
@@ -342,8 +376,7 @@ mod tests {
             OsString::from("echo \"MARKER=$ALC_MARKER TERM=$TERM\""),
         ];
 
-        let (host, reader) =
-            PtyHost::spawn(Path::new("/bin/sh"), &spec, temp.path(), 80, 24).unwrap();
+        let (host, reader) = PtyHost::spawn(&shell(&spec), temp.path(), 80, 24).unwrap();
         let host = Arc::new(host);
         watchdog(Arc::clone(&host), 20);
         let mut reader = std::io::BufReader::new(reader);

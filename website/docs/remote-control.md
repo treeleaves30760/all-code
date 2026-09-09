@@ -299,6 +299,69 @@ enough. Matching is case-insensitive.
 `alc hub stop` refuses while sessions are still running unless you pass
 `--drain`, so stopping the hub is never an accidental way to kill work.
 
+## One size each, with `--tmux`
+
+A shared session is one terminal with two viewers, and a terminal has exactly
+one size. The browser and your terminal take turns setting it: whichever
+resized last wins, and the other is left drawing a full-screen TUI at a width
+it does not have — wrapped borders, doubled lines, a cursor in the wrong
+place. If the two are not the same width, one of them looks broken.
+
+`--tmux` runs the agent inside tmux instead, which is the tool built for
+exactly this: one program, several attached clients, each with its own size.
+
+```sh
+alc --share --tmux --codex claude    # or -t
+```
+
+Your terminal attaches as one tmux client and the hub attaches as another, so
+neither has to agree with the other about how wide the world is.
+
+### What changes
+
+| | Without `--tmux` | With `--tmux` |
+| --- | --- | --- |
+| Size | Last resize wins, for both | Your terminal's; the page follows it |
+| Detach | `ctrl-\` then `d` | `ctrl-b` then `d` |
+| Scrollback | The page's | The page's, plus tmux's own copy mode in your terminal |
+| Your terminal's view | Mirrored through the hub, keys masked | A direct tmux client, raw |
+
+The last row is the one to read twice. Without `--tmux` there is no
+unscrubbed view of a session: your own terminal reads the same masked stream
+the browser does. With `--tmux` your terminal is a tmux client, so it shows
+what the agent actually printed — including an API key alc put in the
+environment, if the agent echoes one. **The browser still sees those masked.**
+
+### Requirements and limits
+
+- tmux **3.2 or newer**. `alc doctor` reports the version it found, as a row
+  rather than a problem — a machine without tmux is not a broken one.
+- `--tmux` only applies to a shared session. Without a mirror there is one
+  viewer and nothing to disagree about, so alc refuses the flag rather than
+  growing a second code path with a worse answer for it.
+- macOS and Linux, like the rest of remote control.
+
+alc starts its own tmux server per session, on its own socket, named after the
+session id, **with no configuration file**. Your own tmux — its config,
+keybindings and sessions — is never touched; alc's sessions behave the same
+for everyone, which is why the prefix is `ctrl-b` whatever you have bound; and
+a `~/.tmux.conf` is never a way to run commands inside a session's server,
+which matters because an agent can write one. A second `alc --tmux` never
+lands on the first one's agent, and running alc from inside tmux works.
+`alc sessions` marks which sessions are tmux sessions, and `alc kill` stops
+the agent rather than just the mirror.
+
+Keystrokes from the **page** are delivered to the agent's pane directly rather
+than typed at the mirror's tmux client, so a viewer cannot reach tmux's own
+command prompt with the prefix key and get a shell that the permission ceiling
+never sees. Your own terminal is a full tmux client and can.
+
+It is not a boundary between alc and the agent, though. The pane can reach
+the server it runs in, so an agent that can already run shell commands can
+type into itself; alc takes `TMUX` out of the pane's environment and the
+credentials out of the server's, but an agent running arbitrary commands was
+never something the permission gate could contain.
+
 ### What the hub does with your environment
 
 The hub is long-lived and was started from whichever shell first ran
@@ -363,6 +426,7 @@ Stated plainly, because finding out later is worse:
 
 ```sh
 alc --share <agent>          # mirror this session
+alc --share --tmux <agent>   # ...with tmux, so both sides keep their own size
 alc share <agent> -- <args>  # the unambiguous form
 alc share <agent> --name x   # name the card, instead of <agent>@<directory>
 alc --no-share <agent>       # never mirror, whatever the settings say
