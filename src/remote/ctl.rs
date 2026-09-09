@@ -100,6 +100,14 @@ pub(crate) struct CreateRequest {
     pub scrollback_bytes: usize,
     /// What alc believes it launched the agent in, if anything.
     pub permission: crate::remote::permission::PermState,
+    /// Whether the agent should run inside tmux, so this terminal and the
+    /// browser can hold different sizes.
+    ///
+    /// A flag rather than a resolved [`Tmux`](crate::remote::tmux::Tmux):
+    /// the socket is named after the session id, and the id does not exist
+    /// until the hub has minted one.
+    #[serde(default)]
+    pub tmux: bool,
 }
 
 /// A `LaunchSpec` in a form that survives a socket.

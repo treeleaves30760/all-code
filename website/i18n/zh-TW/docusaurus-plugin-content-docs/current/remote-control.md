@@ -258,6 +258,61 @@ Session id 長得像 `claude-7QK2M9XB4T`。指令接受任何不含歧義的前�
 `alc hub stop` 在還有 session 在跑時會拒絕，除非你加 `--drain`，所以停 hub 不會
 變成意外殺掉工作的方式。
 
+## 用 `--tmux` 讓兩邊各有自己的寬度
+
+被共享的 session 是一個終端機、兩個觀看者，而一個終端機只有一種尺寸。瀏覽器和你的
+終端機會輪流去設定它：誰最後改變大小誰說了算，另一邊就得用它其實沒有的寬度去畫一個
+全螢幕 TUI —— 邊框折行、線條重複、游標跑掉。只要兩邊不一樣寬，其中一邊看起來就是
+壞的。
+
+`--tmux` 改成讓 agent 跑在 tmux 裡。tmux 正是為此而生的工具：一個程式，多個各自
+附著的 client，每個都有自己的尺寸。
+
+```sh
+alc --share --tmux --codex claude    # 或 -t
+```
+
+你的終端機以一個 tmux client 附著，hub 以另一個附著，於是誰都不必遷就誰。
+
+### 有什麼不同
+
+| | 不加 `--tmux` | 加了 `--tmux` |
+| --- | --- | --- |
+| 尺寸 | 誰最後改變誰說了算，兩邊共用 | 你的終端機決定，頁面跟著走 |
+| 卸離 | `ctrl-\` 然後 `d` | `ctrl-b` 然後 `d` |
+| 捲動紀錄 | 頁面的 | 頁面的，外加你終端機裡 tmux 自己的複製模式 |
+| 你本機看到的畫面 | 經過 hub 鏡像，金鑰被遮蔽 | 直接的 tmux client，原始輸出 |
+
+最後一列值得看兩次。不加 `--tmux` 時，這個 session 沒有任何未經遮蔽的視角：你自己
+的終端機讀的是和瀏覽器同一份被遮蔽過的串流。加了 `--tmux` 之後，你的終端機是一個
+tmux client，所以它顯示的是 agent 真正印出來的東西 —— 包括 agent 如果把 alc 放進
+環境的 API key 回顯出來的話。**瀏覽器那邊仍然是遮蔽過的。**
+
+### 需求與限制
+
+- tmux **3.2 以上**。`alc doctor` 會回報它找到的版本，而且是一列資訊而不是一個
+  問題 —— 沒裝 tmux 的機器並不是壞掉的機器。
+- `--tmux` 只對被共享的 session 有意義。沒有鏡像就只有一個觀看者，也就沒有什麼好
+  吵的，所以 alc 直接拒絕這個旗標，而不是長出一條答案更差的程式路徑。
+- 和遠端控制的其他部分一樣，支援 macOS 與 Linux。
+
+alc 會為每個 session 開自己的 tmux server，用自己的 socket，以 session id 命名，
+而且**完全不讀設定檔**。你原本的 tmux —— 設定、按鍵綁定、session —— 完全不會被
+動到；alc 的 session 對每個人的行為都一樣，所以 prefix 就是 `ctrl-b`，不管你自己
+綁了什麼；`~/.tmux.conf` 也永遠不會變成在某個 session 的 server 裡執行指令的途徑
+—— 這件事有意義，因為 agent 寫得了那個檔案。第二次 `alc --tmux` 也絕不會接到第一次
+那個 agent 上；在 tmux 裡面跑 alc 也沒問題。`alc sessions` 會標示哪些是 tmux
+session，`alc kill` 停的是 agent 而不只是鏡像。
+
+從**頁面**來的按鍵是直接送進 agent 的 pane，而不是打進鏡像那個 tmux client，所以
+觀看者沒辦法用 prefix 鍵叫出 tmux 自己的指令列、拿到一個權限上限看不到的 shell。
+你自己的終端機是完整的 tmux client，可以。
+
+不過它不是 alc 和 agent 之間的界線。pane 連得到自己所在的 server，所以一個本來就
+能執行 shell 指令的 agent 也能對自己打字；alc 會把 `TMUX` 從 pane 的環境裡拿掉、把
+憑證從 server 的環境裡拿掉，但一個能執行任意指令的 agent 從來就不是權限閘門攔得住
+的東西。
+
 ### hub 怎麼處理你的環境
 
 hub 是長期存在的，而且是由第一個執行 `alc --share` 的那個 shell 啟動的。如果 agent
@@ -312,6 +367,7 @@ alc hub start --foreground
 
 ```sh
 alc --share <agent>          # 鏡像這個 session
+alc --share --tmux <agent>   # ……用 tmux，兩邊各保有自己的尺寸
 alc share <agent> -- <args>  # 不會有歧義的寫法
 alc share <agent> --name x   # 自訂卡片名稱，取代 <agent>@<目錄>
 alc --no-share <agent>       # 不論設定為何都不鏡像

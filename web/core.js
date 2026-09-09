@@ -289,6 +289,10 @@
     if (card.provider_kind && card.provider_kind !== card.agent) bits.push(card.provider_kind);
     if (card.model) bits.push(card.model);
     if (card.effort) bits.push(card.effort);
+    // Worth a chip because it changes what this page can do: a tmux
+    // session's size is the local terminal's, so resizing this window
+    // refits the view rather than the agent.
+    if (card.tmux) bits.push('tmux');
     return bits.filter(Boolean);
   }
 

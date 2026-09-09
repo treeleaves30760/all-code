@@ -985,6 +985,7 @@ mod live_tests {
     use std::path::Path;
 
     use crate::launch::{LaunchSpec, SessionGuards};
+    use crate::remote::pty::PtyCommand;
     use crate::remote::session::SessionSpec;
 
     struct Harness {
@@ -1023,10 +1024,11 @@ mod live_tests {
                 scrollback_bytes: 64 * 1024,
                 permission: crate::remote::permission::PermState::unknown(),
             },
-            Path::new("/bin/sh"),
+            PtyCommand::agent(Path::new("/bin/sh"), &spec),
             spec,
             Path::new("/"),
             SessionGuards::none(),
+            None,
         )
         .unwrap();
 

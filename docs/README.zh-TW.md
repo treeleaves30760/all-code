@@ -435,7 +435,7 @@ Session 由背景的 hub 擁有，所以它們會出現在同一個頁面上，�
 
 ```sh
 # ctrl-\ 然後 d            # 卸離；session 繼續跑
-alc sessions               # 有哪些在跑
+alc sessions               # 有哪些在跑（tmux session 會標示出來）
 alc attach 7QK2           # 從任何終端機接回去
 alc kill 7QK2
 alc hub status
@@ -445,6 +445,39 @@ alc hub stop --drain
 頁面提供 session 清單、即時畫面、手機鍵盤沒有的快捷鍵列（Esc、Tab、Shift+Tab、
 Ctrl、方向鍵），以及一個把整段提示詞一次送出的輸入框。介面會跟隨裝置語言，提供
 繁體中文與英文。
+
+### 用 `--tmux` 讓兩邊各有自己的寬度
+
+被共享的 session 是一個終端機、兩個觀看者，而一個終端機只有一種尺寸。誰最後改變
+大小誰說了算，另一邊就得用它其實沒有的寬度去畫一個全螢幕 TUI —— 邊框折行、線條
+重複、游標跑掉。只要瀏覽器視窗和你的終端機不一樣寬，其中一邊看起來就是壞的。
+
+`--tmux` 讓 agent 跑在 tmux 裡來解決這件事。tmux 正是為此而生的工具：一個程式，
+多個各自附著的 client：
+
+```sh
+alc --share --tmux --codex claude    # 或 -t
+```
+
+你的終端機和 hub 各自以獨立的 tmux client 附著上去，所以誰都不必遷就誰。有兩件事
+要知道：
+
+- **尺寸由你的終端機決定，頁面跟著它走。** 瀏覽器視窗不再改變 agent 的大小；頁面
+  會把自己調整成你終端機正在顯示的樣子。
+- **鍵盤歸 tmux 管。** 卸離要按 `ctrl-b` 再按 `d`，不是 alc 的 `ctrl-\`。換來的
+  是 tmux 自己的捲動紀錄與複製模式，以及一個 ssh 斷線也還在的 session。
+  `alc attach` 讓你接回去，用那個終端機當下的尺寸。
+
+alc 為每個 session 開自己的 tmux server，而且啟動時完全不讀設定檔，所以你原本的
+tmux —— 設定、按鍵綁定、session —— 完全不受影響；alc 的 session 對每個人的行為都
+一樣（所以是 `ctrl-b`，不管你自己綁了什麼）；`~/.tmux.conf` 也永遠不會變成進入某個
+session 環境的途徑。在 tmux 裡面跑 alc 也沒問題。需要 tmux 3.2 以上；`alc doctor`
+會告訴你裝的是哪一版。`--tmux` 只對被共享的 session 有意義，沒有共享時傳這個旗標
+會被明確拒絕。
+
+有一點要說清楚：你本機的終端機現在是直接的 tmux client，不再是鏡像，所以它看到的
+是 agent 的原始輸出。瀏覽器那邊仍然會把 alc 注入的 API key 遮蔽掉，你自己的終端機
+不會。
 
 遠端控制目前需要 macOS 或 Linux；在 Windows 上 `--share` 和 `alc hub` 系列指令會直接
 拒絕並說明原因，其他功能都正常。

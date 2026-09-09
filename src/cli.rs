@@ -93,6 +93,21 @@ struct Cli {
     #[arg(long, global = true, conflicts_with = "share")]
     no_share: bool,
 
+    /// Run the agent inside tmux, so this terminal and the browser page can
+    /// hold different sizes.
+    ///
+    /// Only applies to a shared session: without one there is only one
+    /// viewer and nothing to disagree about. Needs tmux 3.2 or newer.
+    //
+    // Deliberately no `env`, unlike `--share`. This flag refuses a launch
+    // that is not shared, so an `ALC_TMUX=1` left in a shell profile would
+    // turn every ordinary `alc claude` in that shell into an error - a
+    // standing preference that breaks the common case is not one worth
+    // having. If it earns one later it belongs in `remote.toml`, beside
+    // `auto_share`, where turning it on cannot fail an unshared run.
+    #[arg(short = 't', long, global = true)]
+    tmux: bool,
+
     /// Bind the session page to this machine's network address instead of
     /// loopback, so a phone on the same Wi-Fi can reach it directly.
     ///
@@ -463,6 +478,7 @@ pub fn run() -> Result<u8> {
         lan: cli.bind_lan,
         name: cli.name.clone(),
         permission: cli.permission.clone(),
+        tmux: cli.tmux,
     };
 
     match cli.command {
@@ -504,6 +520,7 @@ pub fn run() -> Result<u8> {
                 lan: cli.bind_lan,
                 name: cli.name.clone(),
                 permission: cli.permission.clone(),
+                tmux: cli.tmux,
             };
             match args.agent {
                 Agent::Claude => run_claude(
@@ -639,6 +656,9 @@ struct Sharing {
     name: Option<String>,
     /// The permission rung the session starts in, when the user named one.
     permission: Option<String>,
+    /// Run the agent inside tmux, so the terminal and the page can hold
+    /// different sizes. Only meaningful alongside a mirrored session.
+    tmux: bool,
 }
 
 /// alc's own flags, which `trailing_var_arg` hands to the agent verbatim
@@ -648,12 +668,14 @@ struct Sharing {
 /// gesture there is, and without this it silently sends `--share` to the
 /// model as prompt text, or exits with the agent's own unknown-flag error
 /// naming a flag the agent has never heard of.
-const ALC_OWNED_FLAGS: [&str; 5] = [
+const ALC_OWNED_FLAGS: [&str; 7] = [
     "--share",
     "--no-share",
     "--bind-lan",
     "--name",
     "--permission",
+    "--tmux",
+    "-t",
 ];
 
 fn reject_swallowed_flags(args: &[OsString], agent: Agent) -> Result<()> {
@@ -915,6 +937,20 @@ fn run_spec(
         !sharing.forced_off && remote::shares_by_default(store) && remote::can_share()
     };
 
+    // `--tmux` exists to stop two viewers of one session fighting over one
+    // size. Without a mirror there is only one viewer, so the flag would be
+    // asking alc to add a multiplexer to a session nothing else is watching
+    // - and would drag in the whole question of what happens to a detached
+    // agent whose Codex adapter lives in the alc process that just exited.
+    // Refusing is one message instead of a second code path with a worse
+    // answer.
+    if sharing.tmux && !share_now {
+        bail!(
+            "`--tmux` fixes the size conflict between this terminal and the browser page, \
+             so it only applies to a shared session; add `--share`, or drop `--tmux`"
+        );
+    }
+
     if dry_run {
         println!(
             "agent: {}\nprovider: {} ({})\ncommand: {}",
@@ -951,6 +987,17 @@ fn run_spec(
                 }
             }
         }
+        // A dry run exists to report what a real run would do, which
+        // includes admitting the launch it is describing would be refused.
+        if sharing.tmux {
+            match remote::tmux_status() {
+                Ok(found) => println!(
+                    "tmux: would run the agent under {found}, so this terminal and the page \
+                     hold their own sizes"
+                ),
+                Err(error) => println!("tmux: WOULD FAIL - {error}"),
+            }
+        }
         if share_now {
             println!("share: would mirror this session to a browser page");
             // Which process does the work is not a detail here: a shared
@@ -966,7 +1013,14 @@ fn run_spec(
         return Ok(0);
     }
     if share_now {
-        return remote::share(store, spec, sharing.lan, sharing.name, sharing.permission);
+        return remote::share(
+            store,
+            spec,
+            sharing.lan,
+            sharing.name,
+            sharing.permission,
+            sharing.tmux,
+        );
     }
     launch::execute(spec)
 }

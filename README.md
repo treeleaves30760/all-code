@@ -461,7 +461,7 @@ they outlive the terminal that started them:
 
 ```sh
 # ctrl-\ then d            # detach; the session keeps running
-alc sessions               # what is running
+alc sessions               # what is running (tmux sessions are marked)
 alc attach 7QK2           # back on it, from any terminal
 alc kill 7QK2
 alc hub status
@@ -472,6 +472,44 @@ The page gives you the session list, the live screen, a key bar for the keys
 a phone keyboard does not have (Esc, Tab, Shift+Tab, Ctrl, arrows), and a
 composer that sends a whole prompt as one block instead of fighting a mobile
 keyboard inside a raw terminal.
+
+### One size each, with `--tmux`
+
+A shared session is one terminal with two viewers, and a terminal has one
+size. Whichever side resized last wins, and the other is left rendering a
+full-screen TUI at a width it does not have — wrapped borders, doubled lines,
+a cursor in the wrong place. If your browser window and your terminal are not
+the same width, one of them looks broken.
+
+`--tmux` fixes it by running the agent inside tmux, which is the tool built
+for exactly this: one program, several attached clients:
+
+```sh
+alc --share --tmux --codex claude    # or -t
+```
+
+Your terminal and the hub each attach as their own tmux client, so nothing
+has to agree on a size. Two things to know:
+
+- **Your terminal sets the size and the page follows it.** The browser's
+  window no longer resizes the agent; the page fits itself to what your
+  terminal is showing.
+- **tmux owns the keyboard.** Detaching is `ctrl-b` then `d`, not alc's
+  `ctrl-\`. In exchange you get tmux's own scrollback and copy mode, and a
+  session that survives an ssh drop. `alc attach` puts you back on it, at
+  whatever size that terminal is.
+
+alc runs its own tmux server per session and starts it with no configuration
+file, so your own tmux — config, keybindings, sessions — is untouched, alc's
+sessions behave the same for everybody (hence `ctrl-b`, whatever you have
+bound in your own), and a `~/.tmux.conf` is never a way into a session's
+environment. Running alc from inside tmux is fine. Needs tmux 3.2 or newer;
+`alc doctor` says what you have. `--tmux` only applies to a shared session,
+and says so if you pass it without one.
+
+One caveat worth stating plainly: your local terminal is now a direct tmux
+client rather than a mirror, so it shows the agent's raw output. The browser
+still sees API keys alc injected masked; your own terminal does not.
 
 Remote control needs macOS or Linux for now; on Windows the `--share` and
 `alc hub` commands refuse with a message, and everything else works normally.

@@ -14,11 +14,11 @@
 //! of the above is. Nothing here may take two of these in the other order.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -27,10 +27,11 @@ use crate::launch::{LaunchSpec, SessionGuards};
 use crate::remote::caps::{Confidence, caps};
 use crate::remote::fanout::{Fanout, Frame, Subscription};
 use crate::remote::permission::{PermState, probe};
-use crate::remote::pty::PtyHost;
+use crate::remote::pty::{PtyCommand, PtyHost};
 use crate::remote::ring::SeqRing;
 use crate::remote::screen::ModeScanner;
 use crate::remote::scrub::SecretScrubber;
+use crate::remote::tmux::Tmux;
 use crate::remote::utf8::Utf8Chunker;
 use crate::remote::wire::{
     ExitInfo, NoticeLevel, OP_OUTPUT, OP_SNAPSHOT, ServerFrame, SessionCard, SessionState,
@@ -45,6 +46,30 @@ const SCROLLBACK_LINES: usize = 1_000;
 /// A pty read is at most this big. Matches the usual pty buffer, so a busy
 /// agent is drained in one syscall rather than several.
 const READ_CHUNK: usize = 8 * 1024;
+
+/// How often a tmux-hosted session is asked whether its agent is still
+/// alive. A poll rather than a hook: it is one short-lived tmux client
+/// twice a second against a socket on the same machine, and a hook would
+/// mean a shell command tmux runs on alc's behalf with no way to report a
+/// failure back.
+const TMUX_POLL: Duration = Duration::from_millis(500);
+
+/// How many unanswered probes in a row mean the tmux server is really gone.
+const UNANSWERED_PROBES: u32 = 3;
+
+/// The tmux session an agent runs in, and the binary to talk to it with.
+///
+/// Once this is present, four things stop coming from the pty and start
+/// coming from tmux, because the pty's child is now a `tmux attach-session`
+/// client rather than the agent: how the agent exited (a client exits 0
+/// whatever the agent did), how to stop it (signalling the client only
+/// detaches the mirror and leaves the agent running unwatched), which pid to
+/// show on the card, and how a viewer's keystrokes are delivered (bytes
+/// written to a tmux client are parsed as keys first - see `Session::input`).
+pub(crate) struct TmuxHost {
+    pub tmux: Tmux,
+    pub binary: PathBuf,
+}
 
 /// Everything about a session that is decided before it starts.
 pub(crate) struct SessionSpec {
@@ -78,6 +103,22 @@ pub(crate) struct Session {
 
     perm: Mutex<PermState>,
     size: Mutex<(u16, u16)>,
+    /// The tmux session hosting the agent, when the launch asked for one.
+    tmux: Option<TmuxHost>,
+    /// The window size and agent pid tmux last reported, refreshed by the
+    /// watcher.
+    ///
+    /// Cached rather than asked for on demand because both are read on every
+    /// card - which is every session list, every notice and every viewer
+    /// joining - and `Registry::cards` builds those while holding the
+    /// registry's own lock. Forking a tmux client per session in there would
+    /// put a process spawn per session behind that lock on every page
+    /// refresh.
+    tmux_window: Mutex<Option<(u16, u16)>>,
+    tmux_pid: Mutex<Option<u32>>,
+    /// Set by `kill`, so the watcher escalates from asking the agent to stop
+    /// to stopping the server it runs in.
+    killing: AtomicBool,
     seq: AtomicU64,
     warned_clipboard: AtomicBool,
 
@@ -113,10 +154,11 @@ impl Session {
     /// which is not something anyone wants.
     pub(crate) fn start(
         session: SessionSpec,
-        program: &Path,
+        command: PtyCommand,
         spec: LaunchSpec,
         cwd: &Path,
         guards: SessionGuards,
+        tmux: Option<TmuxHost>,
     ) -> Result<Arc<Self>> {
         let SessionSpec {
             id,
@@ -126,7 +168,7 @@ impl Session {
             scrollback_bytes,
             permission: _,
         } = session;
-        let (pty, reader) = PtyHost::spawn(program, &spec, cwd, cols, rows)?;
+        let (pty, reader) = PtyHost::spawn(&command, cwd, cols, rows)?;
 
         let session = Arc::new(Self {
             id,
@@ -154,6 +196,17 @@ impl Session {
             fanout: Fanout::new(),
             perm: Mutex::new(session.permission),
             size: Mutex::new((cols, rows)),
+            // Seeded from creation rather than left for the watcher's first
+            // poll: a card built in the half second before that would
+            // otherwise report a session with no pid at all.
+            tmux_pid: Mutex::new(
+                tmux.as_ref()
+                    .and_then(|host| host.tmux.probe(&host.binary))
+                    .and_then(|snapshot| snapshot.pane_pid),
+            ),
+            tmux,
+            tmux_window: Mutex::new(None),
+            killing: AtomicBool::new(false),
             seq: AtomicU64::new(0),
             warned_clipboard: AtomicBool::new(false),
             exit: Mutex::new(None),
@@ -166,7 +219,129 @@ impl Session {
             .spawn(move || pump.pump(reader))
             .context("failed to start the session's output thread")?;
 
+        if session.tmux.is_some() {
+            let watcher = Arc::clone(&session);
+            thread::Builder::new()
+                .name(format!("alc-tmux-{}", session.id))
+                .spawn(move || watcher.watch_tmux())
+                .context("failed to start the session's tmux watcher")?;
+        }
+
         Ok(session)
+    }
+
+    /// Watches the tmux session, because the pty can no longer be the thing
+    /// that says when the agent is gone.
+    ///
+    /// With `remain-on-exit` on, a dead agent leaves its pane in place, so
+    /// nothing closes and no client sees EOF. This is what notices, records
+    /// the agent's real exit status, and then stops the server - which is
+    /// what finally gives every client its EOF and lets `pump` finish the
+    /// session the same way it always has.
+    ///
+    /// It also refreshes the window size, which the mirror follows, and the
+    /// agent's pid, which the card shows.
+    fn watch_tmux(self: Arc<Self>) {
+        let Some(host) = self.tmux.as_ref() else {
+            return;
+        };
+        // One unanswered probe is not proof of anything: tmux can refuse a
+        // client under fd pressure, and a watcher that gave up on the first
+        // one would leave the session reported as Running for ever, with
+        // nothing left to notice the agent had gone.
+        let mut unanswered = 0;
+        loop {
+            match host.tmux.probe(&host.binary) {
+                Some(snapshot) => {
+                    unanswered = 0;
+                    if let Some(window) = snapshot.window {
+                        self.follow_tmux_window(window);
+                    }
+                    if let Ok(mut pid) = self.tmux_pid.lock() {
+                        *pid = snapshot.pane_pid.or(*pid);
+                    }
+                    if let Some(exit) = snapshot.exit {
+                        self.record_exit(exit);
+                        // Ends the session, which detaches every client and
+                        // stops the server. The user's own terminal, attached
+                        // as its own tmux client, returns to their shell here.
+                        let _ = host.tmux.stop(&host.binary);
+                        return;
+                    }
+                    // `kill` asked the agent to stop and it is still here.
+                    // Waiting longer would mean `alc kill`, `alc hub stop
+                    // --drain` and the page's stop button each reporting they
+                    // stopped something that carried on running.
+                    if self.killing.load(Ordering::Acquire) {
+                        let _ = host.tmux.stop(&host.binary);
+                        return;
+                    }
+                }
+                None => {
+                    unanswered += 1;
+                    if unanswered >= UNANSWERED_PROBES {
+                        // The server is gone - `alc kill`, or someone
+                        // reaching for tmux directly. `pump` has its EOF
+                        // already; there is nothing left to watch.
+                        return;
+                    }
+                }
+            }
+            if self.has_exited() {
+                return;
+            }
+            thread::sleep(TMUX_POLL);
+        }
+    }
+
+    /// Puts the mirror's own terminal at exactly the size tmux settled the
+    /// window on.
+    ///
+    /// The mirror attaches with `ignore-size`, so it has no vote in that
+    /// size and this cannot feed back into it - the local terminal decides,
+    /// and this follows. Which is the point: a mirror wider than the window
+    /// is a mirror tmux pads out and re-emits row by row, and two things
+    /// that matter go wrong when it does. The secret scrubber matches
+    /// contiguous bytes (`scrub.rs`), so a credential re-emitted across a
+    /// row boundary would reach the page unmasked; and `permission` reads
+    /// the bottom rows of this grid for the agent's mode line, which would
+    /// be tmux's padding rather than the agent's output.
+    ///
+    /// It narrows that window rather than closing it: a line straddling the
+    /// old boundary can still be re-emitted split in the moment between the
+    /// local terminal resizing and this catching up. The scrubber has always
+    /// been a best-effort defence over the one hole alc opens, and this is
+    /// the same promise, kept as well as a poll can keep it.
+    fn follow_tmux_window(&self, (cols, rows): (u16, u16)) {
+        if self.size.lock().is_ok_and(|size| *size == (cols, rows)) {
+            return;
+        }
+        if self.pty.resize(cols, rows).is_err() {
+            return;
+        }
+        if let Ok(mut vt) = self.vt.lock() {
+            vt.resize(usize::from(cols), usize::from(rows));
+        }
+        if let Ok(mut size) = self.size.lock() {
+            *size = (cols, rows);
+        }
+        if let Ok(mut window) = self.tmux_window.lock() {
+            *window = Some((cols, rows));
+        }
+    }
+
+    /// Records how the agent ended, unless something already has.
+    ///
+    /// Two threads can reach this: the tmux watcher, which has the agent's
+    /// own status, and `pump`, which only has the tmux client's. First write
+    /// wins, and the watcher always gets there first because it is what
+    /// stops the server that gives `pump` its EOF.
+    fn record_exit(&self, exit: ExitInfo) {
+        if let Ok(mut slot) = self.exit.lock()
+            && slot.is_none()
+        {
+            *slot = Some(exit);
+        }
     }
 
     /// Reads the pty until the agent closes it, feeding every byte to the
@@ -270,13 +445,48 @@ impl Session {
             }
         }
 
-        let exit = self.pty.wait().unwrap_or(ExitInfo {
-            code: None,
-            signal: None,
-        });
-        if let Ok(mut slot) = self.exit.lock() {
-            *slot = Some(exit.clone());
+        // A tmux session's pty child is a `tmux attach-session` client, and a
+        // client's exit status says nothing about the agent: it is 0 whether
+        // the agent finished, failed, or was stopped from the page. The
+        // watcher has already recorded the real one - and if EOF arrived for
+        // any other reason, this is where alc finds out the agent is still
+        // running with nobody left watching it.
+        if let Some(host) = self.tmux.as_ref() {
+            if let Some(snapshot) = host.tmux.probe(&host.binary) {
+                match snapshot.exit {
+                    Some(exit) => self.record_exit(exit),
+                    // Something detached the mirror without ending the
+                    // session - `tmux detach-client`, or a stray kill of that
+                    // one process. Leaving it would strand the agent: the
+                    // guards below tear down the Codex adapter and delete the
+                    // temporary config it is still using, and the card is
+                    // about to say the session ended. Stopping it is the only
+                    // answer that keeps those two stories the same.
+                    None => {
+                        let _ = host.tmux.stop(&host.binary);
+                    }
+                }
+            }
+            self.record_exit(ExitInfo {
+                code: None,
+                signal: None,
+            });
+        } else {
+            let exit = self.pty.wait().unwrap_or(ExitInfo {
+                code: None,
+                signal: None,
+            });
+            self.record_exit(exit);
         }
+        let exit = self
+            .exit
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .unwrap_or(ExitInfo {
+                code: None,
+                signal: None,
+            });
         let frame = ServerFrame::Exit {
             code: exit.code,
             signal: exit.signal.clone(),
@@ -318,7 +528,16 @@ impl Session {
             return current.clone();
         }
         let caps = caps(self.agent);
-        let screen = self.vt.lock().map(|vt| vt.text()).unwrap_or_default();
+        let mut screen = self.vt.lock().map(|vt| vt.text()).unwrap_or_default();
+        // `probe` reads the bottom rows, where an agent renders its mode
+        // line. Under `--tmux` the bottom of this grid is not always the
+        // bottom of the agent's screen: the mirror follows the tmux window,
+        // but between a local resize and the watcher catching up the rest of
+        // the grid is tmux's padding. Reading the grid's own last rows would
+        // find that padding, so it is cut back to the window first.
+        if let Some((_, rows)) = self.tmux_window.lock().ok().and_then(|window| *window) {
+            screen.truncate(usize::from(rows).min(screen.len()));
+        }
         if let Some(rung) = probe(caps, &screen) {
             *current = PermState {
                 rung: Some(rung),
@@ -363,7 +582,9 @@ impl Session {
             model: self.model.clone(),
             effort: self.effort.clone(),
             cwd: self.cwd.clone(),
-            pid: self.pty.process_id(),
+            // The agent's pid, which under `--tmux` is the pane's rather
+            // than the pty child's - the pty child is only the mirror.
+            pid: self.agent_pid(),
             state: if exit.is_some() {
                 SessionState::Exited
             } else {
@@ -376,6 +597,21 @@ impl Session {
             started_at: self.started_at,
             unsandboxed: !caps(self.agent).sandboxed,
             permission: self.permission(),
+            tmux: self.tmux.as_ref().map(|host| host.tmux.clone()),
+        }
+    }
+
+    /// The agent's own process id.
+    ///
+    /// Read from what the watcher last saw rather than asked for here: this
+    /// runs inside `Registry::cards`, which holds the registry's lock while
+    /// it builds every card, and a tmux client forked per session in there
+    /// would put a process spawn per session behind that lock on every page
+    /// refresh.
+    fn agent_pid(&self) -> Option<u32> {
+        match self.tmux.is_some() {
+            true => self.tmux_pid.lock().ok().and_then(|pid| *pid),
+            false => self.pty.process_id(),
         }
     }
 
@@ -409,8 +645,23 @@ impl Session {
         encode_binary(OP_SNAPSHOT, seq, self.snapshot().as_bytes())
     }
 
+    /// Delivers a viewer's keystrokes to the agent.
+    ///
+    /// A tmux session's pty belongs to the mirror's tmux *client*, and bytes
+    /// written to a tmux client are parsed as keys before they are anything
+    /// else. A viewer who sent the prefix would get tmux's command prompt,
+    /// and `:run-shell` from there is a shell that alc's permission ceiling
+    /// and its escalation gate never see - a browser holding the operator
+    /// link is deliberately less trusted than that. `Tmux::send` hands the
+    /// bytes to the pane instead, where the prefix is only a byte again.
+    ///
+    /// Every write that carries a viewer's bytes goes through here,
+    /// `permission::apply`'s mode changes included.
     pub(crate) fn input(&self, data: &[u8]) -> Result<()> {
-        self.pty.write(data)
+        match self.tmux.as_ref() {
+            Some(host) => host.tmux.send(&host.binary, data),
+            None => self.pty.write(data),
+        }
     }
 
     /// Sends composed text as one unit. When the agent has bracketed paste
@@ -423,15 +674,26 @@ impl Session {
             .map(|modes| modes.modes().bracketed_paste)
             .unwrap_or(false);
         if bracketed {
-            self.pty.write(b"\x1b[200~")?;
-            self.pty.write(data.as_bytes())?;
-            self.pty.write(b"\x1b[201~")
+            self.input(b"\x1b[200~")?;
+            self.input(data.as_bytes())?;
+            self.input(b"\x1b[201~")
         } else {
-            self.pty.write(data.as_bytes())
+            self.input(data.as_bytes())
         }
     }
 
+    /// Puts the session at a viewer's size.
+    ///
+    /// Ignored for a tmux session, which is the trade `--tmux` makes and the
+    /// one thing about it a user has to know: the local terminal sets the
+    /// size and the browser fits to it. A browser resize honoured here would
+    /// put the mirror out of step with the window - the exact mismatch that
+    /// makes tmux re-emit the pane row by row - and `follow_tmux_window` is
+    /// the only thing that moves this size, from the window tmux settled on.
     pub(crate) fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        if self.tmux.is_some() {
+            return Ok(());
+        }
         let cols = cols.max(20);
         let rows = rows.max(4);
         self.pty.resize(cols, rows)?;
@@ -444,8 +706,32 @@ impl Session {
         Ok(())
     }
 
+    /// Stops the agent.
+    ///
+    /// For a tmux session this must go through tmux. `PtyHost::kill` signals
+    /// the pty's direct child, which under `--tmux` is the mirror's own
+    /// `tmux attach-session` client: signalling it detaches the mirror,
+    /// reports success, and leaves the agent running unattended - which
+    /// would turn `alc kill`, `alc hub stop --drain` and the page's stop
+    /// button into three controls that say they stopped something and did
+    /// not.
+    ///
+    /// Two steps, and the order is the point. Ending the agent's pane leaves
+    /// `remain-on-exit` holding how it died, so the card can say the session
+    /// was stopped rather than shrugging at it. Stopping the server outright
+    /// would destroy that answer along with the session. The watcher takes it
+    /// from here: it reads the status and stops the server - either because
+    /// the pane is now dead, or because `killing` says an agent that ignored
+    /// the first request has had its turn.
     pub(crate) fn kill(&self) -> Result<()> {
-        self.pty.kill()
+        let Some(host) = self.tmux.as_ref() else {
+            return self.pty.kill();
+        };
+        self.killing.store(true, Ordering::Release);
+        if host.tmux.hangup(&host.binary).is_err() {
+            return host.tmux.stop(&host.binary);
+        }
+        Ok(())
     }
 
     pub(crate) fn has_exited(&self) -> bool {

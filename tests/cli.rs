@@ -226,6 +226,94 @@ fn the_share_subcommand_takes_the_agent_as_an_argument() {
         .stdout(predicate::str::contains("agent: opencode"));
 }
 
+/// `--tmux` exists to stop this terminal and the browser page fighting over
+/// one pty size. Without a mirror there is only one viewer, so the flag has
+/// nothing to fix - and letting it through would mean a second code path
+/// whose answer to "what happens to a detached agent whose Codex adapter
+/// died with alc" is worse than a refusal.
+#[test]
+fn tmux_without_a_shared_session_is_refused_with_the_fix_named() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args([
+            "--openrouter",
+            "--tmux",
+            "--no-share",
+            "--dry-run",
+            "opencode",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("only applies to a shared session"))
+        .stderr(predicate::str::contains("--share"));
+}
+
+/// The short spelling is the one the flag was asked for by name, so it has
+/// to reach the same place the long one does.
+#[test]
+fn the_short_tmux_flag_is_the_same_flag() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "-t", "--no-share", "--dry-run", "opencode"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("only applies to a shared session"));
+}
+
+/// A dry run reports what a real run would do, which includes admitting that
+/// the launch it is describing would be refused - the same promise the
+/// adapter check makes.
+#[test]
+fn a_dry_run_says_whether_tmux_would_work_here() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+        .args(["--openrouter", "--share", "--tmux", "--dry-run", "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tmux:"))
+        .stdout(
+            // Either outcome is correct; which one depends on the machine.
+            predicate::str::contains("would run the agent under tmux")
+                .or(predicate::str::contains("WOULD FAIL")),
+        );
+}
+
+/// `trailing_var_arg` hands everything after the first agent argument to the
+/// agent, so `alc claude "review this" --tmux` would otherwise send the flag
+/// to the model as prompt text. Both spellings are alc's own.
+#[test]
+fn a_tmux_flag_after_the_agents_arguments_is_rejected_with_guidance() {
+    let temp = tempfile::tempdir().unwrap();
+    for flag in ["--tmux", "-t"] {
+        alc(&temp)
+            .env("OPENROUTER_API_KEY", "key-for-this-test-only")
+            .args(["--openrouter", "claude", "review this", flag])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("alc share"))
+            .stderr(predicate::str::contains("before the agent name"));
+    }
+}
+
+/// A row, never an issue: a user who never types `--tmux` must not start
+/// failing `alc doctor` because the feature exists.
+#[test]
+fn doctor_reports_tmux_without_failing_over_it() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["doctor"])
+        .assert()
+        .stdout(predicate::str::contains("tmux"))
+        .stdout(predicate::str::contains("tmux").and(
+            // Whatever it says about tmux, it is not one of the two things
+            // `alc doctor` treats as a problem.
+            predicate::str::contains("tmux  →").not(),
+        ));
+}
+
 #[test]
 fn remote_status_reports_the_posture_without_binding_anything() {
     let temp = tempfile::tempdir().unwrap();
