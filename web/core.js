@@ -290,8 +290,9 @@
     if (card.model) bits.push(card.model);
     if (card.effort) bits.push(card.effort);
     // Worth a chip because it changes what this page can do: a tmux
-    // session's size is the local terminal's, so resizing this window
-    // refits the view rather than the agent.
+    // session's size is this window's, so resizing it resizes the agent -
+    // where a plain session's belongs to the terminal that launched it and
+    // this page only scales what it is given.
     if (card.tmux) bits.push('tmux');
     return bits.filter(Boolean);
   }
@@ -376,11 +377,13 @@
    * `FIT_STEP`, so the grid never grows past the frame and the loop cannot
    * oscillate between two sizes that both round up.
    *
-   * `scale` is the residue, and it is 1 unless the font floor was reached
-   * before the grid fit - a very wide session on a phone. Then the page has
-   * a choice between cropping the agent's screen and transforming what is
-   * unreadable at 4px either way, and it transforms. Where the grid then
-   * sits is not decided here: the frame centres it. */
+   * `scale` is the safety net, and it describes the grid AS IT IS now, not
+   * as it will be at `fontSize`: whatever does not fit the frame at the
+   * current cell. The caller applies it once the font size has settled, so
+   * a fit that ran out of passes still cannot crop the agent's screen - it
+   * only ends up transformed, which is the lesser of the two. It is 1
+   * whenever the grid already fits, which is the ordinary case. Where the
+   * grid then sits is not decided here: the frame centres it. */
   const FIT_MIN_FONT = 4;
   const FIT_MAX_FONT = 32;
   const FIT_STEP = 0.1;
@@ -398,16 +401,14 @@
     // Leaving it alone is the only safe move: every ratio here would be
     // zero, infinity, or NaN.
     if (!(wide > 0) || !(high > 0) || !(room > 0) || !(tall > 0) || !(fontSize > 0)) {
-      return { fontSize, scale: 1, left: 0, top: 0 };
+      return { fontSize, scale: 1 };
     }
 
     // The smaller ratio wins, so the grid is never cropped.
     const want = Math.min(room / wide, tall / high);
     const stepped = Math.floor((fontSize * want) / FIT_STEP) * FIT_STEP;
     const next = Math.min(max, Math.max(min, Math.round(stepped * 10) / 10));
-    // How much the clamp refused. Above the floor this is >= 1 and the
-    // residue is dropped; at the floor it is the shortfall.
-    return { fontSize: next, scale: Math.min(1, (fontSize * want) / next) };
+    return { fontSize: next, scale: Math.min(1, want) };
   }
 
   /* ------------------------------------------------------------ protocol */

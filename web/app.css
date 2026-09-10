@@ -431,17 +431,16 @@ body[data-pane="view"] #list {
   min-height: 0;
   min-width: 0;
   padding: 6px 4px 0 8px;
-  /* The framed grid is out of flow and can be taller than the frame at the
-   * font floor; without this it would paint over the key bar and the
-   * composer below it. */
+  /* A framed grid is centred at its own size, so at the font floor it can be
+   * a little larger than the frame; without this it would paint over the key
+   * bar and the composer below it. */
   overflow: hidden;
 }
 
 /* The bars are this mode's gutter, so the asymmetric padding above - there
- * to keep a fitted grid off the edges - would only be dead space that an
- * absolutely positioned child ignores anyway. */
+ * to keep a fitted grid off the edges - would only be a black margin inside
+ * a black frame, and it would take those pixels off what the grid can use. */
 body[data-sizing="session"] #terminal {
-  position: relative;
   padding: 0;
   background: var(--letterbox);
   display: flex;

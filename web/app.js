@@ -138,15 +138,16 @@
    * is on screen in between is the agent's real output, drawn at the ratio
    * it had a moment ago.
    *
-   * Deliberately not for a `--tmux` card, where the page is the side that
-   * decides: reading the size back from the card there would mean fitting to
-   * a number the page itself produced, and any disagreement - a clamp the
-   * server applied, another browser on the same session - would come back
-   * every five seconds as a fresh resize. The page states its size and does
-   * not listen for an echo. */
+   * The condition is who is driving, not which mode the session is in. A
+   * page that owns the size must not read it back off the card: it would be
+   * fitting to a number it produced itself, and any disagreement - a clamp
+   * the server applied, another browser on the same session - would return
+   * every five seconds as a fresh resize. But a read-only link on a `--tmux`
+   * session drives nothing and needs this exactly as much as a plain session
+   * does, because the operator's window is moving the grid underneath it. */
   function followSessionSize(cards) {
     const card = attached.value;
-    if (!card || card.tmux) return;
+    if (!card || browserOwnsSize(card)) return;
     const fresh = cards.find((row) => row.id === card.id);
     if (!fresh || (fresh.cols === card.cols && fresh.rows === card.rows)) return;
     // A fresh object rather than two fields written into the old one: every
@@ -615,6 +616,9 @@
    * frame, because that is when the renderer has re-measured and re-laid out
    * the grid, rather than assuming it did so on assignment. */
   const FIT_PASSES = 3;
+  /* What the vendored fit addon reserves for the overview ruler when there is
+   * scrollback, which is where this number comes from. */
+  const SCROLLBAR_RESERVE = 14;
 
   function frameGrid(card, pass) {
     // xterm clamps `resize` to its own 2x1 minimum, so a card with no size
@@ -622,13 +626,14 @@
     if (card && card.cols && card.rows) term.resize(card.cols, card.rows);
     const cell = cellPixels();
     if (!cell) return;
-    // xterm reserves a scrollbar inside .xterm, and on a platform with
-    // classic scrollbars it would otherwise sit over the grid's last column.
-    // The same reservation the fit addon makes for the other mode.
-    const viewport = el.terminal.querySelector('.xterm-viewport');
-    const gutter = viewport ? viewport.offsetWidth - viewport.clientWidth : 0;
+    // The same reservation the fit addon makes for the other mode, and for
+    // the same reason: this xterm draws its own overlay scrollbar inside
+    // `.xterm`, over the grid's last column. Measuring it is not an option -
+    // an overlay scrollbar takes no layout width on any platform, so
+    // `offsetWidth - clientWidth` is zero everywhere and would reserve
+    // nothing.
     const box = {
-      width: el.terminal.clientWidth - gutter,
+      width: el.terminal.clientWidth - SCROLLBAR_RESERVE,
       height: el.terminal.clientHeight,
     };
 
@@ -636,21 +641,27 @@
       { fontSize: term.options.fontSize, cell, cols: term.cols, rows: term.rows },
       box
     );
-    // Whatever the font size could not absorb - only ever at the floor,
-    // where a very wide session meets a phone. Cropping the agent's screen
-    // would be worse than transforming something already unreadable, but it
-    // does put xterm's own hit-testing out by the same factor, so it is the
-    // last resort rather than the mechanism.
+    if (placed.fontSize !== term.options.fontSize && pass < FIT_PASSES) {
+      // Another pass. The transform is left as it is rather than guessed at
+      // for a grid that is about to change size - the settled pass below is
+      // what puts it right.
+      term.options.fontSize = placed.fontSize;
+      requestAnimationFrame(() => {
+        // The mode or the session can change inside a frame, and this pass
+        // would then be measuring the wrong one.
+        if (document.body.dataset.sizing !== 'session') return;
+        if (attached.value !== card) return;
+        frameGrid(card, pass + 1);
+      });
+      return;
+    }
+
+    // Settled, or out of passes. Either way `scale` describes the grid that
+    // is actually on screen, so applying it here is what guarantees the
+    // agent's screen is never cropped - a fit that did not converge ends up
+    // transformed instead, which costs xterm's hit-testing the same factor
+    // and is the lesser of the two. In the ordinary case it is 1.
     term.element.style.transform = placed.scale < 1 ? `scale(${placed.scale})` : '';
-    if (placed.fontSize === term.options.fontSize || pass >= FIT_PASSES) return;
-    term.options.fontSize = placed.fontSize;
-    requestAnimationFrame(() => {
-      // The mode or the session can change inside a frame, and this pass
-      // would then be measuring the wrong one.
-      if (document.body.dataset.sizing !== 'session') return;
-      if (attached.value !== card) return;
-      frameGrid(card, pass + 1);
-    });
   }
 
   /* One character's box, in CSS pixels.
@@ -998,10 +1009,10 @@
    * list of everything that moves it kept growing: the rail appears at
    * 900px, the composer and the key bar leave with a read-only link or an
    * exit, the permission bar is the agent's business. Watching the element
-   * is one subscription instead. Nothing loops back - a transform changes no
-   * layout, and in the framed mode the grid is taken out of flow, so
-   * #terminal's own size comes from the flex container rather than from what
-   * is inside it. */
+   * is one subscription instead. Nothing loops back: #terminal is a flex item
+   * with `flex: 1 1 0%` and `min-width/height: 0`, so its size comes from the
+   * pane around it and never from the grid inside it - and a transform
+   * changes no layout at all. */
   if (window.ResizeObserver) new window.ResizeObserver(scheduleRelayout).observe(el.terminal);
   else window.addEventListener('resize', scheduleRelayout);
   window.addEventListener('orientationchange', scheduleRelayout);

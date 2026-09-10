@@ -490,12 +490,9 @@ impl Hub {
                     program: found.binary.clone(),
                     // The mirror votes on the window size, and it is the
                     // only client that does: the page owns a `--tmux`
-                    // session's geometry, and this pty is how a resize
-                    // frame reaches tmux. Must stay in step with the
-                    // `Sizing::TERMINAL` on the local terminal in
-                    // `remote::attach_tmux` - with every client flagged,
-                    // tmux counts them again and the size becomes a race.
-                    args: session.attach_argv(tmux::Sizing::MIRROR),
+                    // session's geometry, and this pty is how a resize frame
+                    // reaches tmux.
+                    args: session.mirror_argv(),
                     // Deliberately not the launch's environment. The attach
                     // client only needs to talk to a socket, and giving it
                     // the provider key would put that key in a second

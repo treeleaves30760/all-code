@@ -331,9 +331,8 @@ fn attach_tmux(
     let found = tmux::find()?;
     let mut command = std::process::Command::new(&found.binary);
     // No vote in the window's size: the page owns it, and this terminal
-    // renders whatever of it fits. See `tmux::attach_argv`, and keep this in
-    // step with the `Sizing::MIRROR` on the hub's mirror.
-    command.args(host.attach_argv(tmux::Sizing::TERMINAL));
+    // renders whatever of it fits. See `tmux::Tmux::terminal_argv`.
+    command.args(host.terminal_argv());
     // A shell already inside tmux exports the address of ITS server, and a
     // client that inherits it refuses to attach - "sessions should be nested
     // with care". alc's server is a different one, so nesting is safe; the

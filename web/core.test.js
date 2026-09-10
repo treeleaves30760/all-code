@@ -375,45 +375,84 @@ test('a card stays expired while the server keeps reporting it', () => {
 /* ----------------------------------------------------------- geometry */
 
 /* A grid whose size the page does not own has to be drawn as it is, as large
- * as it fits. These assert the arithmetic of that; how it is applied (font
- * size, and a transform only at the floor) is app.js's. */
+ * as it fits. `fitGrid` returns two things: the next font size to try, and
+ * the scale that makes the grid AS IT IS NOW fit the frame. app.js applies
+ * the font size and re-measures, and applies the scale once the size has
+ * settled - so the scale is the safety net, not the mechanism. */
 
 const CELL = { width: 8, height: 17 };
 const view = (over) => ({ fontSize: 13, cell: CELL, cols: 80, rows: 24, ...over });
+/* What a renderer reports back after the proposed font size is applied: a
+ * cell measured from the font and rounded to whole device pixels, which is
+ * the whole reason the fit is a loop and not one division. Measured from the
+ * base font every time, the way a renderer does - compounding the rounding
+ * of the previous pass would model a renderer that cannot shrink. */
+const stepped = (from, placed) =>
+  view({
+    fontSize: placed.fontSize,
+    cols: from.cols,
+    rows: from.rows,
+    cell: {
+      width: Math.round(CELL.width * (placed.fontSize / 13)),
+      height: Math.round(CELL.height * (placed.fontSize / 13)),
+    },
+  });
+const fits = (v, box) =>
+  v.cell.width * v.cols <= box.width + 0.5 && v.cell.height * v.rows <= box.height + 0.5;
 
 test('a grid smaller than its frame is grown until one axis fills it', () => {
   // 640x408 into 1280x816: room for twice the font on both axes.
-  const placed = core.fitGrid(view(), { width: 1280, height: 816 });
+  const box = { width: 1280, height: 816 };
+  const placed = core.fitGrid(view(), box);
   assert.equal(placed.fontSize, 26);
-  assert.equal(placed.scale, 1, 'nothing left for a transform to do');
+  assert.equal(placed.scale, 1, 'it already fits, so there is nothing to scale');
+  assert.ok(fits(stepped(view(), placed), box), 'and the proposed size fits too');
 });
 
 test('the tighter axis decides, so the grid is never cropped', () => {
-  // Twice the width but only a tenth more height: the height decides.
-  const placed = core.fitGrid(view(), { width: 1280, height: 449 });
+  // Twice the width but only a tenth more height: the height decides, and
+  // 449/408 x 13 is 14.3 where the width alone would have said 26.
+  const box = { width: 1280, height: 449 };
+  const placed = core.fitGrid(view(), box);
   assert.equal(placed.fontSize, 14.3);
-  // The chosen size must not make the grid exceed either axis of the frame.
-  const grown = placed.fontSize / 13;
-  assert.ok(CELL.width * 80 * grown <= 1280, 'fits across');
-  assert.ok(CELL.height * 24 * grown <= 449, 'fits down');
+
+  // One step does not have to land inside the frame, and here it does not:
+  // a cell that rounds to whole device pixels overshoots 17 -> 19, which is
+  // 456 rows-deep in a 449 frame. What must be true is that iterating pulls
+  // it back rather than leaving it there - and that at every step the scale
+  // covers whatever is still hanging out.
+  let current = view();
+  let overshot = false;
+  for (let pass = 0; pass < 5; pass += 1) {
+    const step = core.fitGrid(current, box);
+    if (!fits(current, box)) {
+      overshot = true;
+      assert.ok(step.scale < 1, `pass ${pass}: an overshoot must be covered`);
+    }
+    if (step.fontSize === current.fontSize) break;
+    current = stepped(current, step);
+  }
+  assert.ok(overshot, 'this shape is here because rounding overshoots it');
+  assert.ok(fits(current, box), 'and it settles inside the frame');
 });
 
 test('a grid larger than its frame is shrunk rather than clipped', () => {
-  const placed = core.fitGrid(view({ cols: 200 }), { width: 400, height: 800 });
-  assert.equal(placed.fontSize, core.FIT_MIN_FONT, 'the floor, since 200 cols in 400px is 3.25px');
-  // What the floor refused is handed back as a transform: at this size the
-  // choice is between cropping the agent's screen and scaling something
-  // unreadable either way.
-  assert.ok(placed.scale < 1 && placed.scale > 0, `${placed.scale}`);
-  assert.ok(CELL.width * 200 * (placed.fontSize / 13) * placed.scale <= 400.5);
+  const box = { width: 400, height: 800 };
+  const wide = view({ cols: 200 });
+  const placed = core.fitGrid(wide, box);
+  assert.equal(placed.fontSize, core.FIT_MIN_FONT, '200 cols in 400px wants 3.25px');
+  // The frame is a quarter of the grid's width right now, so that is the
+  // scale that makes what is on screen fit while the font catches up.
+  assert.equal(placed.scale, 0.25);
+  // And at the floor it does fit, so the transform falls away.
+  const next = core.fitGrid(stepped(wide, placed), box);
+  assert.equal(next.scale, 1);
 });
 
 test('the font size is capped, so a tiny session does not fill a monitor with one letter', () => {
   const placed = core.fitGrid(view({ cols: 4, rows: 2 }), { width: 3000, height: 2000 });
   assert.equal(placed.fontSize, core.FIT_MAX_FONT);
-  // A cap is not a shortfall: the grid is smaller than the frame, and the
-  // frame centres what is left over.
-  assert.equal(placed.scale, 1);
+  assert.equal(placed.scale, 1, 'a cap is not a shortfall; the frame centres the rest');
 });
 
 test('the limits can be pinned, since the caps are a judgement and not arithmetic', () => {
@@ -450,18 +489,40 @@ test('a converged fit asks for no further change', () => {
     const placed = core.fitGrid(current, box);
     if (placed.fontSize === current.fontSize) {
       assert.ok(pass > 0, 'it should take at least one step to get there');
+      assert.equal(placed.scale, 1, 'and settle with nothing left to scale');
       return;
     }
-    // What a renderer would then report: a cell that scaled with the font,
-    // rounded to whole device pixels, which is the whole reason the fit is a
-    // loop rather than one division.
-    current = view({
-      fontSize: placed.fontSize,
-      cell: {
-        width: Math.round(CELL.width * (placed.fontSize / 13)),
-        height: Math.round(CELL.height * (placed.fontSize / 13)),
-      },
-    });
+    current = stepped(current, placed);
   }
   assert.fail('the fit never settled');
+});
+
+/* The property the whole thing rests on, over a spread of shapes: whatever
+ * the caller does with the font size - applies it, runs out of passes, or
+ * never converges - applying `scale` to the grid it was measured from always
+ * fits the frame. That is what makes app.js's pass limit safe rather than a
+ * silent crop of the agent's top and bottom rows. */
+test('the scale always makes the measured grid fit, converged or not', () => {
+  for (const cols of [2, 40, 80, 137, 300]) {
+    for (const rows of [2, 24, 60, 200]) {
+      for (const box of [
+        { width: 320, height: 480 },
+        { width: 1280, height: 800 },
+        { width: 90, height: 2000 },
+      ]) {
+        const v = view({ cols, rows });
+        const placed = core.fitGrid(v, box);
+        const wide = v.cell.width * cols * placed.scale;
+        const high = v.cell.height * rows * placed.scale;
+        const where = `${cols}x${rows} in ${box.width}x${box.height}`;
+        assert.ok(wide <= box.width + 0.5, `${where}: ${wide} wide`);
+        assert.ok(high <= box.height + 0.5, `${where}: ${high} high`);
+        assert.ok(placed.scale > 0 && placed.scale <= 1, `${where}: scale ${placed.scale}`);
+        assert.ok(
+          placed.fontSize >= core.FIT_MIN_FONT && placed.fontSize <= core.FIT_MAX_FONT,
+          `${where}: font ${placed.fontSize}`,
+        );
+      }
+    }
+  }
 });

@@ -105,16 +105,14 @@ pub(crate) struct Session {
     size: Mutex<(u16, u16)>,
     /// The tmux session hosting the agent, when the launch asked for one.
     tmux: Option<TmuxHost>,
-    /// The window size and agent pid tmux last reported, refreshed by the
-    /// watcher.
+    /// The agent pid tmux last reported, refreshed by the watcher.
     ///
-    /// Cached rather than asked for on demand because both are read on every
+    /// Cached rather than asked for on demand because it is read on every
     /// card - which is every session list, every notice and every viewer
     /// joining - and `Registry::cards` builds those while holding the
     /// registry's own lock. Forking a tmux client per session in there would
     /// put a process spawn per session behind that lock on every page
     /// refresh.
-    tmux_window: Mutex<Option<(u16, u16)>>,
     tmux_pid: Mutex<Option<u32>>,
     /// Set by `kill`, so the watcher escalates from asking the agent to stop
     /// to stopping the server it runs in.
@@ -205,7 +203,6 @@ impl Session {
                     .and_then(|snapshot| snapshot.pane_pid),
             ),
             tmux,
-            tmux_window: Mutex::new(None),
             killing: AtomicBool::new(false),
             seq: AtomicU64::new(0),
             warned_clipboard: AtomicBool::new(false),
@@ -239,8 +236,7 @@ impl Session {
     /// what finally gives every client its EOF and lets `pump` finish the
     /// session the same way it always has.
     ///
-    /// It also records the window size, which the permission probe reads,
-    /// and the agent's pid, which the card shows.
+    /// It also records the agent's pid, which the card shows.
     fn watch_tmux(self: Arc<Self>) {
         let Some(host) = self.tmux.as_ref() else {
             return;
@@ -254,9 +250,6 @@ impl Session {
             match host.tmux.probe(&host.binary) {
                 Some(snapshot) => {
                     unanswered = 0;
-                    if let Some(window) = snapshot.window {
-                        self.note_tmux_window(window);
-                    }
                     if let Ok(mut pid) = self.tmux_pid.lock() {
                         *pid = snapshot.pane_pid.or(*pid);
                     }
@@ -300,30 +293,6 @@ impl Session {
                 return;
             }
             thread::sleep(TMUX_POLL);
-        }
-    }
-
-    /// Records the size tmux settled the window on. Bookkeeping only - it
-    /// moves nothing.
-    ///
-    /// The mirror is the client that votes (`tmux::attach_argv`), so the
-    /// window *is* the mirror's pty size and there is nothing to follow.
-    /// Writing the pty from here would be worse than redundant: this poll
-    /// runs every 500ms, and one landing between `resize_from_viewer` and
-    /// tmux's own window update would read the old window and drag the
-    /// mirror back to it - whereupon the window, which follows the mirror,
-    /// would come back down with it and the browser's resize would be
-    /// silently undone. A slow flap, in a loop the old arrangement could not
-    /// have, because back then the mirror had no vote.
-    ///
-    /// What the value is still for is `Session::permission`, which cuts the
-    /// emulator's text back to the window's rows before reading the bottom
-    /// of it. The two agree except for the few milliseconds tmux takes to
-    /// catch up with a resize, and that is exactly the window this keeps
-    /// honest.
-    fn note_tmux_window(&self, (cols, rows): (u16, u16)) {
-        if let Ok(mut window) = self.tmux_window.lock() {
-            *window = Some((cols, rows));
         }
     }
 
@@ -525,22 +494,21 @@ impl Session {
             return current.clone();
         }
         let caps = caps(self.agent);
-        let mut screen = self.vt.lock().map(|vt| vt.text()).unwrap_or_default();
-        // `probe` reads the bottom rows, where an agent renders its mode
-        // line. Under `--tmux` the bottom of this grid is not always the
-        // bottom of the agent's screen: the window follows the mirror, but
-        // for the few milliseconds tmux takes to catch up with a resize the
-        // two disagree, so the grid is cut back to the window tmux last
-        // reported. The transient runs the other way from the one this used
-        // to guard - a browser growing the view makes the emulator taller
-        // than the last-seen window, so a card built in that instant reads
-        // four rows from the middle of the screen rather than the bottom.
-        // Bounded, corrected by the next poll, and the worst it can produce
-        // is a stale rung at `Confidence::Reported`, which is never allowed
-        // to decide anything on its own (`permission.rs`).
-        if let Some((_, rows)) = self.tmux_window.lock().ok().and_then(|window| *window) {
-            screen.truncate(usize::from(rows).min(screen.len()));
-        }
+        // `probe` reads the last lines, where an agent renders its mode
+        // line, and the emulator's last lines are the bottom of the screen
+        // in both modes now. Under `--tmux` that holds because the mirror is
+        // the client that votes on the window size, so the grid alc is
+        // feeding is the window - there is no band of tmux padding along the
+        // bottom to read instead.
+        //
+        // This used to be trimmed to the window's row count, and that trim
+        // was wrong: `avt::Vt::text()` returns the scrollback as well as the
+        // screen, oldest line first, so keeping the first N lines of it read
+        // the top of the scrollback rather than the bottom of the screen.
+        // Any tmux session with more than a screenful of output behind it
+        // probed a mode line that had scrolled away minutes ago. Nothing
+        // needs it now, so it is gone rather than fixed.
+        let screen = self.vt.lock().map(|vt| vt.text()).unwrap_or_default();
         if let Some(rung) = probe(caps, &screen) {
             *current = PermState {
                 rung: Some(rung),

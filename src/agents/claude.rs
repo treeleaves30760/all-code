@@ -376,22 +376,35 @@ pub(crate) enum DefaultModelFix {
 /// The decision, over the three things it depends on, so the cases can be
 /// asserted rather than assumed: what the file said before the session, what
 /// it says now, and which models this session offered.
+///
+/// The `current: None` arm is the one that needs explaining. A key that has
+/// gone missing during the session is nearly always another guard's
+/// `Remove`, which is what two overlapping bridged sessions do to each
+/// other, and the last one out is then the only thing left that still
+/// remembers what the user actually had. So it puts it back, and that is
+/// what makes two overlapping sessions converge on the user's own default
+/// whichever order they exit in, rather than on no default at all. Claude
+/// Code's picker writes values rather than removing them, so the alternative
+/// reading, that the user cleared it deliberately mid-session, is the far
+/// rarer one.
 pub(crate) fn decide_default_model(
     previous: Option<&str>,
     current: Option<&str>,
     offered: &[String],
 ) -> DefaultModelFix {
+    let restorable = previous.filter(|previous| !bridge_only_model(offered, previous));
     let Some(current) = current else {
-        return DefaultModelFix::Leave;
+        return match restorable {
+            Some(previous) => DefaultModelFix::Restore(previous.to_owned()),
+            None => DefaultModelFix::Leave,
+        };
     };
     if !bridge_only_model(offered, current) {
         return DefaultModelFix::Leave;
     }
-    match previous {
-        Some(previous) if !bridge_only_model(offered, previous) => {
-            DefaultModelFix::Restore(previous.to_owned())
-        }
-        _ => DefaultModelFix::Remove,
+    match restorable {
+        Some(previous) => DefaultModelFix::Restore(previous.to_owned()),
+        None => DefaultModelFix::Remove,
     }
 }
 
@@ -451,16 +464,33 @@ impl Drop for DefaultModelGuard {
 /// leaving every other key as it was.
 ///
 /// The file must already exist and already parse: alc is putting a value
-/// back, not deciding that Claude Code should have a settings file. A unix
-/// mode is carried across because `atomic_write` creates its temp file at
-/// 0644 and would otherwise relax a settings file the user restricted -
-/// the same care `launch::upsert_json_key` takes for an agent's own config.
+/// back, not deciding that Claude Code should have a settings file. Three
+/// things are carried across the write so that it really is one key and
+/// nothing else that changes:
+///
+/// * **The real path.** `atomic_write` renames over its destination, which
+///   would replace a symlink with a regular file - and a settings.json
+///   symlinked into a dotfiles repository is a common arrangement, where
+///   that would both break the link and leave the actual file still pinned.
+///   So the link is followed first and the target is what gets written.
+/// * **The unix mode.** `atomic_write` creates its temp file at 0644, which
+///   would relax a settings file the user restricted; the same care
+///   `launch::upsert_json_key` takes over an agent's own config.
+/// * **An unguessable temp name**, which is what `secret` buys here rather
+///   than any secrecy: the alternative is a fixed `.settings.json.tmp`
+///   opened with `truncate`, and two guards firing together - two bridged
+///   sessions ended by one `alc hub stop --drain` - would interleave their
+///   bytes into it and rename the result over the user's settings. With a
+///   random `create_new` name each write lands whole and the last rename
+///   wins.
 ///
 /// Rewriting does reformat: serde_json's map is a `BTreeMap` here, so the
 /// keys come back sorted and indented its way. That is the cost of the only
 /// write alc makes, and it is paid only by a file whose `model` key alc's
 /// own adapter is responsible for.
 fn write_default_model(settings: &Path, model: Option<&str>) -> Result<()> {
+    let settings = &fs::canonicalize(settings)
+        .with_context(|| format!("failed to resolve {}", settings.display()))?;
     let text = fs::read_to_string(settings)
         .with_context(|| format!("failed to read {}", settings.display()))?;
     let mut document: Value = serde_json::from_str(&text)
@@ -477,7 +507,7 @@ fn write_default_model(settings: &Path, model: Option<&str>) -> Result<()> {
     let previous_mode = crate::launch::unix_mode(settings)?;
 
     let encoded = serde_json::to_vec_pretty(&document).context("failed to encode JSON")?;
-    crate::config::atomic_write(settings, &encoded, false)?;
+    crate::config::atomic_write(settings, &encoded, true)?;
 
     #[cfg(unix)]
     if let Some(mode) = previous_mode {
@@ -609,13 +639,20 @@ mod tests {
     fn the_default_model_decision_covers_every_arrangement() {
         use DefaultModelFix::*;
 
-        // Nothing pinned, or the user's own model still pinned: alc has no
-        // business in either.
+        // Nothing pinned before or after: alc has no business here.
+        assert_eq!(decide_default_model(None, None, &offered()), Leave);
+        // The key went missing during the session. Nearly always another
+        // guard's `Remove`, so the value this session remembers is the last
+        // record of what the user had - see the note on the function.
         assert_eq!(
             decide_default_model(Some("opus[1m]"), None, &offered()),
-            Leave
+            Restore("opus[1m]".to_owned())
         );
-        assert_eq!(decide_default_model(None, None, &offered()), Leave);
+        assert_eq!(
+            decide_default_model(Some("gpt-6-astra"), None, &offered()),
+            Leave,
+            "nothing worth putting back, and the key is already gone"
+        );
         assert_eq!(
             decide_default_model(Some("opus[1m]"), Some("opus[1m]"), &offered()),
             Leave,
@@ -651,6 +688,69 @@ mod tests {
             Remove,
             "a pin this session never touched is still cleared"
         );
+    }
+
+    /// Two bridged sessions overlapping, in both exit orders.
+    ///
+    /// Session B snapshots the pin session A is still using, so a guard that
+    /// only ever restored its own snapshot would have B remove the key and A
+    /// then find nothing to put back - leaving the user with no default at
+    /// all, which is not what they had either. Both orders must land on
+    /// `opus[1m]`.
+    #[test]
+    fn two_overlapping_sessions_converge_on_what_the_user_actually_had() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+
+        for b_first in [true, false] {
+            fs::write(&settings, r#"{"model": "opus[1m]"}"#).unwrap();
+            let a = DefaultModelGuard::arm(settings.clone(), offered());
+            // What Claude Code writes once the session settles on a bridged
+            // model, and what B therefore snapshots.
+            fs::write(&settings, r#"{"model": "gpt-6-astra"}"#).unwrap();
+            let b = DefaultModelGuard::arm(settings.clone(), offered());
+
+            if b_first {
+                drop(b);
+                drop(a);
+            } else {
+                drop(a);
+                drop(b);
+            }
+            assert_eq!(
+                pinned_model(&settings),
+                Some("opus[1m]".to_owned()),
+                "b_first={b_first}"
+            );
+        }
+    }
+
+    /// A settings.json symlinked into a dotfiles repository is a common
+    /// arrangement, and `atomic_write` renames over its destination - so
+    /// without following the link first, the restore would replace the link
+    /// with a regular file and leave the real file still pinned.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_settings_file_is_written_through_rather_than_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("dotfiles-settings.json");
+        let link = dir.path().join("settings.json");
+        fs::write(&real, r#"{"model": "gpt-6-astra", "tui": "fullscreen"}"#).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        write_default_model(&link, Some("opus[1m]")).unwrap();
+
+        assert!(
+            fs::symlink_metadata(&link).unwrap().is_symlink(),
+            "still a link"
+        );
+        assert_eq!(
+            pinned_model(&real),
+            Some("opus[1m]".to_owned()),
+            "the real file"
+        );
+        let document: Value = serde_json::from_str(&fs::read_to_string(&real).unwrap()).unwrap();
+        assert_eq!(document["tui"], "fullscreen");
     }
 
     #[test]

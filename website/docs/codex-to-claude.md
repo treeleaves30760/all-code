@@ -119,8 +119,12 @@ not exist.
 **From 1.8.0, alc restores that one key when the session exits.** It reads the
 value before the launch and writes it back afterwards. Nothing else in the
 file is touched, and nothing is written at all unless the value it finds is
-one only the adapter can serve — so a session where you never opened `/model`
-leaves the file exactly as it was, byte for byte.
+one only the adapter can serve — so a session that starts and ends on your own
+default leaves the file exactly as it was, byte for byte.
+
+(The one case where a session you did not touch does write: if the value was
+*already* adapter-only when the session started, it is cleared rather than
+put back. That is the self-heal below.)
 
 Two cases it deliberately does not touch:
 

@@ -952,7 +952,10 @@ fn doctor_says_how_to_clear_a_claude_default_only_the_bridge_can_serve() {
         .assert();
     let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     assert!(output.contains("gpt-6-astra"), "{output}");
-    assert!(output.contains("alc --codex claude"), "{output}");
+    // The phrase the 1.8.0 remediation adds. Asserting `alc --codex claude`
+    // alone would pass against the wording this replaced, because the row
+    // above the remediation has always named that command.
+    assert!(output.contains("clears the line on exit"), "{output}");
 }
 
 /// The snapshot belongs to `launch::prepare`, which a dry run never reaches.
