@@ -94,10 +94,12 @@ struct Cli {
     no_share: bool,
 
     /// Run the agent inside tmux, so this terminal and the browser page can
-    /// hold different sizes.
+    /// hold different sizes, with the page setting the agent's.
     ///
-    /// Only applies to a shared session: without one there is only one
-    /// viewer and nothing to disagree about. Needs tmux 3.2 or newer.
+    /// Without it the size is this terminal's and the page scales the
+    /// agent's screen to fit its window. Only applies to a shared session:
+    /// without one there is only one viewer and nothing to disagree about.
+    /// Needs tmux 3.2 or newer.
     //
     // Deliberately no `env`, unlike `--share`. This flag refuses a launch
     // that is not shared, so an `ALC_TMUX=1` left in a shell profile would

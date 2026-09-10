@@ -734,8 +734,13 @@ fn serve_websocket(stream: TcpStream, request: &Request, context: &Serving) {
         return;
     };
 
+    // A page states a size only for a session whose size it owns, so this
+    // is a `--tmux` session in practice; a plain session's grid belongs to
+    // the terminal that launched it and the page letterboxes it instead.
+    // Honoured here as well as on a `resize` frame because the browser's
+    // first geometry arrives on the auth frame, before this reply.
     if grade >= Grade::Operator && cols > 0 && rows > 0 {
-        let _ = session.resize(cols, rows);
+        let _ = session.resize_from_viewer(cols, rows);
     }
 
     let subscription = session.subscribe();
@@ -891,7 +896,7 @@ fn apply(session: &Session, frame: ClientFrame, grade: Grade) -> bool {
             if !operator {
                 return false;
             }
-            let _ = session.resize(cols, rows);
+            let _ = session.resize_from_viewer(cols, rows);
         }
         ClientFrame::Auth { .. } | ClientFrame::Pong => {}
     }

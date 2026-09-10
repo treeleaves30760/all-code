@@ -25,6 +25,11 @@
   --warn: #a86a1f;
   --danger: #a52a2a;
   --term-bg: #16161a;
+  /* Behind a grid that is not the frame's shape. Deliberately darker than
+   * --term-bg rather than equal to it: the bars are the edge of the agent's
+   * screen, and a bar the same colour as the screen hides where that edge
+   * is. */
+  --letterbox: #000000;
   --radius: 10px;
   --bar: 52px;
   --rail: 320px;
@@ -43,6 +48,7 @@
     --warn: #e0a458;
     --danger: #e07a7a;
     --term-bg: #16161a;
+    --letterbox: #000000;
   }
 }
 
@@ -407,13 +413,53 @@ body[data-pane="view"] #list {
   padding: 7px 12px;
 }
 
-/* ---- terminal ---- */
+/* ---- terminal ----
+ *
+ * Two sizing modes, and body[data-sizing] is the only thing that says which,
+ * for the same reason body[data-pane] is the only thing that says which pane
+ * is on screen.
+ *
+ * With `--tmux` the browser owns the size, so this box is a measurement: the
+ * fit addon reads it and the agent is told the answer. Without it the size is
+ * the local terminal's, so this box is a frame - the grid is drawn at its
+ * real cols x rows, as large as the font size can make it, and whatever the
+ * ratio leaves over is left black rather than filled by a screen the agent
+ * is not drawing for. */
 
 #terminal {
-  flex: 1 1 auto;
+  flex: 1 1 0%;
   min-height: 0;
   min-width: 0;
   padding: 6px 4px 0 8px;
+  /* The framed grid is out of flow and can be taller than the frame at the
+   * font floor; without this it would paint over the key bar and the
+   * composer below it. */
+  overflow: hidden;
+}
+
+/* The bars are this mode's gutter, so the asymmetric padding above - there
+ * to keep a fitted grid off the edges - would only be dead space that an
+ * absolutely positioned child ignores anyway. */
+body[data-sizing="session"] #terminal {
+  position: relative;
+  padding: 0;
+  background: var(--letterbox);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Sized by its own content, never by the frame: a flex item defaults to
+ * shrinking, which would squash the grid instead of letting it be centred
+ * and clipped. The grid's pixel size comes from .xterm-screen, which the
+ * renderer writes cols x rows onto.
+ *
+ * Deliberately no will-change and no transition on the transform: either one
+ * pins the layer's raster scale, which turns text the browser would
+ * otherwise re-render at its final size into a resampled bitmap. */
+body[data-sizing="session"] #terminal > .xterm {
+  flex: 0 0 auto;
+  transform-origin: center;
 }
 
 .keys {
@@ -578,7 +624,9 @@ body.viewer .keys {
 }
 
 @media (min-width: 900px) {
-  #terminal {
+  /* The measured mode only. In the framed mode the letterbox is the gutter,
+   * and padding here would just be a black margin inside a black frame. */
+  body[data-sizing="browser"] #terminal {
     padding: 10px 8px 0 14px;
   }
 }

@@ -257,7 +257,7 @@ impl Hub {
                     return;
                 };
                 if cols > 0 && rows > 0 {
-                    let _ = session.resize(cols, rows);
+                    let _ = session.resize_from_terminal(cols, rows);
                 }
                 if reply(&peer, &CtlReply::Ok).is_err() {
                     return;
@@ -266,7 +266,7 @@ impl Hub {
             }
             CtlRequest::Resize { id, cols, rows } => {
                 if let Some(session) = self.registry.get(&id) {
-                    let _ = session.resize(cols, rows);
+                    let _ = session.resize_from_terminal(cols, rows);
                 }
                 let _ = reply(&peer, &CtlReply::Ok);
             }
@@ -488,7 +488,14 @@ impl Hub {
                     })?;
                 let command = PtyCommand {
                     program: found.binary.clone(),
-                    args: session.attach_argv(tmux::Sizing::Abstain),
+                    // The mirror votes on the window size, and it is the
+                    // only client that does: the page owns a `--tmux`
+                    // session's geometry, and this pty is how a resize
+                    // frame reaches tmux. Must stay in step with the
+                    // `Sizing::TERMINAL` on the local terminal in
+                    // `remote::attach_tmux` - with every client flagged,
+                    // tmux counts them again and the size becomes a race.
+                    args: session.attach_argv(tmux::Sizing::MIRROR),
                     // Deliberately not the launch's environment. The attach
                     // client only needs to talk to a socket, and giving it
                     // the provider key would put that key in a second

@@ -3,12 +3,13 @@
 //!
 //! # The problem this exists for
 //!
-//! Without it, a shared session is one pty with two viewers. A pty has
-//! exactly one size, so the browser and the local terminal take turns
-//! setting it: whichever resized last wins, and the other one is left
-//! rendering a full-screen TUI at a width it does not have. Claude Code
-//! draws a boxed prompt to the column it was told about, so the losing side
-//! sees wrapped borders, doubled lines and a cursor in the wrong place.
+//! Without it, a shared session is one pty with two viewers, and a pty has
+//! exactly one size. That size is the local terminal's - it is sitting there
+//! drawing at it - so the browser cannot have one of its own: it draws the
+//! agent's real grid scaled to fit its window instead. Which is the honest
+//! answer for a viewer, and the wrong one for somebody whose browser *is*
+//! the terminal they are working in, on a screen shaped nothing like the one
+//! they launched from.
 //!
 //! tmux is a terminal multiplexer, which is the tool built for exactly this:
 //! one program, many attached clients, each with its own size. alc starts the
@@ -16,12 +17,24 @@
 //! user's terminal attaches to it as a second, independent one.
 //!
 //! The two clients are not equals, and `attach_argv` is where that is
-//! decided: the user's terminal sizes the window and the mirror abstains
-//! (`ignore-size`), because a mirror that voted would make the window
-//! narrower than itself and tmux would then re-emit the pane row by row into
-//! it - past a secret scrubber that matches contiguous bytes, and past a
-//! permission probe that reads the bottom rows of a grid whose bottom rows
-//! would be tmux's padding.
+//! decided: the mirror sizes the window and the user's terminal abstains
+//! (`ignore-size`). The browser is what somebody asking for `--tmux` is
+//! about to go and use, so the browser owns the size - a resize frame
+//! reaches tmux as a SIGWINCH on the mirror's own pty, and with the mirror
+//! the only client voting, the window is exactly what the page asked for.
+//!
+//! Which client abstains is a safety decision as much as a usability one.
+//! tmux serves a client that is not the window's size by re-emitting the
+//! pane into it row by row, with a field of padding beside it - and that
+//! breaks two things when the client in question is the mirror: the secret
+//! scrubber matches contiguous bytes, so a credential re-emitted across a
+//! row boundary would reach the page unmasked, and the permission probe
+//! reads the bottom rows of a grid whose bottom rows would be padding. With
+//! the mirror voting it is always the window's size, so the padded,
+//! row-split client is the user's own terminal - the one client alc neither
+//! scrubs nor probes. It renders whatever of the window fits, clipped to its
+//! top-left corner when it is smaller, and `alc share` and `alc attach` both
+//! say so.
 //!
 //! # Why a private server per session
 //!
@@ -84,7 +97,10 @@ use crate::remote::wire::ExitInfo;
 /// The oldest tmux alc will use.
 ///
 /// Set by `attach-session -f ignore-size`, which arrived in 3.2 and is what
-/// keeps the mirror out of the window-sizing vote (see `attach_argv`).
+/// keeps the user's own terminal out of the window-sizing vote (see
+/// `attach_argv`). Still required after the vote changed hands: without it a
+/// terminal smaller than the page would shrink the window under the mirror,
+/// which is the re-emit case, on the one stream alc scrubs.
 /// `window-size` itself only needs 2.9.
 ///
 /// Deliberately not 3.3. `allow-passthrough` would have raised the floor
@@ -164,14 +180,17 @@ pub(crate) struct Snapshot {
     /// asked, and the watcher tears the session down straight afterwards.
     pub exit: Option<ExitInfo>,
     /// The size tmux settled on for the window, which under
-    /// `window-size smallest` is the smaller of the two attached clients.
+    /// `window-size smallest` is the smallest of the clients that get a
+    /// vote - and the mirror is the only one, so this is the mirror's pty
+    /// size and therefore the browser's.
     ///
-    /// Not the same as the hub's pty size, and the difference is load
-    /// bearing: the hub's client is whatever the browser asked for, and tmux
-    /// fills the rows past the window with padding. Anything reading the
-    /// *agent's* output out of the grid - `permission::probe` reads the
-    /// bottom rows for a mode line - has to look inside the window rather
-    /// than at the bottom of the client, or it reads padding forever.
+    /// Read anyway, and not only because the same call carries the exit
+    /// status and the pane's pid: the two agree except while tmux catches up
+    /// with a resize alc has just made, and `Session::permission` needs the
+    /// window's own row count to stay honest across that gap. Anything
+    /// reading the *agent's* output out of the grid - `permission::probe`
+    /// reads the bottom rows for a mode line - has to look inside the window
+    /// rather than at the bottom of the emulator.
     pub window: Option<(u16, u16)>,
     /// The agent's own pid. `exec` in the pane wrapper is what makes this
     /// the agent rather than a shell holding it.
@@ -247,10 +266,27 @@ impl Snapshot {
 /// Whether an attaching client gets a say in how large the window is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Sizing {
-    /// The user's own terminal: the window is this size.
+    /// The mirror the hub holds open for the browser: the window is this
+    /// size, and this pty's size is whatever the page last asked for.
     Drive,
-    /// The mirror the hub holds open for the browser. See `attach_argv`.
+    /// The user's own terminal, which keeps its own size and gets no vote in
+    /// the window's. See `attach_argv`.
     Abstain,
+}
+
+impl Sizing {
+    /// How the hub's mirror attaches, named by role rather than by
+    /// behaviour so the two call sites say who they are and this is the one
+    /// place that says what that means.
+    ///
+    /// Not cosmetic. The behaviour these two map onto changed hands in
+    /// 1.8.0, and the test that covered it went on passing, because it
+    /// asserted `Drive`/`Abstain` while the decision lived in two other
+    /// files. Naming the roles here puts the decision back where a test can
+    /// reach it.
+    pub(crate) const MIRROR: Self = Self::Drive;
+    /// How the user's own terminal attaches.
+    pub(crate) const TERMINAL: Self = Self::Abstain;
 }
 
 /// Where tmux is and what version it is, resolved once at launch.
@@ -290,7 +326,8 @@ fn find_unix() -> Result<Found> {
         anyhow::anyhow!(
             "`--tmux` needs tmux on PATH and there is none. Install it \
              (`brew install tmux`, `apt install tmux`, `dnf install tmux`) or drop the flag - \
-             sharing works without it, but this terminal and the browser then share one size."
+             sharing works without it, but the size is then this terminal's and the page scales \
+             the agent's screen to fit its window."
         )
     })?;
     let version = read_version(&binary)?;
@@ -298,7 +335,7 @@ fn find_unix() -> Result<Found> {
         bail!(
             "tmux {}.{} is on your PATH but `--tmux` needs {}.{} or newer, for the client flags \
              that let this terminal and the browser hold different sizes. Upgrade tmux, or drop \
-             the flag and share at one size.",
+             the flag - the size is then this terminal's and the page scales to fit.",
             version.0,
             version.1,
             MIN_VERSION.0,
@@ -417,7 +454,11 @@ impl Tmux {
         for option in [
             // The feature. Without it tmux sizes the window to whichever
             // client was most recently active, which is the pty's single
-            // size all over again, wearing a multiplexer.
+            // size all over again, wearing a multiplexer - and `latest`
+            // would hand the size to the local terminal besides, since page
+            // keystrokes reach the pane through `send-keys` and give the
+            // mirror client no activity at all. With exactly one client
+            // voting, `smallest` is that client's size exactly.
             &["-gw", "window-size", "smallest"][..],
             // How the agent's own exit status is read back, and how the
             // output of an agent that dies on its first line survives long
@@ -656,20 +697,29 @@ impl Tmux {
 
     /// The argv a terminal runs to become a client of this session.
     ///
-    /// `ignore-size` is only for the mirror, and it is the decision the
-    /// whole feature turns on. A tmux client that votes on the window size
-    /// makes the window the smaller of the two viewers, which leaves the
-    /// larger one - the browser, usually - rendering a window narrower than
-    /// itself, and tmux then re-emits the pane row by row into that client's
-    /// stream. Two things break at once when it does: the secret scrubber
-    /// matches contiguous bytes, so a credential re-emitted across a row
-    /// boundary reaches the page unmasked; and `permission::probe` reads the
-    /// bottom rows of a grid whose bottom rows are now tmux's padding.
+    /// `ignore-size` is only for the user's own terminal, and it is the
+    /// decision the whole feature turns on. A tmux client that votes on the
+    /// window size makes the window the smaller of the two viewers, and the
+    /// larger one is then left rendering a window narrower than itself -
+    /// which tmux serves by re-emitting the pane row by row into that
+    /// client's stream, plus a field of padding beside it. Two things break
+    /// when that client is the mirror: the secret scrubber matches
+    /// contiguous bytes, so a credential re-emitted across a row boundary
+    /// reaches the page unmasked; and `permission::probe` reads the bottom
+    /// rows of a grid whose bottom rows are now tmux's padding.
     ///
-    /// With the mirror abstaining, the window is exactly the local
-    /// terminal's size, the hub follows it (`Session::follow_tmux_window`),
-    /// and the page draws that size. The local terminal drives; the browser
-    /// fits to it.
+    /// So the mirror is the client that votes, and with it the only voter,
+    /// `window-size smallest` makes the window exactly the mirror's pty
+    /// size - which is exactly what the browser asked for, because a resize
+    /// frame reaches tmux as a SIGWINCH on that pty (`Session::resize`).
+    /// The mirror is therefore never the padded, row-split client. The user's
+    /// own terminal is, and it is the one client alc neither scrubs nor
+    /// probes: it renders whatever of the window fits, clipped to its
+    /// top-left corner when it is smaller.
+    ///
+    /// The browser drives; the terminal watches. That is the trade `--tmux`
+    /// makes, and it is the way round it makes sense: `--tmux` is asked for
+    /// by somebody who is about to go and use the page.
     pub(crate) fn attach_argv(&self, sizing: Sizing) -> Vec<OsString> {
         let mut argv: Vec<OsString> = self.address().iter().map(OsString::from).collect();
         argv.push(OsString::from("attach-session"));
@@ -725,8 +775,10 @@ impl Tmux {
 mod live {
     use super::*;
     use crate::launch::LaunchSpec;
+    use crate::remote::pty::{PtyCommand, PtyHost};
     use std::ffi::OsString;
-    use std::thread::sleep;
+    use std::io::Read;
+    use std::thread::{self, sleep};
     use std::time::{Duration, Instant};
 
     /// A tmux new enough for what alc asks of it, or `None`.
@@ -795,6 +847,90 @@ mod live {
         assert_eq!(snapshot.window, Some((96, 28)));
         assert!(snapshot.exit.is_none());
         assert!(snapshot.pane_pid.is_some());
+    }
+
+    /// The claim `--tmux` rests on, and the only place it can be asserted:
+    /// the mirror's size is the window's, and the local terminal's is not.
+    ///
+    /// `attach_argv` alone cannot cover this - it maps a role onto a flag,
+    /// and what the flag then means is tmux's business. Both directions are
+    /// checked because `ignore-size` is not symmetric on paper: a flagged
+    /// client that is *larger* than the window must not raise it either, and
+    /// tmux counts flagged clients again once no unflagged one is attached.
+    #[test]
+    fn the_mirror_sizes_the_window_and_the_local_terminal_does_not() {
+        let Some(found) = tmux() else { return };
+        let live = start(&found, "claude-LIVEVOTE01", &["-c", "sleep 30"], 96, 28);
+
+        let mirror = attach(&found, &live, Sizing::MIRROR, 100, 30);
+        let terminal = attach(&found, &live, Sizing::TERMINAL, 70, 20);
+        assert_eq!(
+            window(&found, &live, (100, 30)),
+            Some((100, 30)),
+            "the mirror votes, and it is the only client that does"
+        );
+
+        // Smaller than the window: the case `ignore-size` exists for. Left
+        // to vote, `window-size smallest` would take this and the mirror
+        // would be the padded, row-split client - past the scrubber.
+        terminal.resize(60, 16).unwrap();
+        assert_eq!(
+            window(&found, &live, (100, 30)),
+            Some((100, 30)),
+            "a smaller local terminal cannot shrink the window"
+        );
+        // Larger than the window, which is the other half of "no vote".
+        terminal.resize(200, 60).unwrap();
+        assert_eq!(
+            window(&found, &live, (100, 30)),
+            Some((100, 30)),
+            "a larger local terminal cannot grow it either"
+        );
+
+        // What a browser resize does: `Session::resize_from_viewer` resizes
+        // this pty, the kernel raises SIGWINCH in the client, and the window
+        // follows.
+        mirror.resize(88, 24).unwrap();
+        assert_eq!(
+            window(&found, &live, (88, 24)),
+            Some((88, 24)),
+            "the page's size reaches tmux through the mirror's pty"
+        );
+    }
+
+    /// A live tmux client on `live`'s session, held open by its pty.
+    fn attach(found: &Found, live: &Live, sizing: Sizing, cols: u16, rows: u16) -> PtyHost {
+        let mut command = PtyCommand::agent(&found.binary, &LaunchSpec::for_test());
+        command.args = live.tmux.attach_argv(sizing);
+        command.env_remove = vec![OsString::from("TMUX"), OsString::from("TMUX_PANE")];
+        let (pty, reader) = PtyHost::spawn(&command, Path::new("/"), cols, rows).unwrap();
+        // A tmux client that is never read fills its pty buffer and stops
+        // drawing, which is also to stop reporting its size.
+        thread::spawn(move || {
+            let mut reader = reader;
+            let mut sink = [0_u8; 4096];
+            while reader.read(&mut sink).is_ok_and(|read| read > 0) {}
+        });
+        pty
+    }
+
+    /// The window size, once tmux has had a chance to settle on `expected`.
+    ///
+    /// A resize is three hops - TIOCSWINSZ, SIGWINCH, the client telling its
+    /// server - so this polls for the answer rather than sleeping a guess.
+    /// It returns whatever it last saw, so a wrong answer is asserted
+    /// against rather than timing out.
+    fn window(found: &Found, live: &Live, expected: (u16, u16)) -> Option<(u16, u16)> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut last = None;
+        while Instant::now() < deadline {
+            last = live.tmux.probe(&found.binary).and_then(|snap| snap.window);
+            if last == Some(expected) {
+                return last;
+            }
+            sleep(Duration::from_millis(50));
+        }
+        last
     }
 
     /// The reason `remain-on-exit` is on at all: a `tmux attach-session`
@@ -1027,16 +1163,19 @@ mod tests {
     }
 
     #[test]
-    fn only_the_mirror_abstains_from_sizing_the_window() {
-        // The one flag the whole feature turns on: a mirror that voted would
-        // shrink the window below its own width, and tmux would then re-emit
-        // the pane row by row - past the secret scrubber, which matches
-        // contiguous bytes.
+    fn only_the_local_terminal_abstains_from_sizing_the_window() {
+        // The one flag the whole feature turns on, asserted through the
+        // roles rather than the variants: the mirror votes, so the window is
+        // the size the page asked for and the mirror is never the client
+        // tmux pads out and re-emits row by row - which matters because the
+        // mirror is the stream the secret scrubber reads, and it matches
+        // contiguous bytes. Flipping this back at the call sites now flips
+        // `MIRROR`/`TERMINAL` and fails here.
         let tmux = Tmux::for_session("claude-ABCDEFGHJK").unwrap();
-        assert!(argv(&tmux, Sizing::Abstain).contains(&"ignore-size".to_owned()));
-        assert!(!argv(&tmux, Sizing::Drive).contains(&"ignore-size".to_owned()));
+        assert!(argv(&tmux, Sizing::TERMINAL).contains(&"ignore-size".to_owned()));
+        assert!(!argv(&tmux, Sizing::MIRROR).contains(&"ignore-size".to_owned()));
         assert_eq!(
-            argv(&tmux, Sizing::Drive),
+            argv(&tmux, Sizing::MIRROR),
             vec!["-L", "alc-claude-abcdefghjk", "attach-session", "-t", "alc"]
         );
     }

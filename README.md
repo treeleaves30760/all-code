@@ -478,31 +478,38 @@ a phone keyboard does not have (Esc, Tab, Shift+Tab, Ctrl, arrows), and a
 composer that sends a whole prompt as one block instead of fighting a mobile
 keyboard inside a raw terminal.
 
-### One size each, with `--tmux`
+### Who owns the size
 
-A shared session is one terminal with two viewers, and a terminal has one
-size. Whichever side resized last wins, and the other is left rendering a
-full-screen TUI at a width it does not have — wrapped borders, doubled lines,
-a cursor in the wrong place. If your browser window and your terminal are not
-the same width, one of them looks broken.
+A shared session without `--tmux` is one terminal with two viewers, and a
+terminal has one size. That size belongs to the terminal you launched from,
+which is still sitting there drawing at it — so the page does not touch it.
+It draws the agent's real grid instead, as large as it fits, centred, with
+black where the ratio does not match. Resize your terminal and the page
+follows within a few seconds.
 
-`--tmux` fixes it by running the agent inside tmux, which is the tool built
-for exactly this: one program, several attached clients:
+`--tmux` is for when the page is the side you are actually going to use. It
+runs the agent inside tmux, which is the tool built for exactly this: one
+program, several attached clients, each with its own size:
 
 ```sh
 alc --share --tmux --codex claude    # or -t
 ```
 
 Your terminal and the hub each attach as their own tmux client, so nothing
-has to agree on a size. Two things to know:
+has to agree on a size. Three things to know:
 
-- **Your terminal sets the size and the page follows it.** The browser's
-  window no longer resizes the agent; the page fits itself to what your
-  terminal is showing.
+- **The page sets the size and your terminal shows what fits.** Your browser
+  window drives the agent, and a terminal narrower or shorter than it shows
+  the top-left corner of the screen — pan with `ctrl-b :refresh-client
+  -L/-R/-U/-D`, or `-c` to follow the cursor. It is the opposite way round
+  from a plain shared session, and it is the trade: `--tmux` is asked for by
+  somebody who is about to go and use the page.
+- **With no browser attached, the size stays where it launched.** Your
+  terminal has no vote, so `alc attach` from a different-sized terminal
+  changes nothing until a page connects.
 - **tmux owns the keyboard.** Detaching is `ctrl-b` then `d`, not alc's
   `ctrl-\`. In exchange you get tmux's own scrollback and copy mode, and a
-  session that survives an ssh drop. `alc attach` puts you back on it, at
-  whatever size that terminal is.
+  session that survives an ssh drop.
 
 alc runs its own tmux server per session and starts it with no configuration
 file, so your own tmux — config, keybindings, sessions — is untouched, alc's

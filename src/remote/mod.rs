@@ -198,10 +198,20 @@ pub fn share(
         // "your prefix" because alc's server reads no configuration file, so
         // the prefix is tmux's own default whatever the user has bound in
         // their own.
-        Some(found) => println!(
-            "  keys  ctrl-b then d detaches ({}); the session keeps running",
-            found.label()
-        ),
+        Some(found) => {
+            println!(
+                "  keys  ctrl-b then d detaches ({}); the session keeps running",
+                found.label()
+            );
+            // The one thing about `--tmux` a user has to be told, because
+            // it is the opposite of what a terminal usually promises: the
+            // page owns the size. A terminal smaller than it is not broken,
+            // it is showing a corner.
+            println!(
+                "  size  the page sets it; a smaller terminal shows the top-left corner \
+                 (ctrl-b :refresh-client -L/-R/-U/-D to pan)"
+            );
+        }
         None => println!("  keys  ctrl-\\ then d detaches; the session keeps running"),
     }
     std::io::stdout().flush().ok();
@@ -214,6 +224,11 @@ pub fn share(
 /// Returns the agent's exit code when the session ends, and 0 when the user
 /// detaches - detaching is a success, and reporting the agent's last status
 /// for it would be a lie about a session that is still running.
+///
+/// For a plain session this terminal owns the size: the pty is one grid, it
+/// was opened at this terminal's size, and `watch_resize` below keeps it
+/// there. The page draws that grid scaled to fit its window rather than
+/// resizing it, so the two no longer take turns.
 pub(crate) fn attach(
     store: &Store,
     secrets: &Secrets,
@@ -222,8 +237,16 @@ pub(crate) fn attach(
     rows: u16,
 ) -> Result<u8> {
     // A tmux session is not relayed. The whole point of `--tmux` is that
-    // this terminal becomes a second, independent tmux client with a size of
-    // its own, so it runs one rather than reading the mirror's bytes.
+    // this terminal becomes a second, independent tmux client holding its
+    // own size, so it runs one rather than reading the mirror's bytes.
+    //
+    // This branch is load-bearing beyond that: the relay path starts
+    // `watch_resize`, which reports this terminal's size to the session.
+    // `Session::resize_from_terminal` refuses it for a tmux session, so a
+    // card that arrived without its `tmux` field could not put this
+    // terminal in charge of the page's window - but it would put this
+    // terminal on the mirror's byte stream, which is not what `--tmux`
+    // promised either.
     if let Some(card) = card_for(store, secrets, session_id)
         && let Some(host) = card.tmux
     {
@@ -287,7 +310,11 @@ pub(crate) fn attach(
 ///
 /// Nothing about the mirror changes: the hub still holds its own client, and
 /// the page still shows what the agent draws. What changes is that the two
-/// clients hold their own sizes, which is the whole reason `--tmux` exists.
+/// clients hold their own sizes, which is the whole reason `--tmux` exists -
+/// and that this terminal holds its own without setting the window's. The
+/// page drives the window (`tmux::attach_argv`), so this terminal renders
+/// whatever of it fits: padded out when it is larger, and clipped to the
+/// top-left corner when it is smaller, which is what the line below is for.
 ///
 /// The exit code still comes from the card afterwards, for the same reason
 /// the relay path reads it there - tmux's own client exits 0 whether the
@@ -303,7 +330,10 @@ fn attach_tmux(
     // tmux should hear that here rather than fail obscurely one line later.
     let found = tmux::find()?;
     let mut command = std::process::Command::new(&found.binary);
-    command.args(host.attach_argv(tmux::Sizing::Drive));
+    // No vote in the window's size: the page owns it, and this terminal
+    // renders whatever of it fits. See `tmux::attach_argv`, and keep this in
+    // step with the `Sizing::MIRROR` on the hub's mirror.
+    command.args(host.attach_argv(tmux::Sizing::TERMINAL));
     // A shell already inside tmux exports the address of ITS server, and a
     // client that inherits it refuses to attach - "sessions should be nested
     // with care". alc's server is a different one, so nesting is safe; the
@@ -315,6 +345,12 @@ fn attach_tmux(
              reach it with your outer prefix first"
         );
     }
+    // Printed before the terminal is handed to tmux, which is the last
+    // moment anything alc writes will be read.
+    println!(
+        "the page sets this session's size; a smaller terminal shows the top-left corner of it \
+         (ctrl-b :refresh-client -L/-R/-U/-D to pan, -c to follow the cursor)"
+    );
     command.env_remove("TMUX");
     command.env_remove("TMUX_PANE");
 

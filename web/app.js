@@ -130,23 +130,30 @@
     followSessionSize(cards);
   }
 
-  /* A `--tmux` session's size is the local terminal's, and it changes
-   * whenever that terminal does. Nothing tells the page over the socket -
-   * the server's control frames are notices, exits and keepalives, none of
-   * which carries a size - so this poll is what notices, and the terminal is
-   * refitted to match. Five seconds late is a redraw, not a wrong one: the
-   * stream never assumes more columns than the window has, so the worst case
-   * in between is a screen drawn narrower than the space it has. */
+  /* A plain session's size is the local terminal's, and it changes whenever
+   * that terminal does. Nothing tells the page over the socket - the
+   * server's control frames are notices, exits and keepalives, none of which
+   * carries a size - so this poll is what notices, and the grid is redrawn
+   * at the new shape. Five seconds late is a redraw, not a wrong one: what
+   * is on screen in between is the agent's real output, drawn at the ratio
+   * it had a moment ago.
+   *
+   * Deliberately not for a `--tmux` card, where the page is the side that
+   * decides: reading the size back from the card there would mean fitting to
+   * a number the page itself produced, and any disagreement - a clamp the
+   * server applied, another browser on the same session - would come back
+   * every five seconds as a fresh resize. The page states its size and does
+   * not listen for an echo. */
   function followSessionSize(cards) {
     const card = attached.value;
-    if (!card || !card.tmux) return;
+    if (!card || card.tmux) return;
     const fresh = cards.find((row) => row.id === card.id);
     if (!fresh || (fresh.cols === card.cols && fresh.rows === card.rows)) return;
     // A fresh object rather than two fields written into the old one: every
     // other writer of this signal assigns a whole card, and a subscriber
     // that compared identities would never see an in-place edit.
     attached.value = { ...card, cols: fresh.cols, rows: fresh.rows };
-    refit();
+    relayout();
   }
 
   /* An exited row leaves on its own schedule rather than on the poll's, so
@@ -477,6 +484,9 @@
 
   let term = null;
   let fit = null;
+  /* The base font size, kept because the framed mode moves the live one and
+   * every step of that fit is measured against where it started. */
+  let baseFontSize = 13;
   let socket = null;
   let lastSeq = null;
   let attempt = 0;
@@ -501,11 +511,12 @@
 
   function ensureTerminal() {
     if (term) return;
+    baseFontSize = window.matchMedia('(min-width: 900px)').matches ? 13 : 12;
     term = new window.Terminal({
       allowProposedApi: true,
       cursorBlink: true,
       convertEol: false,
-      fontSize: window.matchMedia('(min-width: 900px)').matches ? 13 : 12,
+      fontSize: baseFontSize,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       scrollback: 5000,
       theme: DARK,
@@ -533,28 +544,58 @@
     // input that it does.
   }
 
-  function refit() {
-    if (!fit || !term) return;
-    // Fitting a pane that is display:none measures nothing, and the addon
-    // clamps to its minimum rather than bailing - which would then resize
-    // the real agent's pty down to a couple of columns.
+  /* Whether this page is the side that decides how large the session is.
+   *
+   * Only with `--tmux`, where the agent runs under a multiplexer and the
+   * hub's mirror carries this window's size into it while the user's own
+   * terminal abstains. `--tmux` is asked for by somebody who is about to go
+   * and use the page, so the page drives.
+   *
+   * Without it there is one pty and its size belongs to the terminal that
+   * launched it, which is still sitting there drawing at that size. A
+   * read-only link never decides anything either way - the server drops its
+   * resize frames, so acting as though it had one would only render the
+   * screen at a shape the agent is not using. */
+  function browserOwnsSize(card) {
+    return !!(card && card.tmux) && operator.value;
+  }
+
+  function relayout() {
+    if (!term) return;
+    // Measuring a pane that is display:none measures nothing, and the fit
+    // addon clamps to its own minimum rather than bailing - which would then
+    // resize the real agent's pty down to a couple of columns.
     if (document.body.dataset.pane !== 'view') return;
 
-    // Two cases cannot move the session's own size, and fitting to this
-    // window would then render the mirrored screen at a width the agent is
-    // not drawing for - wrapped lines in the wrong places, boxes that do not
-    // meet. Both match the session's real geometry instead.
-    //
-    // A read-only link is the obvious one. The other is a `--tmux` session,
-    // where the size is the local terminal's and the page follows it: that
-    // is the trade `--tmux` makes, and it is what stops tmux re-emitting the
-    // pane row by row into a mirror wider than the window.
     const card = attached.value;
-    if (!operator.value || (card && card.tmux)) {
-      if (card && card.cols && card.rows) term.resize(card.cols, card.rows);
+    const drives = browserOwnsSize(card);
+    // Set before anything is measured: the two modes give #terminal
+    // different padding and a different background, so which box is being
+    // measured depends on this attribute.
+    document.body.dataset.sizing = drives ? 'browser' : 'session';
+    if (drives) driveSize();
+    else frameGrid(card, 0);
+  }
+
+  /* The page's window is the size, so the agent is told what fits in it. */
+  function driveSize() {
+    if (!fit) return;
+    // The framed mode leaves a font size and a transform behind, and there
+    // is one terminal for every session on the page: attaching to a plain
+    // session and then to a `--tmux` one would otherwise fit this window
+    // while still drawing it shrunk.
+    term.element.style.transform = '';
+    if (term.options.fontSize !== baseFontSize) {
+      term.options.fontSize = baseFontSize;
+      // The fit divides this box by a cell, and the cell is what the new
+      // font size measures to only once the renderer has re-measured it.
+      // Fitting now would divide by the old cell and tell the agent a width
+      // it does not have, which is the bug this whole mode exists to avoid.
+      requestAnimationFrame(() => {
+        if (document.body.dataset.sizing === 'browser') driveSize();
+      });
       return;
     }
-
     try {
       fit.fit();
     } catch {
@@ -563,6 +604,74 @@
       return;
     }
     send({ t: 'resize', cols: term.cols, rows: term.rows });
+  }
+
+  /* The session's own grid, drawn as large as the frame allows.
+   *
+   * `core.fitGrid` decides; this measures for it and applies the answer. The
+   * loop is because a cell's pixel size is not perfectly linear in the font
+   * size - a renderer rounds to device pixels - so each pass is given the
+   * cell the previous font size actually produced. Passes are separated by a
+   * frame, because that is when the renderer has re-measured and re-laid out
+   * the grid, rather than assuming it did so on assignment. */
+  const FIT_PASSES = 3;
+
+  function frameGrid(card, pass) {
+    // xterm clamps `resize` to its own 2x1 minimum, so a card with no size
+    // yet would land there and stay.
+    if (card && card.cols && card.rows) term.resize(card.cols, card.rows);
+    const cell = cellPixels();
+    if (!cell) return;
+    // xterm reserves a scrollbar inside .xterm, and on a platform with
+    // classic scrollbars it would otherwise sit over the grid's last column.
+    // The same reservation the fit addon makes for the other mode.
+    const viewport = el.terminal.querySelector('.xterm-viewport');
+    const gutter = viewport ? viewport.offsetWidth - viewport.clientWidth : 0;
+    const box = {
+      width: el.terminal.clientWidth - gutter,
+      height: el.terminal.clientHeight,
+    };
+
+    const placed = core.fitGrid(
+      { fontSize: term.options.fontSize, cell, cols: term.cols, rows: term.rows },
+      box
+    );
+    // Whatever the font size could not absorb - only ever at the floor,
+    // where a very wide session meets a phone. Cropping the agent's screen
+    // would be worse than transforming something already unreadable, but it
+    // does put xterm's own hit-testing out by the same factor, so it is the
+    // last resort rather than the mechanism.
+    term.element.style.transform = placed.scale < 1 ? `scale(${placed.scale})` : '';
+    if (placed.fontSize === term.options.fontSize || pass >= FIT_PASSES) return;
+    term.options.fontSize = placed.fontSize;
+    requestAnimationFrame(() => {
+      // The mode or the session can change inside a frame, and this pass
+      // would then be measuring the wrong one.
+      if (document.body.dataset.sizing !== 'session') return;
+      if (attached.value !== card) return;
+      frameGrid(card, pass + 1);
+    });
+  }
+
+  /* One character's box, in CSS pixels.
+   *
+   * The cell rather than the grid, because the renderer defers writing the
+   * grid's pixel size onto `.xterm-screen` while the element is off-screen,
+   * and the first layout after an attach runs a frame too early to see it.
+   * The cell does not depend on cols or rows, so it survives that.
+   *
+   * `_renderService.dimensions` is not public API. It is the same path the
+   * vendored fit addon takes for the other mode, so it is a dependency this
+   * page already ships; the DOM measurement below is the fallback for the
+   * build where it stops being true. */
+  function cellPixels() {
+    const dimensions =
+      term._core && term._core._renderService && term._core._renderService.dimensions;
+    const cell = dimensions && dimensions.css && dimensions.css.cell;
+    if (cell && cell.width > 0 && cell.height > 0) return cell;
+    const screen = el.terminal.querySelector('.xterm-screen');
+    if (!screen || !screen.offsetWidth || !term.cols || !term.rows) return null;
+    return { width: screen.offsetWidth / term.cols, height: screen.offsetHeight / term.rows };
   }
 
   const NEEDS_OPERATOR = new Set(['input', 'paste', 'resize']);
@@ -601,13 +710,18 @@
 
     ws.addEventListener('open', () => {
       if (mine !== generation) return ws.close();
-      send({
-        t: 'auth',
-        token: token.value || '',
-        cols: term ? term.cols : 80,
-        rows: term ? term.rows : 24,
-        since: lastSeq,
-      });
+      // A size is stated only by the side that owns one. The server resizes
+      // the session from this frame before it answers, so sending this
+      // window's columns for a session the local terminal sizes is exactly
+      // how a shared `alc claude` ended up at a phone's width - on every
+      // reconnect, too. Omitted, both fields default to zero and the server
+      // skips the resize.
+      const frame = { t: 'auth', token: token.value || '', since: lastSeq };
+      if (browserOwnsSize(card)) {
+        frame.cols = term ? term.cols : 80;
+        frame.rows = term ? term.rows : 24;
+      }
+      send(frame);
     });
 
     ws.addEventListener('message', (event) => {
@@ -662,7 +776,7 @@
         renderPermission(frame.session);
         setConnection('live');
         attempt = 0;
-        refit();
+        relayout();
         break;
       }
       case 'notice':
@@ -726,7 +840,7 @@
     connect(card, mine);
 
     requestAnimationFrame(() => {
-      refit();
+      relayout();
       if (!document.body.classList.contains('viewer')) term.focus();
     });
     renderRows(rows.value);
@@ -761,6 +875,9 @@
     autoGrow();
     attached.value = null;
     document.body.dataset.pane = 'list';
+    // The next session decides this for itself, and a stale value would
+    // paint the list pane's frame for a mode it is not in.
+    delete document.body.dataset.sizing;
     el.back.hidden = true;
     el.grade.hidden = true;
     el.perm.hidden = true;
@@ -872,20 +989,30 @@
   /* -------------------------------------------------------------- layout */
 
   let resizeTimer = 0;
-  function scheduleRefit() {
+  function scheduleRelayout() {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(refit, 120);
+    resizeTimer = setTimeout(relayout, 120);
   }
-  window.addEventListener('resize', scheduleRefit);
-  window.addEventListener('orientationchange', scheduleRefit);
+
+  /* The box, not the window, is what both modes measure against, and this
+   * list of everything that moves it kept growing: the rail appears at
+   * 900px, the composer and the key bar leave with a read-only link or an
+   * exit, the permission bar is the agent's business. Watching the element
+   * is one subscription instead. Nothing loops back - a transform changes no
+   * layout, and in the framed mode the grid is taken out of flow, so
+   * #terminal's own size comes from the flex container rather than from what
+   * is inside it. */
+  if (window.ResizeObserver) new window.ResizeObserver(scheduleRelayout).observe(el.terminal);
+  else window.addEventListener('resize', scheduleRelayout);
+  window.addEventListener('orientationchange', scheduleRelayout);
   if (window.visualViewport) {
-    // The on-screen keyboard resizes the visual viewport, not the window.
-    window.visualViewport.addEventListener('resize', scheduleRefit);
+    // The on-screen keyboard resizes the visual viewport, not the layout, so
+    // no element changes size and the observer above never fires.
+    window.visualViewport.addEventListener('resize', scheduleRelayout);
   }
-  // The rail appears and disappears at 900px, which changes the terminal's
-  // width without changing the window's.
-  const wide = window.matchMedia('(min-width: 900px)');
-  wide.addEventListener('change', scheduleRefit);
+  // Which mode this is depends on the grade, and the grade arrives with the
+  // hello - after the first attach has already laid the terminal out.
+  operator.subscribe(scheduleRelayout);
 
   /* ---------------------------------------------------------------- boot */
 
