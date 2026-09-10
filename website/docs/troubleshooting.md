@@ -128,14 +128,19 @@ A hub outlives terminals by design, so it also outlives an upgrade. From 1.6.0
 alc refuses to hand a bridged session to a hub of another version rather than
 letting it run without one, and `alc doctor` names a hub that is behind.
 
-**Claude Code's own saved default.** Picking a GPT model in Claude Code's
-`/model` also writes it to `~/.claude/settings.json` as your default for new
-sessions — Claude Code says so on the confirmation line. Every later `claude`
-that alc did not start reads that file, and those have no adapter. Delete the
-`model` line; alc passes the model itself:
+**Claude Code's own saved default.** The model a Claude Code session settles
+on is written to `~/.claude/settings.json` as your default for new sessions.
+Every later `claude` that alc did not start reads that file, and those have no
+adapter.
+
+From 1.8.0 alc restores that key when a bridged session exits, so a pin you
+still find here is a leftover: a session killed outright, an alc older than
+1.8.0, or a value set by hand. Either run one bridged session, which clears it
+on exit, or delete the line yourself — alc passes the model itself:
 
 ```sh
-alc doctor   # names the file and the line when it finds one
+alc doctor            # names the file and the line when it finds one
+alc --codex claude    # clears it on exit; alc passes the model itself
 ```
 
 **A model the bridge cannot route.** Before 1.5.0 the bridge alc depended on

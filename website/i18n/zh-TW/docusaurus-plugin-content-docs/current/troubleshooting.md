@@ -118,13 +118,18 @@ hub 的設計本來就是比終端機活得久，所以它也會比升級活得�
 寧可拒絕把需要轉接器的 session 交給版本不同的 hub，也不會讓它在沒有轉接器的
 情況下跑；`alc doctor` 也會指出落後的 hub。
 
-**Claude Code 自己存下的預設值。** 在 Claude Code 的 `/model` 裡選 GPT 模型時，
-它同時會把該模型寫進 `~/.claude/settings.json`，當成之後每個新 session 的預設值
-（確認訊息上就這麼寫）。之後每一個不是 alc 啟動的 `claude` 都會讀到那個檔案，
-而那些前面沒有轉接器。把 `model` 那一行刪掉即可 —— alc 自己會帶模型參數：
+**Claude Code 自己存下的預設值。** 一個 Claude Code session 最後落在哪個模型，
+就會被寫進 `~/.claude/settings.json`，當成之後每個新 session 的預設值。之後每一個
+不是 alc 啟動的 `claude` 都會讀到那個檔案，而那些前面沒有轉接器。
+
+從 1.8.0 起，alc 會在轉接過的 session 結束時把那個欄位放回去，所以你現在還會在
+這裡看到的，都是殘留：被直接砍掉的 session、1.8.0 之前的 alc，或是手動設的值。
+跑一次轉接過的 session 讓它在結束時清掉，或者自己把那一行刪掉 —— alc 本來就會帶
+模型參數：
 
 ```sh
-alc doctor   # 找到時會指出那個檔案與那一行
+alc doctor            # 找到時會指出那個檔案與那一行
+alc --codex claude    # 結束時會清掉；模型參數 alc 自己會帶
 ```
 
 **橋接無法轉送的模型。** 1.5.0 之前 alc 所依賴的橋接裡有一份寫死的模型清單，

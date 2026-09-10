@@ -194,20 +194,24 @@ fn defaults(store: &Store, theme: &Theme) {
 /// Reports a Codex-only model left pinned as Claude Code's own default.
 ///
 /// alc teaches Claude Code's `/model` picker the models the bridge serves, so
-/// they can be switched mid-session. Claude Code saves that pick to its
-/// user-level `settings.json` as "your default for new sessions", and that
-/// file is read by every Claude Code session on the machine - including the
-/// ones alc did not start, which have no bridge in front of them. Those ask
-/// api.anthropic.com for a GPT model and are told, correctly, that it does
-/// not exist.
+/// they can be switched mid-session. Claude Code saves the model it settles
+/// on to its user-level `settings.json` as "your default for new sessions",
+/// and that file is read by every Claude Code session on the machine -
+/// including the ones alc did not start, which have no bridge in front of
+/// them. Those ask api.anthropic.com for a GPT model and are told, correctly,
+/// that it does not exist.
 ///
-/// alc will not edit another tool's settings behind the user's back, so this
-/// is a report, with the one line that undoes it.
+/// Since 1.8.0 alc puts that one key back when a bridged session exits
+/// (`agents::claude::DefaultModelGuard`), so anything found here is
+/// *leftover*: a session killed outright, so its guard never ran; a pin
+/// written by an alc older than 1.8.0; or a value the user set by hand. The
+/// remediation says so, and names the launch that clears it - a pre-launch
+/// value that is itself bridge-only is removed rather than re-pinned.
 ///
-/// Reported whether or not a Codex profile is still configured. The pin is a
-/// machine-global side effect that outlives the profile that produced it, and
-/// somebody who tried `alc --codex claude` once and then removed the profile
-/// is exactly the person with no other way to find out.
+/// Reported whether or not a Codex profile is still configured, and that
+/// matters more now than it did: the pin is a machine-global side effect
+/// that outlives the profile that produced it, and somebody who removed the
+/// profile will never run the launch that self-heals.
 fn claude_code_default_model(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     let Some(settings) = crate::agents::claude::user_settings_path() else {
         return;
@@ -215,7 +219,12 @@ fn claude_code_default_model(store: &Store, theme: &Theme, issues: &mut Vec<Issu
     let Some(model) = crate::agents::claude::pinned_model(&settings) else {
         return;
     };
-    if !bridge_only_model(&ModelCatalog::load(&store.dir), &model) {
+    let offered: Vec<String> = ModelCatalog::load(&store.dir)
+        .models
+        .into_iter()
+        .map(|info| info.id)
+        .collect();
+    if !crate::agents::claude::bridge_only_model(&offered, &model) {
         return;
     }
     heading(theme, "Claude Code settings");
@@ -240,23 +249,11 @@ fn claude_code_default_model(store: &Store, theme: &Theme, issues: &mut Vec<Issu
             settings.display()
         ),
         Some(format!(
-            "remove the \"model\" line from {}; alc passes the model itself",
+            "run `alc --codex claude` once and it clears the line on exit, or remove the \"model\" \
+             line from {} yourself; alc passes the model itself",
             settings.display()
         )),
     ));
-}
-
-/// Whether `model` is one only alc's Codex adapter can serve.
-///
-/// The catalog is the precise answer - those are the ids alc itself put in
-/// Claude Code's picker - but it is a cache refreshed at most daily, and a
-/// cache that had gone stale against a Codex release is how `gpt-6-astra`
-/// became unreachable in the first place. So a `gpt-` prefix answers for the
-/// models a fresher Codex has and this catalog does not: api.anthropic.com
-/// serves none of them either way, and the only thing at stake here is
-/// whether a warning is printed.
-fn bridge_only_model(catalog: &ModelCatalog, model: &str) -> bool {
-    catalog.find(model).is_some() || model.starts_with("gpt-")
 }
 
 fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {

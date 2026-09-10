@@ -385,15 +385,20 @@ A model chosen with `/model` applies to that Claude Code session. The next
 stays the source of truth.
 
 One thing to know about that picker, because it is Claude Code's and not
-alc's: selecting a model there also writes it to `~/.claude/settings.json` as
-your default for new sessions — Claude Code says so on the confirmation line.
-That file is read by every Claude Code session on the machine, including the
-ones alc did not start, and those have no adapter in front of them. A plain
-`claude` afterwards will ask Anthropic for a GPT model and be told it does not
-exist. To keep the pick for this session only, use the picker's
-"use this session only" option; to undo one already saved, delete the `model`
-line from `~/.claude/settings.json` — alc passes the model itself and does not
-need it. `alc doctor` reports the file and the line when it finds one.
+alc's: the model it settles on is also written to `~/.claude/settings.json` as
+your default for new sessions. That file is read by every Claude Code session
+on the machine, including the ones alc did not start, and those have no
+adapter in front of them — a plain `claude` afterwards would ask Anthropic for
+a GPT model and be told it does not exist.
+
+**alc puts that one key back when the session exits.** It reads the value
+before the launch and restores it afterwards, so your own default survives a
+trip through the adapter. Two things it deliberately leaves alone: a real
+Claude model you switched to mid-session, which is your choice and not alc's
+to overrule, and a session that was killed outright, where nothing ran to
+restore anything. For that last case `alc doctor` still reports the file and
+the line — and the next `alc --codex claude` clears it, because a value that
+is *already* one only the adapter can serve is removed rather than put back.
 
 ### Every other agent
 

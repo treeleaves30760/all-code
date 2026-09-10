@@ -107,22 +107,37 @@ A model chosen with `/model` applies to that Claude Code session. The next
 `alc --codex claude` starts from the alc provider default again, so
 [`alc config`](./configuration.md) stays the source of truth.
 
-### What `/model` also writes
+### What `/model` also writes, and what alc puts back
 
-That picker is Claude Code's, not alc's, and selecting a model in it writes the
-model to `~/.claude/settings.json` as your default for new sessions — Claude
-Code says so on the confirmation line. That file is read by every Claude Code
-session on the machine, including the ones alc did not start, and those have no
-adapter in front of them: a plain `claude` afterwards asks Anthropic for a GPT
-model and is told it does not exist.
+That picker is Claude Code's, not alc's, and the model a session settles on is
+written to `~/.claude/settings.json` as your default for new sessions. That
+file is read by every Claude Code session on the machine, including the ones
+alc did not start, and those have no adapter in front of them: a plain
+`claude` afterwards would ask Anthropic for a GPT model and be told it does
+not exist.
 
-To keep the pick for one session, use the picker's "use this session only"
-option. To undo one already saved, delete the `model` line from
-`~/.claude/settings.json` — alc passes the model itself and does not need it.
-`alc doctor` names the file and the line when it finds one.
+**From 1.8.0, alc restores that one key when the session exits.** It reads the
+value before the launch and writes it back afterwards. Nothing else in the
+file is touched, and nothing is written at all unless the value it finds is
+one only the adapter can serve — so a session where you never opened `/model`
+leaves the file exactly as it was, byte for byte.
+
+Two cases it deliberately does not touch:
+
+- **A real Claude model you switched to mid-session.** `/model sonnet` inside
+  a bridged session is a choice about your own default, and putting the old
+  value back over it would be alc overruling something it was never asked
+  about.
+- **A session killed outright.** `kill -9` on alc, or on the hub, runs no
+  cleanup at all. `alc doctor` still names the file and the line for that
+  case — and the next `alc --codex claude` clears it, because a pre-launch
+  value that is *itself* adapter-only is removed rather than put back.
 
 Do not try to isolate it with `CLAUDE_CONFIG_DIR`: that moves Claude Code's
-whole configuration home, including its login.
+whole configuration home, including its login. alc reads the same variable to
+find the file, and resolves it in the shell you typed into rather than in the
+hub, so a per-project `CLAUDE_CONFIG_DIR` is honoured for a shared session
+too.
 
 ## OpenCode, Pi, and Kimi Code CLI
 

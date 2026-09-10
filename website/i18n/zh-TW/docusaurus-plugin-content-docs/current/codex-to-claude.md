@@ -100,20 +100,33 @@ alc --codex claude --model gpt-5.6-terra --effort medium --save
 `alc --codex claude` 會再從 alc provider 的預設值開始，所以
 [`alc config`](./configuration.md) 仍然是唯一的真實來源。
 
-### `/model` 還會寫下什麼
+### `/model` 還會寫下什麼，以及 alc 會放回什麼
 
-那個選單是 Claude Code 的、不是 alc 的。在裡面選模型時，它會把該模型寫進
-`~/.claude/settings.json`，當成之後每個新工作階段的預設值（確認訊息上就這麼
-寫）。那個檔案會被這台機器上每一個 Claude Code 工作階段讀到，包含不是 alc
-啟動的那些 —— 而那些前面沒有轉接器：之後直接執行 `claude` 就會向 Anthropic
-要一個 GPT 模型，然後被告知它不存在。
+那個選單是 Claude Code 的、不是 alc 的。工作階段最後落在哪個模型，就會被寫進
+`~/.claude/settings.json`，當成之後每個新工作階段的預設值。那個檔案會被這台
+機器上每一個 Claude Code 工作階段讀到，包含不是 alc 啟動的那些 —— 而那些前面
+沒有轉接器：之後直接執行 `claude` 就會向 Anthropic 要一個 GPT 模型，然後被告知
+它不存在。
 
-想只套用在這一次，請用選單裡的「use this session only」。已經寫進去的，把
-`~/.claude/settings.json` 裡的 `model` 那一行刪掉即可 —— alc 自己會帶模型參數，
-不需要它。`alc doctor` 發現時會指出那個檔案與那一行。
+**從 1.8.0 起，alc 會在工作階段結束時把那一個欄位放回去。** 它在啟動前讀下原本
+的值，結束後再寫回去。檔案裡其他東西一概不動；而且除非它讀到的值只有轉接器
+服務得了，否則根本不會寫 —— 所以一個從沒開過 `/model` 的工作階段，會讓那個檔案
+保持一個位元組都沒變。
+
+有兩種情況它刻意不動：
+
+- **你在工作階段中途自己切到某個真正的 Claude 模型。** 在轉接過的工作階段裡打
+  `/model sonnet`，是你對自己預設值做的決定；把舊值蓋回去，等於 alc 推翻一件
+  它根本沒被問過的事。
+- **工作階段是被直接砍掉的。** 對 alc 或 hub 下 `kill -9`，什麼收尾都不會跑。
+  這種情況 `alc doctor` 仍然會指出那個檔案與那一行 —— 而下一次
+  `alc --codex claude` 就會把它清掉：如果啟動前讀到的值本身就只有轉接器服務
+  得了，那就直接移除，而不是再寫回去。
 
 不要用 `CLAUDE_CONFIG_DIR` 去隔離它：那會搬走 Claude Code 的整個設定家目錄，
-連登入資訊也一起搬走。
+連登入資訊也一起搬走。alc 找那個檔案時讀的是同一個變數，而且是在你實際輸入指令
+的那個 shell 裡解析，不是在 hub 裡 —— 所以就算是共享的 session，逐專案設定的
+`CLAUDE_CONFIG_DIR` 也一樣有效。
 
 ## OpenCode、Pi、Kimi Code CLI
 

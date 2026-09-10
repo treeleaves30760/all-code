@@ -128,8 +128,8 @@ pub(crate) struct Session {
     /// once the reader has reached EOF - see the note on that method.
     exit: Mutex<Option<ExitInfo>>,
 
-    /// Held for its `Drop`: the Codex bridge and any temporary config written
-    /// for this launch.
+    /// Held for its `Drop`: Claude Code's own default model, the Codex
+    /// bridge, and any temporary config written for this launch.
     ///
     /// Released by the pump the moment the pty reaches EOF, not when the
     /// session is finally dropped. An exited session's card lingers on the

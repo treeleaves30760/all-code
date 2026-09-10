@@ -23,8 +23,8 @@
 //! the hub itself resolves out of `std::env` while preparing a launch reads
 //! the wrong shell's answer. What a launch needs from the user's environment
 //! is therefore resolved client-side and carried: the agent's binary
-//! override, the Codex `auth.json`, the model and effort. Anything added
-//! later has to travel the same way.
+//! override, the Codex `auth.json`, Claude Code's own `settings.json`, the
+//! model and effort. Anything added later has to travel the same way.
 //!
 //! # What a hub crash leaves behind
 //!
@@ -648,6 +648,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         agent,
         bridge,
         codex_auth_file,
+        claude_settings_file,
         file_setup,
         model,
         effort,
@@ -685,6 +686,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         // does instead of talking straight to the model vendor.
         bridge,
         codex_auth_file: codex_auth_file.map(PathBuf::from),
+        claude_settings_file: claude_settings_file.map(PathBuf::from),
         file_setup,
         model,
         effort: effort
@@ -720,6 +722,7 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         agent,
         bridge,
         codex_auth_file,
+        claude_settings_file,
         file_setup,
         model,
         effort,
@@ -748,6 +751,10 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         codex_auth_file: codex_auth_file
             .as_ref()
             .map(|path| text(path.as_os_str(), "Codex credential path"))
+            .transpose()?,
+        claude_settings_file: claude_settings_file
+            .as_ref()
+            .map(|path| text(path.as_os_str(), "Claude Code settings path"))
             .transpose()?,
         file_setup: file_setup.clone(),
         model: model.clone(),

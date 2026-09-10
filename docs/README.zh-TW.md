@@ -368,14 +368,19 @@ Claude Code 的內建別名也一併留在 Codex 上：選單的 Default 一列�
 `alc --codex claude` 會再從 alc provider 的預設值開始，所以 `alc config`
 仍然是唯一的真實來源。
 
-有一件事要知道，因為那個選單是 Claude Code 的、不是 alc 的：在裡面選模型
-的同時，Claude Code 會把它寫進 `~/.claude/settings.json`，當成之後每個新
-工作階段的預設值（確認訊息上就這麼寫）。那個檔案會被這台機器上每一個
-Claude Code 工作階段讀到，包含不是 alc 啟動的那些，而那些前面沒有轉接器。
-之後直接執行 `claude` 就會向 Anthropic 要一個 GPT 模型，然後被告知它不存
-在。想只套用在這次工作階段，請用選單裡的「use this session only」；已經寫
-進去的，把 `~/.claude/settings.json` 裡的 `model` 那一行刪掉即可 —— alc 自
-己會帶模型參數，不需要它。`alc doctor` 發現時會指出那個檔案與那一行。
+有一件事要知道，因為那個選單是 Claude Code 的、不是 alc 的：工作階段最後
+落在哪個模型，Claude Code 也會把它寫進 `~/.claude/settings.json`，當成之後
+每個新工作階段的預設值。那個檔案會被這台機器上每一個 Claude Code 工作階段
+讀到，包含不是 alc 啟動的那些，而那些前面沒有轉接器 —— 之後直接執行
+`claude` 就會向 Anthropic 要一個 GPT 模型，然後被告知它不存在。
+
+**alc 會在工作階段結束時把那一個欄位放回去。** 它在啟動前先讀下原本的值，
+結束後再寫回，所以你自己的預設值撐得過一趟轉接器。有兩種情況它刻意不動：
+你在工作階段中途自己切到某個真正的 Claude 模型 —— 那是你的選擇，不該由 alc
+推翻；以及工作階段是被直接砍掉的 —— 那時候沒有任何東西跑得起來去還原。後者
+`alc doctor` 仍然會指出那個檔案與那一行，而下一次 `alc --codex claude` 就會
+把它清掉：如果啟動前讀到的值本身就只有轉接器服務得了，那就直接移除，而不是
+再寫回去。
 
 ### 其他每個 agent
 
