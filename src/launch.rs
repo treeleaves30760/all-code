@@ -114,6 +114,17 @@ pub struct LaunchSpec {
     /// `Bridge::start` then falls back to resolving it itself and reports the
     /// same error it always did.
     pub codex_auth_file: Option<PathBuf>,
+    /// Where Claude Code's own user-level `settings.json` is, resolved here
+    /// for the same reason `codex_auth_file` is: both inputs to that path
+    /// (`CLAUDE_CONFIG_DIR` and `HOME`) come out of the environment, and the
+    /// hub's environment is whichever shell started the daemon.
+    ///
+    /// Set only for a bridged Claude Code launch, which is the only launch
+    /// that can leave a model in there that plain `claude` cannot reach.
+    /// `None` otherwise, and when the path could not be resolved at all -
+    /// a relative `CLAUDE_CONFIG_DIR`, or no home directory - in which case
+    /// nothing is snapshotted and nothing is restored.
+    pub claude_settings_file: Option<PathBuf>,
     pub file_setup: Vec<FileSetup>,
     /// The model this session starts on, once the builder has resolved it.
     /// Descriptive only: the agent was already told through args or env.
@@ -185,6 +196,7 @@ impl LaunchSpec {
                 api: BridgeApi::Messages,
             }),
             codex_auth_file: Some(PathBuf::from("/work/codex/auth.json")),
+            claude_settings_file: Some(PathBuf::from("/work/claude/settings.json")),
             file_setup: vec![
                 FileSetup::UpsertJson {
                     path: PathBuf::from("/tmp/alc-models.json"),
@@ -222,6 +234,7 @@ impl LaunchSpec {
             agent: Agent::Codex,
             bridge: None,
             codex_auth_file: None,
+            claude_settings_file: None,
             file_setup: Vec::new(),
             model: None,
             effort: None,
@@ -281,6 +294,7 @@ pub fn build(
         agent,
         bridge: None,
         codex_auth_file: None,
+        claude_settings_file: None,
         file_setup: Vec::new(),
         model: None,
         effort: None,
@@ -309,6 +323,24 @@ pub fn build(
         spec.codex_auth_file = Some(codex_auth_file()?);
     }
 
+    // Claude Code's settings file, resolved in the same shell and for the
+    // same reason. Only for a bridged Claude launch: that is the one
+    // combination whose model ids no plain `claude` can reach, so it is the
+    // one whose default is worth putting back.
+    //
+    // Deliberately not extended to a local-server launch (Ollama, vLLM),
+    // which can pin a local model id the same way. Those ids are not
+    // recognisable as alc's doing - a `gemma4:12b` in that file may be
+    // exactly what the user meant - and guessing would be alc overruling a
+    // choice it cannot read. `alc doctor` reports neither; that is a
+    // decision, not an oversight.
+    //
+    // Unlike `codex_auth_file` a failure here is not worth a refusal: the
+    // path resolving to nothing costs a restore, not a launch.
+    if spec.bridge.is_some() && spec.agent == Agent::Claude {
+        spec.claude_settings_file = agents::claude::user_settings_path();
+    }
+
     // Recorded once here rather than at each builder's own resolution site:
     // a bridged launch runs on the plan's model, and every other launch on
     // the override or the profile default, which is what the builders each
@@ -323,10 +355,21 @@ pub fn build(
     Ok(spec)
 }
 
-/// The side effects a running session owns: the Codex bridge and the
-/// temporary files written for the agent. Both must outlive the agent
-/// process and be torn down when it exits, so they travel together.
+/// The side effects a running session owns: Claude Code's own default
+/// model, the Codex bridge, and the temporary files written for the agent.
+/// All three must outlive the agent process and be undone when it exits, so
+/// they travel together.
+///
+/// Declaration order is drop order, and it is deliberate: the settings
+/// restore goes first, because `Bridge::drop` waits up to two seconds for
+/// its runtime thread and the user's shell should not come back before
+/// their `~/.claude/settings.json` is right again.
 pub(crate) struct SessionGuards {
+    #[allow(
+        dead_code,
+        reason = "held for its Drop; it restores the pinned model on exit"
+    )]
+    claude_default: Option<crate::agents::claude::DefaultModelGuard>,
     #[allow(
         dead_code,
         reason = "held for its Drop; the bridge dies with the session"
@@ -345,6 +388,7 @@ impl SessionGuards {
     #[cfg(all(test, unix))]
     pub(crate) fn none() -> Self {
         Self {
+            claude_default: None,
             bridge: None,
             cleanup: CleanupFiles(Vec::new()),
         }
@@ -407,8 +451,40 @@ fn needs_an_adapter_and_has_one(spec: &LaunchSpec) -> Result<()> {
 /// pseudo-terminal, say) while keeping the ordering this sequence depends on:
 /// `apply_bridge` must run before `process_file_setup`, because the Pi and
 /// Kimi builders write files whose contents name the bridge's base URL.
+///
+/// It is also where the snapshot of Claude Code's own default model is
+/// taken, and that placement is the point: both spawn paths - `execute` here
+/// and `Hub::create` - go through this function and nothing else does, while
+/// `--dry-run` returns before reaching it, so a dry run still reads nothing
+/// and writes nothing.
 pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
     needs_an_adapter_and_has_one(&spec)?;
+
+    // Before the agent starts, so what is read is what the user had.
+    // `claude_settings_file` is only set for a bridged Claude launch, and
+    // the plan's own options are the list this session put in Claude Code's
+    // picker - which is exactly the set of ids that must not be left behind
+    // as a machine-wide default.
+    let claude_default = spec
+        .claude_settings_file
+        .clone()
+        .zip(spec.bridge.as_ref())
+        .map(|(settings, plan)| {
+            let mut offered: Vec<String> = plan
+                .options
+                .iter()
+                .map(|option| option.id.clone())
+                .collect();
+            // The starting model as well as the picker's rows: `--model`
+            // takes a hand-typed id, and one that is neither in the catalog
+            // nor `gpt-` prefixed would otherwise not be recognised as
+            // alc's doing.
+            if !offered.contains(&plan.model) {
+                offered.push(plan.model.clone());
+            }
+            agents::claude::DefaultModelGuard::arm(settings, offered)
+        });
+
     let bridge = if let Some(plan) = spec.bridge.clone() {
         let bridge = Bridge::start(&plan, spec.codex_auth_file.clone())?;
         agents::apply_bridge(&mut spec, &bridge.base_url(), &plan)?;
@@ -423,7 +499,11 @@ pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
     Ok(Prepared {
         program,
         spec,
-        guards: SessionGuards { bridge, cleanup },
+        guards: SessionGuards {
+            claude_default,
+            bridge,
+            cleanup,
+        },
     })
 }
 
@@ -1022,7 +1102,7 @@ fn upsert_json_key(path: &Path, pointer: &str, key: &str, value: serde_json::Val
 /// The pre-existing unix permission bits of `path`, or `None` when it does
 /// not exist yet (a fresh file keeps whatever `atomic_write` gives it).
 #[cfg(unix)]
-fn unix_mode(path: &Path) -> Result<Option<u32>> {
+pub(crate) fn unix_mode(path: &Path) -> Result<Option<u32>> {
     use std::os::unix::fs::PermissionsExt;
     match fs::metadata(path) {
         Ok(metadata) => Ok(Some(metadata.permissions().mode())),

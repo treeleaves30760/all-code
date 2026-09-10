@@ -290,8 +290,9 @@
     if (card.model) bits.push(card.model);
     if (card.effort) bits.push(card.effort);
     // Worth a chip because it changes what this page can do: a tmux
-    // session's size is the local terminal's, so resizing this window
-    // refits the view rather than the agent.
+    // session's size is this window's, so resizing it resizes the agent -
+    // where a plain session's belongs to the terminal that launched it and
+    // this page only scales what it is given.
     if (card.tmux) bits.push('tmux');
     return bits.filter(Boolean);
   }
@@ -350,6 +351,66 @@
     return RUNGS.find((rung) => offered.has(rung)) || 'plan';
   }
 
+  /* ------------------------------------------------------------ geometry */
+
+  /* How to draw a grid whose size is not the page's to choose.
+   *
+   * Only a `--tmux` session's size belongs to the browser. Without it there
+   * is one pty, its size is the terminal that launched it, and a page that
+   * resized the agent to fit its own window left that terminal drawing for a
+   * width it no longer had - which is the whole bug. So the page keeps the
+   * session's real cols x rows and changes the only thing that is its own:
+   * how big a character is.
+   *
+   * The font size is the mechanism rather than a CSS transform, and the
+   * difference matters twice. Text stays real text laid out at its final
+   * size, so it is sharp when the grid is blown up to fill a desktop window
+   * as well as when it is shrunk onto a phone; and xterm's own hit-testing
+   * divides pixels by the cell it measured, so a scaled transform would put
+   * every click and drag-selection on the wrong cell while a resized font
+   * leaves them exact.
+   *
+   * Cell metrics are not perfectly linear in the font size - a renderer
+   * rounds to device pixels - so this is one step of a converging loop
+   * rather than an answer: it is given the cell the last size actually
+   * produced and returns the next size to try. Steps are floored to
+   * `FIT_STEP`, so the grid never grows past the frame and the loop cannot
+   * oscillate between two sizes that both round up.
+   *
+   * `scale` is the safety net, and it describes the grid AS IT IS now, not
+   * as it will be at `fontSize`: whatever does not fit the frame at the
+   * current cell. The caller applies it once the font size has settled, so
+   * a fit that ran out of passes still cannot crop the agent's screen - it
+   * only ends up transformed, which is the lesser of the two. It is 1
+   * whenever the grid already fits, which is the ordinary case. Where the
+   * grid then sits is not decided here: the frame centres it. */
+  const FIT_MIN_FONT = 4;
+  const FIT_MAX_FONT = 32;
+  const FIT_STEP = 0.1;
+
+  function fitGrid(view, box, limits) {
+    const min = (limits && limits.min) || FIT_MIN_FONT;
+    const max = (limits && limits.max) || FIT_MAX_FONT;
+    const fontSize = view ? view.fontSize : 0;
+    const cell = (view && view.cell) || {};
+    const wide = cell.width * (view ? view.cols : 0);
+    const high = cell.height * (view ? view.rows : 0);
+    const room = box ? box.width : 0;
+    const tall = box ? box.height : 0;
+    // Not laid out yet, or measured before the renderer had an answer.
+    // Leaving it alone is the only safe move: every ratio here would be
+    // zero, infinity, or NaN.
+    if (!(wide > 0) || !(high > 0) || !(room > 0) || !(tall > 0) || !(fontSize > 0)) {
+      return { fontSize, scale: 1 };
+    }
+
+    // The smaller ratio wins, so the grid is never cropped.
+    const want = Math.min(room / wide, tall / high);
+    const stepped = Math.floor((fontSize * want) / FIT_STEP) * FIT_STEP;
+    const next = Math.min(max, Math.max(min, Math.round(stepped * 10) / 10));
+    return { fontSize: next, scale: Math.min(1, want) };
+  }
+
   /* ------------------------------------------------------------ protocol */
 
   const OP_OUTPUT = 0x01;
@@ -400,6 +461,9 @@
     formatExit,
     RUNGS,
     cycleRung,
+    FIT_MIN_FONT,
+    FIT_MAX_FONT,
+    fitGrid,
     OP_OUTPUT,
     OP_SNAPSHOT,
     decodeFrame,

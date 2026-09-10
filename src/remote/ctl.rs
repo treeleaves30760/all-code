@@ -150,6 +150,18 @@ pub(crate) struct WireSpec {
     /// have. A path, never a credential.
     #[serde(default)]
     pub codex_auth_file: Option<String>,
+    /// Claude Code's own `settings.json`, resolved in the client's shell for
+    /// the same reason: `CLAUDE_CONFIG_DIR` and `HOME` belong to whoever
+    /// typed the command, not to the daemon.
+    ///
+    /// The dangerous direction costs less here than it does for `bridge`: a
+    /// hub still running yesterday's binary drops this in silence and the
+    /// session's pinned model is not put back afterwards - a stale default,
+    /// which `alc doctor` reports, rather than a mis-launch. It is set only
+    /// on a bridged launch, and `hub_cannot_carry` already refuses a
+    /// version-mismatched hub for those.
+    #[serde(default)]
+    pub claude_settings_file: Option<String>,
     /// Files the launch must write before the agent starts. Carries the Kimi
     /// builder's merged config, which holds an API key - no worse than this
     /// message's `env` and `secret_values`, which already do.

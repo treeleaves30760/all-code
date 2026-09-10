@@ -105,16 +105,14 @@ pub(crate) struct Session {
     size: Mutex<(u16, u16)>,
     /// The tmux session hosting the agent, when the launch asked for one.
     tmux: Option<TmuxHost>,
-    /// The window size and agent pid tmux last reported, refreshed by the
-    /// watcher.
+    /// The agent pid tmux last reported, refreshed by the watcher.
     ///
-    /// Cached rather than asked for on demand because both are read on every
+    /// Cached rather than asked for on demand because it is read on every
     /// card - which is every session list, every notice and every viewer
     /// joining - and `Registry::cards` builds those while holding the
     /// registry's own lock. Forking a tmux client per session in there would
     /// put a process spawn per session behind that lock on every page
     /// refresh.
-    tmux_window: Mutex<Option<(u16, u16)>>,
     tmux_pid: Mutex<Option<u32>>,
     /// Set by `kill`, so the watcher escalates from asking the agent to stop
     /// to stopping the server it runs in.
@@ -128,8 +126,8 @@ pub(crate) struct Session {
     /// once the reader has reached EOF - see the note on that method.
     exit: Mutex<Option<ExitInfo>>,
 
-    /// Held for its `Drop`: the Codex bridge and any temporary config written
-    /// for this launch.
+    /// Held for its `Drop`: Claude Code's own default model, the Codex
+    /// bridge, and any temporary config written for this launch.
     ///
     /// Released by the pump the moment the pty reaches EOF, not when the
     /// session is finally dropped. An exited session's card lingers on the
@@ -205,7 +203,6 @@ impl Session {
                     .and_then(|snapshot| snapshot.pane_pid),
             ),
             tmux,
-            tmux_window: Mutex::new(None),
             killing: AtomicBool::new(false),
             seq: AtomicU64::new(0),
             warned_clipboard: AtomicBool::new(false),
@@ -239,8 +236,7 @@ impl Session {
     /// what finally gives every client its EOF and lets `pump` finish the
     /// session the same way it always has.
     ///
-    /// It also refreshes the window size, which the mirror follows, and the
-    /// agent's pid, which the card shows.
+    /// It also records the agent's pid, which the card shows.
     fn watch_tmux(self: Arc<Self>) {
         let Some(host) = self.tmux.as_ref() else {
             return;
@@ -254,9 +250,6 @@ impl Session {
             match host.tmux.probe(&host.binary) {
                 Some(snapshot) => {
                     unanswered = 0;
-                    if let Some(window) = snapshot.window {
-                        self.follow_tmux_window(window);
-                    }
                     if let Ok(mut pid) = self.tmux_pid.lock() {
                         *pid = snapshot.pane_pid.or(*pid);
                     }
@@ -300,42 +293,6 @@ impl Session {
                 return;
             }
             thread::sleep(TMUX_POLL);
-        }
-    }
-
-    /// Puts the mirror's own terminal at exactly the size tmux settled the
-    /// window on.
-    ///
-    /// The mirror attaches with `ignore-size`, so it has no vote in that
-    /// size and this cannot feed back into it - the local terminal decides,
-    /// and this follows. Which is the point: a mirror wider than the window
-    /// is a mirror tmux pads out and re-emits row by row, and two things
-    /// that matter go wrong when it does. The secret scrubber matches
-    /// contiguous bytes (`scrub.rs`), so a credential re-emitted across a
-    /// row boundary would reach the page unmasked; and `permission` reads
-    /// the bottom rows of this grid for the agent's mode line, which would
-    /// be tmux's padding rather than the agent's output.
-    ///
-    /// It narrows that window rather than closing it: a line straddling the
-    /// old boundary can still be re-emitted split in the moment between the
-    /// local terminal resizing and this catching up. The scrubber has always
-    /// been a best-effort defence over the one hole alc opens, and this is
-    /// the same promise, kept as well as a poll can keep it.
-    fn follow_tmux_window(&self, (cols, rows): (u16, u16)) {
-        if self.size.lock().is_ok_and(|size| *size == (cols, rows)) {
-            return;
-        }
-        if self.pty.resize(cols, rows).is_err() {
-            return;
-        }
-        if let Ok(mut vt) = self.vt.lock() {
-            vt.resize(usize::from(cols), usize::from(rows));
-        }
-        if let Ok(mut size) = self.size.lock() {
-            *size = (cols, rows);
-        }
-        if let Ok(mut window) = self.tmux_window.lock() {
-            *window = Some((cols, rows));
         }
     }
 
@@ -537,16 +494,21 @@ impl Session {
             return current.clone();
         }
         let caps = caps(self.agent);
-        let mut screen = self.vt.lock().map(|vt| vt.text()).unwrap_or_default();
-        // `probe` reads the bottom rows, where an agent renders its mode
-        // line. Under `--tmux` the bottom of this grid is not always the
-        // bottom of the agent's screen: the mirror follows the tmux window,
-        // but between a local resize and the watcher catching up the rest of
-        // the grid is tmux's padding. Reading the grid's own last rows would
-        // find that padding, so it is cut back to the window first.
-        if let Some((_, rows)) = self.tmux_window.lock().ok().and_then(|window| *window) {
-            screen.truncate(usize::from(rows).min(screen.len()));
-        }
+        // `probe` reads the last lines, where an agent renders its mode
+        // line, and the emulator's last lines are the bottom of the screen
+        // in both modes now. Under `--tmux` that holds because the mirror is
+        // the client that votes on the window size, so the grid alc is
+        // feeding is the window - there is no band of tmux padding along the
+        // bottom to read instead.
+        //
+        // This used to be trimmed to the window's row count, and that trim
+        // was wrong: `avt::Vt::text()` returns the scrollback as well as the
+        // screen, oldest line first, so keeping the first N lines of it read
+        // the top of the scrollback rather than the bottom of the screen.
+        // Any tmux session with more than a screenful of output behind it
+        // probed a mode line that had scrolled away minutes ago. Nothing
+        // needs it now, so it is gone rather than fixed.
+        let screen = self.vt.lock().map(|vt| vt.text()).unwrap_or_default();
         if let Some(rung) = probe(caps, &screen) {
             *current = PermState {
                 rung: Some(rung),
@@ -691,18 +653,54 @@ impl Session {
         }
     }
 
-    /// Puts the session at a viewer's size.
+    /// Puts the session at a browser viewer's size.
     ///
-    /// Ignored for a tmux session, which is the trade `--tmux` makes and the
-    /// one thing about it a user has to know: the local terminal sets the
-    /// size and the browser fits to it. A browser resize honoured here would
-    /// put the mirror out of step with the window - the exact mismatch that
-    /// makes tmux re-emit the pane row by row - and `follow_tmux_window` is
-    /// the only thing that moves this size, from the window tmux settled on.
-    pub(crate) fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+    /// Honoured only for a tmux session, and that is the trade `--tmux`
+    /// makes: the page owns the size, because the page is what somebody
+    /// asking for `--tmux` is about to go and use. Resizing this pty is the
+    /// whole mechanism - the pty's child is a `tmux attach-session` client,
+    /// so the kernel raises SIGWINCH in it, the client reports its new size,
+    /// and `window-size smallest` with the mirror as the only voter makes
+    /// the window exactly this. One event moves the mirror and the window
+    /// together, so they cannot drift apart into the mismatch that has tmux
+    /// re-emitting the pane row by row.
+    ///
+    /// Ignored for a plain session, where there is one pty and its size
+    /// belongs to the terminal that launched it (`resize_from_terminal`).
+    /// Honouring a browser here is what put a shared session at a phone's
+    /// width and left the user's own terminal drawing for a size it no
+    /// longer had; the page draws that grid scaled to fit instead.
+    ///
+    /// The clamps match `tmux::create`'s `-x`/`-y`, so a phone cannot ask
+    /// for a window narrower than the pane can hold.
+    pub(crate) fn resize_from_viewer(&self, cols: u16, rows: u16) -> Result<()> {
+        if self.tmux.is_none() {
+            return Ok(());
+        }
+        self.set_size(cols, rows)
+    }
+
+    /// Puts the session at the local terminal's size.
+    ///
+    /// The mirror image of `resize_from_viewer`, and the reason there are
+    /// two methods rather than one: which viewer is asking decides whether
+    /// the answer is honoured, and a single `resize` could not tell them
+    /// apart. The transports already can - a `ClientFrame` is a browser and
+    /// a `CtlRequest` is the local `alc` process - so the distinction is
+    /// made at the call sites and named here.
+    ///
+    /// Ignored for a tmux session, where this terminal is a tmux client in
+    /// its own right and gets no vote (`tmux::attach_argv`). In practice it
+    /// is never called for one either: `remote::attach` diverts to
+    /// `attach_tmux` before the relay and its resize watcher ever start.
+    pub(crate) fn resize_from_terminal(&self, cols: u16, rows: u16) -> Result<()> {
         if self.tmux.is_some() {
             return Ok(());
         }
+        self.set_size(cols, rows)
+    }
+
+    fn set_size(&self, cols: u16, rows: u16) -> Result<()> {
         let cols = cols.max(20);
         let rows = rows.max(4);
         self.pty.resize(cols, rows)?;

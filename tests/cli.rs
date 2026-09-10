@@ -932,6 +932,52 @@ fn codex_to_opencode_dry_run_reports_the_bridge() {
         .stdout(predicate::str::contains("adapter: built in (alc native)"));
 }
 
+/// A pin `alc doctor` finds is one a guard could not undo - a session killed
+/// outright, an alc older than 1.8.0, or a hand edit - so the remediation has
+/// to name the launch that clears it as well as the manual fix.
+#[test]
+fn doctor_says_how_to_clear_a_claude_default_only_the_bridge_can_serve() {
+    let temp = tempfile::tempdir().unwrap();
+    let claude = tempfile::tempdir().unwrap();
+    std::fs::write(
+        claude.path().join("settings.json"),
+        r#"{"model": "gpt-6-astra"}"#,
+    )
+    .unwrap();
+
+    let assert = alc(&temp)
+        // Claude Code requires this absolute, and so does alc.
+        .env("CLAUDE_CONFIG_DIR", claude.path())
+        .args(["doctor"])
+        .assert();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(output.contains("gpt-6-astra"), "{output}");
+    // The phrase the 1.8.0 remediation adds. Asserting `alc --codex claude`
+    // alone would pass against the wording this replaced, because the row
+    // above the remediation has always named that command.
+    assert!(output.contains("clears the line on exit"), "{output}");
+}
+
+/// The snapshot belongs to `launch::prepare`, which a dry run never reaches.
+/// Taking it in `launch::build` instead would have `--dry-run` reading, and
+/// eventually rewriting, a file the user only asked alc to describe.
+#[test]
+fn a_dry_run_does_not_touch_claude_codes_own_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let claude = tempfile::tempdir().unwrap();
+    let settings = claude.path().join("settings.json");
+    let before = "{\n  \"model\": \"gpt-6-astra\",\n  \"tui\": \"fullscreen\"\n}\n";
+    std::fs::write(&settings, before).unwrap();
+
+    alc(&temp)
+        .env("CLAUDE_CONFIG_DIR", claude.path())
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success();
+
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), before);
+}
+
 #[test]
 fn doctor_lists_every_agent() {
     let temp = tempfile::tempdir().unwrap();

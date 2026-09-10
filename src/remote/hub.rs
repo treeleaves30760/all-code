@@ -23,8 +23,8 @@
 //! the hub itself resolves out of `std::env` while preparing a launch reads
 //! the wrong shell's answer. What a launch needs from the user's environment
 //! is therefore resolved client-side and carried: the agent's binary
-//! override, the Codex `auth.json`, the model and effort. Anything added
-//! later has to travel the same way.
+//! override, the Codex `auth.json`, Claude Code's own `settings.json`, the
+//! model and effort. Anything added later has to travel the same way.
 //!
 //! # What a hub crash leaves behind
 //!
@@ -257,7 +257,7 @@ impl Hub {
                     return;
                 };
                 if cols > 0 && rows > 0 {
-                    let _ = session.resize(cols, rows);
+                    let _ = session.resize_from_terminal(cols, rows);
                 }
                 if reply(&peer, &CtlReply::Ok).is_err() {
                     return;
@@ -266,7 +266,7 @@ impl Hub {
             }
             CtlRequest::Resize { id, cols, rows } => {
                 if let Some(session) = self.registry.get(&id) {
-                    let _ = session.resize(cols, rows);
+                    let _ = session.resize_from_terminal(cols, rows);
                 }
                 let _ = reply(&peer, &CtlReply::Ok);
             }
@@ -488,7 +488,11 @@ impl Hub {
                     })?;
                 let command = PtyCommand {
                     program: found.binary.clone(),
-                    args: session.attach_argv(tmux::Sizing::Abstain),
+                    // The mirror votes on the window size, and it is the
+                    // only client that does: the page owns a `--tmux`
+                    // session's geometry, and this pty is how a resize frame
+                    // reaches tmux.
+                    args: session.mirror_argv(),
                     // Deliberately not the launch's environment. The attach
                     // client only needs to talk to a socket, and giving it
                     // the provider key would put that key in a second
@@ -648,6 +652,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         agent,
         bridge,
         codex_auth_file,
+        claude_settings_file,
         file_setup,
         model,
         effort,
@@ -685,6 +690,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         // does instead of talking straight to the model vendor.
         bridge,
         codex_auth_file: codex_auth_file.map(PathBuf::from),
+        claude_settings_file: claude_settings_file.map(PathBuf::from),
         file_setup,
         model,
         effort: effort
@@ -720,6 +726,7 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         agent,
         bridge,
         codex_auth_file,
+        claude_settings_file,
         file_setup,
         model,
         effort,
@@ -748,6 +755,10 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         codex_auth_file: codex_auth_file
             .as_ref()
             .map(|path| text(path.as_os_str(), "Codex credential path"))
+            .transpose()?,
+        claude_settings_file: claude_settings_file
+            .as_ref()
+            .map(|path| text(path.as_os_str(), "Claude Code settings path"))
             .transpose()?,
         file_setup: file_setup.clone(),
         model: model.clone(),

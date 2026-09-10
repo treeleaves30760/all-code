@@ -299,38 +299,61 @@ enough. Matching is case-insensitive.
 `alc hub stop` refuses while sessions are still running unless you pass
 `--drain`, so stopping the hub is never an accidental way to kill work.
 
-## One size each, with `--tmux`
+## Who owns the size
 
 A shared session is one terminal with two viewers, and a terminal has exactly
-one size. The browser and your terminal take turns setting it: whichever
-resized last wins, and the other is left drawing a full-screen TUI at a width
-it does not have — wrapped borders, doubled lines, a cursor in the wrong
-place. If the two are not the same width, one of them looks broken.
+one size. That size belongs to the terminal you launched from: it is sitting
+there drawing at it, and a browser that resized the agent to fit its own
+window would leave it drawing a full-screen TUI at a width it no longer has —
+wrapped borders, doubled lines, a cursor in the wrong place.
 
-`--tmux` runs the agent inside tmux instead, which is the tool built for
-exactly this: one program, several attached clients, each with its own size.
+So the page does not resize it. It draws the agent's real grid instead, as
+large as the space allows, centred, with black where the ratio does not
+match — the same thing a video player does with a frame that is not the shape
+of the screen. Resize your terminal and the page follows it within a few
+seconds.
+
+`--tmux` is for when the page is the side you are actually going to use. It
+runs the agent inside tmux, which is the tool built for exactly this: one
+program, several attached clients, each with its own size.
 
 ```sh
 alc --share --tmux --codex claude    # or -t
 ```
 
 Your terminal attaches as one tmux client and the hub attaches as another, so
-neither has to agree with the other about how wide the world is.
+neither has to agree with the other about how wide the world is — and this
+time it is the page that decides how wide the agent's world is.
 
 ### What changes
 
 | | Without `--tmux` | With `--tmux` |
 | --- | --- | --- |
-| Size | Last resize wins, for both | Your terminal's; the page follows it |
+| Size | Your terminal's; the page scales it to fit | The page's; your terminal shows what fits |
 | Detach | `ctrl-\` then `d` | `ctrl-b` then `d` |
 | Scrollback | The page's | The page's, plus tmux's own copy mode in your terminal |
 | Your terminal's view | Mirrored through the hub, keys masked | A direct tmux client, raw |
+
+Read the first row twice as well. With `--tmux` a terminal narrower or
+shorter than the browser window shows the **top-left corner** of the agent's
+screen and nothing explaining why — pan with `ctrl-b :refresh-client
+-L/-R/-U/-D`, or `-c` to follow the cursor. With no browser attached at all
+the size stays where the session launched, because your terminal has no vote
+in it: that is the trade `--tmux` makes, and `alc share` and `alc attach`
+both print a line saying so.
 
 The last row is the one to read twice. Without `--tmux` there is no
 unscrubbed view of a session: your own terminal reads the same masked stream
 the browser does. With `--tmux` your terminal is a tmux client, so it shows
 what the agent actually printed — including an API key alc put in the
 environment, if the agent echoes one. **The browser still sees those masked.**
+
+That row is also why the size is arranged this way round. tmux serves a
+client that is not the window's size by re-emitting the pane into it row by
+row, and alc's secret masking matches contiguous bytes — so the client that
+gets that treatment must never be the mirror. With the page driving, the
+mirror is always exactly the window's size, and the re-emitted one is your
+own terminal, which alc was never masking anyway.
 
 ### Requirements and limits
 
@@ -426,7 +449,7 @@ Stated plainly, because finding out later is worse:
 
 ```sh
 alc --share <agent>          # mirror this session
-alc --share --tmux <agent>   # ...with tmux, so both sides keep their own size
+alc --share --tmux <agent>   # ...with tmux: two sizes, and the page owns the agent's
 alc share <agent> -- <args>  # the unambiguous form
 alc share <agent> --name x   # name the card, instead of <agent>@<directory>
 alc --no-share <agent>       # never mirror, whatever the settings say
