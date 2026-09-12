@@ -2,8 +2,8 @@
 
 **Run Claude Code on the Codex/ChatGPT subscription you already pay for** — and
 seven other coding agents besides, on that same login or on any provider you
-point them at. Any session can be mirrored to a browser page and driven from
-another device.
+point them at. On macOS and Linux, any session can be mirrored to a browser
+page and driven from another device.
 
 [![CI](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml/badge.svg)](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/treeleaves30760/all-code?logo=github)](https://github.com/treeleaves30760/all-code/releases/latest)
@@ -25,7 +25,9 @@ Windows PowerShell: `irm https://raw.githubusercontent.com/treeleaves30760/all-c
 
 **There is no configuration step.** No `alc config init`, no file to edit. The
 starter configuration is compiled into the binary and already carries a Codex
-profile; `alc --codex claude` reads it in memory and writes nothing to disk.
+profile; `alc --codex claude` reads it in memory and writes no configuration
+file of its own. The only thing it leaves in `~/.config/alc` is the Codex model
+catalog, re-cached at most once a day.
 
 **What it needs** is the `auth.json` that `codex login` writes, and `claude` on
 PATH — alc launches coding agents, it does not bundle them. **What it does not
@@ -36,7 +38,7 @@ both is told about `codex login` first:
 
 ```text
 error: Codex credentials were not found at ~/.codex/auth.json; run `codex login` and retry
-error: 'claude' is not installed or not on PATH; install it first, then retry `alc claude`
+error: 'claude' is not installed or not on PATH; install it first, then retry `alc claude`: cannot find binary path
 ```
 
 **What you get.** Claude Code starts on `gpt-5.6-terra` at `medium` effort — or
@@ -67,7 +69,8 @@ front of them. alc reads that one key before the launch and puts it back when
 the session exits. [Codex bridge](#codex-bridge) has the details, and the two
 cases where it deliberately leaves the file alone.
 
-alc prints nothing at launch: what you are looking at is Claude Code. The
+alc prints nothing at launch — bar one note when an `ultra` effort from your
+Codex config is clamped to `max` — so what you are looking at is Claude Code. The
 adapter in between is a third-party compatibility layer, not an official OpenAI
 or Anthropic integration — review [THIRD_PARTY.md](THIRD_PARTY.md) and your
 provider terms before routing subscription credentials through it.
@@ -143,8 +146,10 @@ Ids can be given as any unambiguous prefix, git-short-hash style. `alc sessions`
 leads with the link because the one `--share` printed scrolls away the moment the
 agent draws its own interface.
 
-**What the link can do.** A shared session starts in **ask** mode — the link does
-not hand anyone an autonomous agent — and loosening it past the ceiling you
+**What the link can do.** A shared Claude Code, Codex, or OpenCode session starts
+in **ask** mode — alc passes the flag itself, so the link does not hand anyone an
+autonomous agent. The other five agents start on their own defaults unless you
+name a rung with `--permission`. Loosening a session past the ceiling you
 configure needs `alc confirm <ticket>` typed at a terminal on the host machine.
 [Remote control](#remote-control) has the permission ladder and the threat model.
 
@@ -210,7 +215,6 @@ and protocol for every kind.
 alc --codex codex exec "review this repository"
 alc --openrouter claude --print "summarize the diff"
 alc --ollama opencode run "fix the failing test"
-alc goose run --name my-session
 ```
 
 To pass an option with one of those same names to Claude itself, put it after
@@ -221,10 +225,10 @@ alc's own flags — `--share`, `--no-share`, `--bind-lan`, `--name`,
 they would be handed to the agent as prompt text, so alc stops and says so
 instead.
 
-**Previewing.** `alc --openrouter --dry-run claude` prints the resolved agent and
-provider, the command with secrets redacted, the adapter's loopback port, and
-every file it would write — and says when a launch would be refused rather than
-only what would succeed.
+**Previewing.** `alc --codex --dry-run claude` prints the resolved agent and
+provider, the command with secrets redacted, a line for the built-in adapter when
+the launch uses one, and every file it would write — and says when a launch would
+be refused rather than only what would succeed.
 
 ## Diagnostics
 
@@ -292,11 +296,12 @@ natively, and `ALC_CLAUDE_BIN` and its siblings override a binary path.
 
 ## Codex bridge
 
-alc offers the models Codex lists, and the bridge keeps no allowlist of its own:
-whatever slug it is handed goes upstream, and chatgpt.com decides. A model is
-therefore usable on the day Codex ships it rather than the day alc catches up —
-which is what made `gpt-6-astra` unreachable before 1.5.0, while `codex` itself
-was already serving it.
+alc tracks four Codex models — the ones in the table above — and syncs their
+details from the installed Codex CLI. The bridge itself keeps no allowlist:
+whatever slug it is handed goes upstream, and chatgpt.com decides, so a model alc
+has not been taught about is still reachable by naming it with `--model` on the
+day Codex ships it. That is what made `gpt-6-astra` usable in 1.5.0, when the
+hard-coded list in the bridge alc used to depend on was a release behind.
 
 **Effort.** Every model accepts `low`, `medium`, `high`, `xhigh`, or `max`.
 Higher effort gives the model more room to reason, but can take longer and use
@@ -462,7 +467,8 @@ alc runs its own tmux server per session and starts it with no configuration
 file, so your own tmux is untouched, alc's sessions behave the same for
 everybody, and a `~/.tmux.conf` is never a way into a session's environment.
 Running alc from inside tmux is fine. Needs tmux 3.2 or newer; `alc doctor` says
-what you have. One caveat worth stating plainly: your local terminal is now a
+what you have, and `--tmux` only applies to a shared session — it says so if you
+pass it without one. One caveat worth stating plainly: your local terminal is now a
 direct tmux client rather than a mirror, so it shows the agent's raw output. The
 browser still sees API keys alc injected masked; your own terminal does not.
 
@@ -497,9 +503,14 @@ alc has five rungs, loosest last: `plan` (reads and plans, writes nothing), `ask
 asking, still asks for commands), `auto` (acts inside whatever sandbox the agent
 has), and `full` (no gate). `--permission <rung>` sets where a session starts.
 
-A shared session with no `--permission` starts at **ask**, so a link opened on a
-phone is not looking at an autonomous agent. The page can change the rung while
-the session runs, up to a ceiling — `auto-edit` by default, set on the **Sharing
+A shared session with no `--permission` starts at **ask** on the three agents
+whose flags alc verified against a real `--help` — Claude Code, Codex, and
+OpenCode — so a link opened on a phone is not looking at an autonomous agent
+there. The other five launch exactly as they would on their own, because guessing
+an unverified flag name into argv produces a session that will not start rather
+than a tightened one; name the rung with `--permission` to have alc pass the
+documented flag anyway, except on Pi, which has no permission model to set. The
+page can change the rung while the session runs, up to a ceiling — `auto-edit` by default, set on the **Sharing
 & remote** screen of `alc config`. Tightening is never gated.
 
 Past the ceiling, the page shows a ticket and you type it at a terminal on the
@@ -519,7 +530,7 @@ each one whether it verified the flags against a real `--help`, whether the mode
 can be changed mid-session at all (Kimi is relaunch-only; Pi has no permission
 model and is not sandboxed), and whether the current mode was set at launch, read
 back off the screen, or merely assumed. The page shows the agent's own word
-beside alc's rung — `Auto-edit · Claude Code: acceptEdits` — because a single
+beside alc's rung — `auto-edit · Accept edits` — because a single
 shared label would mislead.
 
 ### What this actually grants
@@ -558,7 +569,8 @@ does today.
 - `credentials.toml`: locally saved API keys. On Unix, alc writes this file with
   mode `0600`; on Windows it lives under the current user's AppData.
 - `remote.toml`: sharing — on/off, share-by-default, bind address, port, and the
-  permission ceiling. `alc config show` prints these as comments at the end.
+  permission ceiling. `alc config show` prints the sharing and share-by-default
+  values as comments at the end.
 
 Override the directory with `ALC_CONFIG_DIR`. Useful scripting commands:
 
@@ -602,9 +614,10 @@ The installer puts `alc` in `~/.local/bin` (Windows:
 needed. On macOS/Linux, restart the terminal or source the profile named by the
 installer; PowerShell updates the current session and your User PATH. If PATH
 cannot be changed, the installer prints the exact directory to add manually. To
-install into a different directory, set `ALC_INSTALL_DIR` — custom directories
-are not added silently — or set `ALC_NO_PATH_UPDATE=1` to disable automatic PATH
-changes explicitly. The Windows installer is tested with both Windows PowerShell
+install into a different directory, set `ALC_INSTALL_DIR`: on macOS and Linux a
+custom directory is never added to PATH for you, while on Windows it is added to
+your User PATH like the default one. Set `ALC_NO_PATH_UPDATE=1` to disable
+automatic PATH changes explicitly. The Windows installer is tested with both Windows PowerShell
 5.1 and PowerShell 7, including 32-bit PowerShell running on 64-bit Windows.
 
 ### Updating
@@ -635,7 +648,8 @@ cargo build --release --locked
 
 The Codex bridge is alc's own code (`src/bridge/`), compiled into the binary, so
 a source build is a complete one — `alc --codex <agent>` works with nothing else
-installed. Release archives contain only `alc` for the same reason.
+installed. Release archives ship one binary, `alc`, for the same reason, with the
+license notices (`LICENSE`, `THIRD_PARTY.md`, `THIRD_PARTY_LICENSES/`) beside it.
 
 Useful development checks:
 
