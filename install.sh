@@ -130,11 +130,15 @@ esac
 printf '\nInstalled alc to %s\n' "$install_dir/alc"
 case "$path_status" in
   present)
-    printf 'alc is already available on PATH. Run: alc config\n'
+    printf 'alc is already available on PATH.\n'
+    printf 'Next: codex login, then: alc --codex claude\n'
+    printf 'Another provider instead: alc config\n'
     ;;
   profile)
     printf 'Added ~/.local/bin to PATH in %s.\n' "$profile"
-    printf 'Restart your terminal (or run: source "%s"), then run: alc config\n' "$profile"
+    printf 'Restart your terminal (or run: source "%s").\n' "$profile"
+    printf 'Then: codex login, then: alc --codex claude\n'
+    printf 'Another provider instead: alc config\n'
     ;;
   failed)
     printf 'Could not update %s automatically.\n' "$profile" >&2

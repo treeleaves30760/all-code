@@ -148,12 +148,15 @@ try {
     if ($pathUpdated) {
         Write-Host 'Added the install directory to your User PATH.'
         Write-Host 'alc is ready in this PowerShell. New terminals will pick it up automatically.'
-        Write-Host 'Run: alc config'
+        Write-Host 'Next: codex login, then: alc --codex claude'
+        Write-Host 'Another provider instead: alc config'
     } elseif ($inCurrentPath) {
-        Write-Host 'alc is already available on PATH. Run: alc config'
+        Write-Host 'alc is already available on PATH.'
+        Write-Host 'Next: codex login, then: alc --codex claude'
+        Write-Host 'Another provider instead: alc config'
     } elseif ($inUserPath -or $inMachinePath) {
         Write-Host 'The install directory is already in your persistent PATH.'
-        Write-Host 'Restart PowerShell, then run: alc config'
+        Write-Host 'Restart PowerShell, then: codex login, then: alc --codex claude'
     } else {
         if ($pathUpdateError) {
             Write-Warning "Could not update your User PATH automatically: $pathUpdateError"
@@ -163,7 +166,7 @@ try {
         Write-Host 'alc is installed, but its directory is not on PATH.'
         Write-Host 'Add this directory to Settings > Environment Variables > User variables > Path:'
         Write-Host "  $normalizedInstallDir"
-        Write-Host 'Then restart PowerShell and run: alc config'
+        Write-Host 'Then restart PowerShell, run codex login, and: alc --codex claude'
     }
 } finally {
     $resolvedTemp = [IO.Path]::GetFullPath($tempDir)
