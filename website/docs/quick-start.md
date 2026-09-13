@@ -74,6 +74,11 @@ after `--`:
 alc claude -- --model sonnet
 ```
 
+alc's own flags must come before the agent name: `--share`, `--no-share`,
+`--bind-lan`, `--name`, `--permission`, `--tmux`, and `-t`. After the agent
+name they would be handed to the agent, so alc rejects them instead — write
+`alc --name my-session goose run`, not `alc goose run --name my-session`.
+
 ## Preview without launching
 
 Print the exact command and environment that would be used. Secrets are

@@ -17,8 +17,8 @@ alc 會印出連結：
 ```text
 alc session claude-7QK2M9XB4T (claude@all-code)
   open  http://127.0.0.1:8787/#k=…
-  bind  127.0.0.1:8787 · this link grants input; keep it to yourself
-  pid   48213
+  hub   127.0.0.1:8787 · loopback only (pid 48213) · this link grants input; keep it to yourself
+  keys  ctrl-\ then d detaches; the session keeps running
 ```
 
 你自己的終端機完全照舊。共享是把 session 鏡像出去，不是把它拿走。

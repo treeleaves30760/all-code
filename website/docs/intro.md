@@ -28,7 +28,7 @@ launch [Claude Code](https://code.claude.com/docs/en/setup),
 [Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli),
 [Goose](https://block.github.io/goose/),
 [Qwen Code](https://github.com/QwenLM/qwen-code), or
-[Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli) with any of them —
+[Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli) with any provider —
 including running any of them on your Codex/ChatGPT subscription.
 
 ```sh

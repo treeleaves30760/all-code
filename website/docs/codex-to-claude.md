@@ -57,11 +57,13 @@ own `/model` picker:
 | `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
 | `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
 
-alc offers the models Codex lists, and the bridge keeps no allowlist of its
-own: whatever slug it is handed goes upstream, and chatgpt.com decides. A
-model is therefore usable on the day Codex ships it. Before 1.5.0 a
-hard-coded list in the bridge alc depended on could be a release behind,
-which is what made `gpt-6-astra` unreachable while `codex` itself served it.
+alc tracks these four models in a hard-coded list and syncs their details from
+the installed Codex CLI. The bridge is a separate thing, and it keeps no
+allowlist of its own: whatever slug it is handed goes upstream, and
+chatgpt.com decides. So a model alc does not track is still reachable by
+naming it with `--model`. Before 1.5.0 a hard-coded list in the bridge alc
+depended on could be a release behind, which is what made `gpt-6-astra`
+unreachable while `codex` itself served it.
 
 The list is ordered by capability, most capable first, matching Codex's own
 tiers. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` effort

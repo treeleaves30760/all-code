@@ -36,8 +36,10 @@ Windows 上執行的 32 位元 PowerShell。
 
 ## 安裝到其他目錄
 
-執行安裝器前設定 `ALC_INSTALL_DIR`。自訂目錄不會被靜默加入 PATH；需要手動設定時
-安裝器會告訴你。設定 `ALC_NO_PATH_UPDATE=1` 可明確關閉自動修改 PATH。
+執行安裝器前設定 `ALC_INSTALL_DIR`。在 macOS 與 Linux 上，`install.sh` 不會靜默把
+自訂目錄加入 PATH；需要手動設定時安裝器會告訴你。`install.ps1` 沒有這項區別，它會
+像對待預設目錄一樣，把自訂目錄加入你的 User PATH，所以在 Windows 上唯一的退出方式
+是 `ALC_NO_PATH_UPDATE=1`，它會直接關掉自動修改 PATH。
 
 ## 從原始碼建置
 
@@ -47,9 +49,10 @@ Windows 上執行的 32 位元 PowerShell。
 cargo build --release --locked
 ```
 
-Codex 橋接是固定版本的 Cargo 依賴，直接編進 `alc` 裡，所以從原始碼建置就是
-完整的建置 —— 不必再裝任何東西，`alc --codex claude` 就能用。發行包裡也因此
-只有 `alc` 一個檔案。
+Codex 橋接是 alc 自己的程式碼，放在 `src/bridge/`，直接編進執行檔裡，所以從原始碼
+建置就是完整的建置 —— 不必再裝任何東西，`alc --codex <agent>` 就能用。發行包裡也
+因此只有 `alc` 一個執行檔，外加放在旁邊的授權聲明：`LICENSE`、`THIRD_PARTY.md`
+與 `THIRD_PARTY_LICENSES/`。
 
 常用的開發檢查：
 

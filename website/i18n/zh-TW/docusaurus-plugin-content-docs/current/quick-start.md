@@ -72,6 +72,11 @@ alc --ollama opencode run "fix the failing test"
 alc claude -- --model sonnet
 ```
 
+alc 自己的旗標必須寫在 agent 名稱前面：`--share`、`--no-share`、`--bind-lan`、
+`--name`、`--permission`、`--tmux`、`-t`。寫在 agent 名稱後面等於交給 agent，
+所以 alc 會直接拒絕——請寫 `alc --name my-session goose run`，而不是
+`alc goose run --name my-session`。
+
 ## 先預覽不啟動
 
 印出實際會使用的指令與環境變數，API key 會被遮蔽：

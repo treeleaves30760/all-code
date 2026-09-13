@@ -38,10 +38,12 @@ PowerShell 7, including 32-bit PowerShell running on 64-bit Windows.
 
 ## Install to a different directory
 
-Set `ALC_INSTALL_DIR` before running the installer. Custom directories are not
-added to PATH silently; the installer tells you when a manual PATH change is
-needed. Set `ALC_NO_PATH_UPDATE=1` to disable automatic PATH changes
-explicitly.
+Set `ALC_INSTALL_DIR` before running the installer. On macOS and Linux,
+`install.sh` never adds a custom directory to PATH silently; it tells you when
+a manual PATH change is needed. `install.ps1` draws no such distinction — it
+adds a custom directory to your User PATH exactly like the default one, so
+`ALC_NO_PATH_UPDATE=1`, which disables automatic PATH changes outright, is the
+only way to opt out on Windows.
 
 ## Build from source
 
@@ -51,9 +53,11 @@ Rust 1.88 or newer:
 cargo build --release --locked
 ```
 
-The Codex bridge is a pinned Cargo dependency compiled into `alc`, so a source
-build is a complete one — `alc --codex claude` works with nothing else
-installed. Release archives contain only `alc` for the same reason.
+The Codex bridge is alc's own code in `src/bridge/`, compiled into the binary,
+so a source build is a complete one — `alc --codex <agent>` works with nothing
+else installed. Release archives ship the one `alc` binary for the same reason,
+plus the license notices beside it: `LICENSE`, `THIRD_PARTY.md` and
+`THIRD_PARTY_LICENSES/`.
 
 Useful development checks:
 

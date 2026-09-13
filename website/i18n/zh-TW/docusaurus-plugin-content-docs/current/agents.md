@@ -35,9 +35,11 @@ alc 會啟動八個 coding agent。每一個對「如何設定 provider」都有
   三十分鐘的 `API_TIMEOUT_MS`，並把伺服器回報的 context 長度放進
   `CLAUDE_CODE_MAX_CONTEXT_TOKENS` —— 見
   [在本機 Ollama 模型上跑 Claude Code](./providers.md#在本機-ollama-模型上跑-claude-code)。
-- 透過橋接時，Claude Code 是唯一能在工作階段中切換的 agent：內建橋接能轉送的
-  GPT 模型都會出現在它自己的 `/model` 選單裡，`/model`／`/effort` 可以直接變更正在
-  執行的工作階段 —— 完整說明請見 [Codex 橋接](./codex-to-claude.md)。
+- 透過橋接時，Claude Code 是唯一能在工作階段中切換的 agent：alc 追蹤的那四個
+  GPT 模型會出現在它自己的 `/model` 選單裡，`/model`／`/effort` 可以直接變更
+  正在執行的工作階段。橋接本身不保留任何允許清單，所以 alc 沒有追蹤的模型，
+  只要用 `--model` 指名一樣能用 —— 完整說明請見
+  [Codex 橋接](./codex-to-claude.md)。
 
 ```sh
 alc claude
