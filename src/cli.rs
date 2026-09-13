@@ -1043,7 +1043,7 @@ fn run_spec(
             sharing.tmux,
         );
     }
-    launch::execute(spec)
+    launch::execute(spec, &store.dir)
 }
 
 fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {

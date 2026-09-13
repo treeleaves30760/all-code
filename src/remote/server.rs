@@ -90,6 +90,62 @@ impl Registry {
     }
 }
 
+/// The usage report the page polls, rebuilt at most this often.
+///
+/// The page polls sessions every five seconds and would happily poll this on
+/// the same clock; a vendor call per poll would be rude to the vendor and slow
+/// for the viewer. One minute is what the Codex CLI itself uses for the same
+/// numbers.
+const USAGE_TTL: Duration = Duration::from_secs(60);
+
+/// A usage report shared by every connection thread.
+///
+/// The rebuild happens under the lock on purpose: several polls arriving at
+/// once then wait for one fetch instead of each starting their own. It never
+/// runs inside `Registry::cards()`, which holds a different lock that the
+/// whole page depends on.
+struct UsageCache {
+    config_dir: std::path::PathBuf,
+    state: Mutex<Option<(Instant, crate::usage::UsageReport)>>,
+}
+
+impl UsageCache {
+    fn new(config_dir: &std::path::Path) -> Self {
+        Self {
+            config_dir: config_dir.to_path_buf(),
+            state: Mutex::new(None),
+        }
+    }
+
+    fn report(&self) -> Result<crate::usage::UsageReport> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("the usage cache lock was poisoned"))?;
+        if let Some((built, report)) = state.as_ref()
+            && built.elapsed() < USAGE_TTL
+        {
+            return Ok(report.clone());
+        }
+
+        let store = crate::config::Store::load(Some(self.config_dir.clone()))?;
+        // The hub's own environment belongs to whichever shell started it, so
+        // discovery here reads configuration and the home directory only. A
+        // profile that pins its account directory is the way to be certain,
+        // and the page says so. The Keychain is off limits from a daemon: a
+        // background read would raise a dialog on a desktop nobody is at.
+        let report = crate::usage::build_report(
+            &store,
+            None,
+            crate::usage::ResolvedBy::Hub,
+            &crate::usage::accounts::Env::hub_safe(),
+            crate::usage::accounts::ClaudeStores::FileOnly,
+        );
+        *state = Some((Instant::now(), report.clone()));
+        Ok(report)
+    }
+}
+
 /// Everything a connection thread needs that outlives the connection.
 /// Named for what it does rather than `Context`, which `anyhow` already
 /// owns in this file.
@@ -100,6 +156,7 @@ struct Serving {
     /// The loosest rung a browser may reach without a confirmation typed at
     /// a terminal on this machine.
     ceiling: SafetyRung,
+    usage: UsageCache,
 }
 
 pub(crate) struct Server {
@@ -157,6 +214,7 @@ impl Server {
                 registry: Arc::new(Registry::default()),
                 gate: EscalationGate::new(config_dir)?,
                 ceiling,
+                usage: UsageCache::new(config_dir),
             }),
             connections: Arc::new(AtomicUsize::new(0)),
             max_connections: settings.max_connections,
@@ -617,6 +675,23 @@ fn serve_http(
             let body = serde_json::to_vec(&registry.cards())?;
             respond(stream, 200, "application/json; charset=utf-8", None, &body)
         }
+        // Answered for both grades rather than refused for one: the page
+        // forgets its token on any 401 or 403, so a refusal here would log a
+        // viewer out of the whole page. A viewer sees the numbers with the
+        // identity taken off instead.
+        "/api/usage" => {
+            debug_assert!(grade.is_some());
+            let body = match context.usage.report() {
+                Ok(report) if grade >= Some(Grade::Operator) => serde_json::to_vec(&report)?,
+                Ok(report) => serde_json::to_vec(&report.redacted())?,
+                Err(error) => {
+                    let body =
+                        serde_json::to_vec(&serde_json::json!({ "error": format!("{error:#}") }))?;
+                    return respond(stream, 500, "application/json; charset=utf-8", None, &body);
+                }
+            };
+            respond(stream, 200, "application/json; charset=utf-8", None, &body)
+        }
         path if path.starts_with("/api/sessions/") => {
             let id = path.trim_start_matches("/api/sessions/");
             match registry.get(id) {
@@ -651,6 +726,7 @@ fn respond(
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        500 => "Internal Server Error",
         503 => "Service Unavailable",
         _ => "Error",
     };
@@ -1113,6 +1189,39 @@ mod live_tests {
             ),
         );
         assert!(status(&response).contains("403"), "{response}");
+        let _ = harness.session.kill();
+    }
+
+    #[test]
+    fn the_usage_route_needs_a_token_and_answers_both_grades() {
+        let harness = harness();
+        let ask = |token: Option<&str>| {
+            let authorization = match token {
+                Some(token) => format!("Authorization: Bearer {token}\r\n"),
+                None => String::new(),
+            };
+            request(
+                harness.address,
+                &format!(
+                    "GET /api/usage HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
+                     {authorization}Connection: close\r\n\r\n",
+                    harness.address.port()
+                ),
+            )
+        };
+
+        let anonymous = ask(None);
+        assert!(status(&anonymous).contains("401"), "{anonymous}");
+
+        // A viewer must get an answer rather than a refusal: the page forgets
+        // its token on any 401 or 403, so refusing here would log it out.
+        for token in [&harness.operator, &harness.viewer] {
+            let response = ask(Some(token));
+            assert!(status(&response).contains("200"), "{response}");
+            assert!(response.contains("\"accounts\""), "{response}");
+            assert!(!response.contains(&harness.operator), "{response}");
+            assert!(!response.contains(&harness.viewer), "{response}");
+        }
         let _ = harness.session.kill();
     }
 

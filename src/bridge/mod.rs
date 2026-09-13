@@ -63,6 +63,13 @@ pub(crate) struct BridgeConfig {
     /// plan does not set it, and those routes then 404 rather than existing
     /// unused.
     pub responses_api: bool,
+    /// Who this bridge is serving, so the turns it sees can be attributed to a
+    /// provider and an agent in the usage ledger.
+    pub agent: crate::config::Agent,
+    pub provider: String,
+    /// Where to append those turn rows. `None` in tests and anywhere the
+    /// ledger is deliberately not written.
+    pub ledger: Option<PathBuf>,
 }
 
 /// Everything a handler shares: config, credentials, and one HTTP client.
@@ -74,6 +81,8 @@ pub(crate) struct BridgeState {
     pub config: BridgeConfig,
     pub auth: auth::AuthManager,
     pub http: reqwest::Client,
+    /// Set once at startup, so recording a turn costs no lookup and no lock.
+    pub ledger: Option<Arc<crate::usage::ledger::Ledger>>,
 }
 
 impl BridgeState {
@@ -86,7 +95,25 @@ impl BridgeState {
             .build()
             .context("failed to build the Codex bridge's HTTP client")?;
         let auth = auth::AuthManager::new(config.auth_file.clone());
-        Ok(Self { config, auth, http })
+        // Read once here rather than per turn: it is the id the requests
+        // already carry as a header, and reading the file on every frame
+        // would be a syscall per turn for a number that cannot change while
+        // the session runs.
+        let ledger = config.ledger.clone().map(|path| {
+            Arc::new(crate::usage::ledger::Ledger::new(
+                path,
+                config.agent,
+                config.provider.clone(),
+                crate::config::ProviderKind::Codex,
+                auth.stored_account_id(),
+            ))
+        });
+        Ok(Self {
+            config,
+            auth,
+            http,
+            ledger,
+        })
     }
 }
 

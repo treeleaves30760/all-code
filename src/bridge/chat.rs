@@ -1261,6 +1261,9 @@ mod tests {
             auth_file: PathBuf::from("/nonexistent/auth.json"),
             effort,
             responses_api: true,
+            agent: crate::config::Agent::Claude,
+            provider: "codex".to_owned(),
+            ledger: None,
         }
     }
 

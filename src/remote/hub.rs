@@ -443,7 +443,7 @@ impl Hub {
                 .spawning
                 .lock()
                 .map_err(|_| anyhow::anyhow!("the hub's spawn lock was poisoned"))?;
-            launch::prepare(spec)?
+            launch::prepare(spec, &self.config_dir)?
         };
 
         let record = OrphanRecord {

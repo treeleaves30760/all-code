@@ -457,8 +457,13 @@ fn needs_an_adapter_and_has_one(spec: &LaunchSpec) -> Result<()> {
 /// and `Hub::create` - go through this function and nothing else does, while
 /// `--dry-run` returns before reaching it, so a dry run still reads nothing
 /// and writes nothing.
-pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
+pub(crate) fn prepare(mut spec: LaunchSpec, config_dir: &Path) -> Result<Prepared> {
     needs_an_adapter_and_has_one(&spec)?;
+
+    // Here rather than in `execute`, for the reason the whole function is
+    // here: both spawn paths go through it and `--dry-run` returns before
+    // reaching it, so a dry run still records nothing.
+    crate::usage::ledger::Ledger::record_launch(config_dir, &spec);
 
     // Before the agent starts, so what is read is what the user had.
     // `claude_settings_file` is only set for a bridged Claude launch, and
@@ -486,7 +491,7 @@ pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
         });
 
     let bridge = if let Some(plan) = spec.bridge.clone() {
-        let bridge = Bridge::start(&plan, spec.codex_auth_file.clone())?;
+        let bridge = Bridge::start(&plan, &spec, config_dir)?;
         agents::apply_bridge(&mut spec, &bridge.base_url(), &plan)?;
         Some(bridge)
     } else {
@@ -507,8 +512,8 @@ pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
     })
 }
 
-pub fn execute(spec: LaunchSpec) -> Result<u8> {
-    let prepared = prepare(spec)?;
+pub fn execute(spec: LaunchSpec, config_dir: &Path) -> Result<u8> {
+    let prepared = prepare(spec, config_dir)?;
     let Prepared {
         program,
         spec,
@@ -797,12 +802,21 @@ fn shell_quote(value: &OsStr) -> String {
 /// its own model and effort on every request, so pinning either would freeze
 /// a slider the user can see. Every other agent chooses once at launch.
 /// Pure, so the distinction stays asserted rather than assumed.
-fn bridge_config(auth_file: PathBuf, plan: &BridgePlan) -> BridgeConfig {
+fn bridge_config(
+    auth_file: PathBuf,
+    plan: &BridgePlan,
+    agent: Agent,
+    provider: String,
+    ledger: Option<PathBuf>,
+) -> BridgeConfig {
     let per_request = plan.api == BridgeApi::Messages;
     BridgeConfig {
         auth_file,
         effort: (!per_request).then_some(plan.effort).flatten(),
         responses_api: !per_request,
+        agent,
+        provider,
+        ledger,
     }
 }
 
@@ -817,7 +831,8 @@ impl Bridge {
     /// `auth_file` is the path the launch resolved in the user's own shell.
     /// Resolving it here instead would read the environment of whichever
     /// process is starting the bridge, which on the shared path is the hub.
-    fn start(plan: &BridgePlan, auth_file: Option<PathBuf>) -> Result<Self> {
+    fn start(plan: &BridgePlan, spec: &LaunchSpec, config_dir: &Path) -> Result<Self> {
+        let auth_file = spec.codex_auth_file.clone();
         // No model allowlist, on purpose: a stale one is the whole reason
         // this code exists. Upstream decides what it will serve, and says so
         // in terms the agent can show the user.
@@ -837,7 +852,13 @@ impl Bridge {
                 auth_file.display()
             );
         }
-        let native = bridge_config(auth_file, plan);
+        let native = bridge_config(
+            auth_file,
+            plan,
+            spec.agent,
+            spec.provider_name.clone(),
+            Some(config_dir.join(crate::usage::ledger::LEDGER_FILE)),
+        );
 
         // Bound with the standard library, so the port is known before the
         // runtime exists and `base_url` can be handed to the agent builders
@@ -1793,7 +1814,13 @@ mod tests {
             options: Vec::new(),
             api: BridgeApi::Responses,
         };
-        let config = bridge_config(PathBuf::from("auth.json"), &plan);
+        let config = bridge_config(
+            PathBuf::from("auth.json"),
+            &plan,
+            Agent::Claude,
+            "codex".to_owned(),
+            None,
+        );
         assert!(config.responses_api);
         assert_eq!(config.effort, Some(ReasoningEffort::High));
 
@@ -1804,7 +1831,13 @@ mod tests {
             effort: Some(ReasoningEffort::High),
             ..plan
         };
-        let config = bridge_config(PathBuf::from("auth.json"), &claude);
+        let config = bridge_config(
+            PathBuf::from("auth.json"),
+            &claude,
+            Agent::Claude,
+            "codex".to_owned(),
+            None,
+        );
         assert!(!config.responses_api);
         assert_eq!(config.effort, None);
     }

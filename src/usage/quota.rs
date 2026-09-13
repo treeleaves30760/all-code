@@ -720,7 +720,7 @@ fn map_zai(value: &serde_json::Value, refused_message: &str) -> Outcome {
                 ),
                 scope: None,
                 used_percent: clamp_percent(number(limit, "percentage").unwrap_or(0.0)),
-                resets_at: number(limit, "nextResetTime").and_then(|at| to_unix_seconds(at)),
+                resets_at: number(limit, "nextResetTime").and_then(to_unix_seconds),
                 remaining: number(limit, "remaining"),
                 limit: number(limit, "number"),
             }),

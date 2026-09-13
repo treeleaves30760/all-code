@@ -48,6 +48,7 @@ use serde_json::{Value, json};
 
 use super::upstream::{self, Lane};
 use super::{BridgeError, BridgeState};
+use crate::usage::ledger::Ledger;
 
 /// Responses parameters chatgpt.com's Codex endpoint refuses outright.
 ///
@@ -120,10 +121,11 @@ async fn relay(state: &BridgeState, body: Bytes) -> Result<Response, BridgeError
         let payload = serialise(&request, &model)?;
         let response = upstream::post(state, payload, true, Lane::Plain).await?;
         if response.status() != StatusCode::BAD_REQUEST {
+            let ledger = state.ledger.clone();
             return Ok(if streaming {
-                relay_response(response)
+                relay_response(response, ledger, model.clone())
             } else {
-                fold_response(response).await?
+                fold_response(response, ledger, &model).await?
             });
         }
         // A 400 is short and already complete, so reading it costs nothing and
@@ -254,10 +256,18 @@ fn drop_parameter(request: &mut Value, name: &str) -> bool {
 
 /// Hands the upstream answer to the client with its status, its content type
 /// and its bytes intact.
-fn relay_response(upstream: reqwest::Response) -> Response {
+fn relay_response(
+    upstream: reqwest::Response,
+    ledger: Option<Arc<Ledger>>,
+    model: String,
+) -> Response {
     let status = upstream.status();
     let headers = passthrough_headers(upstream.headers());
-    let mut response = Response::new(Body::from_stream(guard_idle(upstream.bytes_stream())));
+    let mut response = Response::new(Body::from_stream(observe(
+        guard_idle(upstream.bytes_stream()),
+        ledger,
+        model,
+    )));
     *response.status_mut() = status;
     *response.headers_mut() = headers;
     response
@@ -276,7 +286,11 @@ fn relay_response(upstream: reqwest::Response) -> Response {
 /// items delivered one at a time as `response.output_item.done`. So the items
 /// are collected in arrival order and spliced back in, which is the only place
 /// this function invents anything.
-async fn fold_response(upstream: reqwest::Response) -> Result<Response, BridgeError> {
+async fn fold_response(
+    upstream: reqwest::Response,
+    ledger: Option<Arc<Ledger>>,
+    model: &str,
+) -> Result<Response, BridgeError> {
     let headers = passthrough_headers(upstream.headers());
     let mut body = Box::pin(upstream.bytes_stream());
     let mut decoder = upstream::SseDecoder::default();
@@ -309,6 +323,9 @@ async fn fold_response(upstream: reqwest::Response) -> Result<Response, BridgeEr
             None => decoder.finish(),
         };
         for frame in frames {
+            if let Some(ledger) = &ledger {
+                ledger.observe_frame(&frame.data, model);
+            }
             collect_frame(&frame.data, &mut output, &mut completed);
         }
         if chunk.is_none() || completed.is_some() {
@@ -413,6 +430,28 @@ fn relayable(name: &HeaderName) -> bool {
 /// The error travels in the body, after the status line is already sent, which
 /// is the only channel left once a relay has started — and why the timeout
 /// message says what it was waiting for.
+/// Shows every frame to the ledger on its way to the client.
+///
+/// This surface relays bytes rather than decoding them, so it is the one place
+/// the shared `UpstreamStream` hook cannot reach. The stream is not buffered:
+/// each chunk is handed on as it arrives, and the decoder only keeps whatever
+/// partial frame is in flight.
+fn observe(
+    body: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
+    ledger: Option<Arc<Ledger>>,
+    model: String,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
+    let mut decoder = upstream::SseDecoder::default();
+    body.map(move |item| {
+        if let (Ok(chunk), Some(ledger)) = (&item, &ledger) {
+            for frame in decoder.push(chunk) {
+                ledger.observe_frame(&frame.data, &model);
+            }
+        }
+        item
+    })
+}
+
 fn guard_idle(
     body: impl Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
@@ -782,6 +821,9 @@ mod tests {
                 auth_file: std::path::PathBuf::from("/nonexistent/auth.json"),
                 effort: None,
                 responses_api: true,
+                agent: crate::config::Agent::Claude,
+                provider: "codex".to_owned(),
+                ledger: None,
             })
             .expect("the state builds without touching the auth file"),
         );

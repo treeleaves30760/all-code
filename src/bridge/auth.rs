@@ -279,6 +279,16 @@ impl AuthManager {
         write_atomic(&self.path, &document)
     }
 
+    /// The account id the file names, or `None` if it cannot be read.
+    ///
+    /// Reads; never refreshes. Used to label the turns the usage ledger
+    /// records, which must not be able to trigger a token rotation.
+    pub(crate) fn stored_account_id(&self) -> Option<String> {
+        self.stored()
+            .ok()
+            .and_then(|credentials| credentials.account_id)
+    }
+
     /// The credentials as the file currently states them, with the account id
     /// recovered from the tokens themselves when `codex login` did not record
     /// one.
