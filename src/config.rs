@@ -432,6 +432,21 @@ pub struct Provider {
     pub auth: AuthStyle,
     pub api_key_env: Option<String>,
     pub codex_profile: Option<String>,
+    /// The Codex home holding this profile's login (`auth.json`, `config.toml`).
+    ///
+    /// Absolute. `None` leaves the choice to the environment (`CODEX_HOME`,
+    /// then `~/.codex`), which is what every profile did before this field
+    /// existed. Setting it is how a second ChatGPT login becomes a second
+    /// profile: `alc usage` reads that account's quota and a launch through
+    /// this profile exports the same home, so the account you see is the one
+    /// you use.
+    pub codex_home: Option<String>,
+    /// The Claude Code config directory holding this profile's login.
+    ///
+    /// Absolute, and the same idea as [`Provider::codex_home`] for an
+    /// Anthropic profile that runs on Claude Code's own login rather than an
+    /// API key.
+    pub claude_config_dir: Option<String>,
     pub enabled: bool,
 }
 
@@ -483,8 +498,51 @@ impl Provider {
             auth,
             api_key_env: kind.default_key_env().map(str::to_owned),
             codex_profile: None,
+            codex_home: None,
+            claude_config_dir: None,
             enabled: true,
         }
+    }
+
+    /// The account directory this profile pins, if it pins one.
+    ///
+    /// Empty strings read as unset so `alc config upsert --codex-home ''`
+    /// clears the field the same way the other optional strings clear.
+    pub fn pinned_codex_home(&self) -> Option<&str> {
+        self.codex_home.as_deref().filter(|value| !value.is_empty())
+    }
+
+    /// See [`Provider::pinned_codex_home`].
+    pub fn pinned_claude_config_dir(&self) -> Option<&str> {
+        self.claude_config_dir
+            .as_deref()
+            .filter(|value| !value.is_empty())
+    }
+
+    /// Refuses an account directory that names the wrong kind of login, or
+    /// that is relative.
+    ///
+    /// A relative path would resolve against whichever directory the launch
+    /// happened to start in, and a Codex home on an Anthropic profile would
+    /// silently never be read — both fail later, somewhere less obvious.
+    pub fn validate_account_dirs(&self, name: &str) -> Result<()> {
+        for (value, field, kind) in [
+            (self.pinned_codex_home(), "codex_home", ProviderKind::Codex),
+            (
+                self.pinned_claude_config_dir(),
+                "claude_config_dir",
+                ProviderKind::Anthropic,
+            ),
+        ] {
+            let Some(value) = value else { continue };
+            if self.kind != kind {
+                bail!("provider '{name}' sets {field} but is not a {kind} profile");
+            }
+            if !Path::new(value).is_absolute() {
+                bail!("provider '{name}' {field} must be an absolute path");
+            }
+        }
+        Ok(())
     }
 
     pub fn effective_base_url(&self) -> Option<&str> {
@@ -639,6 +697,7 @@ impl Config {
             if provider.kind == ProviderKind::Custom && provider.effective_base_url().is_none() {
                 bail!("custom provider '{name}' needs a base_url");
             }
+            provider.validate_account_dirs(name)?;
         }
         for agent in Agent::ALL {
             let default_name = self.defaults.get(agent);

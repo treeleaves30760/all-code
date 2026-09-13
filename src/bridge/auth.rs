@@ -519,7 +519,7 @@ pub(crate) fn account_id_from_claims(claims: &Value) -> Option<String> {
 }
 
 /// [`account_id_from_claims`] over a token rather than its decoded claims.
-fn account_id_from_token(token: &str) -> Option<String> {
+pub(crate) fn account_id_from_token(token: &str) -> Option<String> {
     account_id_from_claims(&decode_jwt_payload(token)?)
 }
 

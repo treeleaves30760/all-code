@@ -11,7 +11,7 @@ use crate::config::{
 };
 use crate::model_catalog::{ModelCatalog, ModelInfo};
 use crate::remote::RemoteCommand;
-use crate::{doctor, launch, ollama, remote, tui, update};
+use crate::{doctor, launch, ollama, remote, tui, update, usage};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -146,6 +146,8 @@ enum Command {
     Config(ConfigArgs),
     /// Check agent binaries, credentials, defaults, and compatibility.
     Doctor,
+    /// Show what is left on every provider login, and usage per provider and agent.
+    Usage(UsageArgs),
     /// Show or refresh the GPT models available through the Codex bridge.
     Models(ModelsArgs),
     /// Check for and install the latest alc release.
@@ -353,6 +355,13 @@ struct ModelsArgs {
 }
 
 #[derive(Debug, Args)]
+struct UsageArgs {
+    /// Print the report as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
 struct UpdateArgs {
     /// Check whether an update is available without installing it.
     #[arg(long, conflicts_with = "force")]
@@ -444,6 +453,15 @@ struct UpsertArgs {
     #[arg(long)]
     codex_profile: Option<String>,
 
+    /// Codex home holding this profile's login (absolute). Empty clears it.
+    #[arg(long, value_name = "DIR")]
+    codex_home: Option<String>,
+
+    /// Claude Code config directory holding this profile's login (absolute).
+    /// Empty clears it.
+    #[arg(long, value_name = "DIR")]
+    claude_config_dir: Option<String>,
+
     /// Disable this profile without deleting it.
     #[arg(long, conflicts_with = "enable")]
     disable: bool,
@@ -486,6 +504,7 @@ pub fn run() -> Result<u8> {
     match cli.command {
         Command::Config(args) => run_config(&mut store, args),
         Command::Doctor => Ok(if doctor::run(&store)? { 0 } else { 1 }),
+        Command::Usage(args) => usage::run(&store, requested_provider.as_deref(), args.json),
         Command::Models(args) => run_models(&store, args),
         Command::Update(_) => unreachable!("update is handled before config loading"),
         Command::Remote(args) => run_remote(&store, args),
@@ -1194,6 +1213,12 @@ fn upsert(store: &mut Store, args: UpsertArgs) -> Result<()> {
     }
     if let Some(profile) = args.codex_profile {
         provider.codex_profile = non_empty(profile);
+    }
+    if let Some(home) = args.codex_home {
+        provider.codex_home = non_empty(home);
+    }
+    if let Some(dir) = args.claude_config_dir {
+        provider.claude_config_dir = non_empty(dir);
     }
     if args.disable {
         provider.enabled = false;

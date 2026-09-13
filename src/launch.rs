@@ -320,7 +320,7 @@ pub fn build(
     // bridge ends up being started, and reported here too - a `CODEX_HOME`
     // that resolves to nothing is worth saying in the shell that set it.
     if spec.bridge.is_some() {
-        spec.codex_auth_file = Some(codex_auth_file()?);
+        spec.codex_auth_file = Some(codex_auth_file(provider)?);
     }
 
     // Claude Code's settings file, resolved in the same shell and for the
@@ -338,7 +338,7 @@ pub fn build(
     // Unlike `codex_auth_file` a failure here is not worth a refusal: the
     // path resolving to nothing costs a restore, not a launch.
     if spec.bridge.is_some() && spec.agent == Agent::Claude {
-        spec.claude_settings_file = agents::claude::user_settings_path();
+        spec.claude_settings_file = agents::claude::user_settings_path(provider);
     }
 
     // Recorded once here rather than at each builder's own resolution site:
@@ -544,10 +544,7 @@ pub(crate) fn resolve_codex_model(provider: &Provider) -> Result<String> {
         return Ok(normalize_codex_model(&provider.model));
     }
 
-    let codex_home = env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(".codex")));
-    if let Some(home) = codex_home {
+    if let Some(home) = codex_home_for(provider) {
         let profile_path = provider
             .codex_profile
             .as_deref()
@@ -577,10 +574,7 @@ pub(crate) fn resolve_codex_effort(provider: &Provider) -> Result<Option<Reasoni
         return Ok(Some(effort));
     }
 
-    let codex_home = env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(".codex")));
-    if let Some(home) = codex_home {
+    if let Some(home) = codex_home_for(provider) {
         let profile_path = provider
             .codex_profile
             .as_deref()
@@ -957,19 +951,44 @@ impl Drop for Bridge {
     }
 }
 
-fn codex_auth_file() -> Result<PathBuf> {
+pub(crate) fn codex_auth_file(provider: &Provider) -> Result<PathBuf> {
     resolve_codex_auth_file(
+        provider.pinned_codex_home(),
         env::var_os("CCP_CODEX_AUTH_FILE"),
         env::var_os("CODEX_HOME"),
         home_dir(),
     )
 }
 
+/// The Codex home this profile launches against.
+///
+/// The same ladder as [`codex_auth_file`] minus the one rung that names a
+/// file rather than a directory, so the model and effort read out of
+/// `config.toml` come from the account whose `auth.json` signs the requests.
+pub(crate) fn codex_home_for(provider: &Provider) -> Option<PathBuf> {
+    provider
+        .pinned_codex_home()
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("CODEX_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+        .or_else(|| home_dir().map(|home| home.join(".codex")))
+}
+
 fn resolve_codex_auth_file(
+    profile_home: Option<&str>,
     explicit: Option<OsString>,
     codex_home: Option<OsString>,
     user_home: Option<PathBuf>,
 ) -> Result<PathBuf> {
+    // The profile wins over every environment variable: a `CODEX_HOME` left
+    // in a shell profile must not quietly move the account a named profile
+    // points at, which is the whole reason the field exists.
+    if let Some(home) = profile_home {
+        return Ok(PathBuf::from(home).join("auth.json"));
+    }
     if let Some(path) = explicit.filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path));
     }
@@ -1715,16 +1734,48 @@ mod tests {
 
     #[test]
     fn codex_auth_path_falls_back_to_the_platform_user_home() {
-        let path = resolve_codex_auth_file(None, None, Some(PathBuf::from("user-home"))).unwrap();
+        let path =
+            resolve_codex_auth_file(None, None, None, Some(PathBuf::from("user-home"))).unwrap();
         assert_eq!(path, PathBuf::from("user-home/.codex/auth.json"));
 
         let explicit = resolve_codex_auth_file(
+            None,
             Some(OsString::from("selected-auth.json")),
             Some(OsString::from("ignored-codex-home")),
             Some(PathBuf::from("ignored-user-home")),
         )
         .unwrap();
         assert_eq!(explicit, PathBuf::from("selected-auth.json"));
+    }
+
+    /// Two Codex logins are two profiles, and the one a profile names has to
+    /// win over whatever the shell exported - otherwise the account `alc
+    /// usage` reports is not the account the session spends.
+    #[test]
+    fn a_profile_codex_home_outranks_every_environment_variable() {
+        let path = resolve_codex_auth_file(
+            Some("/work/codex"),
+            Some(OsString::from("/shell/auth.json")),
+            Some(OsString::from("/shell/codex")),
+            Some(PathBuf::from("/home/ada")),
+        )
+        .unwrap();
+        assert_eq!(path, PathBuf::from("/work/codex/auth.json"));
+    }
+
+    #[test]
+    fn the_codex_home_a_profile_pins_is_where_its_model_preference_is_read() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.toml"),
+            "model = \"gpt-5.6-luna\"\n",
+        )
+        .unwrap();
+        let mut provider = Provider::for_kind(ProviderKind::Codex);
+        provider.codex_home = Some(home.path().display().to_string());
+
+        assert_eq!(codex_home_for(&provider).as_deref(), Some(home.path()));
+        assert_eq!(resolve_codex_model(&provider).unwrap(), "gpt-5.6-luna");
     }
 
     #[test]

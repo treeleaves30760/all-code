@@ -9,8 +9,8 @@ use crate::config::{Agent, AuthStyle, Provider, ProviderKind, ReasoningEffort, S
 use crate::model_catalog::ModelCatalog;
 use crate::ollama;
 
-const INDENT: &str = "  ";
-const GUTTER: &str = "  ";
+pub(crate) const INDENT: &str = "  ";
+pub(crate) const GUTTER: &str = "  ";
 /// Profile names are elided past this so one outlier cannot stretch every column.
 const NAME_LIMIT: usize = 24;
 
@@ -213,7 +213,18 @@ fn defaults(store: &Store, theme: &Theme) {
 /// that outlives the profile that produced it, and somebody who removed the
 /// profile will never run the launch that self-heals.
 fn claude_code_default_model(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
-    let Some(settings) = crate::agents::claude::user_settings_path() else {
+    // Resolved through the profile Claude Code would launch on, so a profile
+    // that pins its own config directory is checked there rather than in
+    // whatever `~/.claude` the shell points at. An unresolvable default falls
+    // back to a profile that pins nothing, which is the environment-only
+    // answer this check used before profiles could pin anything.
+    let fallback = Provider::for_kind(ProviderKind::Anthropic);
+    let provider = store
+        .config
+        .resolve(Agent::Claude, None)
+        .map(|(_, provider)| provider)
+        .unwrap_or(&fallback);
+    let Some(settings) = crate::agents::claude::user_settings_path(provider) else {
         return;
     };
     let Some(model) = crate::agents::claude::pinned_model(&settings) else {
@@ -465,27 +476,34 @@ fn local_models(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     marked(theme, &rows);
 }
 
-fn summary(theme: &Theme, issues: &[Issue]) {
-    println!();
+pub(crate) fn summary(theme: &Theme, issues: &[Issue]) {
+    print!("{}", summary_text(theme, issues));
+}
+
+/// The same block as a string, for the reports that build one rather than
+/// streaming to a terminal. `alc usage` renders through this so the two
+/// commands cannot drift apart.
+pub(crate) fn summary_text(theme: &Theme, issues: &[Issue]) -> String {
+    let mut out = String::from("\n");
     if issues.is_empty() {
-        println!(
-            "{} {}",
+        out.push_str(&format!(
+            "{} {}\n",
             theme.mark(Status::Good),
             theme.paint(Tone::Good, "ready")
-        );
-        return;
+        ));
+        return out;
     }
 
     let count = issues.len();
     let noun = if count == 1 { "issue" } else { "issues" };
-    println!(
-        "{} {}",
+    out.push_str(&format!(
+        "{} {}\n",
         theme.mark(Status::Bad),
         theme.paint(
             Tone::Bad,
             &format!("needs attention {} {count} {noun}", theme.dash())
         )
-    );
+    ));
 
     let subject = issues
         .iter()
@@ -514,12 +532,13 @@ fn summary(theme: &Theme, issues: &[Issue]) {
             if fix.is_empty() { 0 } else { problem },
             Align::Left,
         );
-        println!(
-            "{INDENT}{} {}{GUTTER}{tail}{fix}",
+        out.push_str(&format!(
+            "{INDENT}{} {}{GUTTER}{tail}{fix}\n",
             theme.bullet(),
             pad(&issue.subject, subject, Align::Left)
-        );
+        ));
     }
+    out
 }
 
 /// Remote control's posture.
@@ -536,9 +555,13 @@ fn remote(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     }
 }
 
-fn heading(theme: &Theme, title: &str) {
-    println!();
-    println!("{}", theme.paint(Tone::Head, title));
+pub(crate) fn heading(theme: &Theme, title: &str) {
+    print!("{}", heading_text(theme, title));
+}
+
+/// See [`summary_text`].
+pub(crate) fn heading_text(theme: &Theme, title: &str) -> String {
+    format!("\n{}\n", theme.paint(Tone::Head, title))
 }
 
 /// Prints `label  value` rows with the labels padded to a common width.
@@ -554,7 +577,7 @@ fn pairs(rows: &[(&str, String)]) {
 }
 
 /// Prints `glyph  name  detail` rows with the names padded to a common width.
-fn marked(theme: &Theme, rows: &[Row]) {
+pub(crate) fn marked(theme: &Theme, rows: &[Row]) {
     let name = rows
         .iter()
         .map(|row| width(&row.name))
@@ -593,14 +616,14 @@ fn key_status(store: &Store, name: &str, provider: &Provider) -> (String, Tone) 
 }
 
 /// A `glyph  name  detail` line; `status` is `None` for rows that only carry information.
-struct Row {
+pub(crate) struct Row {
     status: Option<Status>,
     name: String,
     detail: String,
 }
 
 impl Row {
-    fn new(status: Status, name: impl ToString, detail: String) -> Self {
+    pub(crate) fn new(status: Status, name: impl ToString, detail: String) -> Self {
         Self {
             status: Some(status),
             name: name.to_string(),
@@ -608,7 +631,7 @@ impl Row {
         }
     }
 
-    fn blank(name: impl ToString, detail: String) -> Self {
+    pub(crate) fn blank(name: impl ToString, detail: String) -> Self {
         Self {
             status: None,
             name: name.to_string(),
@@ -618,14 +641,14 @@ impl Row {
 }
 
 /// One reason `alc doctor` reports failure, with the command that clears it.
-struct Issue {
+pub(crate) struct Issue {
     subject: String,
     problem: String,
     fix: Option<String>,
 }
 
 impl Issue {
-    fn new(subject: impl Into<String>, problem: String, fix: Option<String>) -> Self {
+    pub(crate) fn new(subject: impl Into<String>, problem: String, fix: Option<String>) -> Self {
         Self {
             subject: subject.into(),
             problem,
@@ -635,7 +658,7 @@ impl Issue {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Status {
+pub(crate) enum Status {
     Good,
     Warn,
     Bad,
@@ -643,7 +666,7 @@ enum Status {
 }
 
 impl Status {
-    fn tone(self) -> Tone {
+    pub(crate) fn tone(self) -> Tone {
         match self {
             Self::Good => Tone::Good,
             Self::Warn => Tone::Warn,
@@ -654,7 +677,7 @@ impl Status {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Tone {
+pub(crate) enum Tone {
     Plain,
     Head,
     Dim,
@@ -677,20 +700,27 @@ impl Tone {
 }
 
 /// What the stream the report is written to can render.
-struct Theme {
+pub(crate) struct Theme {
     color: bool,
     unicode: bool,
 }
 
 impl Theme {
-    fn detect() -> Self {
+    pub(crate) fn detect() -> Self {
         Self {
             color: color_supported(),
             unicode: unicode_supported(),
         }
     }
 
-    fn paint(&self, tone: Tone, text: &str) -> String {
+    /// A theme with both capabilities pinned, so a test asserts on one
+    /// rendering rather than on whatever the machine running it supports.
+    #[cfg(test)]
+    pub(crate) fn for_test(color: bool, unicode: bool) -> Self {
+        Self { color, unicode }
+    }
+
+    pub(crate) fn paint(&self, tone: Tone, text: &str) -> String {
         match tone.code() {
             Some(code) if self.color => format!("\x1b[{code}m{text}\x1b[0m"),
             _ => text.to_owned(),
@@ -709,7 +739,7 @@ impl Theme {
         }
     }
 
-    fn mark(&self, status: Status) -> String {
+    pub(crate) fn mark(&self, status: Status) -> String {
         self.paint(status.tone(), self.glyph(status))
     }
 
@@ -721,7 +751,7 @@ impl Theme {
         if self.unicode { "•" } else { "*" }
     }
 
-    fn dash(&self) -> &'static str {
+    pub(crate) fn dash(&self) -> &'static str {
         if self.unicode { "—" } else { "-" }
     }
 }
@@ -762,19 +792,19 @@ fn unicode_supported() -> bool {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Align {
+pub(crate) enum Align {
     Left,
     Center,
 }
 
-struct Cell {
+pub(crate) struct Cell {
     text: String,
     tone: Tone,
     align: Align,
 }
 
 impl Cell {
-    fn left(text: impl Into<String>, tone: Tone) -> Self {
+    pub(crate) fn left(text: impl Into<String>, tone: Tone) -> Self {
         Self {
             text: text.into(),
             tone,
@@ -793,20 +823,20 @@ impl Cell {
 
 /// A whitespace-aligned table whose columns are sized from the widest value in each,
 /// so the layout cannot drift as profile names and provider kinds change.
-struct Table {
+pub(crate) struct Table {
     headers: Vec<String>,
     rows: Vec<Vec<Cell>>,
 }
 
 impl Table {
-    fn new<S: Into<String>>(headers: Vec<S>) -> Self {
+    pub(crate) fn new<S: Into<String>>(headers: Vec<S>) -> Self {
         Self {
             headers: headers.into_iter().map(Into::into).collect(),
             rows: Vec::new(),
         }
     }
 
-    fn push(&mut self, row: Vec<Cell>) {
+    pub(crate) fn push(&mut self, row: Vec<Cell>) {
         self.rows.push(row);
     }
 
@@ -826,7 +856,7 @@ impl Table {
             .collect()
     }
 
-    fn render(&self, theme: &Theme) -> Vec<String> {
+    pub(crate) fn render(&self, theme: &Theme) -> Vec<String> {
         let widths = self.widths();
         let last = self.headers.len().saturating_sub(1);
         let mut lines = Vec::with_capacity(self.rows.len() + 1);
@@ -865,7 +895,7 @@ fn trim_last(text: String, column: usize, last: usize) -> String {
     }
 }
 
-fn width(value: &str) -> usize {
+pub(crate) fn width(value: &str) -> usize {
     value.chars().count()
 }
 
