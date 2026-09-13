@@ -90,6 +90,23 @@
       permUnsupported: 'Not available:',
       permUnverified: 'alc has not checked this agent’s flags against an installed copy.',
       unsandboxedNote: 'This agent gates nothing.',
+      usage: 'Usage',
+      accounts: 'Accounts',
+      byAgent: 'By provider and agent',
+      usageFailed: 'Could not load usage.',
+      usageEmpty: 'No accounts to show',
+      usageEmptyHow: 'Add a provider with',
+      usageEmptyCommand: 'alc config',
+      left: '{p}% left',
+      resetsIn: 'resets in {t}',
+      hubNote: 'Found through this machine’s environment. Set codex_home or claude_config_dir on the profile to pin an account.',
+      provider: 'Provider',
+      agent: 'Agent',
+      launches: 'Launches',
+      turns: 'Turns',
+      tokens: 'Tokens',
+      ledgerEmpty: 'No launches recorded yet.',
+      directOnly: 'Tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone.',
     },
     'zh-TW': {
       empty: '目前沒有 session',
@@ -127,6 +144,23 @@
       permUnsupported: '不支援：',
       permUnverified: 'alc 尚未對照已安裝的版本確認這個 agent 的旗標。',
       unsandboxedNote: '這個 agent 沒有任何權限控制。',
+      usage: '用量',
+      accounts: '帳號',
+      byAgent: '各 provider 與 agent',
+      usageFailed: '無法載入用量。',
+      usageEmpty: '沒有可顯示的帳號',
+      usageEmptyHow: '用這個指令新增 provider',
+      usageEmptyCommand: 'alc config',
+      left: '剩 {p}%',
+      resetsIn: '{t} 後重置',
+      hubNote: '這些帳號來自本機的環境變數。在 profile 設定 codex_home 或 claude_config_dir 可固定帳號。',
+      provider: 'Provider',
+      agent: 'Agent',
+      launches: '啟動',
+      turns: '回合',
+      tokens: 'Token',
+      ledgerEmpty: '尚未記錄任何啟動。',
+      directOnly: '只有經 alc 轉送流量的 session 才會計算 token；直接啟動只計啟動次數。',
     },
   };
 
@@ -351,6 +385,132 @@
     return RUNGS.find((rung) => offered.has(rung)) || 'plan';
   }
 
+  /* --------------------------------------------------------------- usage */
+
+  /* The same threshold `alc usage` paints amber at, so the terminal and the
+   * page never disagree about whether a window is worth worrying about. */
+  const WARN_PERCENT = 75;
+
+  /* `{p}% left` with the number in it. The strings keep their placeholders so
+   * a translation can put the number where its own grammar wants it. */
+  function fill(template, values) {
+    return String(template).replace(/\{(\w+)\}/g, (whole, key) =>
+      values[key] === undefined || values[key] === null ? '' : String(values[key])
+    );
+  }
+
+  function clampPercent(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 0;
+    return Math.min(100, Math.max(0, number));
+  }
+
+  /* Green, amber, red - the meter's only three states. */
+  function quotaLevel(usedPercent) {
+    const used = clampPercent(usedPercent);
+    if (used >= 100) return 'danger';
+    if (used >= WARN_PERCENT) return 'warn';
+    return 'ok';
+  }
+
+  /* Coarse, and never negative: a window whose reset has passed while the
+   * page sat open should read as due, not as a negative countdown. */
+  function formatCountdown(seconds) {
+    const left = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (left < 60) return `${left}s`;
+    const minutes = Math.floor(left / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ${minutes % 60}m`;
+    return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  }
+
+  /* The magnitude is the information; the digits are not. */
+  function compactCount(value) {
+    const count = Math.max(0, Math.floor(Number(value) || 0));
+    if (count < 1000) return String(count);
+    const trim = (text) => text.replace('.0', '');
+    if (count < 1e6) return trim(`${(count / 1000).toFixed(1)}K`);
+    return trim(`${(count / 1e6).toFixed(1)}M`);
+  }
+
+  /* One meter's worth of a window: how much is left, how alarmed to look,
+   * and when it comes back. */
+  function describeWindow(window, nowSeconds, t) {
+    const used = clampPercent(window && window.used_percent);
+    const name = window && window.scope ? `${window.scope} ${window.name}` : (window && window.name) || '';
+    const resetsAt = window && window.resets_at;
+    return {
+      key: `${name}`,
+      label: name,
+      leftPercent: Math.round(100 - used),
+      level: quotaLevel(used),
+      left: fill(t.left, { p: Math.round(100 - used) }),
+      resets: resetsAt ? fill(t.resetsIn, { t: formatCountdown(resetsAt - nowSeconds) }) : '',
+    };
+  }
+
+  /* What an account is, as chips. A per-model window nobody has touched is
+   * left out for the same reason `alc usage` leaves it out of its table: a
+   * row of "100% left" is not worth the space. */
+  function describeAccount(account) {
+    return [account.kind, account.plan].filter(Boolean);
+  }
+
+  function accountWindows(account) {
+    return (account.windows || []).filter(
+      (window) => !window.scope || clampPercent(window.used_percent) > 0
+    );
+  }
+
+  /* The sentence a row shows instead of meters, if it has one. */
+  function accountNote(account) {
+    if (account.balance) {
+      const money = (value) =>
+        account.balance.unit === 'USD' ? `$${Number(value).toFixed(2)}` : `${Number(value).toFixed(2)} ${account.balance.unit}`.trim();
+      const { remaining, limit } = account.balance;
+      if (remaining !== null && remaining !== undefined && limit) {
+        return `${money(remaining)} / ${money(limit)}`;
+      }
+      if (remaining !== null && remaining !== undefined) return money(remaining);
+    }
+    return account.error || '';
+  }
+
+  /* Whatever the server sent, as something the renderer can iterate.
+   *
+   * The page is served by the same binary that builds the report, but it can
+   * also be looking at a hub that is mid-restart or a build that is one
+   * version behind, so nothing here assumes a field exists. */
+  function normalizeUsage(payload) {
+    const report = payload && typeof payload === 'object' ? payload : {};
+    const accounts = Array.isArray(report.accounts) ? report.accounts : [];
+    return {
+      accounts,
+      rows: Array.isArray(report.ledger && report.ledger.rows) ? report.ledger.rows : [],
+      generatedAt: Number(report.generated_at) || 0,
+      /* Only worth saying when the hub resolved an account from its own
+       * environment, which belongs to whichever shell started it. */
+      hubEnv:
+        report.resolved_by === 'hub' &&
+        accounts.some((account) => account.source === 'env' || account.source === 'default'),
+    };
+  }
+
+  /* One ledger row's cells. A pair alc never carried traffic for shows a dash
+   * rather than a zero: the tokens are unknown, not nil. */
+  function ledgerCells(row) {
+    const carried = Number(row.turns) > 0;
+    const count = (value) => (carried ? compactCount(value) : '—');
+    return [
+      row.provider,
+      row.agent,
+      String(row.launches || 0),
+      count(row.turns),
+      carried ? compactCount((row.input_tokens || 0) + (row.output_tokens || 0)) : '—',
+    ];
+  }
+
   /* ------------------------------------------------------------ geometry */
 
   /* How to draw a grid whose size is not the page's to choose.
@@ -461,6 +621,18 @@
     formatExit,
     RUNGS,
     cycleRung,
+    WARN_PERCENT,
+    fill,
+    clampPercent,
+    quotaLevel,
+    formatCountdown,
+    compactCount,
+    describeWindow,
+    describeAccount,
+    accountWindows,
+    accountNote,
+    normalizeUsage,
+    ledgerCells,
     FIT_MIN_FONT,
     FIT_MAX_FONT,
     fitGrid,

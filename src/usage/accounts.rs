@@ -378,6 +378,17 @@ pub(crate) enum ClaudeStores {
     FileOnly,
 }
 
+/// Why a Claude login could not be read.
+///
+/// The distinction matters for the exit code: "you are not signed in" is a
+/// thing the person reading can fix, and "this process may not open the
+/// Keychain" is not.
+pub(crate) struct ClaudeRefusal {
+    pub message: String,
+    /// Whether the reader could do something about it where they are.
+    pub actionable: bool,
+}
+
 /// Reads Claude Code's login for one config directory, without writing it.
 ///
 /// On macOS the Keychain is the store and the file exists only where the
@@ -389,12 +400,26 @@ pub(crate) fn read_claude_login(
     config_dir: &Path,
     home: Option<&Path>,
     stores: ClaudeStores,
-) -> Result<ClaudeLogin, String> {
+) -> Result<ClaudeLogin, ClaudeRefusal> {
     let missing = || {
-        format!(
-            "no Claude Code login in {}; run `claude` and sign in",
-            crate::usage::elide_home(config_dir, home)
-        )
+        // On macOS the login normally lives in the Keychain, and a daemon is
+        // not allowed to open it. Saying "not signed in" there would send
+        // somebody looking for a login they have already made.
+        if cfg!(target_os = "macos") && stores == ClaudeStores::FileOnly {
+            return ClaudeRefusal {
+                message: "the Claude login is in the macOS Keychain, which the hub does not \
+                    open; run `alc usage` in a terminal for this row"
+                    .to_owned(),
+                actionable: false,
+            };
+        }
+        ClaudeRefusal {
+            message: format!(
+                "no Claude Code login in {}; run `claude` and sign in",
+                crate::usage::elide_home(config_dir, home)
+            ),
+            actionable: true,
+        }
     };
 
     let mut raw = None;
@@ -406,13 +431,19 @@ pub(crate) fn read_claude_login(
     }
     let raw = raw.ok_or_else(missing)?;
 
-    let value: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|error| format!("the stored Claude login is not valid JSON: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| ClaudeRefusal {
+        message: format!("the stored Claude login is not valid JSON: {error}"),
+        actionable: true,
+    })?;
     // Claude Code 2.1.x has been seen storing an item that holds only its MCP
     // OAuth state, with no login in it at all.
-    let oauth = value
-        .get("claudeAiOauth")
-        .ok_or_else(|| format!("{} (the stored item holds no login)", missing()))?;
+    let oauth = value.get("claudeAiOauth").ok_or_else(|| {
+        let refusal = missing();
+        ClaudeRefusal {
+            message: format!("{} (the stored item holds no login)", refusal.message),
+            ..refusal
+        }
+    })?;
     let text = |key: &str| {
         oauth
             .get(key)
@@ -744,18 +775,34 @@ mod tests {
             serde_json::json!({ "mcpOAuth": {} }).to_string(),
         )
         .unwrap();
-        let Err(error) = read_claude_login(dir.path(), None, ClaudeStores::FileOnly) else {
+        let Err(refusal) = read_claude_login(dir.path(), None, ClaudeStores::FileOnly) else {
             panic!("an item with no login cannot be a login");
         };
-        assert!(error.contains("holds no login"), "{error}");
+        assert!(
+            refusal.message.contains("holds no login"),
+            "{}",
+            refusal.message
+        );
     }
 
     #[test]
     fn a_directory_with_no_claude_login_names_the_command_that_makes_one() {
         let dir = tempfile::tempdir().unwrap();
-        let Err(error) = read_claude_login(dir.path(), None, ClaudeStores::FileOnly) else {
+        let Err(refusal) = read_claude_login(dir.path(), None, ClaudeStores::FileOnly) else {
             panic!("an empty directory holds no login");
         };
-        assert!(error.contains("run `claude` and sign in"), "{error}");
+        // On macOS a file-only read means the hub, which cannot open the
+        // Keychain, so the row says that rather than blaming the user.
+        if cfg!(target_os = "macos") {
+            assert!(refusal.message.contains("Keychain"), "{}", refusal.message);
+            assert!(!refusal.actionable);
+        } else {
+            assert!(
+                refusal.message.contains("run `claude` and sign in"),
+                "{}",
+                refusal.message
+            );
+            assert!(refusal.actionable);
+        }
     }
 }

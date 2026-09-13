@@ -246,10 +246,14 @@ fn account_for(
             let label = Some(elide_home(config_dir, env.home.as_deref()));
             match accounts::read_claude_login(config_dir, env.home.as_deref(), stores) {
                 Ok(login) => quota::fetch_claude(&login, label, now_ms),
-                Err(error) => quota::Outcome {
+                Err(refusal) => quota::Outcome {
                     label,
-                    state: Some(AccountState::SignedOut),
-                    error: Some(error),
+                    state: Some(if refusal.actionable {
+                        AccountState::SignedOut
+                    } else {
+                        AccountState::Unavailable
+                    }),
+                    error: Some(refusal.message),
                     ..quota::Outcome::default()
                 },
             }

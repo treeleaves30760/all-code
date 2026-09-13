@@ -256,6 +256,27 @@ body[data-pane="view"] #list {
   display: none;
 }
 
+#usage {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom))
+    max(14px, env(safe-area-inset-left));
+}
+
+/* A third value for the same switch, so there is still exactly one thing
+ * deciding what is on screen. Usage takes the whole width at every size:
+ * it is a place you go, read, and leave, not something to keep beside a
+ * terminal. */
+body:not([data-pane="usage"]) #usage {
+  display: none;
+}
+
+body[data-pane="usage"] #list,
+body[data-pane="usage"] #view {
+  display: none;
+}
+
 @media (min-width: 900px) {
   /* Both panes at once, and the rail keeps a fixed width so switching
    * sessions cannot change the split. */
@@ -263,6 +284,16 @@ body[data-pane="view"] #list {
     display: flex;
     flex: 0 0 var(--rail);
     border-right: 1px solid var(--line);
+  }
+
+  body[data-pane="usage"] #list {
+    display: none;
+  }
+
+  /* Long enough to read, narrow enough that a meter does not stretch across
+   * a desktop monitor. */
+  #usage {
+    max-width: 720px;
   }
 }
 
@@ -369,6 +400,132 @@ body[data-pane="view"] #list {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ---- usage ----
+ *
+ * A quota is a quantity, so it is drawn as one. The bar fills with what is
+ * left rather than what is gone: the question this pane answers is "how much
+ * have I got", and a bar that grows as you spend reads backwards. */
+
+.pane-title {
+  margin: 4px 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.pane-title + .pane-title,
+#usageNote + .pane-title,
+#accounts + .pane-title {
+  margin-top: 22px;
+}
+
+#accounts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.account {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.meters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.meter-label {
+  flex: 0 0 auto;
+  min-width: 4.5em;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.meter {
+  flex: 1 1 auto;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--raised);
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ok);
+  transition: width 0.4s ease;
+}
+
+.meter-fill.warn {
+  background: var(--warn);
+}
+
+.meter-fill.danger {
+  background: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meter-fill {
+    transition: none;
+  }
+}
+
+.note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.ledger {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.ledger th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 0 8px 6px 0;
+}
+
+.ledger td {
+  padding: 7px 8px 7px 0;
+  border-top: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger td:first-child {
+  font-weight: 600;
+}
+
+#ledgerNote {
+  margin-top: 10px;
 }
 
 /* ---- empty state ----
