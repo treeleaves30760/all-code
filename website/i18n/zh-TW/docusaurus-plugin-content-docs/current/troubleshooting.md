@@ -1,144 +1,104 @@
 ---
 id: troubleshooting
 title: 疑難排解
+sidebar_label: 疑難排解
 sidebar_position: 8
-description: 用 alc doctor 診斷常見問題，包含找不到 agent、provider 不相容、缺少 API key 與 Codex 登入失效。
+description: alc 會印出哪些錯誤，以及各自要做什麼才會消失 —— 找不到 agent、provider 不相容、Codex 登入、Ollama 逾時，還有留在 Claude Code 設定裡的 GPT 模型。
 keywords:
   - alc doctor
-  - codex 登入過期
+  - claude code error
+  - codex login
+  - ollama timeout
+  - model not found
+  - 中文
 ---
 
 # 疑難排解
 
-先執行：
-
-```sh
-alc doctor
-```
-
-它會列出全部八個 agent 的執行檔狀態、憑證狀態、每個 provider profile 各自的
-agent 相容性欄位、解析後的預設值，以及（當設定了 Codex provider 時）Codex
-橋接的登入狀態。
+先跑 `alc doctor`。它會回報每個 agent 的執行檔、憑證狀態、每個 provider profile
+以及它各自的 agent 相容性欄位、解析後的預設值，還有 Codex 的登入狀態。
 
 ## `'claude' is not installed or not on PATH`
 
-alc 只負責啟動這台機器上已安裝的 agent。請先安裝該 agent，或用
-`ALC_CLAUDE_BIN`、`ALC_CODEX_BIN`、`ALC_OPENCODE_BIN`、`ALC_PI_BIN`、
-`ALC_COPILOT_BIN`、`ALC_GOOSE_BIN`、`ALC_QWEN_BIN`、`ALC_KIMI_BIN` 指定執行檔
-位置。
+alc 只啟動已經裝好的 agent。請先安裝那個 agent，或用[覆寫變數](./agents.md#執行檔覆寫)把
+alc 指向某個執行檔。
 
 ## `provider '…' cannot be used with claude; Claude Code needs Anthropic Messages`
 
-選到的 profile 使用了 Claude Code 無法接受的協定。請改用 Anthropic 相容端點、
-OpenRouter 或 Ollama，或改用
-[`alc --codex claude`](./codex-to-claude.md)。詳見
-[Provider 相容性](./providers.md)。
+那個 profile 講的協定 Claude Code 用不了。請換一個 Anthropic 相容的端點，或改用
+[`alc --codex claude`](./codex-to-claude.md)。對照表在 [Provider 相容性](./providers.md)。
 
 ## `provider '…' has no API key`
 
-用 `alc config key <profile>` 儲存一組 key，或設定該 profile `api_key_env` 欄位
-指定的環境變數。
+用 `alc config key <profile>` 存一把，或設定那個 profile 的 `api_key_env` 指名的
+環境變數。
 
 ## `Codex credentials were not found`
 
-執行 `codex login` 後再試一次。登入狀態會顯示在 `alc doctor` 輸出的
-**Codex bridge** 底下。
-
-## `the bundled claude-codex … helper is missing`
-
-從 1.4.0 起不會發生：橋接是 `alc` 的一部分，不再是旁邊的另一個執行檔；從 1.5.0
-起它是 alc 自己的程式碼。如果你是在舊版 `alc` 上看到這個訊息，請用一行安裝器升級。
+執行 `codex login`，然後再試一次。[`alc usage`](./usage.md) 會告訴你哪些登入還有效。
 
 ## Ollama profile 出現 `API Error: Request timed out`（或 `500`）
 
-Claude Code 會放棄六分鐘內還沒開始回應的請求並重試；Ollama 則把被放棄的請求
-記成 `500`。原因單純是模型來不及在時限內讀完 Claude Code 的第一個請求
-（25k 到 40k tokens）。現在的 alc 會為 Ollama profile 設定
-`API_FORCE_IDLE_TIMEOUT=0` 與 `API_TIMEOUT_MS=1800000`，讓 Claude Code 改為
-等待（如果還看到六分鐘的截止，請更新 alc）；沒有這兩個變數時，重試會從
-Ollama 的 prompt cache 接續，工作階段通常在第二或第三次嘗試時才開始。要讓
-第一輪一次就快：
+模型沒能在 Claude Code 放棄之前，讀完那個 25k 到 40k tokens 的第一個請求。alc 會為
+Ollama profile 設定 `API_FORCE_IDLE_TIMEOUT=0` 與 `API_TIMEOUT_MS=1800000`，讓它
+願意等下去；而重試本來就會從 Ollama 的 prompt cache 接續，所以不管走哪一條路，
+session 通常在第二次嘗試就會開始。
 
-- 看 `alc doctor` 的 **Ollama** 區塊：模型必須已 pull、能呼叫工具，
-  而且 context 至少 64k。
-- 啟動時少掛一些 MCP server、plugin 和 skill；每一個都會把工具 schema
-  加進第一個請求，讀取時間隨長度增加。
-- 小機器上把 Ollama 的 context 長度維持在 64k–128k，不要開到模型的上限，
-  並用 `OLLAMA_KEEP_ALIVE=4h` 讓模型保持載入，prompt cache 才能跨輪保留。
-- 先讓進行中的 `ollama pull` 跑完，並關掉其他吃記憶體的程式。
-
-見[在本機 Ollama 模型上跑 Claude Code](./providers.md#在本機-ollama-模型上跑-claude-code)。
+想讓第一輪不只是撐得過去，而是真的快，請看[本機模型](./local-models.md)。先看
+`alc doctor` 的 **Ollama** 區塊：模型必須已經 pull 下來、能呼叫工具，而且 context
+至少 64k。
 
 ## Ollama 回傳 `404 model 'claude-…' not found`
 
-Claude Code 向伺服器要求了它自己的 model ID —— 通常是背景工作用的 `haiku`
-別名，或 `/model` 選單裡的某一列。現在的 alc 會把 Ollama profile 的每個別名
-都釘在 profile 的模型上；請更新 alc，或把 profile 的 `small_model` 設成
-你已經 pull 下來的模型。
+Claude Code 向伺服器要了一個它自己的 model ID，通常是透過它拿來做背景工作的
+`haiku` 別名。alc 會把 Ollama profile 的每個別名都釘在 profile 的模型上；請把那個
+profile 的 `small_model` 設成一個你真的 pull 下來的模型。
 
-## 模型清單看起來過期
+## 模型清單看起來過期了
 
-模型目錄每 24 小時最多向本機 Codex CLI 同步一次：
+模型目錄每天最多向已安裝的 Codex CLI 同步一次：
 
 ```sh
 alc models --refresh
 ```
 
-## 輸出裡的機密資料
-
-`alc --dry-run` 會遮蔽 API key 與 auth token；`alc config show` 不會印出憑證內容，
-只會顯示每個 profile 有沒有設定。
-
-## 在 `alc config` 裡找不到共享設定
-
-它在第三個畫面。`alc config` 的標題列會列出三個畫面 —— `1 Providers`、
-`2 Agent defaults`、`3 Sharing & remote` —— 用 `Tab`、`Shift+Tab` 或直接按數字鍵
-就能切換。預設共享、綁定位址與權限上限都在第三個畫面裡。
-
-在 TUI 之外，`alc remote auto-share on` 設定的是同一個值，`alc remote status`
-與 `alc doctor` 都會顯示它，`alc config show` 則會印在 `# Remote control` 底下。
-
-如果那一列顯示 `on (inactive)`，代表共享本身是關的：一個 session 要兩者都開才會
-預設共享。把上面那列的 `sharing` 打開，或執行 `alc remote on`。
-
 ## `the model may not exist or you may not have access to it`
 
-有三種成因，看這個 session 從哪裡來就能分辨。
+有兩種成因。
 
-**1.6.0 之前的共享 session。** 在 1.3.0 到 1.5.0 之間，經過 hub 的 session
-（`--share`，或在「預設共享」開啟時的任何 session）會在傳送途中丟掉 Codex
-轉接器：agent 帶著 GPT 模型名稱被啟動，後面卻什麼都沒有，於是它向自己原本的
-廠商要一個那個廠商從沒聽過的模型。請升級到 1.6.0，然後把還在跑舊版的 hub 停掉：
+**留在 Claude Code 設定裡的 GPT 模型。** 一個 session 最後落在哪個模型，就會被寫進
+`~/.claude/settings.json`，成為你之後新 session 的預設值，而之後直接跑的 `claude`
+前面並沒有轉接器。alc 會在轉接過的 session 結束時把那個欄位放回去，所以你現在還找
+得到的，是被直接砍掉的 session 留下的殘留，或是手動設進去的值。
+
+```sh
+alc doctor            # names the file and the line when it finds one
+alc --codex claude    # clears it on exit; alc passes the model itself
+```
+
+**還在跑舊版本的 hub。** hub 的設計本來就是比終端機活得久，所以它也會比一次升級活
+得久，而 alc 寧可拒絕，也不會把需要轉接的 session 交給版本不同的 hub。`alc doctor`
+會指出落後的那一個：
 
 ```sh
 alc hub stop
 ```
 
-hub 的設計本來就是比終端機活得久，所以它也會比升級活得久。從 1.6.0 起，alc
-寧可拒絕把需要轉接器的 session 交給版本不同的 hub，也不會讓它在沒有轉接器的
-情況下跑；`alc doctor` 也會指出落後的 hub。
+## `alc update` 找不到釋出的壓縮檔
 
-**Claude Code 自己存下的預設值。** 一個 Claude Code session 最後落在哪個模型，
-就會被寫進 `~/.claude/settings.json`，當成之後每個新 session 的預設值。之後每一個
-不是 alc 啟動的 `claude` 都會讀到那個檔案，而那些前面沒有轉接器。
+1.4.0 之前裝好的版本，會去找一個已經不再發布的第二個執行檔。重新跑一次安裝器就好，
+它會把整份安裝換掉。
 
-從 1.8.0 起，alc 會在轉接過的 session 結束時把那個欄位放回去，所以你現在還會在
-這裡看到的，都是殘留：被直接砍掉的 session、1.8.0 之前的 alc，或是手動設的值。
-跑一次轉接過的 session 讓它在結束時清掉，或者自己把那一行刪掉 —— alc 本來就會帶
-模型參數：
+## 在 `alc config` 裡找不到共享設定
 
-```sh
-alc doctor            # 找到時會指出那個檔案與那一行
-alc --codex claude    # 結束時會清掉；模型參數 alc 自己會帶
-```
+它在第三個畫面 —— `Tab`、`Shift+Tab` 或直接按數字鍵，就能在 `1 Providers`、
+`2 Agent defaults` 與 `3 Sharing & remote` 之間切換。預設共享、綁定位址與權限上限
+都在那裡。
 
-**橋接無法轉送的模型。** 1.5.0 之前 alc 所依賴的橋接裡有一份寫死的模型清單，
-可能落後 Codex 一個版本。從 1.5.0 起橋接不保留任何清單，改由 chatgpt.com 決定，
-所以這種情況不該再發生；若真的發生，訊息會列出可用的模型：
+在 TUI 之外，`alc remote auto-share on` 設定的是同一個東西，`alc remote status`
+會回報它。某一列顯示 `on (inactive)`，代表共享本身是關的：請執行 `alc remote on`。
 
-```sh
-alc config upsert codex --model gpt-5.6-terra
-```
+## 輸出裡的機密資料
 
-如果 codex profile 的 model 是空的，它會改用 Codex CLI 自己的 `model` 設定，
-而那通常正是不能轉送的那個來源。原生的 `alc codex` 不受影響。
+`alc --dry-run` 會遮蔽 API key 與 auth token，`alc config show` 只會顯示某個 profile
+有沒有金鑰，而 `alc usage` 不管哪一種憑證都不會印出來。

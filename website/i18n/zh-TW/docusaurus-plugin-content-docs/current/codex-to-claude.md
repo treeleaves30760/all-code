@@ -2,169 +2,97 @@
 id: codex-to-claude
 title: Codex 橋接
 sidebar_label: Codex 橋接
-sidebar_position: 4
-description: 透過內建的橋接，一次 codex login 就能讓全部八個 coding agent 使用你的 Codex／ChatGPT 登入 —— Claude Code 有工作階段內的 GPT 模型選單，其他每個 agent 則是每個工作階段使用一個橋接模型。
+sidebar_position: 3
+description: 一次 codex login，透過內建的橋接就能餵飽全部八個 coding agent —— Claude Code 有 session 內的 GPT 模型選單，其他 agent 則是每個 session 用一個橋接過的模型。
 keywords:
-  - claude code 用 gpt
-  - codex 訂閱
-  - gpt-5.6
-  - claude code 模型選單
-  - codex bridge
+  - claude code with gpt
+  - codex subscription
+  - chatgpt plan coding agent
+  - gpt-6-astra
+  - reasoning effort
+  - 中文
 ---
 
 # Codex 橋接
 
-一次 `codex login` 就能讓 alc 啟動的每個 agent 使用。`alc --codex <agent>`
-會在 loopback port 上啟動內建的 Codex 轉接器，並讓那一個 agent 的
-工作階段指向它 —— OpenCode、Pi、Copilot CLI、Goose、Qwen Code、Kimi Code
-CLI 都不需要另外登入。
+`alc --codex <agent>` 會啟動一個 loopback 轉接器，並把某一個 agent 的 session
+指向它。一次 `codex login` 就夠八個 agent 一起用。
 
 ```sh
 codex login
 alc --codex claude
-alc --codex opencode
-alc --codex pi
-alc --codex copilot
-alc --codex goose
-alc --codex qwen
-alc --codex kimi
+alc --codex opencode      # or pi, copilot, goose, qwen, kimi
 ```
 
-轉接器會依 agent 不同，說不同的 wire protocol，但背後都是同一個 Codex 登入：
+| Agent | 橋接提供給它的協定 | 它怎麼選模型 |
+| --- | --- | --- |
+| Claude Code | Anthropic Messages | `/model` 選單，session 中途也能換 |
+| OpenCode、Pi、Kimi Code CLI | OpenAI Responses | 一個模型，啟動時選定 |
+| Copilot CLI、Goose、Qwen Code | OpenAI Chat Completions | 一個模型，啟動時選定 |
 
-| Agent | 橋接提供的 wire protocol |
-| --- | --- |
-| Claude Code | Anthropic Messages |
-| OpenCode、Pi、Kimi Code CLI | OpenAI Responses |
-| Copilot CLI、Goose、Qwen Code | OpenAI Chat Completions |
+只有 Claude Code 能在 session 中途切換，因為它每次請求都會把模型與推理強度一起
+送出，所以 alc 兩者都不必釘在轉接器上。其他 agent 則是沿用它們各自處理
+`openai` 這個 kind 的那套既有機制接上來，只是改指向轉接器、帶一個佔位用的
+key —— 每個 agent 實際收到什麼，見[支援的 agent](./agents.md)。
 
-Claude Code 是唯一能在工作階段中切換的 agent：因為它每次請求都會帶上模型與
-推理強度，alc 從不會把任何一項鎖在轉接器上，`/model`／`/effort` 可以直接
-變更正在執行的工作階段（詳見下方）。其他每個 agent 都是在啟動時就選定一個
-模型 —— 以及該次工作階段固定的一個推理強度 —— 並使用各自的機制，而不是
-選單。
+## 模型
 
-## Claude Code
-
-Claude Code 會直接以你儲存的預設值啟動，並把下列模型放進它自己的 `/model`
-選單：
+Claude Code 會把這幾個列進它自己的 `/model` 選單：
 
 | 模型 | 適合的情境 | Codex 預設強度 |
 | --- | --- | --- |
-| `gpt-6-astra` | GPT-6，能力最強，適合複雜且吃重的工作 | `medium` |
-| `gpt-5.6-sol` | 能力最完整，適合架構、困難除錯與大型重構 | `low` |
-| `gpt-5.6-terra` | 速度、能力、成本均衡，建議新手從這個開始 | `medium` |
-| `gpt-5.6-luna` | 速度快、費用低，適合簡單修改與大量例行工作 | `medium` |
+| `gpt-6-astra` | GPT-6。能力最強，適合複雜吃重的工作 | `medium` |
+| `gpt-5.6-sol` | 前沿等級的能力，適合最困難的專業工作 | `low` |
+| `gpt-5.6-terra` | 日常寫程式的均衡選擇，建議從這個開始 | `medium` |
+| `gpt-5.6-luna` | 快、便宜，適合大量的例行工作 | `medium` |
 
-alc 以一份寫死的清單追蹤這四個模型，並向本機安裝的 Codex CLI 同步它們的細節。
-橋接則是另一回事：它本身不保留任何允許清單，收到什麼 slug 就往上游送，由
-chatgpt.com 決定。所以 alc 沒有追蹤的模型，仍然可以用 `--model` 指名使用。
-1.5.0 之前，alc 所依賴的橋接裡有一份寫死的清單可能落後一個版本，這正是
-`gpt-6-astra` 明明 `codex` 自己能用、透過橋接卻用不了的原因。
+橋接本身不保留任何允許清單：收到什麼 slug 就往上游送，由 chatgpt.com 決定，
+所以 alc 沒有追蹤的模型，一樣可以用 `--model` 指名使用。這正是為什麼一個新模型
+在 Codex 推出的那天就能用，而不是等 alc 追上的那天。
 
-清單依能力由強到弱排列，與 Codex 自己的分級一致。`gpt-6-astra` 與較新的 GPT-5.6
-模型另外提供高於 `max` 的 `ultra` 強度。這一級可以用原生的 `alc codex` 使用，但
-**無法**透過 Codex 橋接：內建 helper 自己的強度範圍到 `max` 為止，所以 alc 會在
-啟動時把它降到 `max` 並明說，而不是讓請求在 session 進行到一半被拒絕。上游細節可參考
-OpenAI 的
-[模型選擇指南](https://developers.openai.com/api/docs/guides/latest-model)、
-[Luna 說明](https://developers.openai.com/api/docs/models/gpt-5.6-luna)與
-[Sol 說明](https://developers.openai.com/api/docs/models/gpt-5.6-sol)。
+## 推理強度
 
-### 在工作階段中切換模型與強度
+`/model` 畫面的左右方向鍵可以移動強度滑桿，`/effort` 則能直接指定一個等級。
+每個模型都接受 `low`、`medium`、`high`、`xhigh` 或 `max`。強度越高，模型思考的
+空間越大，也越吃你的額度。
 
-進到工作階段後，用 `/model` 換模型，該畫面的左右方向鍵可調整推理強度；也可以
-用 `/effort` 直接指定等級。每個模型都接受 `low`、`medium`、`high`、`xhigh`、
-`max`。強度越高，模型思考的空間越大，但也會花更多時間與額度。
+`gpt-6-astra` 與 GPT-5.6 系列另外提供 `ultra`：原生的 `alc codex` 用得到，橋接
+則不行。alc 會在啟動時把它降到 `max` 並明說，而不是讓請求在 session 進行到一半
+才被拒絕。
 
-alc 會透過 Claude Code 的
-[`modelPicker`](https://code.claude.com/docs/en/settings-reference#modelpicker)
-設定傳入模型清單，這個設定自 Claude Code 2.1.243 起提供。選單只會顯示這些
-GPT 模型與 Default 一列，因為 Claude 自家的模型無法經由 Codex 轉接器服務；
-舊版會忽略這個設定，仍可拿到啟動時的預設模型作為可選項目。
-
-### 設定啟動預設值
-
-想單次換掉起始值，或用在腳本與 CI：
+## 換一個起點
 
 ```sh
 alc --codex claude --model gpt-5.6-luna --effort low
 alc --codex claude --model gpt-5.6-terra --effort medium --save
 ```
 
-`--save` 會把模型與 effort 存入目前選定的 alc provider。沒有這些參數時，
-起始值依序取自 alc provider、選定的 Codex profile、模型內建預設值。放在
-`--` 之後的 `--model`、`--effort`、`--settings` 會原樣交給 Claude Code，並
-蓋過 alc 的注入值。
+`--save` 會把兩者一起存進 provider profile。沒有這些參數時，session 的起始值
+依序取自 profile 的設定、選定的 Codex profile，最後是模型自己的預設值。放在
+`--` 之後的東西會原封不動交給 agent，而且蓋過前面所有來源。
 
-用 `/model` 選的模型只影響那一次 Claude Code 工作階段。下次執行
-`alc --codex claude` 會再從 alc provider 的預設值開始，所以
-[`alc config`](./configuration.md) 仍然是唯一的真實來源。
+用 `/model` 選的模型只對那一次 session 有效；下次啟動又會從 profile 的值開始。
 
-### `/model` 還會寫下什麼，以及 alc 會放回什麼
+## 你原本的 `claude` 仍然連得到 Anthropic
 
-那個選單是 Claude Code 的、不是 alc 的。工作階段最後落在哪個模型，就會被寫進
-`~/.claude/settings.json`，當成之後每個新工作階段的預設值。那個檔案會被這台
-機器上每一個 Claude Code 工作階段讀到，包含不是 alc 啟動的那些 —— 而那些前面
-沒有轉接器：之後直接執行 `claude` 就會向 Anthropic 要一個 GPT 模型，然後被告知
-它不存在。
+Claude Code 會把你最後停在的那個模型寫進 `~/.claude/settings.json`，當成之後
+新 session 的預設值，而這台機器上每一個 session 都會讀那個檔案 —— 包含不是
+alc 啟動的那些：它們前面沒有轉接器，卻會拿一個 GPT 模型去向 Anthropic 要。
 
-**從 1.8.0 起，alc 會在工作階段結束時把那一個欄位放回去。** 它在啟動前讀下原本
-的值，結束後再寫回去。檔案裡其他東西一概不動；而且除非它讀到的值只有轉接器
-服務得了，否則根本不會寫 —— 所以一個從你自己的預設值開始、也在那個值上結束的
-工作階段，會讓那個檔案保持一個位元組都沒變。
+alc 會在啟動前把那一個欄位讀下來，並在 session 結束時放回去。檔案裡其他東西
+一概不動；而且除非它讀到的值只有轉接器服務得了，否則根本不會寫。
 
-（唯一一種「你什麼都沒動它卻還是寫了」的情況：工作階段開始時那個值本身就只有
-轉接器服務得了，那它會被清掉而不是寫回去。這就是下面說的自我修復。）
+有兩種情況它刻意不碰。一是你在 session 中途自己切到某個真正的 Claude 模型：
+那是你對自己預設值做的決定，就該算數。二是 session 被直接砍掉，任何收尾都不會
+跑 —— 這時 `alc doctor` 會指出那個檔案與那一行，而下一次經過橋接的啟動會把它
+清掉。
 
-有兩種情況它刻意不動：
-
-- **你在工作階段中途自己切到某個真正的 Claude 模型。** 在轉接過的工作階段裡打
-  `/model sonnet`，是你對自己預設值做的決定；把舊值蓋回去，等於 alc 推翻一件
-  它根本沒被問過的事。
-- **工作階段是被直接砍掉的。** 對 alc 或 hub 下 `kill -9`，什麼收尾都不會跑。
-  這種情況 `alc doctor` 仍然會指出那個檔案與那一行 —— 而下一次
-  `alc --codex claude` 就會把它清掉：如果啟動前讀到的值本身就只有轉接器服務
-  得了，那就直接移除，而不是再寫回去。
-
-不要用 `CLAUDE_CONFIG_DIR` 去隔離它：那會搬走 Claude Code 的整個設定家目錄，
-連登入資訊也一起搬走。alc 找那個檔案時讀的是同一個變數，而且是在你實際輸入指令
-的那個 shell 裡解析，不是在 hub 裡 —— 所以就算是共享的 session，逐專案設定的
-`CLAUDE_CONFIG_DIR` 也一樣有效。
-
-## OpenCode、Pi、Kimi Code CLI
-
-這三個 agent 會直接使用轉接器的 OpenAI Responses 介面。每一個都會在啟動時
-選定一個模型與一個推理強度（採用 alc provider 設定的值，或模型目錄的預設
-值），並用各自的機制接上，而不是工作階段內的選單：OpenCode 會在
-`OPENCODE_CONFIG_CONTENT` 裡拿到一個 `alc-codex` provider，Pi 會拿到合併進
-`models.json` 的一筆 `alc-codex` 項目，Kimi Code CLI 則會在暫時的
-`--config-file` 裡拿到一個 `alc-codex` provider。三者非橋接相關的細節，請見
-[支援的 agent](./agents.md)。
-
-```sh
-alc --codex opencode
-alc --codex pi
-alc --codex kimi
-```
-
-## Copilot CLI、Goose、Qwen Code
-
-這三個 agent 會使用轉接器的 OpenAI Chat Completions 介面，透過它們原本用在
-`openai` 這個 provider kind 上的同一套機制接上 —— Copilot CLI 用
-`COPILOT_PROVIDER_*` 環境變數、Goose 用 `OPENAI_*`、Qwen Code 用 `OPENAI_*`
-加上 `--auth-type openai` —— 只是改指向 loopback 轉接器，並帶一個佔位用的
-key，而不是真正的 key。
-
-```sh
-alc --codex copilot
-alc --codex goose
-alc --codex qwen
-```
+不要想用 `CLAUDE_CONFIG_DIR` 來隔離這件事：那會把 Claude Code 的整個設定家目錄
+搬走，連登入資訊也一起搬走。
 
 ## 模型目錄
 
-模型清單每天最多自動向本機 Codex CLI 同步一次；離線時會使用內建清單：
+每天最多向已安裝的 Codex CLI 同步一次，另外內建一份清單，離線時照樣有得用。
 
 ```sh
 alc models
@@ -172,27 +100,20 @@ alc models --refresh
 alc models --json
 ```
 
-同步到的 Codex context window 也會透過 Claude Code 官方的
+同步到的 context window 會以
 [`CLAUDE_CODE_MAX_CONTEXT_TOKENS`](https://code.claude.com/docs/en/env-vars)
-設定傳入，讓 Claude Code 不認得的 GPT ID 依照 Codex 的實際上限壓縮對話，而
-不是用它的通用預設值。
+傳給 Claude Code，讓 GPT 模型依 Codex 的實際上限壓縮對話，而不是照 Claude Code
+對不認得的 ID 假設的 200k。
 
-Claude Code 的內建別名也一併留在 Codex 上：選單的 Default 一列跟著 alc 的
-預設值，`haiku` 與背景工作使用最便宜的模型，`sonnet` 跟著本次的起始模型，
-`opus` 使用最強的模型。
+## 運作方式
 
-## 橋接如何運作
+橋接是 alc 自己的程式碼，跑在 `alc` 行程內、綁在隨機的 loopback port 上，只服務
+它啟動的那個 agent，並在該 session 結束時關閉。它會讀取、必要時更新
+`~/.codex/auth.json`；憑證絕不會被複製進 alc 自己的設定裡。
 
-橋接是 alc 自己的程式碼（`src/bridge/`）。它跑在 `alc` 行程內、綁在隨機的
-`127.0.0.1` port 上，只讓啟動的那個 agent 指向它，並在該 session 結束時關閉。
-它會讀取並可能更新 `~/.codex/auth.json`；憑證不會被複製到 alc 的設定裡。
+:::caution[這是第三方相容層]
 
-它不保留任何模型清單。收到什麼 slug 就往上游送，由 chatgpt.com 決定要不要拒絕
-—— 這就是為什麼一個模型在 Codex 推出的當天就能用，而不是等 alc 追上。
-
-:::caution 這是第三方相容層
-
-這個轉接器不是 OpenAI 或 Anthropic 的官方整合。使用訂閱帳號前，請先檢閱
-專案的 `THIRD_PARTY.md` 與你的 provider 條款。
+這個轉接器不是 OpenAI 或 Anthropic 的官方整合。在把訂閱憑證交給它之前，請先
+看過專案的 `THIRD_PARTY.md` 與你的 provider 條款。
 
 :::

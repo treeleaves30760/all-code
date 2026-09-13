@@ -1,30 +1,691 @@
-/**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
+/*
+ * all-code docs — the one stylesheet.
+ *
+ * Tokens come from static/img/logo.svg (purple #7c5cff, green #4ade80,
+ * blue #38bdf8 on #1f2430). Light mode darkens the purple so links pass
+ * AA on white; dark mode lightens it so they pass on the navy ground.
+ * Everything below is either an Infima variable override (--ifm-*) or a
+ * class the theme already renders — no swizzled components.
  */
 
-/* You can override the default Infima variables here. */
+/* ------------------------------------------------------------ tokens */
+
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
-  --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  /* brand */
+  --alc-purple: #7c5cff;
+  --alc-green: #4ade80;
+  --alc-blue: #38bdf8;
+
+  /* light palette */
+  --alc-bg: #ffffff;
+  --alc-surface: #f7f7fa;
+  --alc-raised: #efeef5;
+  --alc-line: #e4e4ec;
+  --alc-line-strong: #cfcfdb;
+  --alc-text: #1b1b22;
+  --alc-muted: #5d6170;
+  --alc-code-bg: #f6f6f9;
+  --alc-ok: #15803d;
+  --alc-warn: #b45309;
+  --alc-danger: #b91c1c;
+
+  /* Infima */
+  --ifm-color-primary: #5b3fe0;
+  --ifm-color-primary-dark: #4f33d4;
+  --ifm-color-primary-darker: #4a2fc9;
+  --ifm-color-primary-darkest: #3d27a6;
+  --ifm-color-primary-light: #6b51e6;
+  --ifm-color-primary-lighter: #745ce8;
+  --ifm-color-primary-lightest: #9484ee;
+
+  --ifm-background-color: var(--alc-bg);
+  --ifm-background-surface-color: var(--alc-surface);
+  --ifm-font-color-base: var(--alc-text);
+  --ifm-color-content: var(--alc-text);
+  --ifm-color-content-secondary: var(--alc-muted);
+  --ifm-heading-color: var(--alc-text);
+
+  --ifm-font-family-base: 'Inter', ui-sans-serif, system-ui, -apple-system,
+    'Segoe UI', Roboto, 'Noto Sans', 'Noto Sans TC', 'PingFang TC',
+    'Microsoft JhengHei', sans-serif;
+  --ifm-font-family-monospace: ui-monospace, 'SF Mono', SFMono-Regular, Menlo,
+    Consolas, 'Liberation Mono', monospace;
+  --ifm-font-size-base: 16px;
+  --ifm-line-height-base: 1.6;
+  --ifm-heading-font-weight: 650;
+  --ifm-heading-line-height: 1.2;
+  --ifm-h1-font-size: 2rem;
+  --ifm-h2-font-size: 1.45rem;
+  --ifm-h3-font-size: 1.15rem;
+  --ifm-h4-font-size: 1rem;
+
+  --ifm-global-radius: 8px;
+  --ifm-code-font-size: 87.5%;
+  --ifm-code-border-radius: 6px;
+  --ifm-code-padding-horizontal: 0.35em;
+  --ifm-code-padding-vertical: 0.15em;
+  --ifm-code-background: var(--alc-raised);
+  --ifm-pre-padding: 1rem 1.1rem;
+  --ifm-pre-line-height: 1.55;
+
+  --ifm-link-decoration: none;
+  --ifm-link-hover-decoration: underline;
+
+  --ifm-navbar-height: 3.5rem;
+  --ifm-navbar-background-color: rgba(255, 255, 255, 0.85);
+  --ifm-navbar-shadow: none;
+  --ifm-navbar-link-color: var(--alc-muted);
+  --ifm-navbar-link-hover-color: var(--alc-text);
+
+  --ifm-menu-color: var(--alc-muted);
+  --ifm-menu-color-active: var(--ifm-color-primary);
+  --ifm-menu-color-background-active: rgba(91, 63, 224, 0.08);
+  --ifm-menu-color-background-hover: rgba(27, 27, 34, 0.05);
+  --ifm-menu-link-padding-vertical: 0.4rem;
+  --ifm-menu-link-padding-horizontal: 0.7rem;
+
+  --ifm-toc-border-color: var(--alc-line);
+  --ifm-toc-link-color: var(--alc-muted);
+  --ifm-toc-padding-vertical: 0.3rem;
+
+  --ifm-table-border-width: 0;
+  --ifm-table-cell-padding: 0.55rem 0.75rem;
+  --ifm-table-stripe-background: transparent;
+  --ifm-table-head-background: var(--alc-surface);
+
+  --ifm-hr-background-color: var(--alc-line);
+  --ifm-hr-height: 1px;
+
+  --ifm-blockquote-border-color: var(--alc-line-strong);
+  --ifm-blockquote-color: var(--alc-muted);
+
+  --ifm-alert-border-left-width: 3px;
+  --ifm-alert-border-radius: var(--ifm-global-radius);
+  --ifm-alert-shadow: none;
+
+  --ifm-footer-background-color: var(--alc-surface);
+  --ifm-footer-color: var(--alc-muted);
+  --ifm-footer-link-color: var(--alc-muted);
+  --ifm-footer-link-hover-color: var(--alc-text);
+  --ifm-footer-title-color: var(--alc-text);
+  --ifm-footer-padding-vertical: 2.5rem;
+
+  --ifm-breadcrumb-item-background-active: transparent;
+  --ifm-breadcrumb-color-active: var(--alc-text);
+
+  --docusaurus-highlighted-code-line-bg: rgba(91, 63, 224, 0.08);
+  --doc-sidebar-width: 272px;
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
 [data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  --alc-bg: #0f1117;
+  --alc-surface: #151821;
+  --alc-raised: #1f2430;
+  --alc-line: #262b38;
+  --alc-line-strong: #363c4c;
+  --alc-text: #e6e7ec;
+  --alc-muted: #9ea3b3;
+  --alc-code-bg: #12151d;
+  --alc-ok: var(--alc-green);
+  --alc-warn: #e0a458;
+  --alc-danger: #f08080;
+
+  --ifm-color-primary: #a390ff;
+  --ifm-color-primary-dark: #9077ff;
+  --ifm-color-primary-darker: var(--alc-purple);
+  --ifm-color-primary-darkest: #6a49f0;
+  --ifm-color-primary-light: #b1a1ff;
+  --ifm-color-primary-lighter: #bcaeff;
+  --ifm-color-primary-lightest: #d1c8ff;
+
+  --ifm-navbar-background-color: rgba(15, 17, 23, 0.85);
+  --ifm-menu-color-background-active: rgba(163, 144, 255, 0.12);
+  --ifm-menu-color-background-hover: rgba(230, 231, 236, 0.06);
+  --ifm-footer-background-color: var(--alc-surface);
+  --docusaurus-highlighted-code-line-bg: rgba(163, 144, 255, 0.12);
+}
+
+/* --------------------------------------------------------- base type */
+
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.markdown {
+  --ifm-h1-vertical-rhythm-top: 0;
+  --ifm-h2-vertical-rhythm-top: 2.2;
+  --ifm-h3-vertical-rhythm-top: 1.6;
+  --ifm-heading-vertical-rhythm-bottom: 0.6;
+}
+
+.markdown > h1:first-child {
+  --ifm-h1-font-size: 2.25rem;
+  letter-spacing: -0.02em;
+}
+
+.markdown h2 {
+  letter-spacing: -0.01em;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--alc-line);
+}
+
+.markdown > p,
+.markdown > ul,
+.markdown > ol {
+  max-width: 72ch;
+}
+
+.markdown > p:first-of-type {
+  font-size: 1.05rem;
+  color: var(--alc-muted);
+}
+
+.markdown a {
+  font-weight: 500;
+}
+
+.markdown code {
+  border: 1px solid var(--alc-line);
+  font-weight: 450;
+  /* A long unbreakable token (an installer URL) must not set the doc
+   * column's min-content width, or a phone gets a sideways-scrolling page. */
+  overflow-wrap: anywhere;
+}
+
+.markdown a code {
+  color: inherit;
+}
+
+.markdown kbd {
+  border: 1px solid var(--alc-line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--alc-surface);
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------------ navbar */
+
+.navbar {
+  border-bottom: 1px solid var(--alc-line);
+  backdrop-filter: saturate(160%) blur(12px);
+  -webkit-backdrop-filter: saturate(160%) blur(12px);
+}
+
+.navbar__title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.navbar__link {
+  font-size: 0.925rem;
+  font-weight: 500;
+}
+
+.navbar__link--active {
+  color: var(--alc-text);
+}
+
+/* ----------------------------------------------------------- sidebar */
+
+.theme-doc-sidebar-container {
+  border-right: 1px solid var(--alc-line) !important;
+}
+
+.theme-doc-sidebar-menu {
+  padding: 0.75rem 0.75rem 2rem;
+  font-size: 0.9rem;
+}
+
+/* Non-collapsible categories render as section labels. */
+.theme-doc-sidebar-item-category-level-1 > .menu__list-item-collapsible {
+  pointer-events: none;
+  margin-top: 1.1rem;
+}
+
+.theme-doc-sidebar-item-category-level-1:first-child
+  > .menu__list-item-collapsible {
+  margin-top: 0.25rem;
+}
+
+.theme-doc-sidebar-item-category-level-1
+  > .menu__list-item-collapsible
+  > .menu__link {
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--alc-muted);
+  padding-left: 0.7rem;
+}
+
+.theme-doc-sidebar-item-category-level-1 > .menu__list {
+  margin-top: 0.15rem;
+  padding-left: 0;
+}
+
+.menu__link {
+  border-radius: 6px;
+  line-height: 1.35;
+}
+
+.menu__link--active:not(.menu__link--sublist) {
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------- toc */
+
+.table-of-contents {
+  font-size: 0.8rem;
+}
+
+.table-of-contents__link--active {
+  color: var(--ifm-color-primary);
+  font-weight: 600;
+}
+
+/* -------------------------------------------------------- breadcrumbs */
+
+.theme-doc-breadcrumbs {
+  font-size: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.breadcrumbs__link {
+  color: var(--alc-muted);
+}
+
+/* -------------------------------------------------------------- code */
+
+.theme-code-block {
+  --prism-background-color: var(--alc-code-bg) !important;
+  border: 1px solid var(--alc-line);
+  border-radius: 10px;
+  box-shadow: none;
+  font-size: 0.875rem;
+}
+
+.theme-code-block pre {
+  font-variant-ligatures: none;
+}
+
+/* Title bar of a code block with a `title="…"` meta. */
+.theme-code-block > div:first-child:not(pre) {
+  border-bottom: 1px solid var(--alc-line);
+  font-size: 0.75rem;
+  color: var(--alc-muted);
+}
+
+/* ------------------------------------------------------------- tables */
+
+.markdown table {
+  display: table;
+  width: 100%;
+  font-size: 0.9rem;
+  border: 1px solid var(--alc-line);
+  border-radius: var(--ifm-global-radius);
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+}
+
+.markdown table thead th {
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--alc-muted);
+  background: var(--alc-surface);
+  border-bottom: 1px solid var(--alc-line);
+}
+
+.markdown table td {
+  border-top: 1px solid var(--alc-line);
+  vertical-align: top;
+}
+
+.markdown table tr:first-child td {
+  border-top: 0;
+}
+
+/* Below the docs breakpoint a table goes back to Docusaurus's scrolling
+ * block, so a four-column table cannot widen the page on a phone. */
+@media (max-width: 996px) {
+  .markdown table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+  }
+}
+
+/* -------------------------------------------------------- admonitions */
+
+.theme-admonition {
+  background: var(--alc-surface);
+  border-color: var(--alc-line-strong);
+  color: var(--alc-text);
+}
+
+.theme-admonition > div:first-child {
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* --------------------------------------------------------- pagination */
+
+.pagination-nav__link {
+  border: 1px solid var(--alc-line);
+  border-radius: var(--ifm-global-radius);
+}
+
+.pagination-nav__link:hover {
+  border-color: var(--ifm-color-primary);
+}
+
+.pagination-nav__sublabel {
+  font-size: 0.75rem;
+  color: var(--alc-muted);
+}
+
+/* ------------------------------------------------------------- footer */
+
+.footer {
+  border-top: 1px solid var(--alc-line);
+  font-size: 0.875rem;
+}
+
+.footer__title {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.footer__bottom {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--alc-line);
+  font-size: 0.8rem;
+}
+
+/* ------------------------------------------------------- doc chrome */
+
+.theme-doc-footer {
+  margin-top: 3rem;
+  font-size: 0.85rem;
+  color: var(--alc-muted);
+}
+
+.theme-doc-version-badge {
+  display: none;
+}
+
+/* ============================================================ landing
+ * intro.md (slug /) is styled as the landing page. It stays a doc so
+ * routeBasePath '/' and every inbound link keep working; these classes
+ * are the only thing that makes it look different.
+ */
+
+html.docs-doc-id-intro .theme-doc-breadcrumbs,
+html.docs-doc-id-intro .theme-doc-footer,
+html.docs-doc-id-intro .pagination-nav {
+  display: none;
+}
+
+.alc-hero {
+  padding: 2.5rem 0 2rem;
+  max-width: 46rem;
+}
+
+.alc-hero__eyebrow {
+  display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--alc-line);
+  border-radius: 999px;
+  background: var(--alc-surface);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--alc-muted);
+}
+
+.alc-hero__eyebrow::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--alc-green);
+}
+
+.alc-hero__title {
+  margin: 0 0 0.75rem;
+  font-size: clamp(2rem, 5vw, 3rem);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+}
+
+.alc-hero__title em {
+  font-style: normal;
+  color: var(--ifm-color-primary);
+}
+
+.alc-hero__lead {
+  margin: 0 0 1.5rem;
+  font-size: 1.15rem;
+  line-height: 1.55;
+  color: var(--alc-muted);
+  max-width: 38rem;
+}
+
+.alc-hero .theme-code-block {
+  font-size: 0.95rem;
+}
+
+.alc-hero__note {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--alc-muted);
+}
+
+.alc-actions p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 1.25rem 0 0;
+}
+
+.alc-actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1rem;
+  border-radius: var(--ifm-global-radius);
+  border: 1px solid var(--alc-line-strong);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--alc-text);
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.alc-actions a:hover {
+  text-decoration: none;
+  border-color: var(--ifm-color-primary);
+  color: var(--alc-text);
+}
+
+.alc-actions a:first-child {
+  background: var(--ifm-color-primary);
+  border-color: var(--ifm-color-primary);
+  color: #fff;
+}
+
+.alc-actions a:first-child:hover {
+  background: var(--ifm-color-primary-dark);
+  border-color: var(--ifm-color-primary-dark);
+  color: #fff;
+}
+
+.alc-section {
+  margin: 2.5rem 0 0;
+}
+
+.alc-section__title {
+  margin: 0 0 1rem;
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--alc-muted);
+}
+
+.alc-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+@media (max-width: 700px) {
+  .alc-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* A card is a div holding two markdown paragraphs: a title link, then text.
+ * The title link is stretched over the whole card, so the card is one target
+ * while the link itself stays a real Docusaurus-resolved <a>. */
+.alc-card {
+  position: relative;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--alc-line);
+  border-radius: 12px;
+  background: var(--alc-surface);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.alc-card:hover {
+  border-color: var(--ifm-color-primary);
+  transform: translateY(-1px);
+}
+
+.alc-card > p {
+  max-width: none;
+}
+
+.alc-card > p:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+  font-weight: 650;
+  color: var(--alc-text);
+}
+
+.alc-card > p:first-child::after {
+  content: '→';
+  color: var(--ifm-color-primary);
+  font-weight: 500;
+}
+
+.alc-card > p:first-child a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.alc-card > p:first-child a::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.alc-card > p:last-child {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--alc-muted);
+}
+
+.alc-card code {
+  font-size: 0.8rem;
+}
+
+/* Chips are one markdown paragraph of links. */
+.alc-chips p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0;
+  max-width: none;
+}
+
+.alc-chips a {
+  display: inline-block;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--alc-line);
+  border-radius: 999px;
+  background: var(--alc-surface);
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--alc-text);
+  text-decoration: none;
+}
+
+.alc-chips a:hover {
+  text-decoration: none;
+  color: var(--alc-text);
+  border-color: var(--ifm-color-primary);
+}
+
+.alc-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+@media (max-width: 700px) {
+  .alc-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+.alc-facts li {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--alc-line);
+  border-radius: 12px;
+  font-size: 0.9rem;
+  color: var(--alc-muted);
+}
+
+.alc-facts strong {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-size: 1.35rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--alc-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .alc-card,
+  .alc-actions a {
+    transition: none;
+  }
+  .alc-card:hover {
+    transform: none;
+  }
 }

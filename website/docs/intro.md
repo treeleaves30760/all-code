@@ -2,12 +2,13 @@
 id: intro
 slug: /
 title: all-code (alc)
-sidebar_label: Introduction
+sidebar_label: Overview
 sidebar_position: 1
-description: One CLI to configure LLM providers once and launch eight coding agents with any of them, including running any of them on a Codex/ChatGPT login.
+description: Run Claude Code on the Codex/ChatGPT subscription you already pay for, and seven other coding agents on any provider, from one command.
 keywords:
   - claude code
   - codex cli
+  - chatgpt subscription
   - opencode
   - pi coding agent
   - copilot cli
@@ -16,84 +17,113 @@ keywords:
   - kimi code cli
   - llm provider
   - coding agent
+hide_title: true
+hide_table_of_contents: true
+pagination_next: null
+pagination_prev: null
 ---
 
-# all-code (`alc`)
+<div className="alc-hero">
 
-**One CLI for eight coding agents.** Configure your LLM providers once, then
-launch [Claude Code](https://code.claude.com/docs/en/setup),
-[Codex CLI](https://learn.chatgpt.com/docs/codex/cli),
-[OpenCode](https://opencode.ai/docs),
-[Pi](https://github.com/earendil-works/pi),
-[Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli),
-[Goose](https://block.github.io/goose/),
-[Qwen Code](https://github.com/QwenLM/qwen-code), or
-[Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli) with any provider —
-including running any of them on your Codex/ChatGPT subscription.
+<p className="alc-hero__eyebrow">alc · one binary · macOS, Linux, Windows</p>
+
+<h1 className="alc-hero__title">Claude Code on your <em>ChatGPT plan</em>.</h1>
+
+<p className="alc-hero__lead">One <code>codex login</code> serves every coding agent alc launches — Claude Code and seven others — on that subscription, or on any provider you point them at.</p>
 
 ```sh
-alc config
-alc claude
-alc codex
-alc opencode
-alc pi
-alc copilot
-alc goose
-alc qwen
-alc kimi
-alc --codex opencode
-alc --deepseek claude
-alc --provider work opencode
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
+codex login
+alc --codex claude
 ```
 
-## What alc does
+<p className="alc-hero__note">Windows PowerShell: <code>irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex</code></p>
 
-- **Switch LLM provider per agent.** Point any of the eight agents at
-  Anthropic, the OpenAI API, OpenRouter, Ollama, vLLM, DeepSeek, Moonshot,
-  Z.ai, MiniMax, Groq, xAI, Google, or any custom endpoint, and change it for
-  a single run without editing config files.
-- **Run every agent on GPT models.** [`alc --codex <agent>`](./codex-to-claude.md)
-  bridges your Codex / ChatGPT login to whichever agent you launch. Claude Code
-  lists every GPT model in its own `/model` picker so you switch model and
-  reasoning effort mid-session; every other agent picks one model for the
-  session.
-- **Validate before launching.** alc checks that the agent and provider speak a
-  [compatible model protocol](./providers.md) instead of sending a request that
-  cannot work.
-- **Keep credentials out of the way.** API keys live in a separate file or come
-  from environment variables; nothing is copied between agents.
+<div className="alc-actions">
 
-## Why it exists
+[Get started](./getting-started.md) [Download](https://github.com/treeleaves30760/all-code/releases/latest)
 
-Each coding agent has its own idea of how a provider is configured: Claude
-Code, Copilot CLI, and Goose read environment variables; Codex CLI and Qwen
-Code take flags on the command line; OpenCode expects an inline JSON config;
-Pi merges an entry into its own `models.json`; and Kimi Code CLI merges one
-into a TOML config file. Keeping the same set of providers usable across all
-eight means repeating that work eight times, in eight formats, every time a
-key or an endpoint changes.
+</div>
 
-`alc` holds one provider list and translates it into whatever the agent you are
-launching expects — see [Supported agents](./agents.md) for exactly what it
-sets for each one.
+</div>
 
-## Requirements
+<div className="alc-section">
 
-`alc` launches coding agents that are already installed; install the ones you
-plan to use separately:
+<p className="alc-section__title">What it does</p>
 
-- [Claude Code](https://code.claude.com/docs/en/setup)
-- [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)
-- [OpenCode](https://opencode.ai/docs)
-- [Pi](https://github.com/earendil-works/pi) (`npm install -g @earendil-works/pi-coding-agent`)
-- [Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli)
-- [Goose](https://block.github.io/goose/)
-- [Qwen Code](https://github.com/QwenLM/qwen-code)
-- [Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli)
+<div className="alc-grid">
 
-## Next steps
+<div className="alc-card">
 
-- [Install alc](./installation.md)
-- [Quick start](./quick-start.md)
-- [Supported agents](./agents.md)
-- [Codex bridge](./codex-to-claude.md)
+[Codex bridge](./codex-to-claude.md)
+
+`alc --codex <agent>` puts a loopback adapter in front of one session. Claude
+Code gets every GPT model in its own `/model` picker; the other agents pick
+one at launch.
+
+</div>
+
+<div className="alc-card">
+
+[Any provider](./providers.md)
+
+Anthropic, OpenAI, OpenRouter, Ollama, vLLM, DeepSeek, Moonshot, Z.ai,
+MiniMax, Groq, xAI, Google, or your own endpoint. Change it for one run with
+a flag.
+
+</div>
+
+<div className="alc-card">
+
+[Remote control](./remote-control.md)
+
+`alc --share claude` mirrors the session to a web page you can drive from a
+phone. Same page for every agent; your terminal keeps working.
+
+</div>
+
+<div className="alc-card">
+
+[Usage](./usage.md)
+
+`alc usage` shows what is left on every Claude and Codex login you have, what
+each API-key provider has left, and which agent spent it.
+
+</div>
+
+</div>
+
+</div>
+
+<div className="alc-section">
+
+<p className="alc-section__title">Agents</p>
+
+<div className="alc-chips">
+
+[Claude Code](./agents.md#claude-code)
+[Codex CLI](./agents.md#codex-cli)
+[OpenCode](./agents.md#opencode)
+[Pi](./agents.md#pi)
+[Copilot CLI](./agents.md#copilot-cli)
+[Goose](./agents.md#goose)
+[Qwen Code](./agents.md#qwen-code)
+[Kimi Code CLI](./agents.md#kimi-code-cli)
+
+</div>
+
+<p className="alc-hero__note">alc launches agents that are already installed; it does not bundle them.</p>
+
+</div>
+
+<div className="alc-section">
+
+<p className="alc-section__title">How it works</p>
+
+<ul className="alc-facts">
+  <li><strong>No config step</strong>The starter configuration is compiled in. <code>alc --codex claude</code> reads it in memory and writes no file of its own.</li>
+  <li><strong>Checked before launch</strong>Agents and providers disagree on wire protocols. alc refuses a pair that cannot work instead of sending the request.</li>
+  <li><strong>Keys stay put</strong>API keys live in <code>credentials.toml</code> (mode 0600) or in your environment. Nothing is copied between agents.</li>
+</ul>
+
+</div>

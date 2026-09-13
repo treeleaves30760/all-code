@@ -2,17 +2,26 @@
 id: remote-control
 title: Remote control
 sidebar_label: Remote control
+sidebar_position: 5
+description: Mirror any coding-agent session to a web page and drive it from a phone — the same page for every agent, with permission modes, tmux sizing and a security model that assumes the link is the credential.
+keywords:
+  - claude code on phone
+  - remote coding agent
+  - share terminal session
+  - tmux
+  - tailscale cloudflare tunnel
 ---
 
+# Remote control
+
 Mirror a running session to a web page and drive it from another device — the
-same page for every agent and every provider.
+same page for every agent and every provider. Your terminal keeps working;
+sharing mirrors the session rather than taking it away.
 
 ```sh
 alc --share claude
 alc share opencode -- --mini
 ```
-
-alc prints a link:
 
 ```text
 alc session claude-7QK2M9XB4T (claude@all-code)
@@ -21,86 +30,29 @@ alc session claude-7QK2M9XB4T (claude@all-code)
   keys  ctrl-\ then d detaches; the session keeps running
 ```
 
-Your own terminal keeps working exactly as before. Sharing mirrors the
-session; it does not take it away.
-
-## Why it works for every agent
-
-The eight agents alc launches disagree about almost everything: some expose a
-machine-readable control channel, some expose nothing, and the ones that do
-disagree on transport, session identity, and what an approval even is. The one
-thing they all share is the terminal, so that is what alc mirrors. A session
-behaves the same whichever agent and whichever provider it runs on — including
-provider setups that agents' own remote features refuse to work with.
-
-## What the page gives you
-
-- **The session list**, with the agent, provider, model, working directory,
-  how long it has been up and how many people are watching. A lit dot means
-  running; a session that exits greys out, shows how it ended, and then
-  clears itself off the list.
-- **The live screen**, rendered by a real terminal emulator, so full-screen
-  TUIs look the way they do locally.
-- **A key bar** for the keys a phone keyboard does not have — Esc, Tab,
-  Shift+Tab, Ctrl (sticky, so you can press it then a letter), and arrows.
-  Shift+Tab is how Claude Code cycles its permission mode.
-- **A composer** that sends a whole prompt as one block. Typing a long prompt
-  into a raw terminal on a phone means fighting your own IME, which rewrites
-  text it has already emitted; a raw terminal cannot take that back.
-- **Reconnection that keeps your place.** Walk into a tunnel and come back —
-  the page asks for exactly the bytes it missed, and gets the current screen
-  instead when it has been away too long. A header light shows whether the
-  session is live, reconnecting, or over.
-- **Reload without losing the list.** The link's token is held for the life
-  of the tab, so refreshing keeps you signed in. Closing the tab drops it:
-  open a fresh link from `alc sessions`.
-
-The page follows your device's language: it is available in English and
-Traditional Chinese.
-
 ## Reaching it from a phone
 
-The default binds to loopback only. Nothing is exposed until you say so.
+The default binds to loopback. Nothing is exposed until you say so.
 
-### Tailscale
-
-With [Tailscale](https://tailscale.com/) on both devices, alc stays on
-loopback and Tailscale does the exposing:
+**Tailscale** — alc stays on loopback and Tailscale does the exposing. HTTPS,
+no third party in the middle.
 
 ```sh
-alc remote allow-host box.tail1a2b.ts.net   # your machine's tailnet name
+alc remote allow-host box.tail1a2b.ts.net
 tailscale serve 8787
 alc claude --share
 ```
 
-Open the `ts.net` address on your phone. There is no third party in the
-middle, and the connection is HTTPS, so the token is not on the wire in
-clear.
-
-### Your own Wi-Fi (LAN)
-
-The most direct option, and it needs nothing installed:
+**Your own Wi-Fi** — nothing to install, but plain HTTP, so the token crosses
+the network in clear. Fine at home; use a tunnel on café Wi-Fi.
 
 ```sh
 alc claude --share --bind-lan
 ```
 
-alc prints a link with this machine's own address —
-`http://192.168.1.42:8787/#k=…` — which a phone on the same network opens
-directly. Or set it once:
-
-```toml
-# remote.toml
-bind = "lan"
-```
-
-The one thing to know: this is plain HTTP, so the token crosses your local
-network unencrypted. On a home or office network that is usually fine; on
-café Wi-Fi, use a tunnel instead.
-
-### Cloudflare Tunnel
-
-Reaches the session from anywhere, including cellular, with no VPN:
+**Cloudflare Tunnel** — works from anywhere, including cellular. Cloudflare
+terminates the TLS, so put Access in front of it if that matters. A quick
+tunnel mints a new hostname every run, hence the wildcard.
 
 ```sh
 alc remote allow-host '*.trycloudflare.com'
@@ -108,38 +60,20 @@ cloudflared tunnel --url http://127.0.0.1:8787
 alc claude --share
 ```
 
-`cloudflared` prints a `https://<three-random-words>.trycloudflare.com`
-address. The wildcard is there because a quick tunnel mints a fresh hostname
-every run — otherwise you would be reconfiguring alc at exactly the moment
-you are trying to get connected. With a named tunnel and your own domain,
-allow that hostname exactly instead.
-
-Cloudflare terminates the TLS, so unlike the other two options there is a
-third party that could see the traffic. Put Cloudflare Access in front of it
-if that matters.
-
-### How alc decides what to answer to
-
-alc checks the `Host` header against a list, and allows an `Origin` exactly
-when its host is on that same list. Loopback and, with `--bind-lan`, this
-machine's own addresses are always on it; `alc remote allow-host` adds the
-rest.
+alc answers only to names you allowed: it checks the `Host` header against a
+list and allows an `Origin` whose host is on the same list. An attacker's page
+can point `evil.com` at `127.0.0.1` and have your own browser drive your agent,
+and the name the browser thinks it is talking to is the part it cannot forge.
 
 ```sh
 alc remote allow-host box.tail1a2b.ts.net   # exact
 alc remote allow-host '*.trycloudflare.com' # any subdomain
-alc remote status                           # what it currently answers to
+alc remote status                           # what it answers to now
 ```
-
-That check is not a formality. An attacker's page can point `evil.com` at
-`127.0.0.1` and have your own browser drive your agent; the name the browser
-thinks it is talking to is the part it cannot forge, which is why a host is
-allowed only if you said so.
 
 ## Finding the link again
 
-The link `alc <agent> --share` prints scrolls away the moment the agent draws
-its own interface. It is recoverable:
+The link scrolls away as soon as the agent draws its interface.
 
 ```sh
 alc remote url        # just the link
@@ -147,7 +81,6 @@ alc sessions          # the link, then what is running
 ```
 
 ```text
-$ alc sessions
 page  http://192.168.1.42:8787/#k=…
       https://box.tail1a2b.ts.net/#k=…
 
@@ -155,340 +88,188 @@ claude-7QK2M9XB4T      claude   running   ask        ~/src/all-code
 codex-68B8XMJ6F5       codex    running   plan       ~/src/api
 ```
 
-Every name you allowed gets a line, so the one to open on a phone is there
-without having to remember which. A wildcard entry is a pattern rather than a
-name, so it cannot become a link — use the address the tunnel printed.
+Every allowed name gets a line. `alc remote token --rotate` invalidates every
+link handed out so far.
 
-The token is in that output, which does mean it lands in your shell
-scrollback. That is the same place it was printed the first time, and a token
-you cannot recover is a feature nobody can use. `alc remote token --rotate`
-invalidates every link handed out so far.
-
-## Sharing every session
-
-If you almost always want the page, say so once:
+## Sharing by default
 
 ```sh
 alc remote auto-share on     # `alc claude` now behaves like `alc claude --share`
 alc --no-share claude        # opt one launch out
 ```
 
-It is also in `alc config`, on the **Sharing & remote** screen named in the
-header — `Tab`/`Shift+Tab` moves between screens. Sharing, share-by-default,
-the bind address and the permission ceiling are all editable there.
+It is also on the **Sharing & remote** screen of `alc config`. A scripted run —
+one with redirected input or output — never shares whatever this is set to, so
+a standing preference cannot make a cron job start failing. An explicit
+`--share` there still fails loudly.
 
-A scripted run — one with redirected input or output, like
-`alc claude -p "…" > out.txt` — quietly does **not** share, whatever this is
-set to. A standing preference must not be the reason a cron job starts
-failing. An explicit `--share` there still fails loudly, because that is the
-user asking for something alc cannot do.
+## What the link grants
 
-## What sharing actually grants
+A page that types into a coding agent is remote code execution on your machine.
 
-A page that types into a coding agent is remote code execution on your
-machine. The model is worth stating plainly.
-
-- **The link's fragment is the credential.** Anyone who has the `#k=…` part
-  can type into the session. A fragment is never sent to a server, so it does
-  not land in an access log or a proxy — but it does land in your clipboard.
-  Treat it like a password.
-- **alc checks `Host` down to the port** and requires an `Origin` on the
-  WebSocket upgrade. That is what stops a page at some other origin, resolved
-  to `127.0.0.1`, from driving your agent through your own browser. Tokens are
-  compared in constant time.
-- **A shared session is screen sharing.** alc masks the API keys *it* put into
-  the environment, so an agent that prints its own environment does not fan
-  your provider key out to every viewer. Masking applies to every view,
-  including the terminal you started the session from — one rule for every
-  viewer is easier to reason about, and the only thing it costs is seeing
-  your own key echoed back. Anything else the agent prints, a viewer sees.
-  That part cannot be solved, only scoped.
-- **alc never answers a clipboard read.** A terminal can be asked to type the
-  viewer's clipboard back into the program's input; a hostile file an agent
-  prints would otherwise pull whatever you last copied into the model's
-  context. alc refuses, and says so on the page when something tries.
-- **alc reads no configuration from the working repository.** A checked-in
+- **The fragment is the credential.** Anyone with the `#k=…` part can type. A
+  fragment never reaches a server, so it stays out of access logs and proxies,
+  but it does land in your clipboard. Treat it like a password.
+- **Host and Origin are checked**, down to the port, and tokens are compared in
+  constant time.
+- **A shared session is screen sharing.** alc masks the API keys it put into
+  the environment, in every view including your own terminal. Anything else the
+  agent prints, a viewer sees.
+- **alc never answers a clipboard read**, so a hostile file an agent prints
+  cannot pull what you last copied into the model's context.
+- **alc reads no configuration from the working repository**, so a checked-in
   file can never turn sharing on.
 
-`--share` needs a real terminal on both ends. It refuses when input or output
-is redirected, so a scripted `alc claude -p "…" > out.txt` keeps behaving
-exactly as it does today.
-
-## Permission modes, agent by agent
+## Permission modes
 
 The eight agents disagree about what a permission mode is, what the modes are
-called, and whether one can be changed at all after launch. The page renders
-whatever the agent in front of it can actually do — a dropdown where a mode
-can be set outright, a relative "cycle" button where it cannot, and a disabled
-control carrying the reason where the agent has no such concept.
+called, and whether one can change after launch. The page renders what the
+agent in front of it can actually do: a dropdown where a mode can be set
+outright, a cycle button where it can only be cycled, and a disabled control
+carrying the reason where the agent has no such concept. It shows alc's rung
+and the agent's own word for it, because a shared label misleads — `auto` is
+the most permissive setting Goose has and a mid-tier one for Claude Code.
 
-It always shows **alc's rung and the agent's own word for it**, because a
-shared label on its own misleads: `auto` is the most permissive setting Goose
-has, and a mid-tier classifier for Claude Code that is *stricter* than
-`bypassPermissions`.
+| Agent | Flag alc passes | Changing it mid-session |
+| --- | --- | --- |
+| claude | `--permission-mode plan\|manual\|acceptEdits\|auto\|bypassPermissions` | Shift+Tab cycling only, so the page offers "cycle" |
+| codex | `-s read-only\|workspace-write\|danger-full-access` and `-a on-request\|never` | `/permissions` opens Codex's own picker |
+| opencode | `--agent plan\|build`, `--auto` | Tab toggles build ↔ plan |
+| goose | `GOOSE_MODE=chat\|approve\|smart_approve\|auto` | `/mode <name>` |
+| qwen | `--approval-mode plan\|default\|auto-edit\|auto\|yolo` | `/approval-mode <name>` |
+| kimi | `--plan`, `--yolo` | relaunch only |
+| copilot | `--mode plan\|interactive`, `--allow-all-tools` | `/permissions` opens its picker |
+| pi | — | not supported: Pi has no permission modes or sandbox, by design |
 
-| Agent | Launch flag alc passes | Changing it mid-session | Verified |
-| --- | --- | --- | --- |
-| claude | `--permission-mode plan\|manual\|acceptEdits\|auto\|bypassPermissions` | Shift+Tab cycling only (`ESC [ Z`) — relative, so the page offers "cycle", never a dropdown | ✅ against `claude --help` |
-| codex | `-s read-only\|workspace-write\|danger-full-access` **and** `-a on-request\|never`, or `--approve-for-me` | `/permissions` opens Codex's own picker; a human finishes it in the terminal pane | ✅ against `codex --help` |
-| opencode | `--agent plan\|build`, `--auto` | Tab toggles build ↔ plan | ✅ against `opencode --help` |
-| goose | `GOOSE_MODE=chat\|approve\|smart_approve\|auto` | `/mode <name>` — sets it outright | from documentation |
-| qwen | `--approval-mode plan\|default\|auto-edit\|auto\|yolo` | `/approval-mode <name>` | from documentation |
-| kimi | `--plan`, `--yolo` | relaunch only | from documentation |
-| copilot | `--mode plan\|interactive`, `--allow-all-tools` | `/permissions` opens its picker | from documentation |
-| pi | — | **not supported.** Pi has no permission modes, no plan mode, no permission prompts and no sandbox, by design. The control is disabled with that sentence and the card carries a red badge. | — |
-
-Two details worth knowing, because they are the kind that rot silently:
-
-- Claude Code's CLI takes `manual`, and has no `default`. Its SDK control
-  channel is the other way round. alc keeps both spellings rather than sharing
-  one constant, because a single value would quietly break one of the paths.
-- `--full-auto` appears in a lot of Codex documentation and does not exist in
-  codex-cli 0.153.2. alc never emits it, and a test enforces that.
-
-**alc only injects a permission flag for the agents it has confirmed against a
-real `--help`.** For the rest it changes nothing unless you ask with
-`--permission`. Guessing a flag name into an agent's arguments does not produce
-a tightened session — it produces one that will not start.
-
-alc also reports how much it trusts what it is showing: `launched` (alc passed
-the flag and has sent nothing since), `reported` (read back off the agent's own
-status line), or a `?` for a guess.
-
-### Raising the ceiling
+alc injects a permission flag only for agents it has confirmed against a real
+`--help`; for the rest it changes nothing unless you ask with `--permission`.
+Each card says how much alc trusts what it shows: `launched`, `reported`, or a
+`?` for a guess.
 
 `max_permission` in `remote.toml` (default `auto-edit`) is the loosest mode the
-page can reach on its own. Tightening is always free. Anything past the ceiling
-returns a ticket instead:
+page can reach on its own. Tightening is always free; anything looser returns a
+ticket:
 
 ```text
-$ # the page shows: alc confirm 7QK2M9XB4T
 $ alc confirm 7QK2M9XB4T
 granted: auto
 the page can apply it once, within the next minute.
 ```
 
-`alc confirm` refuses to run without a terminal, so the confirmation has to
-come from a person at the machine — not from whoever holds the link, and not
-from the agent piping a command into a shell. Every rung past the ceiling is
-gated **every time**, not only the first: alc's idea of the mode a session is
-currently in is usually a belief rather than a fact, and a gate that depended
-on that belief could be walked past.
+`alc confirm` refuses to run without a terminal, so the confirmation comes from
+a person at the machine rather than from whoever holds the link. Every rung
+past the ceiling is gated every time, because alc's idea of the current mode is
+a belief rather than a fact.
 
-## Session lifetime
+## Sessions and the hub
 
-Shared sessions are owned by a **hub** — a small background process alc starts
-the first time you share something. That is what makes one page show every
-session, and what lets a session outlive the terminal it was started from.
+Shared sessions belong to a **hub**, a background process alc starts the first
+time you share. That is what makes one page show every session and lets a
+session outlive the terminal it started in.
 
 ```sh
-alc claude --share           # starts a hub if one is not already running
+alc claude --share           # starts a hub if one is not running
 # ctrl-\ then d              # detach; the session keeps running
 alc sessions                 # what is running
-alc attach 7QK2             # back on it, from any terminal
-alc kill 7QK2               # stop one
-alc rename 7QK2 review      # rename its card
-alc hub status              # is a hub running, and where is its page
-alc hub stop [--drain]      # stop it; --drain stops its sessions too
+alc attach 7QK2              # back on it, from any terminal
+alc kill 7QK2                # stop one
+alc rename 7QK2 review       # rename its card
+alc hub status
+alc hub stop [--drain]       # refuses while sessions run unless --drain
 ```
 
-Session ids look like `claude-7QK2M9XB4T`. Commands take any unambiguous
-prefix, and the distinctive tail on its own works too — `alc attach 7QK2` is
-enough. Matching is case-insensitive.
+Ids look like `claude-7QK2M9XB4T`; any unambiguous prefix or the tail alone
+works, case-insensitively.
 
-`alc hub stop` refuses while sessions are still running unless you pass
-`--drain`, so stopping the hub is never an accidental way to kill work.
+Each launch carries the working directory and environment of the shell that
+asked for it, so a session started in one repository never edits another. If
+the hub is killed outright the agents keep running detached, and the next hub
+cleans up what the last one could not. It keeps no log file; when one will not
+start, run `alc hub start --foreground` and watch.
 
 ## Who owns the size
 
-A shared session is one terminal with two viewers, and a terminal has exactly
-one size. That size belongs to the terminal you launched from: it is sitting
-there drawing at it, and a browser that resized the agent to fit its own
-window would leave it drawing a full-screen TUI at a width it no longer has —
-wrapped borders, doubled lines, a cursor in the wrong place.
+A terminal has one size, and it belongs to the terminal you launched from. So
+the page does not resize the agent: it draws the real grid as large as it fits,
+centred, with black where the ratio does not match. Resize your terminal and
+the page follows within a few seconds.
 
-So the page does not resize it. It draws the agent's real grid instead, as
-large as the space allows, centred, with black where the ratio does not
-match — the same thing a video player does with a frame that is not the shape
-of the screen. Resize your terminal and the page follows it within a few
-seconds.
-
-`--tmux` is for when the page is the side you are actually going to use. It
-runs the agent inside tmux, which is the tool built for exactly this: one
-program, several attached clients, each with its own size.
+`--tmux` is for when the page is the side you will actually use. It runs the
+agent inside tmux, so your terminal and the hub each attach as their own
+client with their own size — and this time the page decides the agent's.
 
 ```sh
 alc --share --tmux --codex claude    # or -t
 ```
 
-Your terminal attaches as one tmux client and the hub attaches as another, so
-neither has to agree with the other about how wide the world is — and this
-time it is the page that decides how wide the agent's world is.
-
-### What changes
-
 | | Without `--tmux` | With `--tmux` |
 | --- | --- | --- |
-| Size | Your terminal's; the page scales it to fit | The page's; your terminal shows what fits |
+| Size | Your terminal's; the page scales it | The page's; your terminal shows what fits |
 | Detach | `ctrl-\` then `d` | `ctrl-b` then `d` |
-| Scrollback | The page's | The page's, plus tmux's own copy mode in your terminal |
+| Scrollback | The page's | The page's, plus tmux copy mode locally |
 | Your terminal's view | Mirrored through the hub, keys masked | A direct tmux client, raw |
 
-Read the first row twice as well. With `--tmux` a terminal narrower or
-shorter than the browser window shows the **top-left corner** of the agent's
-screen and nothing explaining why — pan with `ctrl-b :refresh-client
--L/-R/-U/-D`, or `-c` to follow the cursor. With no browser attached at all
-the size stays where the session launched, because your terminal has no vote
-in it: that is the trade `--tmux` makes, and `alc share` and `alc attach`
-both print a line saying so.
+That last row matters: with `--tmux` your terminal shows what the agent
+actually printed, including a key it echoes. The browser still sees those
+masked.
 
-The last row is the one to read twice. Without `--tmux` there is no
-unscrubbed view of a session: your own terminal reads the same masked stream
-the browser does. With `--tmux` your terminal is a tmux client, so it shows
-what the agent actually printed — including an API key alc put in the
-environment, if the agent echoes one. **The browser still sees those masked.**
-
-That row is also why the size is arranged this way round. tmux serves a
-client that is not the window's size by re-emitting the pane into it row by
-row, and alc's secret masking matches contiguous bytes — so the client that
-gets that treatment must never be the mirror. With the page driving, the
-mirror is always exactly the window's size, and the re-emitted one is your
-own terminal, which alc was never masking anyway.
-
-### Requirements and limits
-
-- tmux **3.2 or newer**. `alc doctor` reports the version it found, as a row
-  rather than a problem — a machine without tmux is not a broken one.
-- `--tmux` only applies to a shared session. Without a mirror there is one
-  viewer and nothing to disagree about, so alc refuses the flag rather than
-  growing a second code path with a worse answer for it.
-- macOS and Linux, like the rest of remote control.
-
-alc starts its own tmux server per session, on its own socket, named after the
-session id, **with no configuration file**. Your own tmux — its config,
-keybindings and sessions — is never touched; alc's sessions behave the same
-for everyone, which is why the prefix is `ctrl-b` whatever you have bound; and
-a `~/.tmux.conf` is never a way to run commands inside a session's server,
-which matters because an agent can write one. A second `alc --tmux` never
-lands on the first one's agent, and running alc from inside tmux works.
-`alc sessions` marks which sessions are tmux sessions, and `alc kill` stops
-the agent rather than just the mirror.
-
-Keystrokes from the **page** are delivered to the agent's pane directly rather
-than typed at the mirror's tmux client, so a viewer cannot reach tmux's own
-command prompt with the prefix key and get a shell that the permission ceiling
-never sees. Your own terminal is a full tmux client and can.
-
-It is not a boundary between alc and the agent, though. The pane can reach
-the server it runs in, so an agent that can already run shell commands can
-type into itself; alc takes `TMUX` out of the pane's environment and the
-credentials out of the server's, but an agent running arbitrary commands was
-never something the permission gate could contain.
-
-### What the hub does with your environment
-
-The hub is long-lived and was started from whichever shell first ran
-`alc --share`. Spawning agents into *its* directory with *its* environment
-would mean a session started in one repository quietly editing another, so
-each request carries the working directory and full environment of the shell
-that made it. Two sessions started from two projects each get their own.
-
-The launch's own variables still win over your shell's: an ambient
-`ANTHROPIC_API_KEY` does not override the provider key alc resolved for that
-profile.
-
-### If the hub dies
-
-A hub killed outright (`kill -9`, a reboot) takes its page with it, but on
-unix the agents themselves are their own session leaders and keep running,
-detached. alc writes a record per session so the next hub to start cleans up
-what the last one could not — in particular the temporary file the Kimi
-builder writes the provider key into, which would otherwise sit on disk.
-
-The hub runs with no terminal and no log file: nothing it could write would be
-worth the redaction rules a log holding launch environments would need. When
-one will not start, run it in the foreground and watch:
-
-```sh
-alc hub start --foreground
-```
+Needs tmux 3.2 or newer, applies only to a shared session, and runs on macOS
+and Linux. alc starts its own tmux server per session with no configuration
+file, so your own tmux is never touched and an agent cannot reach a session's
+server through a `~/.tmux.conf`. Keystrokes from the page go to the agent's
+pane directly, so a viewer cannot reach tmux's command prompt; your own
+terminal is a full client and can.
 
 ## What this does not do
 
-Stated plainly, because finding out later is worse:
-
-- **Windows is not supported yet.** `alc <agent> --share` and the `alc hub`
-  commands refuse there with a message. The hub starts a detached process and
-  talks to it over a loopback control socket; on Windows that process does not
-  come up and does not go away, and shipping a `--share` that hangs and leaves
-  something running would be worse than not shipping it. Everything else alc
-  does works normally on Windows.
-
-- **Approval prompts arrive as terminal text, not as mobile dialogs.** You see
-  the agent's own prompt and answer it with the key bar. Real Approve/Deny
-  cards need a per-agent structured channel, and only half the agents have one.
-- **Every operator link can type at once.** There is no "take control"
-  arbitration — two people holding operator links interleave their keystrokes,
-  the same as two people sharing a tmux pane. Hand out viewer links for
-  anything you are not driving yourself.
-- **A hub crash takes the page, not the agents.** They keep running detached;
-  the next `alc` to start cleans up what the crashed one left. Sessions do not
-  survive a reboot.
-- **alc cannot attach to sessions it did not start.** A `claude` you launched
-  by hand is invisible to the page; start it with `alc --share`.
-- **Permission-mode state is believed, not known, for most agents.** Only three
-  can be told a mode outright; the rest are cycled, hand off to their own
-  picker, or cannot be changed at all. The `confidence` marker on every card
-  says which case you are looking at.
-- **Full-screen agents have no browser scrollback.** Codex, OpenCode and Qwen
-  draw into the alternate screen, exactly as they do locally. `codex
-  --no-alt-screen` and `opencode --mini` are dramatically better on a phone,
-  and the page tells you so.
+- **Windows is not supported yet.** `--share` and the `alc hub` commands refuse
+  there with a message. Everything else alc does works on Windows.
+- **Approval prompts arrive as terminal text**, not as mobile dialogs.
+- **Every operator link can type at once.** There is no take-control
+  arbitration; hand out viewer links for anything you are not driving.
+- **Sessions do not survive a reboot**, and alc cannot attach to a session it
+  did not start.
+- **Permission state is believed, not known, for most agents.** The confidence
+  marker on each card says which case you are looking at.
+- **Full-screen agents have no browser scrollback.** `codex --no-alt-screen`
+  and `opencode --mini` are dramatically better on a phone, and the page says
+  so.
 
 ## Commands
 
 ```sh
 alc --share <agent>          # mirror this session
-alc --share --tmux <agent>   # ...with tmux: two sizes, and the page owns the agent's
+alc --share --tmux <agent>   # ...and let the page own the agent's size
 alc share <agent> -- <args>  # the unambiguous form
-alc share <agent> --name x   # name the card, instead of <agent>@<directory>
+alc share <agent> --name x   # name the card
 alc --no-share <agent>       # never mirror, whatever the settings say
 
-alc remote status            # on/off, how it binds, where the files live
-alc remote on
-alc remote off
-alc remote token --rotate    # invalidate every link handed out so far
-alc remote url               # the link again, after it scrolled away
-alc remote auto-share on     # share every session
-alc remote allow-host <host> # answer to a tunnel's name
+alc remote status
+alc remote on | off
+alc remote token --rotate
+alc remote url
+alc remote auto-share on
+alc remote allow-host <host>
 
-alc --share --permission plan <agent>   # start in a mode
-alc confirm <ticket>         # approve a change the page asked for
+alc --share --permission plan <agent>
+alc confirm <ticket>
 ```
 
-`--share` is alc's own flag, so it has to appear before the agent's arguments.
-Put it after them and alc tells you so rather than passing it to the agent:
-
-```text
-$ alc claude "review this" --share
-error: `--share` is alc's own flag but it came after the agent's arguments,
-where it would be passed to claude instead; put it before the agent name, or
-use `alc share claude -- <args>`
-```
+`--share` is alc's own flag, so it comes before the agent's arguments; put it
+after and alc says so rather than passing it on.
 
 ## Settings
 
-`remote.toml` lives beside `config.toml` — `alc remote status` prints the
-path. It is a separate file on purpose: `config.toml` refuses keys it does not
-recognise, so putting these there would break every older `alc` reading the
-same file.
+`remote.toml` lives beside `config.toml`; `alc remote status` prints the path.
+It is a separate file because `config.toml` refuses keys it does not recognise.
 
 | Key | Default | What it does |
 | --- | --- | --- |
 | `enabled` | `true` | Master switch. `alc remote off` sets this. |
-| `auto_share` | `false` | Share every session without `--share`, when `enabled` is also on. `alc remote auto-share on`. |
+| `auto_share` | `false` | Share every session without `--share`. |
 | `bind` | `"loopback"` | `loopback` or `lan`. |
-| `port` | `8787` | `0` picks an ephemeral port. A busy port falls back to one. |
-| `allowed_hosts` | `[]` | Names to answer to besides this machine's own — a tunnel's hostname, exactly or as `*.example.com`. `alc remote allow-host` edits this. |
-| `scrollback_bytes` | `1048576` | How far back a reconnecting viewer can be caught up exactly. |
+| `port` | `8787` | `0` picks an ephemeral port; a busy one falls back. |
+| `allowed_hosts` | `[]` | Names to answer to besides this machine's own. |
+| `max_permission` | `"auto-edit"` | The loosest mode the page can reach alone. |
+| `scrollback_bytes` | `1048576` | How far back a reconnecting viewer is caught up. |
 | `max_connections` | `64` | Connections served at once. |
