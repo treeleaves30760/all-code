@@ -722,7 +722,11 @@ fn map_zai(value: &serde_json::Value, refused_message: &str) -> Outcome {
                 used_percent: clamp_percent(number(limit, "percentage").unwrap_or(0.0)),
                 resets_at: number(limit, "nextResetTime").and_then(to_unix_seconds),
                 remaining: number(limit, "remaining"),
-                limit: number(limit, "number"),
+                // Not `number`: on a TOKENS_LIMIT entry that field is how
+                // many `unit`s long the window is, which the name above
+                // already carries. Reporting a five-hour window as a quota of
+                // five would be a made-up figure in `--json`.
+                limit: None,
             }),
             Some("CREDIT_LIMIT") => {
                 balance = Some(Balance {

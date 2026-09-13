@@ -147,7 +147,21 @@ impl UsageReport {
             account.label = None;
             account.account_id = None;
             account.credential_path = None;
+            // A sentence naming a path names the home directory it sits in,
+            // which is the operator's account name. The state still says
+            // what kind of row this is.
+            if account.error.is_some() {
+                account.error = Some(match account.state {
+                    AccountState::SignedOut => "not signed in on this machine".to_owned(),
+                    AccountState::Unavailable => "nothing to read".to_owned(),
+                    _ => "could not be read".to_owned(),
+                });
+            }
         }
+        // The page never reads either of these, and both spell out where the
+        // config directory is.
+        self.ledger.path = String::new();
+        self.ledger.error = None;
         self
     }
 
@@ -179,9 +193,18 @@ pub(crate) fn build_report(
     let accounts = found
         .iter()
         .map(|discovered| {
+            // The entry API rather than `insert`, which would replace the
+            // stored name and leave a third profile pointing at the second
+            // rather than at the one that actually holds the numbers.
             let duplicate = discovered
                 .identity()
-                .and_then(|identity| seen.insert(identity, discovered.profile.clone()));
+                .and_then(|identity| match seen.entry(identity) {
+                    std::collections::hash_map::Entry::Occupied(first) => Some(first.get().clone()),
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(discovered.profile.clone());
+                        None
+                    }
+                });
             account_for(discovered, duplicate, env, stores, now_ms)
         })
         .collect();
@@ -230,18 +253,20 @@ fn account_for(
             account.error = Some(reason.clone());
             return finish(account, &discovered.credential, env);
         }
-        Credential::Codex { auth_file } => match accounts::read_codex_login(auth_file) {
-            Ok(login) => {
-                account.account_id = login.account_id.clone();
-                account.label = login.label.clone();
-                quota::fetch_codex(&login, now_ms)
+        Credential::Codex { auth_file } => {
+            match accounts::read_codex_login(auth_file, env.home.as_deref()) {
+                Ok(login) => {
+                    account.account_id = login.account_id.clone();
+                    account.label = login.label.clone();
+                    quota::fetch_codex(&login, now_ms)
+                }
+                Err(error) => quota::Outcome {
+                    state: Some(AccountState::SignedOut),
+                    error: Some(error),
+                    ..quota::Outcome::default()
+                },
             }
-            Err(error) => quota::Outcome {
-                state: Some(AccountState::SignedOut),
-                error: Some(error),
-                ..quota::Outcome::default()
-            },
-        },
+        }
         Credential::Claude { config_dir } => {
             let label = Some(elide_home(config_dir, env.home.as_deref()));
             match accounts::read_claude_login(config_dir, env.home.as_deref(), stores) {
@@ -270,9 +295,13 @@ fn account_for(
     account.balance = outcome.balance;
     account.credits = outcome.credits;
     account.error = outcome.error;
-    account.state = outcome
-        .state
-        .unwrap_or_else(|| state_from(&account.windows, account.balance.as_ref()));
+    account.state = outcome.state.unwrap_or_else(|| {
+        state_from(
+            &account.windows,
+            account.balance.as_ref(),
+            account.credits.as_ref(),
+        )
+    });
     account.fetched_at = Some(now_unix());
     finish(account, &discovered.credential, env)
 }
@@ -292,11 +321,23 @@ fn finish(mut account: Account, credential: &Credential, env: &Env) -> Account {
 }
 
 /// The state a set of windows implies when the vendor did not say.
-fn state_from(windows: &[Window], balance: Option<&Balance>) -> AccountState {
-    if windows.iter().any(|window| window.used_percent >= 100.0)
-        || balance.is_some_and(|balance| balance.remaining.is_some_and(|left| left <= 0.0))
-    {
-        return AccountState::Exhausted;
+fn state_from(
+    windows: &[Window],
+    balance: Option<&Balance>,
+    credits: Option<&Credits>,
+) -> AccountState {
+    // A plan at its limit with credits behind it can still serve a turn, so
+    // it is worth noticing rather than a failure. The mapper leaves the
+    // decision here precisely so both paths agree on it.
+    let spendable = credits.is_some_and(|credits| credits.has_credits || credits.unlimited);
+    let empty = windows.iter().any(|window| window.used_percent >= 100.0)
+        || balance.is_some_and(|balance| balance.remaining.is_some_and(|left| left <= 0.0));
+    if empty {
+        return if spendable {
+            AccountState::Warn
+        } else {
+            AccountState::Exhausted
+        };
     }
     if windows
         .iter()
@@ -310,13 +351,20 @@ fn state_from(windows: &[Window], balance: Option<&Balance>) -> AccountState {
 /// `~/.codex/auth.json` rather than the full path: shorter, and it keeps a
 /// screenshot of the panel from naming the user's home directory.
 pub(crate) fn elide_home(path: &Path, home: Option<&Path>) -> String {
-    let text = path.display().to_string();
-    match home.map(|home| home.display().to_string()) {
-        Some(home) if !home.is_empty() && text.starts_with(&home) => {
-            format!("~{}", &text[home.len()..])
-        }
-        _ => text,
-    }
+    // By component rather than by byte: `/Users/ada-work` starts with
+    // `/Users/ada` as a string, and eliding it would print `~-work/…`, a path
+    // that names nothing. For a Claude profile this string is the only thing
+    // telling two logins apart, so it has to stay a real path.
+    home.filter(|home| !home.as_os_str().is_empty())
+        .and_then(|home| path.strip_prefix(home).ok())
+        .map(|rest| {
+            if rest.as_os_str().is_empty() {
+                "~".to_owned()
+            } else {
+                format!("~/{}", rest.display())
+            }
+        })
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 /// `alc usage`.
@@ -494,8 +542,10 @@ fn remaining_text(account: &Account, theme: &Theme) -> String {
         })
         .collect();
 
-    if let Some(balance) = &account.balance {
-        parts.push(balance_text(balance));
+    if let Some(balance) = &account.balance
+        && let Some(text) = balance_text(balance)
+    {
+        parts.push(text);
     }
     if let Some(credits) = &account.credits {
         if credits.unlimited {
@@ -522,8 +572,11 @@ fn remaining_text(account: &Account, theme: &Theme) -> String {
     }
 }
 
-fn balance_text(balance: &Balance) -> String {
-    match (balance.remaining, balance.limit, balance.used) {
+/// `None` when the vendor enabled a balance but sent no numbers for it, so
+/// the caller pushes nothing rather than an empty part with a separator
+/// hanging off it.
+fn balance_text(balance: &Balance) -> Option<String> {
+    Some(match (balance.remaining, balance.limit, balance.used) {
         (Some(remaining), Some(limit), _) => format!(
             "{} of {} left",
             money(remaining, &balance.unit),
@@ -536,8 +589,8 @@ fn balance_text(balance: &Balance) -> String {
             money(limit, &balance.unit)
         ),
         (None, None, Some(used)) => format!("{} used", money(used, &balance.unit)),
-        _ => String::new(),
-    }
+        _ => return None,
+    })
 }
 
 fn money(value: f64, unit: &str) -> String {
@@ -805,8 +858,115 @@ mod tests {
             remaining: None,
             limit: None,
         };
-        assert_eq!(state_from(&[window(74.0)], None), AccountState::Ok);
-        assert_eq!(state_from(&[window(75.0)], None), AccountState::Warn);
-        assert_eq!(state_from(&[window(100.0)], None), AccountState::Exhausted);
+        assert_eq!(state_from(&[window(74.0)], None, None), AccountState::Ok);
+        assert_eq!(state_from(&[window(75.0)], None, None), AccountState::Warn);
+        assert_eq!(
+            state_from(&[window(100.0)], None, None),
+            AccountState::Exhausted
+        );
+    }
+
+    /// The rule the Codex mapper leaves to `state_from`: a plan at its limit
+    /// with credits behind it can still serve a turn, so it is worth
+    /// noticing rather than a failure.
+    #[test]
+    fn a_used_up_plan_with_credits_behind_it_is_a_warning_not_a_failure() {
+        let full = Window {
+            name: "5h".to_owned(),
+            scope: None,
+            used_percent: 100.0,
+            resets_at: None,
+            remaining: None,
+            limit: None,
+        };
+        let credits = |has: bool, unlimited: bool| Credits {
+            has_credits: has,
+            unlimited,
+            balance: None,
+        };
+
+        assert_eq!(
+            state_from(std::slice::from_ref(&full), None, None),
+            AccountState::Exhausted
+        );
+        assert_eq!(
+            state_from(
+                std::slice::from_ref(&full),
+                None,
+                Some(&credits(false, false))
+            ),
+            AccountState::Exhausted
+        );
+        assert_eq!(
+            state_from(
+                std::slice::from_ref(&full),
+                None,
+                Some(&credits(true, false))
+            ),
+            AccountState::Warn
+        );
+        assert_eq!(
+            state_from(&[full], None, Some(&credits(false, true))),
+            AccountState::Warn
+        );
+    }
+
+    /// A sibling directory shares a prefix with the home directory as a
+    /// string but not as a path, and eliding it would print a `~` path that
+    /// names nothing - which for a Claude profile is the only label telling
+    /// two logins apart.
+    #[test]
+    fn a_sibling_of_the_home_directory_is_not_elided() {
+        let home = Path::new("/home/ada");
+        assert_eq!(
+            elide_home(Path::new("/home/ada-work/.claude"), Some(home)),
+            "/home/ada-work/.claude"
+        );
+        assert_eq!(
+            elide_home(Path::new("/home/adamant/.codex/auth.json"), Some(home)),
+            "/home/adamant/.codex/auth.json"
+        );
+        assert_eq!(elide_home(home, Some(home)), "~");
+    }
+
+    /// A vendor that enables a balance but sends no figures for it would
+    /// otherwise leave a separator pointing at nothing.
+    #[test]
+    fn a_balance_with_no_numbers_adds_nothing_to_the_column() {
+        let mut account = account("anthropic", AccountState::Ok);
+        account.balance = Some(Balance {
+            remaining: None,
+            limit: None,
+            used: None,
+            unit: "USD".to_owned(),
+        });
+
+        let text = render(&report(vec![account], vec![]), &theme());
+        let row = text
+            .lines()
+            .find(|line| line.contains("anthropic"))
+            .unwrap_or_default()
+            .trim_end();
+        assert!(
+            !row.ends_with('—'),
+            "a separator with nothing after it: {row}"
+        );
+        assert!(row.ends_with("resets in 2h 10m"), "{row}");
+    }
+
+    /// Everything a viewer-grade link must not learn: not only who pays for
+    /// the plan, but where on disk any of it lives.
+    #[test]
+    fn a_redacted_report_names_no_path_and_no_person() {
+        let mut account = account("codex", AccountState::SignedOut);
+        account.error = Some("no Codex credentials at /home/ada/.codex/auth.json".to_owned());
+        let mut report = report(vec![account], vec![]);
+        report.ledger.path = "/home/ada/.config/alc/usage.jsonl".to_owned();
+        report.ledger.error = Some("/home/ada/.config/alc/usage.jsonl: denied".to_owned());
+
+        let json = serde_json::to_string(&report.redacted()).unwrap();
+        assert!(!json.contains("/home/ada"), "{json}");
+        assert!(!json.contains("me@example.com"), "{json}");
+        assert!(json.contains("not signed in on this machine"), "{json}");
     }
 }

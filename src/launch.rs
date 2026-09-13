@@ -460,11 +460,6 @@ fn needs_an_adapter_and_has_one(spec: &LaunchSpec) -> Result<()> {
 pub(crate) fn prepare(mut spec: LaunchSpec, config_dir: &Path) -> Result<Prepared> {
     needs_an_adapter_and_has_one(&spec)?;
 
-    // Here rather than in `execute`, for the reason the whole function is
-    // here: both spawn paths go through it and `--dry-run` returns before
-    // reaching it, so a dry run still records nothing.
-    crate::usage::ledger::Ledger::record_launch(config_dir, &spec);
-
     // Before the agent starts, so what is read is what the user had.
     // `claude_settings_file` is only set for a bridged Claude launch, and
     // the plan's own options are the list this session put in Claude Code's
@@ -501,6 +496,14 @@ pub(crate) fn prepare(mut spec: LaunchSpec, config_dir: &Path) -> Result<Prepare
     // Held until the child exits so a failed launch still cleans up.
     let cleanup = CleanupFiles(process_file_setup(&spec)?);
     let program = resolve_program(&spec.program, spec.agent)?;
+
+    // Last, after everything that can still refuse: a missing `codex login`
+    // or an agent that is not on PATH must not count as a launch, or typing
+    // `alc claude` five times before fixing it reads as five sessions. Both
+    // spawn paths go through this function and `--dry-run` returns long
+    // before it, so a dry run still records nothing.
+    crate::usage::ledger::Ledger::record_launch(config_dir, &spec);
+
     Ok(Prepared {
         program,
         spec,

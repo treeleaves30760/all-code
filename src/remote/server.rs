@@ -684,9 +684,15 @@ fn serve_http(
             let body = match context.usage.report() {
                 Ok(report) if grade >= Some(Grade::Operator) => serde_json::to_vec(&report)?,
                 Ok(report) => serde_json::to_vec(&report.redacted())?,
-                Err(error) => {
-                    let body =
-                        serde_json::to_vec(&serde_json::json!({ "error": format!("{error:#}") }))?;
+                // A fixed sentence, never the error itself. Building the
+                // report reads `credentials.toml`, and a TOML parse error
+                // quotes the line it failed on - which is the line holding an
+                // API key. That must not be able to reach a browser, and a
+                // viewer's browser least of all.
+                Err(_) => {
+                    let body = serde_json::to_vec(&serde_json::json!({
+                        "error": "the usage report could not be built; run `alc usage` on the machine running the hub"
+                    }))?;
                     return respond(stream, 500, "application/json; charset=utf-8", None, &body);
                 }
             };
@@ -1221,6 +1227,17 @@ mod live_tests {
             assert!(response.contains("\"accounts\""), "{response}");
             assert!(!response.contains(&harness.operator), "{response}");
             assert!(!response.contains(&harness.viewer), "{response}");
+        }
+
+        // A link handed out to watch a terminal must not also hand over the
+        // operator's home directory - which is their account name.
+        let viewer = ask(Some(&harness.viewer));
+        let body = viewer.split("\r\n\r\n").nth(1).unwrap_or_default();
+        for home in ["/Users/", "/home/", "/var/folders/"] {
+            assert!(
+                !body.contains(home),
+                "a viewer was told a filesystem path: {body}"
+            );
         }
         let _ = harness.session.kill();
     }

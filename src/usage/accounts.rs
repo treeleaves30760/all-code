@@ -303,19 +303,25 @@ pub(crate) struct CodexLogin {
 
 /// Reads `auth.json` through the bridge's own parser, so alc has exactly one
 /// idea of what that file looks like.
-pub(crate) fn read_codex_login(auth_file: &Path) -> Result<CodexLogin, String> {
+pub(crate) fn read_codex_login(
+    auth_file: &Path,
+    home: Option<&Path>,
+) -> Result<CodexLogin, String> {
+    // Elided the way the Claude branch elides its own: these sentences reach
+    // `alc usage` stdout and, before redaction, the remote page, and a full
+    // path spells out the operator's home directory.
+    let shown = crate::usage::elide_home(auth_file, home);
     let file = AuthManager::new(auth_file.to_path_buf())
         .read_file()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            error
+                .to_string()
+                .replace(&auth_file.display().to_string(), &shown)
+        })?;
     let tokens = file
         .tokens
         .filter(|tokens| !tokens.access_token.trim().is_empty())
-        .ok_or_else(|| {
-            format!(
-                "{} holds no Codex access token; run `codex login`",
-                auth_file.display()
-            )
-        })?;
+        .ok_or_else(|| format!("{shown} holds no Codex access token; run `codex login`"))?;
 
     let account_id = tokens
         .account_id
@@ -730,7 +736,7 @@ mod tests {
         )
         .unwrap();
 
-        let Ok(login) = read_codex_login(&path) else {
+        let Ok(login) = read_codex_login(&path, None) else {
             panic!("the auth file should have been read");
         };
         assert_eq!(login.label.as_deref(), Some("…123456"));
@@ -743,7 +749,7 @@ mod tests {
     #[test]
     fn a_missing_auth_file_names_the_command_that_writes_one() {
         let dir = tempfile::tempdir().unwrap();
-        let Err(error) = read_codex_login(&dir.path().join("auth.json")) else {
+        let Err(error) = read_codex_login(&dir.path().join("auth.json"), None) else {
             panic!("a missing auth file cannot be a login");
         };
         assert!(error.contains("codex login"), "{error}");

@@ -39,8 +39,8 @@ Usage by provider and agent
 ```
 
 每個啟用的 provider profile 一列。`REMAINING` 是倒數的：`63% left` 指的是你還剩
-多少，不是你花掉了多少。當某一列點名了一個你可以執行的指令 —— 過期的登入、被拒絕的
-金鑰 —— 結束碼是 1，其餘情況都是 0，所以單純把方案用完並不會讓腳本失敗。
+多少，不是你花掉了多少。當登入過期或被拒絕，或是連不上服務商、服務商回了錯誤時，
+結束碼是 1；其餘情況都是 0，所以單純把方案用完並不會讓腳本失敗。
 
 `alc usage --json` 會把同一份報告印成 JSON。`alc --provider codex-work usage` 或
 `alc --codex usage` 則把範圍縮到單一 profile 或單一種類。
@@ -84,8 +84,10 @@ alc config upsert anthropic-work --kind anthropic --claude-config-dir ~/.claude-
 `CLAUDE_CONFIG_DIR`，所以留在 shell 設定檔裡的一個變數，沒辦法偷偷改掉一個具名
 profile 花的是哪個帳號。
 
-同一種有兩個 profile 時，`alc --codex claude` 就不知道你指的是哪一個，它會直接說；
-請用 `--provider` 指名其中一個。
+`--provider` 與各種捷徑參數會先比對 profile 名稱，再比對種類。所以同時有 `codex`
+與 `codex-work` 兩個 profile 時，`alc --codex claude` 會解析到名字就叫 `codex`
+的那一個，而不會反問你指的是哪一個 —— 另一個請照上面的寫法指名。只有在沒有任何
+profile 叫這個種類的名字、而又有好幾個是同一種時，捷徑才會拒絕替你選。
 
 ## 有餘額 API 的 provider
 

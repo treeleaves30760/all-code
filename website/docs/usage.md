@@ -39,9 +39,9 @@ Usage by provider and agent
 ```
 
 One row per enabled provider profile. `REMAINING` counts down: `63% left` is
-what you have, not what you have spent. The exit code is 1 when a row names a
-command you can run — a login that expired, a key that was refused — and 0
-otherwise, so a plan that is simply used up does not fail a script.
+what you have, not what you have spent. The exit code is 1 when a login has
+expired or been refused, or when a vendor could not be reached or answered an
+error; 0 otherwise, so a plan that is simply used up does not fail a script.
 
 `alc usage --json` prints the same report as JSON. `alc --provider codex-work
 usage` or `alc --codex usage` narrows it to one profile or one kind.
@@ -88,8 +88,11 @@ Both paths must be absolute. A profile's directory beats `CODEX_HOME` or
 `CLAUDE_CONFIG_DIR` in your shell, so a variable left in a shell profile cannot
 quietly move which account a named profile spends.
 
-With two profiles of one kind, `alc --codex claude` no longer knows which you
-mean and says so; name one with `--provider`.
+`--provider` and the kind shortcuts match an exact profile name first, then a
+kind. So with profiles named `codex` and `codex-work`, `alc --codex claude`
+resolves to the one actually named `codex` rather than asking which you meant —
+name the other explicitly, as above. The shortcut only refuses to choose when
+no profile carries the kind's own name and several share that kind.
 
 ## Providers with a balance API
 

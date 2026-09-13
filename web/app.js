@@ -159,6 +159,9 @@
   async function refreshUsage() {
     if (!token.value) {
       usage.value = null;
+      // The "this link has expired" state lives in the list pane, which is
+      // hidden while usage is on screen, so go back to where it can be read.
+      if (document.body.dataset.pane === 'usage') leaveUsage();
       return;
     }
     try {
@@ -332,15 +335,22 @@
 
   rows.subscribe(renderRows);
 
-  el.emptyCommand.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(el.emptyCommand.textContent);
-      toast(T.copied);
-    } catch {
-      // No clipboard permission (or no clipboard): the command is on screen
-      // to be read either way, so there is nothing to recover from.
-    }
-  });
+  /* Every empty state offers the command that fills it, and every one of
+   * them copies. */
+  function wireCopy(button) {
+    button.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(button.textContent);
+        toast(T.copied);
+      } catch {
+        // No clipboard permission (or no clipboard): the command is on screen
+        // to be read either way, so there is nothing to recover from.
+      }
+    });
+  }
+
+  wireCopy(el.emptyCommand);
+  wireCopy(el.usageEmptyCommand);
 
   /* --------------------------------------------------------- permission */
 
@@ -1050,9 +1060,12 @@
     el.ledgerNote.textContent = model.rows.length ? T.directOnly : T.ledgerEmpty;
   }
 
-  usage.subscribe((model) => {
-    if (model) renderUsage(model);
-  });
+  /* Null is drawn rather than skipped: a pane that has never loaded, or whose
+   * link has just expired, must say so instead of leaving the last good
+   * numbers on screen or showing a bare table header. */
+  usage.subscribe((model) =>
+    renderUsage(model || { accounts: [], rows: [], hubEnv: false }),
+  );
 
   function showUsage() {
     document.body.dataset.pane = 'usage';
