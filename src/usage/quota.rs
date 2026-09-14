@@ -80,6 +80,10 @@ fn endpoint(url: &'static str) -> String {
 }
 
 /// Splits a URL at the start of its path and puts `base` in front of it.
+///
+/// Only reachable from the debug-only override above, so a release build has
+/// no caller for it.
+#[cfg(any(debug_assertions, test))]
 fn rebase(base: &str, url: &str) -> String {
     let path_start = url
         .find("://")
