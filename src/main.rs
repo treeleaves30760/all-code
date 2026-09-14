@@ -10,6 +10,7 @@ mod ollama;
 mod remote;
 mod tui;
 mod update;
+mod usage;
 
 use std::process::ExitCode;
 

@@ -320,7 +320,7 @@ pub fn build(
     // bridge ends up being started, and reported here too - a `CODEX_HOME`
     // that resolves to nothing is worth saying in the shell that set it.
     if spec.bridge.is_some() {
-        spec.codex_auth_file = Some(codex_auth_file()?);
+        spec.codex_auth_file = Some(codex_auth_file(provider)?);
     }
 
     // Claude Code's settings file, resolved in the same shell and for the
@@ -338,7 +338,7 @@ pub fn build(
     // Unlike `codex_auth_file` a failure here is not worth a refusal: the
     // path resolving to nothing costs a restore, not a launch.
     if spec.bridge.is_some() && spec.agent == Agent::Claude {
-        spec.claude_settings_file = agents::claude::user_settings_path();
+        spec.claude_settings_file = agents::claude::user_settings_path(provider);
     }
 
     // Recorded once here rather than at each builder's own resolution site:
@@ -457,7 +457,7 @@ fn needs_an_adapter_and_has_one(spec: &LaunchSpec) -> Result<()> {
 /// and `Hub::create` - go through this function and nothing else does, while
 /// `--dry-run` returns before reaching it, so a dry run still reads nothing
 /// and writes nothing.
-pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
+pub(crate) fn prepare(mut spec: LaunchSpec, config_dir: &Path) -> Result<Prepared> {
     needs_an_adapter_and_has_one(&spec)?;
 
     // Before the agent starts, so what is read is what the user had.
@@ -486,7 +486,7 @@ pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
         });
 
     let bridge = if let Some(plan) = spec.bridge.clone() {
-        let bridge = Bridge::start(&plan, spec.codex_auth_file.clone())?;
+        let bridge = Bridge::start(&plan, &spec, config_dir)?;
         agents::apply_bridge(&mut spec, &bridge.base_url(), &plan)?;
         Some(bridge)
     } else {
@@ -496,6 +496,14 @@ pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
     // Held until the child exits so a failed launch still cleans up.
     let cleanup = CleanupFiles(process_file_setup(&spec)?);
     let program = resolve_program(&spec.program, spec.agent)?;
+
+    // Last, after everything that can still refuse: a missing `codex login`
+    // or an agent that is not on PATH must not count as a launch, or typing
+    // `alc claude` five times before fixing it reads as five sessions. Both
+    // spawn paths go through this function and `--dry-run` returns long
+    // before it, so a dry run still records nothing.
+    crate::usage::ledger::Ledger::record_launch(config_dir, &spec);
+
     Ok(Prepared {
         program,
         spec,
@@ -507,8 +515,8 @@ pub(crate) fn prepare(mut spec: LaunchSpec) -> Result<Prepared> {
     })
 }
 
-pub fn execute(spec: LaunchSpec) -> Result<u8> {
-    let prepared = prepare(spec)?;
+pub fn execute(spec: LaunchSpec, config_dir: &Path) -> Result<u8> {
+    let prepared = prepare(spec, config_dir)?;
     let Prepared {
         program,
         spec,
@@ -544,10 +552,7 @@ pub(crate) fn resolve_codex_model(provider: &Provider) -> Result<String> {
         return Ok(normalize_codex_model(&provider.model));
     }
 
-    let codex_home = env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(".codex")));
-    if let Some(home) = codex_home {
+    if let Some(home) = codex_home_for(provider) {
         let profile_path = provider
             .codex_profile
             .as_deref()
@@ -577,10 +582,7 @@ pub(crate) fn resolve_codex_effort(provider: &Provider) -> Result<Option<Reasoni
         return Ok(Some(effort));
     }
 
-    let codex_home = env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(".codex")));
-    if let Some(home) = codex_home {
+    if let Some(home) = codex_home_for(provider) {
         let profile_path = provider
             .codex_profile
             .as_deref()
@@ -803,12 +805,21 @@ fn shell_quote(value: &OsStr) -> String {
 /// its own model and effort on every request, so pinning either would freeze
 /// a slider the user can see. Every other agent chooses once at launch.
 /// Pure, so the distinction stays asserted rather than assumed.
-fn bridge_config(auth_file: PathBuf, plan: &BridgePlan) -> BridgeConfig {
+fn bridge_config(
+    auth_file: PathBuf,
+    plan: &BridgePlan,
+    agent: Agent,
+    provider: String,
+    ledger: Option<PathBuf>,
+) -> BridgeConfig {
     let per_request = plan.api == BridgeApi::Messages;
     BridgeConfig {
         auth_file,
         effort: (!per_request).then_some(plan.effort).flatten(),
         responses_api: !per_request,
+        agent,
+        provider,
+        ledger,
     }
 }
 
@@ -823,7 +834,8 @@ impl Bridge {
     /// `auth_file` is the path the launch resolved in the user's own shell.
     /// Resolving it here instead would read the environment of whichever
     /// process is starting the bridge, which on the shared path is the hub.
-    fn start(plan: &BridgePlan, auth_file: Option<PathBuf>) -> Result<Self> {
+    fn start(plan: &BridgePlan, spec: &LaunchSpec, config_dir: &Path) -> Result<Self> {
+        let auth_file = spec.codex_auth_file.clone();
         // No model allowlist, on purpose: a stale one is the whole reason
         // this code exists. Upstream decides what it will serve, and says so
         // in terms the agent can show the user.
@@ -843,7 +855,13 @@ impl Bridge {
                 auth_file.display()
             );
         }
-        let native = bridge_config(auth_file, plan);
+        let native = bridge_config(
+            auth_file,
+            plan,
+            spec.agent,
+            spec.provider_name.clone(),
+            Some(config_dir.join(crate::usage::ledger::LEDGER_FILE)),
+        );
 
         // Bound with the standard library, so the port is known before the
         // runtime exists and `base_url` can be handed to the agent builders
@@ -957,19 +975,44 @@ impl Drop for Bridge {
     }
 }
 
-fn codex_auth_file() -> Result<PathBuf> {
+pub(crate) fn codex_auth_file(provider: &Provider) -> Result<PathBuf> {
     resolve_codex_auth_file(
+        provider.pinned_codex_home(),
         env::var_os("CCP_CODEX_AUTH_FILE"),
         env::var_os("CODEX_HOME"),
         home_dir(),
     )
 }
 
+/// The Codex home this profile launches against.
+///
+/// The same ladder as [`codex_auth_file`] minus the one rung that names a
+/// file rather than a directory, so the model and effort read out of
+/// `config.toml` come from the account whose `auth.json` signs the requests.
+pub(crate) fn codex_home_for(provider: &Provider) -> Option<PathBuf> {
+    provider
+        .pinned_codex_home()
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("CODEX_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+        .or_else(|| home_dir().map(|home| home.join(".codex")))
+}
+
 fn resolve_codex_auth_file(
+    profile_home: Option<&str>,
     explicit: Option<OsString>,
     codex_home: Option<OsString>,
     user_home: Option<PathBuf>,
 ) -> Result<PathBuf> {
+    // The profile wins over every environment variable: a `CODEX_HOME` left
+    // in a shell profile must not quietly move the account a named profile
+    // points at, which is the whole reason the field exists.
+    if let Some(home) = profile_home {
+        return Ok(PathBuf::from(home).join("auth.json"));
+    }
     if let Some(path) = explicit.filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path));
     }
@@ -1715,16 +1758,48 @@ mod tests {
 
     #[test]
     fn codex_auth_path_falls_back_to_the_platform_user_home() {
-        let path = resolve_codex_auth_file(None, None, Some(PathBuf::from("user-home"))).unwrap();
+        let path =
+            resolve_codex_auth_file(None, None, None, Some(PathBuf::from("user-home"))).unwrap();
         assert_eq!(path, PathBuf::from("user-home/.codex/auth.json"));
 
         let explicit = resolve_codex_auth_file(
+            None,
             Some(OsString::from("selected-auth.json")),
             Some(OsString::from("ignored-codex-home")),
             Some(PathBuf::from("ignored-user-home")),
         )
         .unwrap();
         assert_eq!(explicit, PathBuf::from("selected-auth.json"));
+    }
+
+    /// Two Codex logins are two profiles, and the one a profile names has to
+    /// win over whatever the shell exported - otherwise the account `alc
+    /// usage` reports is not the account the session spends.
+    #[test]
+    fn a_profile_codex_home_outranks_every_environment_variable() {
+        let path = resolve_codex_auth_file(
+            Some("/work/codex"),
+            Some(OsString::from("/shell/auth.json")),
+            Some(OsString::from("/shell/codex")),
+            Some(PathBuf::from("/home/ada")),
+        )
+        .unwrap();
+        assert_eq!(path, PathBuf::from("/work/codex/auth.json"));
+    }
+
+    #[test]
+    fn the_codex_home_a_profile_pins_is_where_its_model_preference_is_read() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.toml"),
+            "model = \"gpt-5.6-luna\"\n",
+        )
+        .unwrap();
+        let mut provider = Provider::for_kind(ProviderKind::Codex);
+        provider.codex_home = Some(home.path().display().to_string());
+
+        assert_eq!(codex_home_for(&provider).as_deref(), Some(home.path()));
+        assert_eq!(resolve_codex_model(&provider).unwrap(), "gpt-5.6-luna");
     }
 
     #[test]
@@ -1742,7 +1817,13 @@ mod tests {
             options: Vec::new(),
             api: BridgeApi::Responses,
         };
-        let config = bridge_config(PathBuf::from("auth.json"), &plan);
+        let config = bridge_config(
+            PathBuf::from("auth.json"),
+            &plan,
+            Agent::Claude,
+            "codex".to_owned(),
+            None,
+        );
         assert!(config.responses_api);
         assert_eq!(config.effort, Some(ReasoningEffort::High));
 
@@ -1753,7 +1834,13 @@ mod tests {
             effort: Some(ReasoningEffort::High),
             ..plan
         };
-        let config = bridge_config(PathBuf::from("auth.json"), &claude);
+        let config = bridge_config(
+            PathBuf::from("auth.json"),
+            &claude,
+            Agent::Claude,
+            "codex".to_owned(),
+            None,
+        );
         assert!(!config.responses_api);
         assert_eq!(config.effort, None);
     }

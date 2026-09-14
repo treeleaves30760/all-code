@@ -2,12 +2,13 @@
 id: intro
 slug: /
 title: all-code (alc)
-sidebar_label: 簡介
+sidebar_label: 總覽
 sidebar_position: 1
-description: 一個 CLI 只要設定一次 LLM provider，就能啟動八個 coding agent 中的任何一個，也能讓其中任何一個改用 Codex／ChatGPT 登入。
+description: 用你已經在付費的 Codex／ChatGPT 訂閱跑 Claude Code，再加上另外七個 coding agent，任何 provider 都行，一行指令就好。
 keywords:
   - claude code
   - codex cli
+  - chatgpt 訂閱
   - opencode
   - pi coding agent
   - copilot cli
@@ -17,81 +18,111 @@ keywords:
   - llm provider
   - coding agent
   - 中文
+hide_title: true
+hide_table_of_contents: true
+pagination_next: null
+pagination_prev: null
 ---
 
-# all-code (`alc`)
+<div className="alc-hero">
 
-**一個 CLI，就能管好八個 coding agent。** 先設定好你的 LLM
-provider，之後就能用任何一家 provider 啟動
-[Claude Code](https://code.claude.com/docs/en/setup)、
-[Codex CLI](https://learn.chatgpt.com/docs/codex/cli)、
-[OpenCode](https://opencode.ai/docs)、
-[Pi](https://github.com/earendil-works/pi)、
-[Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli)、
-[Goose](https://block.github.io/goose/)、
-[Qwen Code](https://github.com/QwenLM/qwen-code)，或
-[Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli) ——
-包括讓其中任何一個都能使用你的 Codex／ChatGPT 訂閱。
+<p className="alc-hero__eyebrow">alc · 單一執行檔 · macOS、Linux、Windows</p>
+
+<h1 className="alc-hero__title">用你的 <em>ChatGPT 方案</em>跑 Claude Code。</h1>
+
+<p className="alc-hero__lead">一次 <code>codex login</code>，alc 啟動的每個 coding agent —— Claude Code 和另外七個 —— 都能用那份訂閱，或是用你指定的任何 provider。</p>
 
 ```sh
-alc config
-alc claude
-alc codex
-alc opencode
-alc pi
-alc copilot
-alc goose
-alc qwen
-alc kimi
-alc --codex opencode
-alc --deepseek claude
-alc --provider work opencode
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
+codex login
+alc --codex claude
 ```
 
-## alc 能做什麼
+<p className="alc-hero__note">Windows PowerShell：<code>irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex</code></p>
 
-- **每個 agent 各自選 provider。** 讓八個 agent 中的任何一個指向
-  Anthropic、OpenAI API、OpenRouter、Ollama、vLLM、DeepSeek、Moonshot、
-  Z.ai、MiniMax、Groq、xAI、Google，或任何自訂端點，也可以只為這次執行
-  換掉，不用手改設定檔。
-- **讓每個 agent 都能用 GPT 模型執行。** [`alc --codex <agent>`](./codex-to-claude.md)
-  會把你的 Codex／ChatGPT 登入橋接給你啟動的那個 agent。Claude Code 會
-  把所有 GPT 模型列進自己的 `/model` 選單，讓你在工作階段中隨時切換模型
-  與推理強度；其他每個 agent 則是在啟動時就選定一個模型，整個工作階段
-  都使用它。
-- **啟動前先驗證相容性。** alc 會先確認 agent 與 provider
-  的[模型協定相容](./providers.md)，而不是送出一個注定失敗的請求。
-- **憑證分開存放。** API key 放在獨立檔案或改用環境變數，不會在 agent
-  之間被複製。
+<div className="alc-actions">
 
-## 為什麼需要它
+[快速上手](./getting-started.md) [下載](https://github.com/treeleaves30760/all-code/releases/latest)
 
-每個 coding agent 對「如何設定 provider」都有自己的一套做法：Claude
-Code、Copilot CLI、Goose 讀取環境變數；Codex CLI 與 Qwen Code 走命令列
-上的旗標；OpenCode 需要一份行內 JSON 設定；Pi 會把一筆項目合併進自己的
-`models.json`；Kimi Code CLI 則是合併進一份 TOML 設定檔。想讓同一組
-provider 在全部八個 agent 上都能用，就等於同樣的事要用八種格式各做一
-次，而且每次換 key 或換端點都要重做一輪。
+</div>
 
-`alc` 只維護一份 provider 清單，再翻譯成你要啟動的那個 agent 看得懂的
-格式 —— 確切會設定哪些內容，請見[支援的 agent](./agents.md)。
+</div>
 
-## 事前準備
+<div className="alc-section">
 
-`alc` 只負責啟動已經安裝好的 coding agent，請自行安裝你要用的：
+<p className="alc-section__title">它能做什麼</p>
 
-- [Claude Code](https://code.claude.com/docs/en/setup)
-- [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)
-- [OpenCode](https://opencode.ai/docs)
-- [Pi](https://github.com/earendil-works/pi)（`npm install -g @earendil-works/pi-coding-agent`）
-- [Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli)
-- [Goose](https://block.github.io/goose/)
-- [Qwen Code](https://github.com/QwenLM/qwen-code)
-- [Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli)
+<div className="alc-grid">
 
-## 下一步
+<div className="alc-card">
 
-- [安裝 alc](./installation.md)
-- [快速開始](./quick-start.md)
-- [支援的 agent](./agents.md)
-- [Codex 橋接](./codex-to-claude.md)
+[Codex 橋接](./codex-to-claude.md)
+
+`alc --codex <agent>` 在單一 session 前面放一個 loopback 轉接器。Claude Code
+的 `/model` 選單裡會列出每個 GPT 模型；其他 agent 在啟動時選定一個。
+
+</div>
+
+<div className="alc-card">
+
+[任何 provider](./providers.md)
+
+Anthropic、OpenAI、OpenRouter、Ollama、vLLM、DeepSeek、Moonshot、Z.ai、
+MiniMax、Groq、xAI、Google，或你自己的端點。加一個旗標就能只為這次執行換掉。
+
+</div>
+
+<div className="alc-card">
+
+[遠端控制](./remote-control.md)
+
+`alc --share claude` 把 session 鏡射到網頁，用手機就能操作。每個 agent
+都是同一個頁面；你的終端機照常運作。
+
+</div>
+
+<div className="alc-card">
+
+[用量](./usage.md)
+
+`alc usage` 顯示你每個 Claude 與 Codex 登入還剩多少額度、每個 API key
+provider 還剩多少，以及是哪個 agent 用掉的。
+
+</div>
+
+</div>
+
+</div>
+
+<div className="alc-section">
+
+<p className="alc-section__title">Agent</p>
+
+<div className="alc-chips">
+
+[Claude Code](./agents.md#claude-code)
+[Codex CLI](./agents.md#codex-cli)
+[OpenCode](./agents.md#opencode)
+[Pi](./agents.md#pi)
+[Copilot CLI](./agents.md#copilot-cli)
+[Goose](./agents.md#goose)
+[Qwen Code](./agents.md#qwen-code)
+[Kimi Code CLI](./agents.md#kimi-code-cli)
+
+</div>
+
+<p className="alc-hero__note">alc 只啟動已經安裝好的 agent，不會替你打包它們。</p>
+
+</div>
+
+<div className="alc-section">
+
+<p className="alc-section__title">運作方式</p>
+
+<ul className="alc-facts">
+  <li><strong>不用先設定</strong>起始設定已編譯進執行檔。<code>alc --codex claude</code> 直接在記憶體裡讀它，不寫任何自己的檔案。</li>
+  <li><strong>啟動前先檢查</strong>agent 與 provider 講的線路協定不一樣。alc 會拒絕注定失敗的組合，而不是把請求送出去。</li>
+  <li><strong>金鑰留在原地</strong>API key 放在 <code>credentials.toml</code>（權限 0600）或環境變數裡，不會在 agent 之間複製。</li>
+</ul>
+
+</div>

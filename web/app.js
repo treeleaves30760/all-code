@@ -28,6 +28,10 @@
     'view', 'terminal', 'keys',
     'perm', 'permLabel', 'permPick', 'permCycle', 'permNote',
     'composer', 'compose', 'send', 'toast',
+    'usage', 'usageToggle', 'accountsTitle', 'accounts', 'usageNote',
+    'usageEmpty', 'usageEmptyTitle', 'usageEmptyHow', 'usageEmptyCommand',
+    'ledgerTitle', 'ledger', 'ledgerProvider', 'ledgerAgent', 'ledgerLaunches',
+    'ledgerTurns', 'ledgerTokens', 'ledgerNote',
   ]) {
     el[id] = document.getElementById(id);
   }
@@ -38,6 +42,19 @@
   el.emptyTitle.textContent = T.empty;
   el.emptyHow.textContent = T.emptyHow;
   el.emptyCommand.textContent = T.emptyCommand;
+  el.usageToggle.setAttribute('aria-label', T.usage);
+  el.usageToggle.title = T.usage;
+  el.accountsTitle.textContent = T.accounts;
+  el.ledgerTitle.textContent = T.byAgent;
+  el.usageEmptyTitle.textContent = T.usageEmpty;
+  el.usageEmptyHow.textContent = T.usageEmptyHow;
+  el.usageEmptyCommand.textContent = T.usageEmptyCommand;
+  el.usageNote.textContent = T.hubNote;
+  el.ledgerProvider.textContent = T.provider;
+  el.ledgerAgent.textContent = T.agent;
+  el.ledgerLaunches.textContent = T.launches;
+  el.ledgerTurns.textContent = T.turns;
+  el.ledgerTokens.textContent = T.tokens;
 
   let toastTimer = 0;
   function toast(message, level) {
@@ -67,6 +84,10 @@
    * than "no sessions" - the empty state used to claim the latter for the
    * whole first round trip, and again after every failed poll. */
   let loaded = false;
+
+  const usage = core.signal(null);
+  let usageTimer = 0;
+  let lastUsageError = '';
 
   const store = core.createSessionStore();
 
@@ -128,6 +149,31 @@
     rows.value = store.reconcile(cards, Date.now());
     scheduleExpiry();
     followSessionSize(cards);
+  }
+
+  /* The accounts and the ledger, on their own clock.
+   *
+   * A minute, not the list's five seconds: behind this route the hub asks
+   * providers what is left, and a poll per five seconds would be a vendor
+   * call per five seconds. Only runs while the pane is on screen. */
+  async function refreshUsage() {
+    if (!token.value) {
+      usage.value = null;
+      // The "this link has expired" state lives in the list pane, which is
+      // hidden while usage is on screen, so go back to where it can be read.
+      if (document.body.dataset.pane === 'usage') leaveUsage();
+      return;
+    }
+    try {
+      usage.value = core.normalizeUsage(await api('/api/usage'));
+      lastUsageError = '';
+    } catch (error) {
+      const message = error.message === 'denied' ? T.denied : T.usageFailed;
+      if (message !== lastUsageError) {
+        lastUsageError = message;
+        toast(message, 'error');
+      }
+    }
   }
 
   /* A plain session's size is the local terminal's, and it changes whenever
@@ -289,15 +335,22 @@
 
   rows.subscribe(renderRows);
 
-  el.emptyCommand.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(el.emptyCommand.textContent);
-      toast(T.copied);
-    } catch {
-      // No clipboard permission (or no clipboard): the command is on screen
-      // to be read either way, so there is nothing to recover from.
-    }
-  });
+  /* Every empty state offers the command that fills it, and every one of
+   * them copies. */
+  function wireCopy(button) {
+    button.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(button.textContent);
+        toast(T.copied);
+      } catch {
+        // No clipboard permission (or no clipboard): the command is on screen
+        // to be read either way, so there is nothing to recover from.
+      }
+    });
+  }
+
+  wireCopy(el.emptyCommand);
+  wireCopy(el.usageEmptyCommand);
 
   /* --------------------------------------------------------- permission */
 
@@ -842,6 +895,11 @@
     everGreeted = false;
     document.body.dataset.pane = 'view';
     el.back.hidden = false;
+    // The header is full while a session is open, and back means the session
+    // here rather than the accounts.
+    el.usageToggle.hidden = true;
+    clearInterval(usageTimer);
+    usageTimer = 0;
 
     ensureTerminal();
     term.reset();
@@ -892,6 +950,7 @@
     el.back.hidden = true;
     el.grade.hidden = true;
     el.perm.hidden = true;
+    el.usageToggle.hidden = false;
     document.body.classList.remove('viewer');
     setText(el.subtitle, '');
     setConnection('idle');
@@ -899,7 +958,140 @@
     renderRows(rows.value);
   }
 
-  el.back.addEventListener('click', detach);
+  /* ---------------------------------------------------------- usage pane */
+
+  /* Rebuilt rather than reconciled in place: there are a handful of accounts,
+   * they change once a minute, and none of them holds focus or selection the
+   * way a session card does. */
+  function renderUsage(model) {
+    el.accounts.textContent = '';
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
+    for (const account of model.accounts) {
+      const li = document.createElement('li');
+      const card = document.createElement('div');
+      card.className = 'account';
+
+      const head = document.createElement('div');
+      head.className = 'row';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = account.profile;
+      const label = document.createElement('span');
+      label.className = 'age';
+      label.textContent = account.label || '';
+      head.append(name, label);
+
+      const chips = document.createElement('div');
+      chips.className = 'chips';
+      for (const text of core.describeAccount(account)) {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = text;
+        chips.append(chip);
+      }
+
+      card.append(head, chips);
+
+      const windows = core.accountWindows(account);
+      if (windows.length) {
+        const meters = document.createElement('div');
+        meters.className = 'meters';
+        for (const window of windows) {
+          const described = core.describeWindow(window, nowSeconds, T);
+          const row = document.createElement('div');
+          row.className = 'meter-row';
+
+          const label = document.createElement('span');
+          label.className = 'meter-label';
+          label.textContent = described.label;
+
+          const track = document.createElement('div');
+          track.className = 'meter';
+          track.setAttribute('role', 'meter');
+          track.setAttribute('aria-valuemin', '0');
+          track.setAttribute('aria-valuemax', '100');
+          track.setAttribute('aria-valuenow', String(described.leftPercent));
+          track.setAttribute('aria-label', `${described.label} ${described.left}`);
+          const fill = document.createElement('span');
+          fill.className = `meter-fill ${described.level}`;
+          fill.style.width = `${described.leftPercent}%`;
+          track.append(fill);
+
+          const value = document.createElement('span');
+          value.className = 'age';
+          value.textContent = described.resets
+            ? `${described.left}, ${described.resets}`
+            : described.left;
+
+          row.append(label, track, value);
+          meters.append(row);
+        }
+        card.append(meters);
+      }
+
+      const note = core.accountNote(account);
+      if (note) {
+        const line = document.createElement('p');
+        line.className = 'note';
+        line.textContent = note;
+        card.append(line);
+      }
+
+      li.append(card);
+      el.accounts.append(li);
+    }
+
+    el.usageEmpty.hidden = model.accounts.length > 0;
+    el.usageNote.hidden = !model.hubEnv;
+
+    const body = el.ledger.tBodies[0];
+    body.textContent = '';
+    for (const row of model.rows) {
+      const tr = document.createElement('tr');
+      for (const cell of core.ledgerCells(row)) {
+        const td = document.createElement('td');
+        td.textContent = cell;
+        tr.append(td);
+      }
+      body.append(tr);
+    }
+    el.ledger.hidden = model.rows.length === 0;
+    el.ledgerNote.textContent = model.rows.length ? T.directOnly : T.ledgerEmpty;
+  }
+
+  /* Null is drawn rather than skipped: a pane that has never loaded, or whose
+   * link has just expired, must say so instead of leaving the last good
+   * numbers on screen or showing a bare table header. */
+  usage.subscribe((model) =>
+    renderUsage(model || { accounts: [], rows: [], hubEnv: false }),
+  );
+
+  function showUsage() {
+    document.body.dataset.pane = 'usage';
+    el.back.hidden = false;
+    el.usageToggle.hidden = true;
+    refreshUsage();
+    clearInterval(usageTimer);
+    usageTimer = setInterval(refreshUsage, 60000);
+  }
+
+  function leaveUsage() {
+    clearInterval(usageTimer);
+    usageTimer = 0;
+    document.body.dataset.pane = 'list';
+    el.back.hidden = true;
+    el.usageToggle.hidden = false;
+    refresh();
+  }
+
+  el.usageToggle.addEventListener('click', showUsage);
+
+  /* One back button, two places to go back from. */
+  el.back.addEventListener('click', () => {
+    if (document.body.dataset.pane === 'usage') leaveUsage();
+    else detach();
+  });
 
   /* ------------------------------------------------------- mobile input */
 
@@ -1035,12 +1227,15 @@
   listTimer = setInterval(refresh, 5000);
   window.addEventListener('beforeunload', () => {
     clearInterval(listTimer);
+    clearInterval(usageTimer);
     clearTimeout(expiryTimer);
   });
 
   // Coming back to a backgrounded tab should show the truth immediately
   // rather than up to five seconds of stale list.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) refresh();
+    if (document.hidden) return;
+    if (document.body.dataset.pane === 'usage') refreshUsage();
+    else refresh();
   });
 })();

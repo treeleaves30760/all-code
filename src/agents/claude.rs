@@ -23,6 +23,14 @@ pub(crate) fn build(
 ) -> Result<()> {
     clear_cloud_provider_env(spec);
 
+    // A profile that pins a Claude Code config directory launches against
+    // that login, so the account `alc usage` reports for this profile is the
+    // account the session spends.
+    if let Some(dir) = provider.pinned_claude_config_dir() {
+        spec.env
+            .insert(OsString::from("CLAUDE_CONFIG_DIR"), OsString::from(dir));
+    }
+
     if provider.kind == ProviderKind::Codex {
         if !overrides.model_options.is_empty()
             && !has_option(passthrough, "--settings", "--settings")
@@ -286,25 +294,36 @@ pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgeP
 /// days ago would answer for that shell's `CLAUDE_CONFIG_DIR`. The resolved
 /// path travels on `LaunchSpec::claude_settings_file` for the same reason
 /// `codex_auth_file` does.
-pub(crate) fn user_settings_path() -> Option<PathBuf> {
-    resolve_user_settings_path(env::var_os("CLAUDE_CONFIG_DIR"), crate::launch::home_dir())
+pub(crate) fn user_settings_path(provider: &Provider) -> Option<PathBuf> {
+    resolve_claude_config_dir(
+        provider.pinned_claude_config_dir(),
+        env::var_os("CLAUDE_CONFIG_DIR"),
+        crate::launch::home_dir(),
+    )
+    .map(|dir| dir.join("settings.json"))
 }
 
 /// The resolution itself, taking its inputs rather than reading them, so a
 /// test can pin one arrangement without a process-wide environment variable
 /// that every other test in the binary shares.
-fn resolve_user_settings_path(
+pub(crate) fn resolve_claude_config_dir(
+    profile_dir: Option<&str>,
     config_dir: Option<OsString>,
     user_home: Option<PathBuf>,
 ) -> Option<PathBuf> {
-    let dir = match config_dir.filter(|value| !value.is_empty()) {
+    // The profile beats the environment for the reason the Codex home does:
+    // a named profile must not move with whatever the shell happens to hold.
+    if let Some(dir) = profile_dir {
+        let path = PathBuf::from(dir);
+        return path.is_absolute().then_some(path);
+    }
+    match config_dir.filter(|value| !value.is_empty()) {
         Some(value) => {
             let path = PathBuf::from(value);
-            path.is_absolute().then_some(path)?
+            path.is_absolute().then_some(path)
         }
-        None => user_home?.join(".claude"),
-    };
-    Some(dir.join("settings.json"))
+        None => Some(user_home?.join(".claude")),
+    }
 }
 
 /// The model Claude Code will start every session on when nothing overrides
@@ -563,12 +582,17 @@ mod tests {
         let elsewhere = env::temp_dir().join("work-claude");
         assert!(home.is_absolute() && elsewhere.is_absolute());
 
+        let settings = |profile: Option<&str>, env: Option<OsString>, home: Option<PathBuf>| {
+            resolve_claude_config_dir(profile, env, home).map(|dir| dir.join("settings.json"))
+        };
+
         assert_eq!(
-            resolve_user_settings_path(None, Some(home.clone())),
+            settings(None, None, Some(home.clone())),
             Some(home.join(".claude").join("settings.json"))
         );
         assert_eq!(
-            resolve_user_settings_path(
+            settings(
+                None,
                 Some(elsewhere.clone().into_os_string()),
                 Some(home.clone())
             ),
@@ -578,10 +602,37 @@ mod tests {
         // anything else; guessing would have alc reading a file inside
         // whatever repository it happens to be standing in.
         assert_eq!(
-            resolve_user_settings_path(Some(OsString::from("relative/claude")), Some(home.clone())),
+            settings(
+                None,
+                Some(OsString::from("relative/claude")),
+                Some(home.clone())
+            ),
             None
         );
-        assert_eq!(resolve_user_settings_path(None, None), None);
+        assert_eq!(settings(None, None, None), None);
+    }
+
+    /// The field exists so a second Claude login is a second profile; if the
+    /// environment could still win, the account `alc usage` reports would not
+    /// be the account the session spends.
+    #[test]
+    fn a_pinned_config_dir_beats_the_environment_and_must_be_absolute() {
+        let home = env::temp_dir().join("ada");
+        let pinned = env::temp_dir().join("work-claude");
+        let ambient = env::temp_dir().join("shell-claude");
+
+        assert_eq!(
+            resolve_claude_config_dir(
+                pinned.to_str(),
+                Some(ambient.clone().into_os_string()),
+                Some(home.clone())
+            ),
+            Some(pinned)
+        );
+        assert_eq!(
+            resolve_claude_config_dir(Some("relative/claude"), None, Some(home)),
+            None
+        );
     }
 
     #[test]

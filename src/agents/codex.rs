@@ -17,6 +17,13 @@ pub(crate) fn build(
     overrides: &LaunchOverrides,
 ) -> Result<()> {
     if provider.kind == ProviderKind::Codex {
+        // Codex CLI reads its login and its `config.toml` out of CODEX_HOME,
+        // so a profile that pins one runs on that account rather than on
+        // whichever login the shell last exported.
+        if let Some(home) = provider.pinned_codex_home() {
+            spec.env
+                .insert(OsString::from("CODEX_HOME"), OsString::from(home));
+        }
         if !has_option(passthrough, "--profile", "-p")
             && let Some(profile) = provider
                 .codex_profile

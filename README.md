@@ -194,6 +194,7 @@ and protocol for every kind.
 | `alc config` | The configuration TUI; also `init`, `show`, `path`, `upsert`, `key`, `set-default`, `remove` |
 | `alc doctor` | Binaries, credentials, compatibility, defaults, bridge and remote state |
 | `alc models` | The GPT models the Codex bridge offers; `--refresh`, `--json` |
+| `alc usage` | What is left on each Claude/Codex login and API-key balance, and usage per provider and agent; `--json` |
 | `alc update` | Update `alc` in place; `--check`, `--force` |
 | `alc share <agent>` | Launch with the session mirrored to a browser page |
 | `alc sessions` | The page link, then the shared sessions (tmux ones marked) |
@@ -245,6 +246,54 @@ summary of issues with a fix for each. It exits non-zero when it finds one.
 
 For named errors and their fixes, see the
 [troubleshooting guide](https://treeleaves30760.github.io/all-code/troubleshooting).
+
+## What is left, and where it went
+
+```sh
+alc usage
+```
+
+```text
+Accounts
+     PROFILE     ACCOUNT                  PLAN  REMAINING
+  ✓  anthropic   ~/.claude                max   5h 97% left, resets in 2h 53m — week 79% left, resets in 6d 4h — Fable week 62% left, resets in 6d 4h
+  ✓  codex       you@example.com          pro   week 66% left, resets in 5d 9h — no credits
+  ·  ollama      —                        —     no quota API
+  ·  openrouter  —                        —     no API key; run `alc config key openrouter`
+
+Usage by provider and agent
+  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  OUTPUT  LAST
+  codex     claude    1         1      20.8K  35      7m ago
+  ollama    opencode  1         —      —      —       12m ago
+  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone
+
+✓ ready
+```
+
+alc asks each login's own vendor what is left: chatgpt.com for a Codex login,
+api.anthropic.com for Claude Code's, and the published balance endpoint for an
+OpenRouter, DeepSeek, Moonshot, MiniMax or Z.ai key. Nothing is ever written
+back and no token is refreshed, so a status command cannot invalidate the
+credential a running session is holding.
+
+**Two logins of one kind are two profiles.** `codex_home` and
+`claude_config_dir` pin the directory a profile's credentials live in, and every
+launch through that profile uses that account — so the row you read is the
+account you spend:
+
+```sh
+CODEX_HOME=~/.codex-work codex login
+alc config upsert codex-work --kind codex --codex-home ~/.codex-work
+alc --provider codex-work claude
+```
+
+The second table comes from `usage.jsonl` in the config directory: one line per
+launch, and one per turn the Codex bridge carried. A provider alc does not
+carry traffic for shows `—` rather than a zero, because those tokens are
+unknown rather than nil. The remote-control page shows the same two sections
+behind its ◔ button.
+
+[Usage](https://treeleaves30760.github.io/all-code/usage) has the whole thing.
 
 ## Providers and agents
 
@@ -414,7 +463,7 @@ it can call tools, and the context it actually gets.
 
 Full tuning notes — KV cache type, keep-alive, why prompt length costs more than
 linearly on Gemma 4 — are in the
-[provider guide](https://treeleaves30760.github.io/all-code/providers#claude-code-on-a-local-ollama-model).
+[provider guide](https://treeleaves30760.github.io/all-code/local-models).
 
 ## Remote control
 
@@ -571,6 +620,8 @@ does today.
 - `remote.toml`: sharing — on/off, share-by-default, bind address, port, and the
   permission ceiling. `alc config show` prints the sharing and share-by-default
   values as comments at the end.
+- `usage.jsonl`: one line per launch, and one per turn the Codex bridge carried.
+  `alc usage` aggregates it; delete it to start counting again.
 
 Override the directory with `ALC_CONFIG_DIR`. Useful scripting commands:
 

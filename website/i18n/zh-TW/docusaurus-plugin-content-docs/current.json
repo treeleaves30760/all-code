@@ -2,5 +2,17 @@
   "version.label": {
     "message": "最新",
     "description": "The label for version current"
+  },
+  "sidebar.docs.category.Start": {
+    "message": "開始",
+    "description": "The label for category 'Start' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Guides": {
+    "message": "指南",
+    "description": "The label for category 'Guides' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Reference": {
+    "message": "參考",
+    "description": "The label for category 'Reference' in sidebar 'docs'"
   }
 }

@@ -1,7 +1,7 @@
 ---
 id: configuration
 title: Configuration
-sidebar_position: 6
+sidebar_position: 7
 description: Where alc stores provider profiles and API keys, how to edit them in the TUI, and the scripting commands that change configuration without it.
 keywords:
   - alc config
@@ -21,8 +21,10 @@ keywords:
 Files:
 
 - `config.toml`: provider metadata, models, defaults, URLs, and env-var names.
-- `credentials.toml`: locally saved API keys. On Unix, alc writes this file
-  with mode `0600`; on Windows it lives under the current user's AppData.
+- `credentials.toml`: locally saved API keys, mode `0600` on Unix.
+- `remote.toml`: the [remote-control](./remote-control.md) settings.
+- `usage.jsonl`: the launch and turn ledger [`alc usage`](./usage.md)
+  aggregates. Delete it to start counting again.
 
 Override the directory with `ALC_CONFIG_DIR`.
 
@@ -58,7 +60,28 @@ alc config remove work
 
 `alc config upsert` accepts `--kind`, `--model`, `--effort`, `--clear-effort`,
 `--small-model`, `--base-url`, `--anthropic-base-url`, `--protocol`, `--auth`,
-`--api-key-env`, `--codex-profile`, `--disable`, and `--enable`.
+`--api-key-env`, `--codex-profile`, `--codex-home`, `--claude-config-dir`,
+`--disable`, and `--enable`.
+
+## Several logins of one kind
+
+A second ChatGPT or Claude login is a second profile pointing at its own
+credential directory:
+
+```toml
+[providers.codex-work]
+kind = "codex"
+codex_home = "/Users/you/.codex-work"
+
+[providers.anthropic-work]
+kind = "anthropic"
+claude_config_dir = "/Users/you/.claude-work"
+```
+
+Both paths must be absolute, `codex_home` belongs to a `codex` profile and
+`claude_config_dir` to an `anthropic` one, and each beats the matching
+environment variable so a shell setting cannot move which account a named
+profile spends. [Usage](./usage.md) has the whole flow.
 
 ## Credential precedence
 
@@ -75,5 +98,7 @@ that covers the Codex login and local runtimes such as Ollama.
 
 1. This run's `--model` / `--effort`
 2. The alc provider profile
-3. `~/.codex/<profile>.config.toml`, then `~/.codex/config.toml`
+3. `<codex_home>/<profile>.config.toml`, then `<codex_home>/config.toml` —
+   where `codex_home` is the profile's field, else `CODEX_HOME`, else
+   `~/.codex`
 4. The model catalog's documented default

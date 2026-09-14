@@ -2,9 +2,8 @@
 import {themes as prismThemes} from 'prism-react-renderer';
 
 const tagline =
-  'Configure your LLM providers once, then launch any of eight coding agents ' +
-  'with any provider — including running any of them on your Codex/ChatGPT ' +
-  'subscription.';
+  'Claude Code on your ChatGPT plan — and seven other coding agents on any ' +
+  'provider, from one command.';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -18,7 +17,17 @@ const config = {
   projectName: 'all-code',
   trailingSlash: false,
 
+  // @docusaurus/faster is already a dependency (package.json); `faster: true`
+  // turns on rspack, swc, lightningcss and worker-thread SSG. `v4: true`
+  // puts Infima and the theme CSS in cascade layers, so custom.css wins
+  // without specificity games.
+  future: {
+    v4: true,
+    faster: true,
+  },
+
   onBrokenLinks: 'throw',
+  onBrokenAnchors: 'throw',
   markdown: {
     hooks: {
       onBrokenMarkdownLinks: 'throw',
@@ -66,9 +75,9 @@ const config = {
         {
           name: 'keywords',
           content:
-            'claude code, codex cli, opencode, pi coding agent, copilot cli, ' +
-            'goose, qwen code, kimi code cli, llm provider, anthropic, ' +
-            'openai, openrouter, ollama, vllm, coding agent, cli, rust',
+            'claude code, codex cli, chatgpt subscription, opencode, pi coding agent, ' +
+            'copilot cli, goose, qwen code, kimi code cli, llm provider, anthropic, ' +
+            'openai, openrouter, ollama, vllm, usage, quota, remote control, coding agent, cli, rust',
         },
         {property: 'og:type', content: 'website'},
         {name: 'twitter:card', content: 'summary_large_image'},
@@ -77,9 +86,20 @@ const config = {
         defaultMode: 'dark',
         respectPrefersColorScheme: true,
       },
+      docs: {
+        sidebar: {
+          hideable: false,
+          autoCollapseCategories: false,
+        },
+      },
+      tableOfContents: {
+        minHeadingLevel: 2,
+        maxHeadingLevel: 3,
+      },
       navbar: {
         title: 'all-code',
-        logo: {alt: 'all-code logo', src: 'img/logo.svg'},
+        hideOnScroll: false,
+        logo: {alt: 'all-code logo', src: 'img/logo.svg', width: 28, height: 28},
         items: [
           {
             type: 'docSidebar',
@@ -106,9 +126,11 @@ const config = {
           {
             title: 'Docs',
             items: [
-              {label: 'Introduction', to: '/'},
-              {label: 'Install', to: '/installation'},
+              {label: 'Overview', to: '/'},
+              {label: 'Getting started', to: '/getting-started'},
               {label: 'Codex bridge', to: '/codex-to-claude'},
+              {label: 'Usage', to: '/usage'},
+              {label: 'Troubleshooting', to: '/troubleshooting'},
             ],
           },
           {
@@ -157,11 +179,11 @@ const config = {
             ],
           },
         ],
-        copyright: `MIT licensed. Copyright © ${new Date().getFullYear()} treeleaves30760.`,
+        copyright: 'MIT licensed · treeleaves30760',
       },
       prism: {
-        theme: prismThemes.github,
-        darkTheme: prismThemes.dracula,
+        theme: prismThemes.oneLight,
+        darkTheme: prismThemes.oneDark,
         additionalLanguages: ['bash', 'powershell', 'toml', 'json'],
       },
     }),

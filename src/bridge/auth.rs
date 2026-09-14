@@ -279,6 +279,16 @@ impl AuthManager {
         write_atomic(&self.path, &document)
     }
 
+    /// The account id the file names, or `None` if it cannot be read.
+    ///
+    /// Reads; never refreshes. Used to label the turns the usage ledger
+    /// records, which must not be able to trigger a token rotation.
+    pub(crate) fn stored_account_id(&self) -> Option<String> {
+        self.stored()
+            .ok()
+            .and_then(|credentials| credentials.account_id)
+    }
+
     /// The credentials as the file currently states them, with the account id
     /// recovered from the tokens themselves when `codex login` did not record
     /// one.
@@ -519,7 +529,7 @@ pub(crate) fn account_id_from_claims(claims: &Value) -> Option<String> {
 }
 
 /// [`account_id_from_claims`] over a token rather than its decoded claims.
-fn account_id_from_token(token: &str) -> Option<String> {
+pub(crate) fn account_id_from_token(token: &str) -> Option<String> {
     account_id_from_claims(&decode_jwt_payload(token)?)
 }
 

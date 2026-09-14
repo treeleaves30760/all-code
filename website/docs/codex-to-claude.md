@@ -2,184 +2,102 @@
 id: codex-to-claude
 title: Codex bridge
 sidebar_label: Codex bridge
-sidebar_position: 4
+sidebar_position: 3
 description: One codex login reaches all eight coding agents through the bundled bridge — Claude Code with an in-session GPT model picker, and every other agent through one bridged model per session.
 keywords:
   - claude code with gpt
   - codex subscription
-  - gpt-5.6
-  - claude code model picker
-  - codex bridge
+  - chatgpt plan coding agent
+  - gpt-6-astra
+  - reasoning effort
 ---
 
 # Codex bridge
 
-One `codex login` serves every agent alc launches. `alc --codex <agent>`
-starts its built-in Codex adapter on a loopback port and points that
-one agent's session at it — no separate login for OpenCode, Pi, Copilot CLI,
-Goose, Qwen Code, or Kimi Code CLI.
+`alc --codex <agent>` starts a loopback adapter and points one agent's session
+at it. One `codex login` serves all eight.
 
 ```sh
 codex login
 alc --codex claude
-alc --codex opencode
-alc --codex pi
-alc --codex copilot
-alc --codex goose
-alc --codex qwen
-alc --codex kimi
+alc --codex opencode      # or pi, copilot, goose, qwen, kimi
 ```
 
-The adapter speaks a different wire protocol depending on the agent, all
-backed by the same Codex login:
+| Agent | What the bridge serves it | How it picks a model |
+| --- | --- | --- |
+| Claude Code | Anthropic Messages | `/model` picker, mid-session |
+| OpenCode, Pi, Kimi Code CLI | OpenAI Responses | one model, chosen at launch |
+| Copilot CLI, Goose, Qwen Code | OpenAI Chat Completions | one model, chosen at launch |
 
-| Agent | Wire protocol the bridge serves |
-| --- | --- |
-| Claude Code | Anthropic Messages |
-| OpenCode, Pi, Kimi Code CLI | OpenAI Responses |
-| Copilot CLI, Goose, Qwen Code | OpenAI Chat Completions |
+Claude Code is the only one that can switch mid-session, because it sends the
+model and effort with every request, so alc pins neither on the adapter. The
+others are wired through the same mechanism each already uses for the `openai`
+kind, pointed at the adapter with a placeholder key — see
+[Agents](./agents.md) for what each one receives.
 
-Claude Code is the only agent with in-session switching: because it sends the
-model and reasoning effort with every request, alc never pins either one on
-the adapter, and `/model`/`/effort` change the running session (see below).
-Every other agent picks one model — and, for that session, one pinned
-reasoning effort — at launch, using its own mechanism instead of a picker.
+## Models
 
-## Claude Code
+Claude Code lists these in its own `/model` picker:
 
-Claude Code starts immediately on your saved default and offers these in its
-own `/model` picker:
-
-| Model | Beginner-friendly use case | Codex default effort |
+| Model | Use case | Codex default effort |
 | --- | --- | --- |
 | `gpt-6-astra` | GPT-6. Most capable; complex, demanding work | `medium` |
 | `gpt-5.6-sol` | Frontier capability for the hardest professional work | `low` |
 | `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
 | `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
 
-alc tracks these four models in a hard-coded list and syncs their details from
-the installed Codex CLI. The bridge is a separate thing, and it keeps no
-allowlist of its own: whatever slug it is handed goes upstream, and
-chatgpt.com decides. So a model alc does not track is still reachable by
-naming it with `--model`. Before 1.5.0 a hard-coded list in the bridge alc
-depended on could be a release behind, which is what made `gpt-6-astra`
-unreachable while `codex` itself served it.
+The bridge keeps no allowlist: whatever slug it is handed goes upstream and
+chatgpt.com decides, so a model alc does not track is still reachable with
+`--model`. That is why a new model works on the day Codex ships it rather than
+on the day alc catches up.
 
-The list is ordered by capability, most capable first, matching Codex's own
-tiers. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` effort
-above `max`. That tier is reachable with native `alc codex`, but **not**
-through the Codex bridge: the built-in helper's own effort range stops at
-`max`, so alc clamps it there and says so at launch rather than letting the
-request be refused mid-session. See OpenAI's
-[model selection guide](https://developers.openai.com/api/docs/guides/latest-model),
-[Luna reference](https://developers.openai.com/api/docs/models/gpt-5.6-luna),
-and [Sol reference](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
-for current upstream details.
+## Effort
 
-### Switching model and effort in-session
+`/model`'s left and right arrows move the effort slider; `/effort` sets one
+directly. Every model takes `low`, `medium`, `high`, `xhigh` or `max`. Higher
+effort gives the model more room to reason, and uses more of your quota.
 
-Inside the session, `/model` switches the GPT model and its left/right arrows
-adjust the effort slider; `/effort` sets a level directly. Every model accepts
-`low`, `medium`, `high`, `xhigh`, or `max`. Higher effort gives the model more
-room to reason, but can take longer and use more quota.
+`gpt-6-astra` and the GPT-5.6 models also offer `ultra`, which native `alc
+codex` can reach but the bridge cannot. alc clamps it to `max` and says so at
+launch, rather than letting the request be refused mid-session.
 
-alc passes the model list through Claude Code's
-[`modelPicker`](https://code.claude.com/docs/en/settings-reference#modelpicker)
-setting, added in Claude Code 2.1.243. The picker shows only these GPT models
-and the Default row, because Claude's own lineup cannot be served through the
-Codex adapter. Older clients ignore the setting and still get the launch
-default as a selectable entry.
-
-### Choosing the launch defaults
-
-To choose a different starting point for one run, or in scripts and CI:
+## Starting somewhere else
 
 ```sh
 alc --codex claude --model gpt-5.6-luna --effort low
 alc --codex claude --model gpt-5.6-terra --effort medium --save
 ```
 
-`--save` stores the model and effort in the selected alc provider. Without
-these options the session starts on the alc provider's values, then the
-selected Codex profile, then the model's documented default. An explicit
-`--model`, `--effort`, or `--settings` placed after `--` is forwarded to Claude
-Code untouched and wins over what alc would inject.
+`--save` stores both on the provider profile. Without them a session starts on
+the profile's values, then the selected Codex profile, then the model's own
+default. Anything after `--` goes to the agent untouched and wins.
 
-A model chosen with `/model` applies to that Claude Code session. The next
-`alc --codex claude` starts from the alc provider default again, so
-[`alc config`](./configuration.md) stays the source of truth.
+A model chosen with `/model` applies to that session only; the next launch
+starts from the profile again.
 
-### What `/model` also writes, and what alc puts back
+## Your plain `claude` still reaches Anthropic
 
-That picker is Claude Code's, not alc's, and the model a session settles on is
-written to `~/.claude/settings.json` as your default for new sessions. That
-file is read by every Claude Code session on the machine, including the ones
-alc did not start, and those have no adapter in front of them: a plain
-`claude` afterwards would ask Anthropic for a GPT model and be told it does
-not exist.
+Claude Code writes the model you settle on to `~/.claude/settings.json` as your
+default for new sessions, and every session on the machine reads that file —
+including the ones alc did not start, which have no adapter in front of them
+and would ask Anthropic for a GPT model.
 
-**From 1.8.0, alc restores that one key when the session exits.** It reads the
-value before the launch and writes it back afterwards. Nothing else in the
-file is touched, and nothing is written at all unless the value it finds is
-one only the adapter can serve — so a session that starts and ends on your own
-default leaves the file exactly as it was, byte for byte.
+alc reads that one key before the launch and puts it back when the session
+exits. Nothing else in the file is touched, and nothing is written at all
+unless the value it finds is one only the adapter can serve.
 
-(The one case where a session you did not touch does write: if the value was
-*already* adapter-only when the session started, it is cleared rather than
-put back. That is the self-heal below.)
+Two cases it leaves alone. A real Claude model you switched to mid-session is
+your choice about your own default, so it stands. A session killed outright
+runs no cleanup — `alc doctor` names the file and the line, and the next
+bridged launch clears it.
 
-Two cases it deliberately does not touch:
-
-- **A real Claude model you switched to mid-session.** `/model sonnet` inside
-  a bridged session is a choice about your own default, and putting the old
-  value back over it would be alc overruling something it was never asked
-  about.
-- **A session killed outright.** `kill -9` on alc, or on the hub, runs no
-  cleanup at all. `alc doctor` still names the file and the line for that
-  case — and the next `alc --codex claude` clears it, because a pre-launch
-  value that is *itself* adapter-only is removed rather than put back.
-
-Do not try to isolate it with `CLAUDE_CONFIG_DIR`: that moves Claude Code's
-whole configuration home, including its login. alc reads the same variable to
-find the file, and resolves it in the shell you typed into rather than in the
-hub, so a per-project `CLAUDE_CONFIG_DIR` is honoured for a shared session
-too.
-
-## OpenCode, Pi, and Kimi Code CLI
-
-These three speak the adapter's OpenAI Responses surface directly. Each picks
-one model, and one reasoning effort, at launch (the alc provider's configured
-values, or the model catalog's default) and wires it in with its own
-mechanism instead of an in-session picker: OpenCode gets an `alc-codex`
-provider in `OPENCODE_CONFIG_CONTENT`, Pi gets an `alc-codex` entry merged
-into `models.json`, and Kimi Code CLI gets an `alc-codex` provider in a
-temporary `--config-file`. See [Supported agents](./agents.md) for the
-non-bridge details of each.
-
-```sh
-alc --codex opencode
-alc --codex pi
-alc --codex kimi
-```
-
-## Copilot CLI, Goose, and Qwen Code
-
-These three speak the adapter's OpenAI Chat Completions surface, wired
-through the same mechanism each already uses for the `openai` provider kind —
-`COPILOT_PROVIDER_*` environment variables for Copilot CLI, `OPENAI_*` for
-Goose, and `OPENAI_*` plus `--auth-type openai` for Qwen Code — pointed at the
-loopback adapter with a placeholder key instead of a real one.
-
-```sh
-alc --codex copilot
-alc --codex goose
-alc --codex qwen
-```
+Do not try to isolate this with `CLAUDE_CONFIG_DIR`: that moves Claude Code's
+whole configuration home, login included.
 
 ## Model catalog
 
-The model catalog is synchronized from the installed Codex CLI at most once
-every 24 hours. A bundled catalog keeps the model list working offline:
+Synced from the installed Codex CLI at most once a day, with a bundled copy so
+the list works offline.
 
 ```sh
 alc models
@@ -187,29 +105,19 @@ alc models --refresh
 alc models --json
 ```
 
-The synchronized Codex context window is also passed to Claude Code through
-its documented
-[`CLAUDE_CODE_MAX_CONTEXT_TOKENS`](https://code.claude.com/docs/en/env-vars)
-gateway setting, so unknown GPT IDs compact at the correct Codex limit instead
-of Claude's generic fallback.
+The synced context window reaches Claude Code as
+[`CLAUDE_CODE_MAX_CONTEXT_TOKENS`](https://code.claude.com/docs/en/env-vars),
+so a GPT model compacts at the real Codex limit rather than the 200k Claude
+Code assumes for an ID it does not know.
 
-Claude Code's built-in aliases stay on Codex as well: the picker's Default row
-follows the alc default, `haiku` and background work use the cheapest catalog
-model, `sonnet` follows the session's starting model, and `opus` uses the most
-capable one.
+## How it works
 
-## How the bridge works
+The bridge is alc's own code, running inside the `alc` process on a random
+loopback port, serving only the agent it launched and stopping when that
+session ends. It reads and may refresh `~/.codex/auth.json`; no credential is
+ever copied into alc's own configuration.
 
-The bridge is alc's own code (`src/bridge/`). It runs inside the `alc`
-process on a random `127.0.0.1` port, points only the launched agent at it,
-and stops when that session ends. It reads and may refresh
-`~/.codex/auth.json`; credentials are never copied into the alc configuration.
-
-It keeps no list of models. Whatever slug it is handed goes upstream, and
-chatgpt.com is the party that refuses an unknown one — which is why a model
-reaches you on the day Codex ships it rather than on the day alc catches up.
-
-:::caution Third-party compatibility layer
+:::caution[Third-party compatibility layer]
 
 This adapter is not an official OpenAI or Anthropic integration. Review the
 project's `THIRD_PARTY.md` and your provider terms before using subscription

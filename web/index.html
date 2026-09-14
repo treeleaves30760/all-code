@@ -35,6 +35,12 @@
         <span id="linkLabel"></span>
       </span>
       <span id="grade" class="pill" hidden></span>
+
+      <!-- The one thing on this page that is not about a single session, so
+           it lives in the header rather than in the list. -->
+      <button id="usageToggle" class="icon" type="button">
+        <span aria-hidden="true">&#9684;</span>
+      </button>
     </header>
 
     <main>
@@ -49,6 +55,36 @@
           <p id="emptyHow" class="empty-how"></p>
           <button type="button" id="emptyCommand" class="command"></button>
         </div>
+      </section>
+
+      <!-- What is left on each login, and where it went. Read-only: this
+           page can spend a quota but never change one. -->
+      <section id="usage" aria-label="Usage">
+        <h2 id="accountsTitle" class="pane-title"></h2>
+        <ul id="accounts"></ul>
+        <p id="usageNote" class="note" hidden></p>
+
+        <div id="usageEmpty" class="empty" hidden>
+          <span class="empty-mark" aria-hidden="true"></span>
+          <p id="usageEmptyTitle" class="empty-title"></p>
+          <p id="usageEmptyHow" class="empty-how"></p>
+          <button type="button" id="usageEmptyCommand" class="command"></button>
+        </div>
+
+        <h2 id="ledgerTitle" class="pane-title"></h2>
+        <table id="ledger" class="ledger">
+          <thead>
+            <tr>
+              <th id="ledgerProvider"></th>
+              <th id="ledgerAgent"></th>
+              <th id="ledgerLaunches"></th>
+              <th id="ledgerTurns"></th>
+              <th id="ledgerTokens"></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p id="ledgerNote" class="note"></p>
       </section>
 
       <!-- Which pane is on screen is decided by body[data-pane] alone, so

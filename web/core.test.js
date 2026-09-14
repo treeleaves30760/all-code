@@ -270,6 +270,152 @@ test('an exit says how it ended', () => {
   assert.equal(core.formatExit(null, t), 'exited');
 });
 
+/* -------------------------------------------------------------- usage */
+
+/** An account row shaped the way `alc usage --json` writes one. */
+function account(overrides) {
+  return Object.assign(
+    {
+      profile: 'codex',
+      kind: 'codex',
+      label: 'me@example.com',
+      plan: 'plus',
+      source: 'profile',
+      state: 'ok',
+      windows: [{ name: '5h', scope: null, used_percent: 37, resets_at: 8800 }],
+      balance: null,
+      error: null,
+      fetched_at: 1000,
+    },
+    overrides,
+  );
+}
+
+test('a quota level follows the same threshold the terminal report uses', () => {
+  assert.equal(core.WARN_PERCENT, 75);
+  assert.equal(core.quotaLevel(74), 'ok');
+  assert.equal(core.quotaLevel(75), 'warn');
+  assert.equal(core.quotaLevel(100), 'danger');
+  assert.equal(core.quotaLevel(140), 'danger');
+});
+
+test('a percentage outside its range is clamped and anything unreadable is zero', () => {
+  assert.equal(core.clampPercent(-5), 0);
+  assert.equal(core.clampPercent(140), 100);
+  assert.equal(core.clampPercent('nonsense'), 0);
+  assert.equal(core.clampPercent(undefined), 0);
+});
+
+test('a countdown is coarse and never negative', () => {
+  assert.equal(core.formatCountdown(-5), '0s');
+  assert.equal(core.formatCountdown(45), '45s');
+  assert.equal(core.formatCountdown(130), '2m');
+  assert.equal(core.formatCountdown(7800), '2h 10m');
+  assert.equal(core.formatCountdown(3 * 86400 + 3600), '3d 1h');
+});
+
+test('a token count is shown by its magnitude', () => {
+  assert.equal(core.compactCount(999), '999');
+  assert.equal(core.compactCount(1500), '1.5K');
+  assert.equal(core.compactCount(88000), '88K');
+  assert.equal(core.compactCount(1200000), '1.2M');
+});
+
+test('a window says how much is left, not how much is gone', () => {
+  const t = core.strings('en');
+  const described = core.describeWindow(
+    { name: '5h', scope: null, used_percent: 37, resets_at: 8800 },
+    1000,
+    t,
+  );
+  assert.equal(described.leftPercent, 63);
+  assert.equal(described.left, '63% left');
+  assert.equal(described.resets, 'resets in 2h 10m');
+  assert.equal(described.level, 'ok');
+});
+
+test('a scoped window is labelled by the model it covers', () => {
+  const t = core.strings('en');
+  const described = core.describeWindow(
+    { name: 'week', scope: 'Fable', used_percent: 90, resets_at: 0 },
+    1000,
+    t,
+  );
+  assert.equal(described.label, 'Fable week');
+  assert.equal(described.level, 'warn', 'red is reserved for a window that is actually gone');
+  assert.equal(described.resets, '', 'no reset time means no countdown at all');
+});
+
+test('a per-model window nobody has touched is left out', () => {
+  const windows = core.accountWindows(
+    account({
+      windows: [
+        { name: '5h', scope: null, used_percent: 0, resets_at: 0 },
+        { name: 'week', scope: 'Spark', used_percent: 0, resets_at: 0 },
+        { name: 'week', scope: 'Astra', used_percent: 4, resets_at: 0 },
+      ],
+    }),
+  );
+  assert.deepEqual(
+    windows.map((window) => window.scope),
+    [null, 'Astra'],
+  );
+});
+
+test('an account note shows a balance, or the sentence that replaces it', () => {
+  assert.equal(
+    core.accountNote(account({ balance: { remaining: 37.6, limit: 50, unit: 'USD' } })),
+    '$37.60 / $50.00',
+  );
+  assert.equal(
+    core.accountNote(account({ windows: [], error: 'no quota API' })),
+    'no quota API',
+  );
+  assert.equal(core.accountNote(account({})), '');
+});
+
+test('a report that is missing or malformed yields nothing rather than throwing', () => {
+  for (const payload of [null, undefined, 'nope', {}, { accounts: 'no' }]) {
+    const model = core.normalizeUsage(payload);
+    assert.deepEqual(model.accounts, []);
+    assert.deepEqual(model.rows, []);
+    assert.equal(model.hubEnv, false);
+  }
+});
+
+test('the environment note appears only for accounts the hub resolved for itself', () => {
+  const pinned = { resolved_by: 'hub', accounts: [account({ source: 'profile' })] };
+  const ambient = { resolved_by: 'hub', accounts: [account({ source: 'env' })] };
+  const local = { resolved_by: 'cli', accounts: [account({ source: 'env' })] };
+  assert.equal(core.normalizeUsage(pinned).hubEnv, false);
+  assert.equal(core.normalizeUsage(ambient).hubEnv, true);
+  assert.equal(core.normalizeUsage(local).hubEnv, false, 'your own shell is not the hub');
+});
+
+test('a pair alc never carried traffic for shows dashes, not zeros', () => {
+  assert.deepEqual(
+    core.ledgerCells({
+      provider: 'codex',
+      agent: 'claude',
+      launches: 14,
+      turns: 231,
+      input_tokens: 1200000,
+      output_tokens: 88000,
+    }),
+    ['codex', 'claude', '14', '231', '1.3M'],
+  );
+  assert.deepEqual(
+    core.ledgerCells({ provider: 'ollama', agent: 'claude', launches: 1, turns: 0 }),
+    ['ollama', 'claude', '1', '—', '—'],
+  );
+});
+
+test('a string template fills what it is given and blanks what it is not', () => {
+  assert.equal(core.fill('{p}% left', { p: 63 }), '63% left');
+  assert.equal(core.fill('resets in {t}', {}), 'resets in ');
+  assert.equal(core.fill('nothing to fill', { p: 1 }), 'nothing to fill');
+});
+
 /* ----------------------------------------------------------- protocol */
 
 function frame(opcode, seq, payload) {

@@ -1151,3 +1151,328 @@ fn removing_a_provider_only_blocks_on_explicit_defaults() {
         .failure()
         .stderr(predicate::str::contains("still the default"));
 }
+
+/// A stand-in for every quota endpoint at once.
+///
+/// One server can answer all of them because each vendor's path is distinct,
+/// which is the reason `ALC_USAGE_API_BASE` replaces only the host. Serves
+/// until the test process exits.
+fn serve_quota() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake quota server");
+    let address = listener.local_addr().expect("fake quota address");
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let mut request = [0_u8; 8192];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let head = String::from_utf8_lossy(&request[..read]);
+            let path = head.split_whitespace().nth(1).unwrap_or("");
+            let (status, body) = if path.starts_with("/backend-api/wham/usage") {
+                (
+                    "200 OK",
+                    r#"{"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,
+                        "primary_window":{"used_percent":63,"limit_window_seconds":18000,"reset_after_seconds":7800},
+                        "secondary_window":{"used_percent":12,"limit_window_seconds":604800,"reset_after_seconds":350000}},
+                        "credits":{"has_credits":false,"unlimited":false}}"#,
+                )
+            } else if path.starts_with("/api/oauth/usage") {
+                (
+                    "200 OK",
+                    r#"{"five_hour":{"utilization":19,"resets_at":null},
+                        "seven_day":{"utilization":22,"resets_at":null}}"#,
+                )
+            } else if path.starts_with("/api/v1/key") {
+                (
+                    "200 OK",
+                    r#"{"data":{"label":"laptop","usage":12.4,"limit":50,"limit_remaining":37.6}}"#,
+                )
+            } else {
+                ("404 Not Found", r#"{"error":"not found"}"#)
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    format!("http://{address}")
+}
+
+/// An `auth.json` shaped like the one `codex login` writes, with an unsigned
+/// JWT whose claims are the ones alc reads.
+fn codex_home(root: &std::path::Path, email: &str) -> std::path::PathBuf {
+    use base64::Engine;
+    let encode = |value: &serde_json::Value| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string())
+    };
+    let header = encode(&serde_json::json!({ "alg": "none", "typ": "JWT" }));
+    // Far enough ahead that the token is never expired while the test runs.
+    let claims = encode(&serde_json::json!({
+        "exp": 4_000_000_000_u64,
+        "email": email,
+        "chatgpt_account_id": "acct_test",
+        "https://api.openai.com/auth": { "chatgpt_plan_type": "plus" }
+    }));
+    let token = format!("{header}.{claims}.signature");
+
+    let home = root.join(email);
+    std::fs::create_dir_all(&home).expect("create codex home");
+    std::fs::write(
+        home.join("auth.json"),
+        serde_json::json!({
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "refresh",
+                "id_token": token,
+                "account_id": "acct_test"
+            }
+        })
+        .to_string(),
+    )
+    .expect("write auth.json");
+    home
+}
+
+#[test]
+fn usage_reports_what_is_left_on_a_codex_login() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = codex_home(temp.path(), "me@example.com");
+    alc(&temp).args(["config", "init"]).assert().success();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "codex",
+            "--kind",
+            "codex",
+            "--codex-home",
+            home.to_str().expect("utf-8 path"),
+        ])
+        .assert()
+        .success();
+
+    alc(&temp)
+        .env("ALC_USAGE_API_BASE", serve_quota())
+        .env("ALC_ASCII", "1")
+        .args(["usage", "--provider", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("me@example.com"))
+        .stdout(predicate::str::contains("plus"))
+        .stdout(predicate::str::contains("5h 37% left"))
+        .stdout(predicate::str::contains("week 88% left"));
+}
+
+/// The panel the feature exists for: two logins of one kind, each reported
+/// against its own directory.
+#[test]
+fn usage_reports_every_codex_login_when_two_profiles_name_two_homes() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let first = codex_home(temp.path(), "me@example.com");
+    let second = codex_home(temp.path(), "work@example.com");
+    alc(&temp).args(["config", "init"]).assert().success();
+    for (name, home) in [("codex", &first), ("codex-work", &second)] {
+        alc(&temp)
+            .args([
+                "config",
+                "upsert",
+                name,
+                "--kind",
+                "codex",
+                "--codex-home",
+                home.to_str().expect("utf-8 path"),
+            ])
+            .assert()
+            .success();
+    }
+
+    alc(&temp)
+        .env("ALC_USAGE_API_BASE", serve_quota())
+        .env("ALC_ASCII", "1")
+        .args(["usage", "--provider", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("me@example.com"))
+        .stdout(predicate::str::contains("work@example.com"))
+        .stdout(predicate::str::contains("codex-work"));
+}
+
+#[test]
+fn usage_reads_a_claude_login_from_the_directory_a_profile_pins() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let claude = temp.path().join("claude-work");
+    std::fs::create_dir_all(&claude).expect("create claude dir");
+    std::fs::write(
+        claude.join(".credentials.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "sk-ant-oat01-test",
+                "expiresAt": 4_000_000_000_000_u64,
+                "subscriptionType": "max"
+            }
+        })
+        .to_string(),
+    )
+    .expect("write credentials");
+
+    alc(&temp).args(["config", "init"]).assert().success();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "anthropic",
+            "--kind",
+            "anthropic",
+            "--claude-config-dir",
+            claude.to_str().expect("utf-8 path"),
+        ])
+        .assert()
+        .success();
+
+    alc(&temp)
+        .env("ALC_USAGE_API_BASE", serve_quota())
+        .env("ALC_ASCII", "1")
+        .args(["usage", "--provider", "anthropic"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("max"))
+        .stdout(predicate::str::contains("5h 81% left"))
+        .stdout(predicate::str::contains("week 78% left"));
+}
+
+#[test]
+fn usage_names_the_login_that_is_missing_and_exits_nonzero() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let empty = temp.path().join("empty-codex");
+    std::fs::create_dir_all(&empty).expect("create empty home");
+    alc(&temp).args(["config", "init"]).assert().success();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "codex",
+            "--kind",
+            "codex",
+            "--codex-home",
+            empty.to_str().expect("utf-8 path"),
+        ])
+        .assert()
+        .success();
+
+    alc(&temp)
+        .env("ALC_ASCII", "1")
+        .args(["usage", "--provider", "codex"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("codex login"))
+        .stdout(predicate::str::contains("needs attention"));
+}
+
+/// A machine with no network and no keys still gets an answer, which is what
+/// makes the command safe to put in a shell prompt.
+#[test]
+fn usage_works_offline_for_providers_with_no_quota_api() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    ollama_profile(&temp, "http://127.0.0.1:1");
+
+    alc(&temp)
+        .env("PATH", "")
+        .env("ALC_ASCII", "1")
+        .args(["usage", "--provider", "ollama"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no quota API"));
+}
+
+#[test]
+fn usage_prints_machine_readable_json_that_carries_no_token() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = codex_home(temp.path(), "me@example.com");
+    alc(&temp).args(["config", "init"]).assert().success();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "codex",
+            "--kind",
+            "codex",
+            "--codex-home",
+            home.to_str().expect("utf-8 path"),
+        ])
+        .assert()
+        .success();
+
+    let output = alc(&temp)
+        .env("ALC_USAGE_API_BASE", serve_quota())
+        .args(["usage", "--provider", "codex", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).expect("utf-8 stdout");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON report");
+
+    assert_eq!(report["accounts"][0]["state"], "ok");
+    assert_eq!(report["accounts"][0]["plan"], "plus");
+    assert_eq!(report["accounts"][0]["windows"][0]["used_percent"], 63.0);
+    let auth = std::fs::read_to_string(home.join("auth.json")).expect("read auth.json");
+    let token: serde_json::Value = serde_json::from_str(&auth).expect("auth json");
+    let token = token["tokens"]["access_token"].as_str().expect("token");
+    assert!(
+        !stdout.contains(token),
+        "the report must never carry an access token"
+    );
+}
+
+#[test]
+fn a_relative_account_directory_is_refused_and_so_is_one_on_the_wrong_kind() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    alc(&temp).args(["config", "init"]).assert().success();
+
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "codex",
+            "--kind",
+            "codex",
+            "--codex-home",
+            "relative/codex",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must be an absolute path"));
+
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "ollama",
+            "--kind",
+            "ollama",
+            "--codex-home",
+            "/work/codex",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not a codex profile"));
+}
+
+/// A dry run resolves everything and starts nothing, so it must leave no trace
+/// in the ledger either.
+#[test]
+fn a_dry_run_records_no_launch() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    ollama_profile(&temp, "http://127.0.0.1:1");
+
+    alc(&temp)
+        .args(["--provider", "ollama", "--dry-run", "claude"])
+        .assert()
+        .success();
+
+    assert!(
+        !temp.path().join("usage.jsonl").exists(),
+        "a dry run must not write a ledger row"
+    );
+}

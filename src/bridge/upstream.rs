@@ -746,15 +746,31 @@ pub(crate) struct UpstreamStream {
     decoder: SseDecoder,
     ready: VecDeque<SseFrame>,
     finished: bool,
+    /// Who to credit this turn to, when anybody is keeping count. Behind one
+    /// pointer because `UpstreamStream` is carried inline by an enum whose
+    /// size is linted.
+    ledger: Option<Box<TurnLedger>>,
+}
+
+/// The ledger a turn is recorded in, and the model to credit a frame that does
+/// not name one itself.
+struct TurnLedger {
+    ledger: std::sync::Arc<crate::usage::ledger::Ledger>,
+    model: String,
 }
 
 impl UpstreamStream {
-    fn new(response: reqwest::Response) -> Self {
+    fn new(
+        response: reqwest::Response,
+        model: String,
+        ledger: Option<std::sync::Arc<crate::usage::ledger::Ledger>>,
+    ) -> Self {
         Self {
             response,
             decoder: SseDecoder::default(),
             ready: VecDeque::new(),
             finished: false,
+            ledger: ledger.map(|ledger| Box::new(TurnLedger { ledger, model })),
         }
     }
 
@@ -768,6 +784,11 @@ impl UpstreamStream {
     pub(crate) async fn next(&mut self) -> Option<Result<UpstreamFrame, BridgeError>> {
         loop {
             while let Some(frame) = self.ready.pop_front() {
+                // The one place both translating surfaces meet, so the ledger
+                // needs exactly one hook rather than one per surface.
+                if let Some(credit) = &self.ledger {
+                    credit.ledger.observe_frame(&frame.data, &credit.model);
+                }
                 match decode_frame(&frame) {
                     Ok(Decoded::Event(frame)) => return Some(Ok(*frame)),
                     Ok(Decoded::End) => self.finished = true,
@@ -930,7 +951,11 @@ pub(crate) async fn send(
         let body = response.bytes().await.unwrap_or_default();
         return Err(status_error(status, &body));
     }
-    Ok(UpstreamStream::new(response))
+    Ok(UpstreamStream::new(
+        response,
+        request.model.clone(),
+        state.ledger.clone(),
+    ))
 }
 
 async fn post_once(
@@ -1090,6 +1115,35 @@ mod tests {
                     frame.data
                 );
             }
+        }
+    }
+
+    /// The one hook both translating surfaces share, replayed against the
+    /// real captured turns so the numbers it records are the ones chatgpt.com
+    /// actually sent.
+    #[test]
+    fn the_ledger_records_the_usage_of_every_captured_turn() {
+        for (name, input, output) in [
+            ("chat-completions-nonstreaming", 12, 6),
+            ("messages-tool-call-streaming", 138, 21),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let ledger = crate::usage::ledger::Ledger::new(
+                dir.path().join(crate::usage::ledger::LEDGER_FILE),
+                crate::config::Agent::Claude,
+                "codex".to_owned(),
+                crate::config::ProviderKind::Codex,
+                None,
+            );
+            for frame in parse_sse(&Case::load(name).upstream_sse()) {
+                ledger.observe_frame(&frame.data, "fallback-model");
+            }
+
+            let summary = crate::usage::ledger::summarise(dir.path());
+            assert_eq!(summary.rows.len(), 1, "{name}");
+            assert_eq!(summary.rows[0].turns, 1, "{name}");
+            assert_eq!(summary.rows[0].input_tokens, input, "{name}");
+            assert_eq!(summary.rows[0].output_tokens, output, "{name}");
         }
     }
 

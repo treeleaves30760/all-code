@@ -181,6 +181,7 @@ OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本�
 | `alc config` | 設定用的 TUI；另有 `init`、`show`、`path`、`upsert`、`key`、`set-default`、`remove` |
 | `alc doctor` | 執行檔、憑證、相容性、預設值，以及橋接與遠端狀態 |
 | `alc models` | Codex 橋接提供的 GPT 模型；`--refresh`、`--json` |
+| `alc usage` | 每個 Claude／Codex 登入與 API key 的剩餘額度，以及各 provider 與 agent 的用量；`--json` |
 | `alc update` | 就地更新 `alc`；`--check`、`--force` |
 | `alc share <agent>` | 啟動 agent，並把 session 鏡像到網頁 |
 | `alc sessions` | 先是頁面連結，然後是共享中的 session（tmux 的會標示出來） |
@@ -231,6 +232,50 @@ profile 對照全部八個 agent 的結果、解析後的各 agent 預設值、�
 
 具名錯誤與各自的修法，請見
 [疑難排解指南](https://treeleaves30760.github.io/all-code/troubleshooting)。
+
+## 還剩多少，又花到哪裡去
+
+```sh
+alc usage
+```
+
+```text
+Accounts
+     PROFILE     ACCOUNT                  PLAN  REMAINING
+  ✓  anthropic   ~/.claude                max   5h 97% left, resets in 2h 53m — week 79% left, resets in 6d 4h — Fable week 62% left, resets in 6d 4h
+  ✓  codex       you@example.com          pro   week 66% left, resets in 5d 9h — no credits
+  ·  ollama      —                        —     no quota API
+  ·  openrouter  —                        —     no API key; run `alc config key openrouter`
+
+Usage by provider and agent
+  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  OUTPUT  LAST
+  codex     claude    1         1      20.8K  35      7m ago
+  ollama    opencode  1         —      —      —       12m ago
+  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone
+
+✓ ready
+```
+
+alc 會向每個登入所屬的服務商查詢剩餘額度：Codex 登入問 chatgpt.com、Claude
+Code 的登入問 api.anthropic.com，OpenRouter、DeepSeek、Moonshot、MiniMax 與
+Z.ai 的 key 則走各自公開的餘額端點。過程中不會寫回任何東西，也不會更新
+token —— 一個查詢狀態的指令不該讓執行中的 session 手上的憑證失效。
+
+**同一種登入有兩個帳號，就開兩個 profile。**`codex_home` 與
+`claude_config_dir` 會固定某個 profile 的憑證目錄，而且每次透過該 profile
+啟動都會用同一個帳號 —— 所以你讀到的那一列，就是實際花掉額度的帳號：
+
+```sh
+CODEX_HOME=~/.codex-work codex login
+alc config upsert codex-work --kind codex --codex-home ~/.codex-work
+alc --provider codex-work claude
+```
+
+第二張表來自設定目錄裡的 `usage.jsonl`：每次啟動一行，Codex 橋接經手的每個
+回合再一行。alc 沒有經手流量的 provider 顯示 `—` 而不是 0，因為那些 token
+是未知，不是沒有。遠端控制頁面的 ◔ 按鈕後面是同樣這兩個區塊。
+
+完整說明請見 [用量](https://treeleaves30760.github.io/all-code/usage)。
 
 ## Provider 與 agent
 
@@ -385,7 +430,7 @@ cache 在每一輪之間撐下來。`alc doctor` 會印出 **Ollama** 區塊：�
 
 完整的調校筆記 —— KV cache 型別、keep-alive、為什麼在 Gemma 4 上提示長度的代價
 比線性還高 —— 都在
-[provider 指南](https://treeleaves30760.github.io/all-code/providers#claude-code-on-a-local-ollama-model)
+[provider 指南](https://treeleaves30760.github.io/all-code/local-models)
 裡。
 
 ## 遠端控制
@@ -525,6 +570,8 @@ ticket 五分鐘後過期，而 `alc confirm` 在沒有控制終端機的情況�
 - `remote.toml`：共享設定 —— 開或關、是否預設共享、綁定位址、port 與權限
   上限。`alc config show` 會把 sharing 與 share-by-default 兩個值以註解
   的形式印在輸出的最後。
+- `usage.jsonl`：每次啟動一行，Codex 橋接經手的每個回合再一行。`alc usage`
+  會彙整它；刪掉就從頭重新計算。
 
 可用 `ALC_CONFIG_DIR` 覆寫目錄位置。常用的腳本化指令：
 

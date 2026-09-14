@@ -1,64 +1,60 @@
 ---
 id: agents
-title: 支援的 agent
-sidebar_label: 支援的 agent
+title: Agent
+sidebar_label: Agent
 sidebar_position: 6
-description: alc 啟動的八個 coding agent，每一個各自會被注入什麼 —— 逐一列出實際的環境變數、旗標與設定檔。
+description: alc 為八個 coding agent 各自設定了什麼 —— 環境變數、旗標，或一份合併過的設定檔 —— 好讓你選的 provider 不必手動改任何東西就能用。
 keywords:
   - claude code
   - codex cli
   - opencode
   - pi coding agent
-  - github copilot cli
+  - copilot cli
   - goose
   - qwen code
   - kimi code cli
+  - 中文
 ---
 
-# 支援的 agent
+# Agent
 
-alc 會啟動八個 coding agent。每一個對「如何設定 provider」都有自己的一套做法
-—— 環境變數、CLI 旗標，或是一份設定檔 —— 所以這一頁會逐一列出，alc 實際上會
-設定什麼，好讓你選的 provider 能正常運作。每個 agent 也都能透過單一一次
-`codex login`，經由 [Codex 橋接](./codex-to-claude.md)運作；橋接本身的運作
-方式請見該頁。
+每個 agent 對「provider 該怎麼設定」都有自己的一套想法，所以 alc 會把同一份
+provider 清單，翻譯成你正要啟動的那個 agent 聽得懂的樣子。這一頁就是它逐一
+設定了什麼。
+
+每個 agent 也都能靠一次 `codex login`，透過 [Codex
+橋接](./codex-to-claude.md)運作；`alc --codex <agent>` 從頭到尾都是同一個
+指令，所以下面不再重複。
 
 ## Claude Code
 
-- 執行檔：`claude` —— [安裝說明](https://code.claude.com/docs/en/setup)
-- 支援端點：Anthropic 相容端點
-- alc 會注入：`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL`、`ANTHROPIC_API_KEY`
-  （像 OpenRouter 這種 bearer 型 provider 則改為 `ANTHROPIC_AUTH_TOKEN`），
-  以及在 profile 有設定 small model 時的 `ANTHROPIC_SMALL_FAST_MODEL`。
-  Ollama profile 還會把每個模型別名都釘在本機模型上、加上
-  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`、`API_FORCE_IDLE_TIMEOUT=0` 和
-  三十分鐘的 `API_TIMEOUT_MS`，並把伺服器回報的 context 長度放進
-  `CLAUDE_CODE_MAX_CONTEXT_TOKENS` —— 見
-  [在本機 Ollama 模型上跑 Claude Code](./providers.md#在本機-ollama-模型上跑-claude-code)。
-- 透過橋接時，Claude Code 是唯一能在工作階段中切換的 agent：alc 追蹤的那四個
-  GPT 模型會出現在它自己的 `/model` 選單裡，`/model`／`/effort` 可以直接變更
-  正在執行的工作階段。橋接本身不保留任何允許清單，所以 alc 沒有追蹤的模型，
-  只要用 `--model` 指名一樣能用 —— 完整說明請見
-  [Codex 橋接](./codex-to-claude.md)。
+`claude` —— [安裝](https://code.claude.com/docs/en/setup) · 支援 Anthropic
+相容端點。
+
+alc 會設定 `ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL` 與 `ANTHROPIC_API_KEY`
+（OpenRouter 這類 bearer 型 provider 則改用 `ANTHROPIC_AUTH_TOKEN`），profile
+有指定 small model 時再加上 `ANTHROPIC_SMALL_FAST_MODEL`。Ollama profile 拿到
+的還更多 —— 見[本機模型](./local-models.md)。
 
 ```sh
 alc claude
 alc --openrouter claude
-alc --codex claude --model gpt-5.6-terra --effort medium
 ```
 
 ## Codex CLI
 
-- 執行檔：`codex` —— [安裝說明](https://learn.chatgpt.com/docs/codex/cli)
-- 支援端點：OpenAI Responses API
-- alc 會注入：`--model`，以及在有設定時的 `--config
-  model_reasoning_effort=<level>`。非 Codex 的 provider 還會得到完整的
-  `model_providers.<id>.*` 覆寫（`base_url`、`wire_api=responses`、
-  `requires_openai_auth=false`），加上 —— 只在該 profile 真的需要 key 時
-  才會有的 —— `env_key` 與帶著它的 `ALC_PROVIDER_API_KEY` 環境變數；Ollama
-  profile 則改為得到 `--oss --local-provider ollama --model <model>`。
-- Codex CLI 是唯一完全不會經過橋接的 agent：`codex` kind 的 profile 會直接用
-  你原生的 `codex login` 執行 `codex`。
+`codex` —— [安裝](https://learn.chatgpt.com/docs/codex/cli) · 支援 OpenAI
+Responses API。
+
+alc 會設定 `--model`，以及有設定時的 `--config
+model_reasoning_effort=<level>`。非 Codex 的 provider 還會拿到一整組
+`model_providers.<id>.*` 覆寫（`base_url`、`wire_api=responses`、
+`requires_openai_auth=false`），需要金鑰時再加上 `env_key` 與
+`ALC_PROVIDER_API_KEY`。Ollama profile 則改成 `--oss --local-provider
+ollama`。
+
+Codex CLI 是唯一完全不經過橋接的 agent：`codex` kind 的 profile 直接用你原生
+的登入執行它。
 
 ```sh
 alc codex
@@ -67,127 +63,108 @@ alc --openrouter codex
 
 ## OpenCode
 
-- 執行檔：`opencode` —— [安裝說明](https://opencode.ai/docs)
-- 支援端點：任何 API 相容的 provider
-- alc 會注入一個行內的 `OPENCODE_CONFIG_CONTENT` JSON 環境變數（不寫任何
-  檔案），把模型命名為 `<provider-id>/<model>`。對 Anthropic、OpenAI、
-  OpenRouter、Ollama 這幾個 profile 來說，provider id 就是 kind 本身的名稱
-  （`anthropic`、`openai`、`openrouter`、`ollama`）；其他所有 kind ——
-  vLLM、Custom，以及七個新的 provider kind 預設值 —— 則一律改用
-  `alc-<profile>`。
-- 同一份 JSON 裡也會寫入完整的 `provider.<id>` 物件（npm 套件、`name`、
-  `options.baseURL`、`models`）：Ollama、vLLM、Custom 與七個新預設值一律
-  會寫；Anthropic／OpenAI／OpenRouter 的 profile 則只有在 base URL 被改成
-  不是該 kind 自己的預設值時才會寫。`options.apiKey:
-  "{env:ALC_PROVIDER_API_KEY}"` 只在該 profile 真的需要 key 時才會加上 ——
-  預設（不需要 key）的 Ollama profile 就不會有 `apiKey` 欄位。
-- 透過橋接時，同一套機制會定義一個指向 loopback 轉接器的 `alc-codex`
-  provider。
+`opencode` —— [安裝](https://opencode.ai/docs) · 支援任何 API 相容的
+provider。
+
+alc 會設定一個行內的 `OPENCODE_CONFIG_CONTENT` JSON 變數，不寫任何檔案，並把
+模型命名為 `<provider-id>/<model>`。Anthropic、OpenAI、OpenRouter 與 Ollama
+的 profile，provider id 就是那個 kind 的名稱；其餘每一種 kind 則是
+`alc-<profile>`。
+
+同一份 JSON 裡也會放進完整的 `provider.<id>` 物件：Ollama、vLLM、custom 與
+比較新的那幾個預設值一律會放；前面那四種則只有在 base URL 被指到該 kind 預設
+值以外的地方時才放。`options.apiKey` 只在 profile 需要金鑰時才出現，所以預設
+的 Ollama profile 不會有。
 
 ```sh
 alc opencode
 alc --zai opencode
-alc --codex opencode
 ```
 
 ## Pi
 
-- 執行檔：`pi` —— [安裝說明](https://github.com/earendil-works/pi)
-  （`npm install -g @earendil-works/pi-coding-agent`）
-- 支援端點：Anthropic、OpenAI，或 OpenAI 相容端點
-- alc 會注入：合併進 `$PI_CODING_AGENT_DIR/models.json`（預設為
-  `~/.pi/agent/models.json`）的一筆 `alc-<profile>` 項目，加上
-  `--provider`、`--model`，以及在有設定 effort 時的 `--thinking` 旗標。
-- **合併是新增式的。** alc 只會寫入名稱為 `alc-*` 的 key，所以你自己加入
-  的 provider 完全不會被動到。寫入是原子性的；如果你原本的 `models.json`
-  解析失敗，alc 會直接拒絕動作 —— 而不是用一份全新的檔案把它蓋掉。
-- **Anthropic 訂閱的特例：** 沒有存 API key 的 `anthropic` kind profile
-  會完全跳過 `models.json` 的寫入，改成直接以 `--provider anthropic
-  --model <model>` 啟動，讓 Pi 改用它自己的 `/login`（訂閱）憑證，而不是
-  一筆沒有東西會用到的 `models.json` 項目。
+`pi` —— [安裝](https://github.com/earendil-works/pi)（`npm install -g
+@earendil-works/pi-coding-agent`）· 支援 Anthropic、OpenAI，或 OpenAI 相容
+端點。
+
+alc 會把一筆 `alc-<profile>` 項目合併進
+`$PI_CODING_AGENT_DIR/models.json`（預設為 `~/.pi/agent/models.json`），並
+傳入 `--provider`、`--model`，以及有設定 effort 時的 `--thinking`。
+
+合併是新增式的：alc 只會寫入名稱為 `alc-*` 的 key，寫入是原子性的，而一份
+解析失敗的 `models.json` 會讓 alc 拒絕動作，而不是把它換掉。沒有存金鑰的
+`anthropic` profile 會完全跳過合併，直接以 `--provider anthropic` 啟動，讓
+Pi 使用它自己的訂閱登入。
 
 ```sh
 alc pi
 alc --minimax pi
-alc --codex pi
 ```
 
 ## Copilot CLI
 
-- 執行檔：`copilot` —— [安裝說明](https://docs.github.com/en/copilot/how-tos/copilot-cli)
-- 支援端點：OpenAI 或 Anthropic 相容端點
-- alc 會注入：`COPILOT_PROVIDER_TYPE`（`anthropic` 或 `openai`）、
-  `COPILOT_PROVIDER_BASE_URL`、`COPILOT_PROVIDER_API_KEY`（像 Ollama 這種
-  不需要 key 的 provider 會略過），以及 `COPILOT_MODEL`。
-- 這是純粹的 BYOK 模式 —— 不會寫任何設定檔，也不需要 GitHub Copilot 登入。
+`copilot` —— [安裝](https://docs.github.com/en/copilot/how-tos/copilot-cli)
+· 支援 OpenAI 或 Anthropic 相容端點。
+
+alc 會設定 `COPILOT_PROVIDER_TYPE`、`COPILOT_PROVIDER_BASE_URL`、
+`COPILOT_PROVIDER_API_KEY`（不需要金鑰的 provider 會略過）與
+`COPILOT_MODEL`。純 BYOK：不寫任何檔案，也不需要 GitHub Copilot 登入。
 
 ```sh
 alc copilot
 alc --deepseek copilot
-alc --codex copilot
 ```
 
 ## Goose
 
-- 執行檔：`goose` —— [安裝說明](https://block.github.io/goose/)
-- 支援端點：OpenAI 或 Anthropic 相容端點
-- alc 會注入 `GOOSE_PROVIDER`，加上對應的 BYOK 變數：OpenRouter 用
-  `OPENROUTER_API_KEY`、Ollama 用 `OLLAMA_HOST`、Anthropic 型 provider 用
-  `ANTHROPIC_API_KEY`（只有在跟 goose 自己的預設值
-  `https://api.anthropic.com` 不同時才會加上 `ANTHROPIC_HOST`），其餘則
-  用 `OPENAI_API_KEY`／`OPENAI_HOST`／`OPENAI_BASE_PATH` —— 再加上
-  `GOOSE_MODEL`，以及有設定時的 `GOOSE_FAST_MODEL`。
-- **預設是 `session`：** 如果你自己沒有加參數，alc 會補上 goose 互動式的
-  `session` 子指令；只要你自己帶了參數（`alc goose run ...`），就會照
-  原樣轉發，不會再補 `session`。
+`goose` —— [安裝](https://block.github.io/goose/) · 支援 OpenAI 或 Anthropic
+相容端點。
+
+alc 會設定 `GOOSE_PROVIDER`、`GOOSE_MODEL`、選用的 `GOOSE_FAST_MODEL`，以及
+該 provider 需要的 BYOK 變數：`OPENROUTER_API_KEY`、`OLLAMA_HOST`、
+`ANTHROPIC_API_KEY`（與 goose 自己的預設值不同時再加上 `ANTHROPIC_HOST`），
+或是整組 `OPENAI_*`。
+
+你自己沒有帶參數時，alc 會補上 goose 互動式的 `session` 子指令；帶了參數就
+原樣轉發。
 
 ```sh
 alc goose
 alc --groq goose
-alc --codex goose
 ```
 
 ## Qwen Code
 
-- 執行檔：`qwen` —— [安裝說明](https://github.com/QwenLM/qwen-code)
-- 支援端點：OpenAI、Anthropic，或 Gemini 相容端點
-- alc 會注入 `--auth-type <anthropic|openai|gemini>` 與 `--model`，加上
-  對應的環境變數：Anthropic 型 provider 用
-  `ANTHROPIC_BASE_URL`／`ANTHROPIC_API_KEY`，`google` kind 用
-  `GEMINI_API_KEY`，其餘則用 `OPENAI_BASE_URL`／`OPENAI_API_KEY`。
+`qwen` —— [安裝](https://github.com/QwenLM/qwen-code) · 支援 OpenAI、
+Anthropic，或 Gemini 相容端點。
+
+alc 會設定 `--auth-type <anthropic|openai|gemini>` 與 `--model`，加上對應的
+環境變數：`ANTHROPIC_*`、`google` kind 的 `GEMINI_API_KEY`，或 `OPENAI_*`。
 
 ```sh
 alc qwen
 alc --xai qwen
-alc --codex qwen
 ```
 
 ## Kimi Code CLI
 
-- 執行檔：`kimi` —— [安裝說明](https://github.com/MoonshotAI/kimi-cli)
-- 支援端點：OpenAI 或 Anthropic 相容端點
-- alc 除了 `--config-file` 之外，不會注入任何環境變數或旗標。它會讀取你
-  現有的設定（`~/.kimi/config.toml`，或是有設定時 `ALC_KIMI_CONFIG`
-  指定的路徑，如果存在的話），合併進 `providers.alc-<profile>`（型別依
-  provider kind 而定，可能是 `anthropic`、`openai_responses` 或
-  `openai_legacy`）、`models.alc-<profile>`，以及
-  `default_model = "alc-<profile>"`，再把**合併後**的結果寫進一份全新的
-  暫存檔（Unix 上權限為 `0600`）。
-- **你原本的設定檔不會被寫入。** 這份暫存檔會以 `--config-file <path>`
-  傳入，等 Kimi 結束後就會刪除，所以真正的 API key 只會在那一個行程存活
-  期間留在磁碟上。
-- 只要你自己帶了 `--config-file`（或 `--config`），就會停用上述所有行為
-  —— alc 會直接照原樣轉發你的參數。
+`kimi` —— [安裝](https://github.com/MoonshotAI/kimi-cli) · 支援 OpenAI 或
+Anthropic 相容端點。
+
+alc 會讀取你現有的設定（`~/.kimi/config.toml`，或 `ALC_KIMI_CONFIG`），合併進
+`providers.alc-<profile>`、`models.alc-<profile>` 與 `default_model`，再把
+合併後的結果寫進一份新的暫存檔（權限 0600），以 `--config-file` 傳入。你真正
+的設定檔完全不會被寫入，暫存檔則在 Kimi 結束時刪除，所以金鑰只在那個行程活著
+的期間落在磁碟上。自己傳 `--config-file` 就會停用以上全部行為。
 
 ```sh
 alc kimi
 alc --moonshot kimi
-alc --codex kimi
 ```
 
 ## 執行檔覆寫
 
-每個 agent 的執行檔都可以指定成特定路徑，而不是從 `PATH` 解析：
+把任何一個 agent 指向特定的執行檔，而不是從 `PATH` 解析：
 
 | Agent | 覆寫用環境變數 |
 | --- | --- |
@@ -199,7 +176,3 @@ alc --codex kimi
 | Goose | `ALC_GOOSE_BIN` |
 | Qwen Code | `ALC_QWEN_BIN` |
 | Kimi Code CLI | `ALC_KIMI_BIN` |
-
-每個 provider kind 各自支援什麼協定，請見
-[Provider 相容性](./providers.md)；`alc --codex <agent>` 底層如何運作，請見
-[Codex 橋接](./codex-to-claude.md)。

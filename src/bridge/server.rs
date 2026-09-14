@@ -65,6 +65,9 @@ mod tests {
                 auth_file: std::path::PathBuf::from("/nonexistent/auth.json"),
                 effort: None,
                 responses_api,
+                agent: crate::config::Agent::Claude,
+                provider: "codex".to_owned(),
+                ledger: None,
             })
             .expect("the state builds without touching the auth file"),
         )
