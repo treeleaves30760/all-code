@@ -96,16 +96,31 @@ pub(crate) struct Discovered {
     pub source: CredentialSource,
 }
 
+/// What two profiles share when they point at one login.
+///
+/// The paths are kept as paths rather than flattened into a string: `Path`
+/// compares and hashes by component, so a home resolved as `C:\\Users\\ada` and
+/// one written `C:/Users/ada` are one account on Windows, where both spellings
+/// are ordinary.
+/// No `Debug`: the key variant holds an API key, and the compiler refusing a
+/// `{:?}` is a better guarantee than a review noticing one.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Identity {
+    Codex(PathBuf),
+    Claude(PathBuf),
+    /// The key itself, never shown: two profiles holding one key are one
+    /// account at the vendor.
+    Key(String),
+}
+
 impl Discovered {
     /// The key two profiles share when they point at one login, so the second
     /// can say so instead of asking the vendor twice.
-    pub(crate) fn identity(&self) -> Option<String> {
+    pub(crate) fn identity(&self) -> Option<Identity> {
         match &self.credential {
-            Credential::Codex { auth_file } => Some(format!("codex:{}", auth_file.display())),
-            Credential::Claude { config_dir } => Some(format!("claude:{}", config_dir.display())),
-            // Keyed by the key itself, never shown: two profiles holding one
-            // key are one account at the vendor.
-            Credential::ApiKey { key, .. } => Some(format!("key:{key}")),
+            Credential::Codex { auth_file } => Some(Identity::Codex(auth_file.clone())),
+            Credential::Claude { config_dir } => Some(Identity::Claude(config_dir.clone())),
+            Credential::ApiKey { key, .. } => Some(Identity::Key(key.clone())),
             Credential::None { .. } => None,
         }
     }
@@ -708,19 +723,43 @@ mod tests {
         assert!(discover(&store, None, &env()).is_empty());
     }
 
+    /// One login reached two ways is one account, however each path happens
+    /// to be spelled - which is the whole reason the identity is a path
+    /// rather than a string.
     #[test]
     fn two_profiles_on_one_auth_file_share_an_identity() {
+        let home = PathBuf::from("/home/ada");
         let mut pinned = Provider::for_kind(ProviderKind::Codex);
-        pinned.codex_home = Some("/home/ada/.codex".to_owned());
-        let store = store(
+        pinned.codex_home = Some(home.join(".codex").display().to_string());
+        let joined_store = store(
             vec![
                 ("codex", Provider::for_kind(ProviderKind::Codex)),
                 ("codex-alias", pinned),
             ],
             vec![],
         );
-        let found = discover(&store, None, &env());
-        assert_eq!(found[0].identity(), found[1].identity());
+        let found = discover(&joined_store, None, &env());
+        assert!(
+            found[0].identity() == found[1].identity(),
+            "one login reached two ways should be one account"
+        );
+
+        // The same directory written with the other separator is still the
+        // same account on a platform that accepts both.
+        let mut slashed = Provider::for_kind(ProviderKind::Codex);
+        slashed.codex_home = Some("/home/ada/.codex".to_owned());
+        let slashed_store = store(
+            vec![
+                ("codex", Provider::for_kind(ProviderKind::Codex)),
+                ("codex-slashed", slashed),
+            ],
+            vec![],
+        );
+        let found = discover(&slashed_store, None, &env());
+        assert!(
+            found[0].identity() == found[1].identity(),
+            "the separator a path is written with should not split an account"
+        );
     }
 
     #[test]

@@ -189,7 +189,7 @@ pub(crate) fn build_report(
     let now_ms = now_unix().saturating_mul(1000);
     // Two profiles can name one login. Asking the vendor twice would be rude
     // and would count against the same rate limit twice.
-    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut seen: HashMap<accounts::Identity, String> = HashMap::new();
     let accounts = found
         .iter()
         .map(|discovered| {
