@@ -27,7 +27,11 @@ use crate::config::ReasoningEffort;
 use super::auth::Credentials;
 use super::{BridgeError, BridgeState};
 
-/// The only upstream alc talks to.
+/// Where every turn goes.
+///
+/// One of two chatgpt.com endpoints alc calls now: [`super::models`] asks the
+/// same host what this account may drive, precisely so the list alc offers
+/// and the party that serves it cannot disagree about what exists.
 pub(crate) const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 
 /// Sent as both `originator` and `user-agent`. Codex gates the

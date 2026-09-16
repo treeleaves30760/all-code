@@ -1,12 +1,12 @@
 use std::env;
 use std::io::{self, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::Result;
 
 use crate::config::{Agent, AuthStyle, Provider, ProviderKind, ReasoningEffort, Store};
-use crate::model_catalog::ModelCatalog;
+use crate::model_catalog::{CodexSource, ModelCatalog};
 use crate::ollama;
 
 pub(crate) const INDENT: &str = "  ";
@@ -71,7 +71,23 @@ fn binaries(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     for agent in Agent::ALL {
         let binary = binary_for(agent);
         match resolve(&binary) {
-            Some(path) => rows.push(Row::new(Status::Good, agent, path.display().to_string())),
+            Some(path) => {
+                // Codex alone carries its version here. alc does not route
+                // through it, but its release is what used to decide the
+                // model list, and not printing it anywhere is the single
+                // reason a picker silently missing GPT-6 took a day to
+                // diagnose. `doctor` can afford the spawn; a launch cannot.
+                let version = (agent == Agent::Codex)
+                    .then(|| codex_version(&path))
+                    .flatten()
+                    .map(|version| theme.paint(Tone::Dim, &format!("{GUTTER}({version})")))
+                    .unwrap_or_default();
+                rows.push(Row::new(
+                    Status::Good,
+                    agent,
+                    format!("{}{version}", path.display()),
+                ));
+            }
             None => {
                 let name = binary.to_string_lossy().into_owned();
                 // An agent nobody has pointed a default at yet is just not
@@ -296,10 +312,17 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
                 .is_some_and(|routable| !routable.contains(&model));
         if unroutable {
             status = Status::Bad;
+            // Names a model out of the catalog rather than a slug written
+            // down here, so the advice cannot go stale the way the catalog
+            // itself once did.
+            let suggestion = catalog
+                .models
+                .first()
+                .map_or("gpt-5.6-terra", |entry| entry.id.as_str());
             issues.push(Issue::new(
                 name.clone(),
                 format!("the bridge cannot route '{model}'"),
-                Some(format!("alc config upsert {name} --model gpt-5.6-terra")),
+                Some(format!("alc config upsert {name} --model {suggestion}")),
             ));
         }
         let effort = crate::launch::resolve_codex_effort(provider)
@@ -346,8 +369,76 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
         "catalog",
         theme.paint(Tone::Dim, &catalog.source),
     ));
+    // The models alc had to supply itself. A catalog that is complete only
+    // because alc insisted looks identical to one the source agreed with,
+    // and telling the two apart is what this whole section could not do when
+    // GPT-6 went missing.
+    for id in &catalog.unreported {
+        rows.push(Row::blank(
+            "",
+            theme.paint(
+                Tone::Dim,
+                &format!("{id} restored from the catalog alc ships"),
+            ),
+        ));
+    }
+    // The stamp the catalog was written against versus the Codex that is
+    // installed now. A disagreement means the list on disk predates the Codex
+    // release this machine actually has, which is exactly the window a user
+    // upgrading Codex used to fall into.
+    //
+    // A catalog that has never been synced is excluded rather than warned
+    // about, because "written before the installed Codex release" would be a
+    // plain falsehood: the bundled fallback was written before every Codex
+    // release, it ships inside the binary, and `refreshed_at == 0` is how it
+    // says so. Warning there put a yellow row and a remediation on a fresh
+    // install whose only fault was not having launched anything yet - and the
+    // first launch syncs it without being asked.
+    let installed_stamp = CodexSource::detect().cache_stamp();
+    let ever_synced = catalog.refreshed_at != 0;
+    if ever_synced && installed_stamp.is_some() && installed_stamp != catalog.codex_cache_stamp {
+        rows.push(Row::new(
+            Status::Warn,
+            "catalog",
+            theme.paint(Tone::Warn, "written before the installed Codex release"),
+        ));
+        issues.push(Issue::new(
+            "codex catalog",
+            "the model catalog predates the installed Codex".to_owned(),
+            Some("alc models --refresh".to_owned()),
+        ));
+    }
+    if let Some(reason) = &catalog.fallback_reason {
+        rows.push(Row::new(
+            Status::Warn,
+            "catalog",
+            theme.paint(Tone::Warn, reason),
+        ));
+        issues.push(Issue::new(
+            "codex catalog",
+            reason.clone(),
+            Some("alc models --refresh".to_owned()),
+        ));
+    }
 
     marked(theme, &rows);
+}
+
+/// The installed Codex's own version string, for the one row that reports it.
+fn codex_version(binary: &Path) -> Option<String> {
+    let output = Command::new(binary)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // `codex-cli 0.154.0`: the trailing token, so a rename of the product
+    // prefix does not cost the version.
+    let version = text.split_whitespace().next_back()?.trim();
+    (!version.is_empty()).then(|| version.to_owned())
 }
 
 /// Claude Code opens every session with a prompt of roughly 25k-40k tokens

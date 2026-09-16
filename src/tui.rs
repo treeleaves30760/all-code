@@ -20,7 +20,7 @@ use crate::config::{
     Agent, AuthStyle, Config, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
     validate_profile_name,
 };
-use crate::model_catalog::ModelCatalog;
+use crate::model_catalog::{CodexSource, ModelCatalog};
 use crate::model_picker::{PickerApp, PickerRequest};
 use crate::remote::{RemoteBind as Bind, SafetyRung, Settings as RemoteSettings, on_off};
 
@@ -28,7 +28,7 @@ type Backend = CrosstermBackend<Stdout>;
 
 pub fn run(store: &mut Store) -> Result<()> {
     // Refresh before taking over the screen so the model chooser is current.
-    let catalog = ModelCatalog::load_and_refresh_if_due(&store.dir);
+    let catalog = ModelCatalog::load_and_refresh_if_due(&store.dir, &CodexSource::detect());
     let mut terminal = setup_terminal()?;
     let _cleanup = TerminalCleanup;
     let mut app = App::new(store.clone(), catalog);

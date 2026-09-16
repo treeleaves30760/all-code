@@ -45,13 +45,11 @@ impl PickerApp {
             .models
             .iter()
             .position(|model| model.id == request.model);
-        let model_selected = initial_model_selected.unwrap_or_else(|| {
-            catalog
-                .models
-                .iter()
-                .position(|model| model.id == "gpt-5.6-terra")
-                .unwrap_or(0)
-        });
+        // Falls back to the head of the catalog rather than to a slug
+        // written down here: a literal is one more place alc has to be
+        // taught about a new model, and the last copy of that mistake is the
+        // reason this whole catalog was rebuilt.
+        let model_selected = initial_model_selected.unwrap_or(0);
         let effort_selected = ReasoningEffort::ALL
             .iter()
             .position(|effort| *effort == request.effort)
@@ -213,12 +211,18 @@ fn draw_models(frame: &mut ratatui::Frame, app: &PickerApp, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
         .split(area);
+    // Badged by position, not by slug. The catalog is already ordered most
+    // capable first - that order is what `agents::claude::apply_bridge` hands
+    // Claude Code's `opus` and `haiku` aliases - so a model that shipped this
+    // morning gets an honest badge instead of reading `[custom]` on the day
+    // it arrives, which is how the old slug list told users a real model was
+    // something unofficial.
+    let last = app.catalog.models.len().saturating_sub(1);
     let items = app.catalog.models.iter().enumerate().map(|(index, model)| {
-        let badge = match model.id.as_str() {
-            "gpt-5.6-luna" => "budget",
-            "gpt-5.6-terra" => "recommended",
-            "gpt-5.6-sol" => "frontier",
-            _ => "custom",
+        let badge = match index {
+            0 => "frontier",
+            index if index == last => "budget",
+            _ => "balanced",
         };
         ListItem::new(vec![
             Line::from(format!("{}. {}  [{badge}]", index + 1, model.name)),
@@ -405,9 +409,13 @@ mod tests {
         }
     }
 
+    /// An unknown model lands on the head of the catalog rather than on a
+    /// slug the picker has memorised, so the fallback follows the catalog
+    /// wherever it goes instead of needing its own release to keep up.
     #[test]
-    fn picker_defaults_to_terra_when_model_is_unknown() {
+    fn picker_defaults_to_the_head_of_the_catalog_when_model_is_unknown() {
         let catalog = ModelCatalog::built_in();
+        let head = catalog.models[0].id.clone();
         let app = PickerApp::new(
             catalog,
             PickerRequest {
@@ -417,7 +425,7 @@ mod tests {
                 choose_effort: true,
             },
         );
-        assert_eq!(app.selected_model().unwrap().id, "gpt-5.6-terra");
+        assert_eq!(app.selected_model().unwrap().id, head);
     }
 
     #[test]

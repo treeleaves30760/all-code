@@ -414,9 +414,13 @@ temp config, or the same BYOK environment variables and `--auth-type` each
 already uses for the `openai` kind) pointed at the loopback adapter instead of an
 in-session picker.
 
-The model catalog is synchronized from the installed Codex CLI at most once every
-24 hours. A catalog bundled into the binary keeps the list working offline, and
-with no `codex` installed at all:
+The model catalog comes from your ChatGPT account - the same party the adapter
+posts every turn to - so a model that account can drive shows up even when the
+installed Codex CLI has never heard of it. `codex debug models` is the fallback
+when that fetch cannot happen, and the catalog bundled into the binary is a
+floor neither of them can drop below: a discovered list may add models, never
+remove one. alc syncs once a day, and again immediately after Codex is
+upgraded:
 
 ```sh
 alc models

@@ -56,11 +56,18 @@ profile 的 `small_model` 設成一個你真的 pull 下來的模型。
 
 ## 模型清單看起來過期了
 
-模型目錄每天最多向已安裝的 Codex CLI 同步一次：
+模型清單每天向你的 ChatGPT 帳號同步一次，Codex 一升級也會立刻再同步一次。要現在
+同步：
 
 ```sh
 alc models --refresh
 ```
+
+`alc models` 會說出這份清單是從哪裡來的。出現 `fallback:` 那一行，代表帳號這一
+關問不到，改由已安裝的 Codex CLI 回答——舊版 Codex 看得到的模型比你的帳號實際跑
+得動的少，所以那一行要先看。標示為來自 `the catalog alc ships` 的模型，是回答的
+那一方沒有列出、由 alc 補回去的：alc 內建的清單是底線，所以某一方回答得不完整，
+只會讓清單不夠新，不會讓你少一個模型。
 
 ## `the model may not exist or you may not have access to it`
 
