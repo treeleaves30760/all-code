@@ -19,25 +19,74 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install latest Codex CLI
         run: npm install --global @openai/codex@latest
-      - name: Verify live Luna, Terra, and Sol catalog
+      # There is no `codex login` in CI, so the account rung cannot answer
+      # here. That makes this the fallback chain's own test: `codex debug
+      # models` plus the catalog alc ships.
+      - name: Build the catalog from the Codex CLI fallback
         run: cargo run --locked -- models --refresh --json
       - name: Run tests against current dependencies
         run: cargo test --locked --all-targets --all-features
 
-  pinned-helper:
+  catalog-drift:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Check whether Codex offers a model alc's catalog does not
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install latest Codex CLI
+        run: npm install --global @openai/codex@latest
+      - name: Check whether the newest Codex and alc's catalog still agree
         shell: pwsh
         run: |
-          # alc owns the bridge now, so there is no pinned dependency to watch.
-          # What can still drift is the model catalog: Codex ships a slug and
-          # alc's TARGET_MODELS has not heard of it.
-          $source = Get-Content -Raw ./src/model_catalog.rs
-          if ($source -notmatch '(?s)TARGET_MODELS[^\]]+\]') {
-            throw 'Could not read TARGET_MODELS from src/model_catalog.rs'
+          # alc owns the bridge now, so there is no pinned dependency to
+          # watch. What can still drift is the model catalog, in both
+          # directions, and each direction is a real user-visible fault:
+          #
+          #   * Codex lists a slug alc does not offer - the priority band is
+          #     keeping out something that belongs in the picker.
+          #   * alc ships a model the newest Codex no longer lists - the one
+          #     genuine cost of treating the bundled list as a floor is that
+          #     a retired model would otherwise stay in every picker forever.
+          $codex = codex debug models | ConvertFrom-Json
+          $listed = $codex.models |
+            Where-Object { $_.visibility -eq 'list' } |
+            ForEach-Object { $_.slug }
+          $bundled = (Get-Content -Raw ./models/codex.json | ConvertFrom-Json).models |
+            ForEach-Object { $_.id }
+          $offered = (cargo run --locked -- models --json | ConvertFrom-Json).models |
+            ForEach-Object { $_.id }
+
+          Write-Host "Codex lists: $($listed -join ', ')"
+          Write-Host "alc offers:  $($offered -join ', ')"
+
+          $retired = $bundled | Where-Object { $listed -notcontains $_ }
+          if ($retired) {
+            throw "alc ships models the newest Codex no longer lists: $($retired -join ', '). Drop them from models/codex.json."
           }
-          Write-Host "alc offers:"
-          [regex]::Matches($Matches[0], '"([^"]+)"') | ForEach-Object { "  $($_.Groups[1].Value)" }
-          Write-Host 'Compare against `codex debug models` when Codex ships a release.'
+          $missing = $listed | Where-Object { $offered -notcontains $_ }
+          if ($missing) {
+            Write-Host "::warning::Codex lists models alc does not offer: $($missing -join ', '). Check the priority band in src/model_catalog.rs."
+          }
+
+          # The third drift, which neither list above can see. alc tells
+          # chatgpt.com which Codex release it is, and chatgpt.com hides every
+          # model whose `minimal_client_version` is newer than that - so a
+          # model held back by a stale CODEX_CLIENT_VERSION_FLOOR is absent
+          # from alc's answer and, with no `codex login` in CI, absent from
+          # the Codex side of the comparison too, because both sides came out
+          # of the same `codex debug models`. The constant is therefore
+          # checked directly, against the Codex npm just installed.
+          $found = Select-String -Path ./src/model_catalog.rs -Pattern 'CODEX_CLIENT_VERSION_FLOOR: &str = "([^"]+)"'
+          if (-not $found) {
+            throw "CODEX_CLIENT_VERSION_FLOOR was not found in src/model_catalog.rs; this check needs updating."
+          }
+          $floor = $found.Matches[0].Groups[1].Value
+          $installed = (codex --version) -split '\s+' | Select-Object -Last 1
+          Write-Host "alc declares client_version $floor; newest Codex is $installed"
+          $behind = $false
+          try { $behind = [version]$floor -lt [version]$installed } catch { }
+          if ($behind) {
+            Write-Host "::warning::alc declares client_version $floor but the newest Codex is $installed. Any model gated on a client_version above $floor is invisible to alc; check the catalog under $installed and bump CODEX_CLIENT_VERSION_FLOOR in src/model_catalog.rs."
+          }

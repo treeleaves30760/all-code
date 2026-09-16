@@ -386,8 +386,11 @@ CLI、Goose、Qwen Code 則使用它的 OpenAI Chat Completions 介面。每一�
 這個 kind 上、同一套 BYOK 環境變數與 `--auth-type`），只是改指向 loopback
 轉接器，而不是 session 內的選單。
 
-模型清單每 24 小時最多向已安裝的 Codex CLI 同步一次。執行檔裡內建了一份清單，
-所以離線時、甚至完全沒裝 `codex` 時，清單照樣能用：
+模型清單直接向你的 ChatGPT 帳號同步——也就是轉接器每一輪請求送去的同一方——
+所以只要那個帳號跑得動的模型，即使已安裝的 Codex CLI 沒聽過，也照樣會出現。
+抓不到時才退回 `codex debug models`，而執行檔內建的那份清單是兩者都不能低於
+的底線：同步回來的清單只能新增模型，不能拿掉。alc 每天同步一次，Codex 一升級
+就會立刻再同步一次：
 
 ```sh
 alc models

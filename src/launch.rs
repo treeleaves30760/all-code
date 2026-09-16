@@ -984,6 +984,32 @@ pub(crate) fn codex_auth_file(provider: &Provider) -> Result<PathBuf> {
     )
 }
 
+/// The Codex `auth.json` for a catalog read that has no profile to ask -
+/// `alc models`, `alc config`, `alc doctor`.
+///
+/// The same ladder as [`codex_auth_file`] minus the profile rung, because
+/// there is no profile. `None` rather than an error: a machine with no
+/// resolvable Codex home still gets a model list, it just gets it from the
+/// models alc ships.
+pub(crate) fn default_codex_auth_file() -> Option<PathBuf> {
+    resolve_codex_auth_file(
+        None,
+        env::var_os("CCP_CODEX_AUTH_FILE"),
+        env::var_os("CODEX_HOME"),
+        home_dir(),
+    )
+    .ok()
+}
+
+/// The Codex home for those same profile-less reads, so the catalog can find
+/// `models_cache.json` and learn which Codex release this machine is on.
+pub(crate) fn default_codex_home() -> Option<PathBuf> {
+    env::var_os("CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(".codex")))
+}
+
 /// The Codex home this profile launches against.
 ///
 /// The same ladder as [`codex_auth_file`] minus the one rung that names a
@@ -1037,6 +1063,11 @@ fn resolve_codex_auth_file(
 /// Kept as a function returning `None` rather than deleted: every caller
 /// already treats `None` as "no opinion" and leaves its list alone, and the
 /// day a real reason to filter appears, it appears here.
+///
+/// The catalog now sources from that same party ([`crate::bridge::models`]),
+/// so the list alc offers and the endpoint that serves it can no longer
+/// disagree about what exists - which removes the last argument for keeping
+/// a second opinion here.
 pub(crate) fn bridge_codex_models() -> Option<BTreeSet<String>> {
     None
 }

@@ -60,11 +60,20 @@ you have actually pulled.
 
 ## The model list looks out of date
 
-The catalog syncs from the installed Codex CLI at most once a day:
+The catalog syncs from your ChatGPT account once a day, and again as soon as
+Codex is upgraded. Sync it now:
 
 ```sh
 alc models --refresh
 ```
+
+`alc models` says where the list it printed came from. A line reading
+`fallback:` means the account could not be asked and the installed Codex CLI
+answered instead — an older Codex is shown fewer models than your account can
+actually drive, so that is the line to read first. A model marked as coming
+`from the catalog alc ships` is one the answering source did not report and alc
+put back: the models alc bundles are a floor, so a source that answers short
+costs freshness and never a model.
 
 ## `the model may not exist or you may not have access to it`
 

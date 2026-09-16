@@ -9,7 +9,7 @@ use crate::config::{
     Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
     validate_profile_name,
 };
-use crate::model_catalog::{ModelCatalog, ModelInfo};
+use crate::model_catalog::{CodexSource, ModelCatalog, ModelInfo};
 use crate::remote::RemoteCommand;
 use crate::{doctor, launch, ollama, remote, tui, update, usage};
 
@@ -345,7 +345,7 @@ struct RemoteTokenArgs {
 
 #[derive(Debug, Args)]
 struct ModelsArgs {
-    /// Force an immediate sync from the installed Codex CLI.
+    /// Sync the catalog from your ChatGPT account now.
     #[arg(long)]
     refresh: bool,
 
@@ -777,8 +777,12 @@ fn run_claude(
         return run_spec(store, spec, dry_run, sharing);
     }
 
+    // Resolved from the profile, not from the machine: a profile that pins
+    // its own `codex_home` launches against a different login, and the models
+    // it is offered have to come from the account it will actually sign with.
+    let source = CodexSource::for_provider(&provider);
     let overrides = if args.model.is_some() || args.effort.is_some() || args.save {
-        let catalog = load_codex_catalog(store, dry_run);
+        let catalog = load_codex_catalog(store, &source, dry_run);
         let (model, effort) =
             resolve_codex_defaults(&provider, &catalog, args.model.as_deref(), args.effort)?;
 
@@ -794,7 +798,7 @@ fn run_claude(
             println!("Saved {model} / {effort} as the default for '{profile_name}'.");
         }
 
-        let catalog = codex_catalog_for(store, catalog, &model, dry_run);
+        let catalog = codex_catalog_for(store, catalog, &model, &source, dry_run);
         let context_window = catalog.find(&model).map(|entry| entry.context_window);
         launch::LaunchOverrides {
             model: Some(model),
@@ -865,13 +869,18 @@ fn clamp_for_bridge(effort: ReasoningEffort) -> ReasoningEffort {
     ReasoningEffort::Max
 }
 
-/// Loads the Codex model catalog, syncing it in the background unless this
-/// is a dry run (which must never touch disk beyond a plain cache read).
-fn load_codex_catalog(store: &Store, dry_run: bool) -> ModelCatalog {
+/// Loads the Codex model catalog, syncing it unless this is a dry run
+/// (which must never touch the network or disk beyond a plain cache read).
+///
+/// The dry-run branch is no longer the weaker one: the catalog it reads has
+/// the models alc ships put back into it by `ModelCatalog::load` itself, so
+/// `--dry-run` reports the same list a real launch would offer even on a
+/// machine that has never once synced.
+fn load_codex_catalog(store: &Store, source: &CodexSource, dry_run: bool) -> ModelCatalog {
     if dry_run {
         ModelCatalog::load(&store.dir)
     } else {
-        ModelCatalog::load_and_refresh_if_due(&store.dir)
+        ModelCatalog::load_and_refresh_if_due(&store.dir, source)
     }
 }
 
@@ -889,12 +898,13 @@ fn codex_catalog_for(
     store: &Store,
     catalog: ModelCatalog,
     model: &str,
+    source: &CodexSource,
     dry_run: bool,
 ) -> ModelCatalog {
     if dry_run || catalog.find(model).is_some() {
         return catalog;
     }
-    ModelCatalog::refresh(&store.dir).unwrap_or(catalog)
+    ModelCatalog::refresh_with(&store.dir, source).unwrap_or(catalog)
 }
 
 /// The catalog-backed defaults a Codex-bridged session starts on for any
@@ -905,9 +915,10 @@ fn codex_launch_overrides(
     provider: &Provider,
     dry_run: bool,
 ) -> Result<launch::LaunchOverrides> {
-    let catalog = load_codex_catalog(store, dry_run);
+    let source = CodexSource::for_provider(provider);
+    let catalog = load_codex_catalog(store, &source, dry_run);
     let (model, effort) = resolve_codex_defaults(provider, &catalog, None, None)?;
-    let catalog = codex_catalog_for(store, catalog, &model, dry_run);
+    let catalog = codex_catalog_for(store, catalog, &model, &source, dry_run);
     let context_window = catalog.find(&model).map(|entry| entry.context_window);
     Ok(launch::LaunchOverrides {
         model: Some(model),
@@ -994,6 +1005,17 @@ fn run_spec(
                     plan.model
                 );
             }
+            // A dry run used to be the one path that said nothing at all
+            // about where its model list came from, which is why a machine
+            // quietly hiding a model looked healthy here.
+            let catalog = ModelCatalog::load(&store.dir);
+            println!("catalog: {}", catalog.source);
+            if !catalog.unreported.is_empty() {
+                println!(
+                    "catalog: {} restored from the catalog alc ships",
+                    catalog.unreported.join(", ")
+                );
+            }
         }
         for entry in &spec.file_setup {
             match entry {
@@ -1068,10 +1090,11 @@ fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {
 }
 
 fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {
+    let source = CodexSource::detect();
     let catalog = if args.refresh {
-        ModelCatalog::refresh(&store.dir)?
+        ModelCatalog::refresh_with(&store.dir, &source)?
     } else {
-        ModelCatalog::load_and_refresh_if_due(&store.dir)
+        ModelCatalog::load_and_refresh_if_due(&store.dir, &source)
     };
     if args.json {
         println!("{}", serde_json::to_string_pretty(&catalog)?);
@@ -1096,7 +1119,19 @@ fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {
             efforts
         );
     }
-    println!("Auto-sync: once every 24 hours; run `alc models --refresh` to sync now.");
+    for id in &catalog.unreported {
+        // Said out loud, because a complete list that only alc believes in
+        // reads exactly like one the source agreed with - and the difference
+        // is the whole bug this catalog was rebuilt to fix.
+        println!(
+            "  ({id} comes from the catalog alc ships; the source that answered did not report it)"
+        );
+    }
+    if let Some(reason) = &catalog.fallback_reason {
+        println!("fallback: {reason}");
+    }
+    println!("Auto-sync: once a day from your ChatGPT account, and again as soon as Codex is");
+    println!("upgraded; run `alc models --refresh` to sync now.");
     Ok(0)
 }
 

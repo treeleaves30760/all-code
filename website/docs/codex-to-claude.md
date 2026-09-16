@@ -96,8 +96,12 @@ whole configuration home, login included.
 
 ## Model catalog
 
-Synced from the installed Codex CLI at most once a day, with a bundled copy so
-the list works offline.
+Synced from your ChatGPT account — the same party the adapter posts every turn
+to — so a model that account can drive is offered even when the installed Codex
+CLI has never heard of it. `codex debug models` is the fallback when that fetch
+cannot happen, and the catalog bundled into the binary is a floor neither of
+them can drop below: a synced list may add models, never remove one. The sync
+runs once a day, and again as soon as Codex is upgraded.
 
 ```sh
 alc models

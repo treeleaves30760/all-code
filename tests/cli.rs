@@ -894,6 +894,45 @@ fn the_bridge_offers_the_model_the_old_one_refused() {
         .stdout(predicate::str::contains("WOULD FAIL").not());
 }
 
+/// The reported bug, pinned offline. A machine whose Codex was one release
+/// behind wrote a three-model catalog into `ALC_CONFIG_DIR`, and every later
+/// read - including this one, which never refreshes - handed that list
+/// straight to Claude Code's picker. The models alc ships are a floor now, so
+/// the cache cannot take one away.
+#[test]
+fn a_cache_written_by_an_older_alc_cannot_hide_a_model_alc_ships() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("codex-models.json"),
+        r#"{
+  "schema_version": 1,
+  "refreshed_at": 4102444800,
+  "source": "installed Codex CLI (`codex debug models`)",
+  "models": [
+    { "id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": "Frontier.",
+      "context_window": 272000, "default_effort": "low",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max", "ultra"] },
+    { "id": "gpt-5.6-terra", "name": "GPT-5.6-Terra", "description": "Balanced.",
+      "context_window": 272000, "default_effort": "medium",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max", "ultra"] },
+    { "id": "gpt-5.6-luna", "name": "GPT-5.6-Luna", "description": "Budget.",
+      "context_window": 272000, "default_effort": "medium",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max"] }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    alc(&temp)
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"model\":\"gpt-6-astra\""))
+        .stdout(predicate::str::contains(
+            "catalog: gpt-6-astra restored from the catalog alc ships",
+        ));
+}
+
 #[test]
 fn codex_to_claude_can_save_defaults_without_picker() {
     let temp = tempfile::tempdir().unwrap();

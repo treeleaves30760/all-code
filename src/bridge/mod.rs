@@ -33,6 +33,7 @@ use crate::config::ReasoningEffort;
 pub(crate) mod auth;
 pub(crate) mod chat;
 pub(crate) mod messages;
+pub(crate) mod models;
 pub(crate) mod responses;
 pub(crate) mod server;
 pub(crate) mod upstream;
