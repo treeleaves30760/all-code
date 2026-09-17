@@ -204,9 +204,24 @@ button:active {
 
 button.icon {
   flex: 0 0 auto;
-  padding: 6px 12px;
-  font-size: 18px;
-  line-height: 1;
+  padding: 7px 11px;
+  line-height: 0;
+}
+
+/* Drawn rather than typed. The glyphs these replaced were a text arrow and a
+ * quarter-filled circle, which is a lot to ask of a font stack that has to
+ * cover Latin and Traditional Chinese on whatever the phone happens to ship.
+ * Stroked in currentColor, so one sprite serves both themes and picks up
+ * whatever state colour its surroundings carry. */
+.glyph {
+  width: 16px;
+  height: 16px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 :focus-visible {
@@ -579,11 +594,27 @@ body[data-pane="usage"] #view {
   color: var(--muted);
 }
 
+/* The icon is the only thing that says this button does anything. Without it
+ * a command is just a monospace box, and the copy was found by the people who
+ * already guessed it was there. */
 .command {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
   background: var(--raised);
   padding: 7px 12px;
+}
+
+.command .glyph {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.command-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* ---- terminal ----
@@ -692,9 +723,21 @@ body[data-sizing="session"] #terminal > .xterm {
 }
 
 /* A read-only link cannot type, so the controls that would are gone rather
- * than present and inert. */
+ * than present and inert.
+ *
+ * The permission control belongs on that list. It is not a typing surface,
+ * but it changes what the agent is allowed to do, which is a larger power
+ * than typing - and a viewer who reached for it got the string `HTTP 403`
+ * back, because the server refuses in text/plain and the page was parsing
+ * the refusal as JSON. #permLabel stays: which mode an agent is in is worth
+ * knowing even when it is not yours to change. */
 body.viewer #composer,
 body.viewer .keys {
+  display: none;
+}
+
+body.viewer .perm select,
+body.viewer .perm button {
   display: none;
 }
 
@@ -740,21 +783,31 @@ body.viewer .keys {
  * beside alc's, because a shared label alone misleads: `auto` is the most
  * permissive setting Goose has and a mid-tier one for Claude Code. */
 
+/* Rows, not a strip.
+ *
+ * This was one row with `overflow-x: auto`, and the note shared it on
+ * `flex: 1 1 auto; min-width: 0`. Measured at 390px with a full-width label
+ * and a live select, that left `This agent gates nothing.` twelve pixels to
+ * live in: it wrapped to twelve lines of one character and still needed the
+ * bar scrolled sideways to finish. A security sentence is the last thing on
+ * this page that may be squeezed by a dropdown, so it gets a row of its own
+ * and takes the height it needs. */
 .perm {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   padding: 7px 10px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
   font-size: 13px;
-  overflow-x: auto;
-  scrollbar-width: none;
 }
 
-.perm::-webkit-scrollbar {
-  display: none;
+.perm-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .perm-label {
@@ -776,11 +829,37 @@ body.viewer .keys {
   opacity: 0.55;
 }
 
+/* What the agent is, rather than what can be done to it. A chip stays on
+ * screen for the whole session, where the note is whatever happened last. */
+.perm-flags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.perm-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 3px 8px 3px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  color: var(--danger);
+}
+
+.perm-flag .glyph {
+  width: 13px;
+  height: 13px;
+}
+
 .perm-note {
-  flex: 1 1 auto;
-  min-width: 0;
+  margin: 0;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.45;
 }
 
 .perm-note.warn {
@@ -789,6 +868,13 @@ body.viewer .keys {
 
 .perm-note.danger {
   color: var(--danger);
+}
+
+/* The one command in the app that had no way to be copied, in the one place
+ * where retyping it is least likely to work: it carries an unguessable
+ * ticket, and the phone reading it is not the machine that must run it. */
+#permCommand {
+  align-self: flex-start;
 }
 
 .perm.unsandboxed {

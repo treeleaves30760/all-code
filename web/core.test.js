@@ -410,6 +410,38 @@ test('a pair alc never carried traffic for shows dashes, not zeros', () => {
   );
 });
 
+/* The caveat under the table exists to explain a dash. A table with no dash
+ * in it has nothing to explain, and a standing sentence under numbers that
+ * are all real reads as a doubt about them. */
+test('the token caveat is shown only when a row actually holds a dash', () => {
+  const carried = {
+    provider: 'codex',
+    agent: 'claude',
+    launches: 3,
+    turns: 40,
+    input_tokens: 10,
+    output_tokens: 5,
+  };
+  const direct = { provider: 'ollama', agent: 'goose', launches: 1, turns: 0 };
+  assert.equal(core.ledgerNeedsCaveat([carried]), false);
+  assert.equal(core.ledgerNeedsCaveat([carried, direct]), true);
+  assert.equal(core.ledgerNeedsCaveat([]), false, 'an empty table explains nothing either');
+  assert.equal(core.ledgerNeedsCaveat(null), false);
+});
+
+/* `impl Default for Config` seeds every starter profile with a name identical
+ * to its kind, so the card's heading and its first chip were the same word on
+ * adjacent lines for anyone who never renamed a profile. */
+test('an account does not repeat its own name as a chip', () => {
+  assert.deepEqual(core.describeAccount(account({ profile: 'codex', kind: 'codex' })), ['plus']);
+  assert.deepEqual(
+    core.describeAccount(account({ profile: 'work', kind: 'codex' })),
+    ['codex', 'plus'],
+    'a renamed profile still says what kind it is',
+  );
+  assert.deepEqual(core.describeAccount(account({ profile: 'codex', kind: 'codex', plan: null })), []);
+});
+
 test('a string template fills what it is given and blanks what it is not', () => {
   assert.equal(core.fill('{p}% left', { p: 63 }), '63% left');
   assert.equal(core.fill('resets in {t}', {}), 'resets in ');
@@ -493,6 +525,106 @@ test('the rung order runs tightest to loosest', () => {
   assert.deepEqual(core.RUNGS, ['plan', 'ask', 'auto-edit', 'auto', 'full']);
 });
 
+/* The permission bar had one span, and nine different messages took turns in
+ * it - persistent facts about the agent and one-off outcomes of a click
+ * overwriting each other, which is why app.js grew a save-and-restore around
+ * it. This decides each class of fact separately so the renderer can give
+ * every one its own place instead of its own turn. */
+test('an agent alc cannot move gets a dead control and the reason it reported', () => {
+  const view = core.permissionView(
+    {
+      modes: [],
+      flags_verified: true,
+      set: { kind: 'unsupported', reason: 'Pi has no permission modes, by design.' },
+    },
+    { unsandboxed: true, permission: {} },
+  );
+  assert.equal(view.control, 'dead');
+  assert.equal(view.reason, 'Pi has no permission modes, by design.');
+  assert.equal(view.ungated, true);
+});
+
+/* This mode could be chosen, the POST round-tripped, and only then did a
+ * sentence appear saying it was never selectable. RelaunchOnly is a property
+ * of the whole agent, so the control is dead from the start instead. */
+test('an agent that can only be relaunched is dead before the pick, not after', () => {
+  const view = core.permissionView(
+    { modes: [{ rung: 'plan', label: 'plan' }], flags_verified: true, set: { kind: 'relaunch-only' } },
+    { unsandboxed: false, permission: { rung: 'plan' } },
+  );
+  assert.equal(view.control, 'dead');
+  assert.equal(view.deadKind, 'relaunch-only');
+  assert.deepEqual(view.options, [], 'nothing to choose from, so nothing is offered');
+});
+
+test('an agent that can only be cycled is never offered a dropdown', () => {
+  const view = core.permissionView(
+    {
+      modes: [{ rung: 'plan', label: 'plan' }],
+      flags_verified: true,
+      set: { kind: 'cycle', order: 'plan → auto → full' },
+    },
+    { unsandboxed: false, permission: { rung: 'plan' } },
+  );
+  assert.equal(view.control, 'cycle');
+  assert.equal(view.order, 'plan → auto → full');
+});
+
+test('a settable agent lists its modes with the reported one selected', () => {
+  const view = core.permissionView(
+    {
+      modes: [
+        { rung: 'plan', label: 'plan mode' },
+        { rung: 'auto', label: 'auto' },
+      ],
+      flags_verified: true,
+      set: { kind: 'absolute', template: '/mode {}' },
+    },
+    { unsandboxed: false, permission: { rung: 'auto', native: 'auto' } },
+  );
+  assert.equal(view.control, 'pick');
+  assert.deepEqual(view.options.map((option) => option.value), ['plan', 'auto']);
+  assert.deepEqual(view.options.map((option) => option.selected), [false, true]);
+  assert.equal(
+    view.options[0].label,
+    'plan · plan mode',
+    "alc's rung and the agent's own word, together, always",
+  );
+});
+
+/* Two different doubts, and one marker for both would say neither. `assumed`
+ * is about this session's current mode; `flags_verified` is about whether alc
+ * ever checked this agent against an installed copy, and it decides whether
+ * alc injects a flag at launch at all. */
+test('an unchecked agent and an unconfirmed mode are two separate doubts', () => {
+  const caps = {
+    modes: [{ rung: 'plan', label: 'plan' }],
+    flags_verified: false,
+    set: { kind: 'absolute', template: '/mode {}' },
+  };
+  const guessing = core.permissionView(caps, {
+    unsandboxed: false,
+    permission: { rung: 'plan', confidence: 'assumed' },
+  });
+  assert.equal(guessing.unverified, true);
+  assert.equal(guessing.assumed, true);
+
+  const checked = core.permissionView(
+    Object.assign({}, caps, { flags_verified: true }),
+    { unsandboxed: false, permission: { rung: 'plan', confidence: 'reported' } },
+  );
+  assert.equal(checked.unverified, false);
+  assert.equal(checked.assumed, false);
+});
+
+/* /api/caps can be a request that failed, or a hub one version behind that
+ * has never heard of this agent. Neither may leave the bar half-drawn. */
+test('a session whose capabilities never loaded still gets a control', () => {
+  const view = core.permissionView(null, { unsandboxed: false, permission: {} });
+  assert.equal(view.control, 'dead');
+  assert.equal(view.reason, '');
+  assert.deepEqual(view.options, []);
+});
 
 /* The row says why a session is gone; the header light says why the page is.
  * zh-TW had both as 已結束, so a dropped connection read exactly like an
@@ -507,9 +639,8 @@ test('a finished session and a dropped connection never read the same', () => {
 
 /* Nothing else fails when a key is added to one locale and forgotten in the
  * other: the page renders `undefined` in the language nobody on the team
- * reads. Key sets and non-emptiness only - an "every key is referenced" check
- * would be brittle against the dynamic `T[state]` lookup, and would have
- * called four live connection states dead. */
+ * reads. Key sets and non-emptiness only - a "every key is referenced" check
+ * would be brittle against the dynamic `T[state]` lookup. */
 test('every locale carries the same keys, and none of them are blank', () => {
   const reference = Object.keys(core.STRINGS.en).sort();
   for (const locale of Object.keys(core.STRINGS)) {
@@ -519,6 +650,7 @@ test('every locale carries the same keys, and none of them are blank', () => {
     }
   }
 });
+
 /* The header light is the only place these four are shown, so two of them
  * reading identically makes the light unreadable. zh-TW had 'connecting' and
  * 'live' both as 連線中. */

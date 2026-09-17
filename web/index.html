@@ -17,9 +17,36 @@
     <link rel="stylesheet" href="/assets/app.css" />
   </head>
   <body data-pane="list">
+    <!-- One sprite for every icon on the page, referenced by <use>. Inline so
+         it costs no request and no round trip against a route that needs a
+         token, and drawn in `currentColor` so one set serves both themes and
+         whatever state colour the thing it sits in happens to carry.
+
+         An icon never carries a meaning on its own here: each one sits beside
+         its own word, or on a control that already has an accessible name.
+         The safety facts on this page are the last place to ask someone to
+         learn a glyph vocabulary. -->
+    <svg id="icons" aria-hidden="true" hidden>
+      <symbol id="i-back" viewBox="0 0 16 16">
+        <path d="M9.5 3.5 5 8l4.5 4.5" />
+      </symbol>
+      <symbol id="i-usage" viewBox="0 0 16 16">
+        <path d="M2.4 12.2a6.4 6.4 0 1 1 11.2 0" />
+        <path d="M8 9.6 10.9 6" />
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 16 16">
+        <rect x="6" y="6" width="7.5" height="7.5" rx="1.6" />
+        <path d="M10.4 3.6H4a1.6 1.6 0 0 0-1.6 1.6v6.4" />
+      </symbol>
+      <symbol id="i-ungated" viewBox="0 0 16 16">
+        <path d="M8 1.9 13 4.1v3.7c0 3-2.1 5.4-5 6.3-2.9-.9-5-3.3-5-6.3V4.1z" />
+        <path d="M5.4 10.6 10.6 5.4" />
+      </symbol>
+    </svg>
+
     <header id="bar">
       <button id="back" class="icon" type="button" hidden aria-label="Back">
-        <span aria-hidden="true">&#8592;</span>
+        <svg class="glyph" aria-hidden="true"><use href="#i-back" /></svg>
       </button>
 
       <div id="title">
@@ -39,7 +66,7 @@
       <!-- The one thing on this page that is not about a single session, so
            it lives in the header rather than in the list. -->
       <button id="usageToggle" class="icon" type="button">
-        <span aria-hidden="true">&#9684;</span>
+        <svg class="glyph" aria-hidden="true"><use href="#i-usage" /></svg>
       </button>
     </header>
 
@@ -53,7 +80,10 @@
           <span class="empty-mark" aria-hidden="true"></span>
           <p id="emptyTitle" class="empty-title"></p>
           <p id="emptyHow" class="empty-how"></p>
-          <button type="button" id="emptyCommand" class="command"></button>
+          <button type="button" id="emptyCommand" class="command">
+            <svg class="glyph" aria-hidden="true"><use href="#i-copy" /></svg>
+            <span class="command-text"></span>
+          </button>
         </div>
       </section>
 
@@ -68,7 +98,10 @@
           <span class="empty-mark" aria-hidden="true"></span>
           <p id="usageEmptyTitle" class="empty-title"></p>
           <p id="usageEmptyHow" class="empty-how"></p>
-          <button type="button" id="usageEmptyCommand" class="command"></button>
+          <button type="button" id="usageEmptyCommand" class="command">
+            <svg class="glyph" aria-hidden="true"><use href="#i-copy" /></svg>
+            <span class="command-text"></span>
+          </button>
         </div>
 
         <h2 id="ledgerTitle" class="pane-title"></h2>
@@ -91,11 +124,23 @@
            there is exactly one thing to get right. `hidden` is left for
            elements that are genuinely absent rather than laid out. -->
       <section id="view" aria-label="Terminal">
+        <!-- Every fact here used to take its turn in one span, and mutually
+             exclusive ones overwrote each other. Now the controls own a row,
+             what the agent is owns a chip, an explanation owns a row of its
+             own that nothing can squeeze, and a command you have to run owns a
+             button that copies it. -->
         <div id="perm" class="perm" hidden>
-          <span id="permLabel" class="perm-label"></span>
-          <select id="permPick" aria-label="Permission mode"></select>
-          <button type="button" id="permCycle" hidden></button>
-          <span id="permNote" class="perm-note"></span>
+          <div class="perm-controls">
+            <span id="permLabel" class="perm-label"></span>
+            <select id="permPick" aria-label="Permission mode"></select>
+            <button type="button" id="permCycle" hidden></button>
+            <span id="permFlags" class="perm-flags"></span>
+          </div>
+          <p id="permNote" class="perm-note" hidden></p>
+          <button type="button" id="permCommand" class="command" hidden>
+            <svg class="glyph" aria-hidden="true"><use href="#i-copy" /></svg>
+            <span class="command-text"></span>
+          </button>
         </div>
 
         <div id="terminal"></div>
