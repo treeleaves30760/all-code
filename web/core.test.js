@@ -493,6 +493,32 @@ test('the rung order runs tightest to loosest', () => {
   assert.deepEqual(core.RUNGS, ['plan', 'ask', 'auto-edit', 'auto', 'full']);
 });
 
+
+/* The row says why a session is gone; the header light says why the page is.
+ * zh-TW had both as 已結束, so a dropped connection read exactly like an
+ * agent that had finished - and the send-failure toast at app.js told a zh
+ * reader their session had ended when only the socket had. */
+test('a finished session and a dropped connection never read the same', () => {
+  for (const locale of Object.keys(core.STRINGS)) {
+    const t = core.strings(locale);
+    assert.notEqual(t.exited, t.ended, locale);
+  }
+});
+
+/* Nothing else fails when a key is added to one locale and forgotten in the
+ * other: the page renders `undefined` in the language nobody on the team
+ * reads. Key sets and non-emptiness only - an "every key is referenced" check
+ * would be brittle against the dynamic `T[state]` lookup, and would have
+ * called four live connection states dead. */
+test('every locale carries the same keys, and none of them are blank', () => {
+  const reference = Object.keys(core.STRINGS.en).sort();
+  for (const locale of Object.keys(core.STRINGS)) {
+    assert.deepEqual(Object.keys(core.STRINGS[locale]).sort(), reference, locale);
+    for (const [key, value] of Object.entries(core.STRINGS[locale])) {
+      assert.ok(typeof value === 'string' && value.trim(), `${locale}.${key} is blank`);
+    }
+  }
+});
 /* The header light is the only place these four are shown, so two of them
  * reading identically makes the light unreadable. zh-TW had 'connecting' and
  * 'live' both as 連線中. */
