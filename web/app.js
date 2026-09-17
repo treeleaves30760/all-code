@@ -1079,9 +1079,30 @@
           const row = document.createElement('div');
           row.className = 'meter-row';
 
+          /* Label and countdown are what the number is about; the number is
+           * the answer. It used to carry `.age` - the 12px muted class a
+           * session's timestamp uses - so the one figure this pane exists to
+           * report was set lighter than the text around it, and the eye fell
+           * back to reading the sentence instead. */
+          const head = document.createElement('div');
+          head.className = 'meter-head';
+
           const label = document.createElement('span');
           label.className = 'meter-label';
           label.textContent = described.label;
+
+          const resets = document.createElement('span');
+          resets.className = 'meter-resets';
+          resets.textContent = described.resets;
+
+          /* The whole phrase, not the bare figure. `{p}% left` and `剩 {p}%`
+           * put the number in different places, and a percentage on its own
+           * beside a bar reads as easily as "63% spent". */
+          const value = document.createElement('span');
+          value.className = 'quota';
+          value.textContent = described.left;
+
+          head.append(label, resets, value);
 
           const track = document.createElement('div');
           track.className = 'meter';
@@ -1095,13 +1116,7 @@
           fill.style.width = `${described.leftPercent}%`;
           track.append(fill);
 
-          const value = document.createElement('span');
-          value.className = 'age';
-          value.textContent = described.resets
-            ? `${described.left}, ${described.resets}`
-            : described.left;
-
-          row.append(label, track, value);
+          row.append(head, track);
           meters.append(row);
         }
         card.append(meters);
@@ -1134,7 +1149,14 @@
       body.append(tr);
     }
     el.ledger.hidden = model.rows.length === 0;
-    el.ledgerNote.textContent = model.rows.length ? T.directOnly : T.ledgerEmpty;
+    /* The caveat explains a dash, so it appears when there is one. A footnote
+     * is the right control for a measurement caveat - `—` says "no value" and
+     * no glyph can say "because alc did not carry this traffic" - but under a
+     * table whose figures are all real it reads as a doubt about them. */
+    const caveat = core.ledgerNeedsCaveat(model.rows) ? T.directOnly : '';
+    const ledgerNote = model.rows.length ? caveat : T.ledgerEmpty;
+    el.ledgerNote.textContent = ledgerNote;
+    el.ledgerNote.hidden = !ledgerNote;
   }
 
   /* Null is drawn rather than skipped: a pane that has never loaded, or whose

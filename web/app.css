@@ -18,6 +18,10 @@
   --surface: #ffffff;
   --raised: #f4f3f0;
   --line: #e3e1dc;
+  /* The edge of a meter's track, which has to be visible against the card
+   * it sits on: --line is a divider between things that are already
+   * distinguishable, and at 1.3:1 it left the bar with no visible extent. */
+  --track-edge: #8f8b80;
   --text: #1a1a19;
   --muted: #5f5e5a;
   --accent: #a1522c;
@@ -41,6 +45,7 @@
     --surface: #1e1e23;
     --raised: #26262c;
     --line: #33333a;
+    --track-edge: #6b6b78;
     --text: #eceae5;
     --muted: #a5a29a;
     --accent: #d98b5f;
@@ -433,9 +438,11 @@ body[data-pane="usage"] #view {
   color: var(--muted);
 }
 
-.pane-title + .pane-title,
-#usageNote + .pane-title,
-#accounts + .pane-title {
+/* Every heading but the first opens a section, so every heading but the first
+ * gets the air that says so. This was three sibling selectors naming the
+ * elements a heading might follow, and it missed the one that actually
+ * precedes the ledger once #usageEmpty is in the flow. */
+.pane-title:not(:first-child) {
   margin-top: 22px;
 }
 
@@ -464,22 +471,59 @@ body[data-pane="usage"] #view {
   gap: 6px;
 }
 
+/* Two lines, so the bar gets the whole card.
+ *
+ * As one line it was label | track | sentence, and on a phone the only
+ * graphic on the page was left about a third of the width while a sentence
+ * that repeated it took the rest. The figure now sits above a full-width
+ * track, and what it is about sits beside it in the weight that says so. */
 .meter-row {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.meter-head {
+  display: flex;
+  align-items: baseline;
   gap: 8px;
 }
 
 .meter-label {
   flex: 0 0 auto;
-  min-width: 4.5em;
   font-size: 12px;
   color: var(--muted);
 }
 
-.meter {
+/* When the window resets, which is the second question, never the first. */
+.meter-resets {
   flex: 1 1 auto;
-  height: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The answer. Left at --text at every level: the fill already carries how
+ * worried to be, and colouring both says it twice while leaving the figure
+ * unreadable for anyone who cannot use the hue. */
+.quota {
+  flex: 0 0 auto;
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  line-height: 1.1;
+}
+
+/* The border is not decoration. Unfilled, the track was --raised on a
+ * --surface card: about 1.08:1 in dark mode, so the bar had no visible
+ * extent and a nearly-spent window read as a dot floating in nothing. */
+.meter {
+  height: 9px;
+  border: 1px solid var(--track-edge);
   border-radius: 999px;
   background: var(--raised);
   overflow: hidden;
