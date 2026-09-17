@@ -18,11 +18,15 @@
   --surface: #ffffff;
   --raised: #f4f3f0;
   --line: #e3e1dc;
+  /* The edge of a meter's track, which has to be visible against the card
+   * it sits on: --line is a divider between things that are already
+   * distinguishable, and at 1.3:1 it left the bar with no visible extent. */
+  --track-edge: #8f8b80;
   --text: #1a1a19;
   --muted: #5f5e5a;
   --accent: #a1522c;
   --ok: #2f7d51;
-  --warn: #a86a1f;
+  --warn: #a4661c;
   --danger: #a52a2a;
   --term-bg: #16161a;
   /* Behind a grid that is not the frame's shape. Deliberately darker than
@@ -41,6 +45,7 @@
     --surface: #1e1e23;
     --raised: #26262c;
     --line: #33333a;
+    --track-edge: #6b6b78;
     --text: #eceae5;
     --muted: #a5a29a;
     --accent: #d98b5f;
@@ -204,9 +209,24 @@ button:active {
 
 button.icon {
   flex: 0 0 auto;
-  padding: 6px 12px;
-  font-size: 18px;
-  line-height: 1;
+  padding: 7px 11px;
+  line-height: 0;
+}
+
+/* Drawn rather than typed. The glyphs these replaced were a text arrow and a
+ * quarter-filled circle, which is a lot to ask of a font stack that has to
+ * cover Latin and Traditional Chinese on whatever the phone happens to ship.
+ * Stroked in currentColor, so one sprite serves both themes and picks up
+ * whatever state colour its surroundings carry. */
+.glyph {
+  width: 16px;
+  height: 16px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 :focus-visible {
@@ -418,9 +438,11 @@ body[data-pane="usage"] #view {
   color: var(--muted);
 }
 
-.pane-title + .pane-title,
-#usageNote + .pane-title,
-#accounts + .pane-title {
+/* Every heading but the first opens a section, so every heading but the first
+ * gets the air that says so. This was three sibling selectors naming the
+ * elements a heading might follow, and it missed the one that actually
+ * precedes the ledger once #usageEmpty is in the flow. */
+.pane-title:not(:first-child) {
   margin-top: 22px;
 }
 
@@ -449,22 +471,59 @@ body[data-pane="usage"] #view {
   gap: 6px;
 }
 
+/* Two lines, so the bar gets the whole card.
+ *
+ * As one line it was label | track | sentence, and on a phone the only
+ * graphic on the page was left about a third of the width while a sentence
+ * that repeated it took the rest. The figure now sits above a full-width
+ * track, and what it is about sits beside it in the weight that says so. */
 .meter-row {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.meter-head {
+  display: flex;
+  align-items: baseline;
   gap: 8px;
 }
 
 .meter-label {
   flex: 0 0 auto;
-  min-width: 4.5em;
   font-size: 12px;
   color: var(--muted);
 }
 
-.meter {
+/* When the window resets, which is the second question, never the first. */
+.meter-resets {
   flex: 1 1 auto;
-  height: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The answer. Left at --text at every level: the fill already carries how
+ * worried to be, and colouring both says it twice while leaving the figure
+ * unreadable for anyone who cannot use the hue. */
+.quota {
+  flex: 0 0 auto;
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  line-height: 1.1;
+}
+
+/* The border is not decoration. Unfilled, the track was --raised on a
+ * --surface card: about 1.08:1 in dark mode, so the bar had no visible
+ * extent and a nearly-spent window read as a dot floating in nothing. */
+.meter {
+  height: 9px;
+  border: 1px solid var(--track-edge);
   border-radius: 999px;
   background: var(--raised);
   overflow: hidden;
@@ -536,13 +595,28 @@ body[data-pane="usage"] #view {
  * opened alc's own page, is words nobody reads. */
 
 .empty {
-  margin: auto;
   padding: 32px 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
   text-align: center;
+}
+
+/* Centred only where it is the whole pane.
+ *
+ * `margin: auto` belongs to #empty, which is alone inside #list. #usageEmpty
+ * is the fourth of seven children of a column flex container, and no sibling
+ * grows - so an auto margin there absorbed every spare pixel and drove the
+ * ledger's heading, table and caveat to the bottom of the viewport. That
+ * happened in the no-accounts state, which is the first one a new user sees.
+ */
+#empty {
+  margin: auto;
+}
+
+#usageEmpty {
+  padding: 20px 16px 4px;
 }
 
 .empty-mark {
@@ -564,11 +638,27 @@ body[data-pane="usage"] #view {
   color: var(--muted);
 }
 
+/* The icon is the only thing that says this button does anything. Without it
+ * a command is just a monospace box, and the copy was found by the people who
+ * already guessed it was there. */
 .command {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
   background: var(--raised);
   padding: 7px 12px;
+}
+
+.command .glyph {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.command-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* ---- terminal ----
@@ -677,9 +767,21 @@ body[data-sizing="session"] #terminal > .xterm {
 }
 
 /* A read-only link cannot type, so the controls that would are gone rather
- * than present and inert. */
+ * than present and inert.
+ *
+ * The permission control belongs on that list. It is not a typing surface,
+ * but it changes what the agent is allowed to do, which is a larger power
+ * than typing - and a viewer who reached for it got the string `HTTP 403`
+ * back, because the server refuses in text/plain and the page was parsing
+ * the refusal as JSON. #permLabel stays: which mode an agent is in is worth
+ * knowing even when it is not yours to change. */
 body.viewer #composer,
 body.viewer .keys {
+  display: none;
+}
+
+body.viewer .perm select,
+body.viewer .perm button {
   display: none;
 }
 
@@ -725,21 +827,31 @@ body.viewer .keys {
  * beside alc's, because a shared label alone misleads: `auto` is the most
  * permissive setting Goose has and a mid-tier one for Claude Code. */
 
+/* Rows, not a strip.
+ *
+ * This was one row with `overflow-x: auto`, and the note shared it on
+ * `flex: 1 1 auto; min-width: 0`. Measured at 390px with a full-width label
+ * and a live select, that left `This agent gates nothing.` twelve pixels to
+ * live in: it wrapped to twelve lines of one character and still needed the
+ * bar scrolled sideways to finish. A security sentence is the last thing on
+ * this page that may be squeezed by a dropdown, so it gets a row of its own
+ * and takes the height it needs. */
 .perm {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   padding: 7px 10px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
   font-size: 13px;
-  overflow-x: auto;
-  scrollbar-width: none;
 }
 
-.perm::-webkit-scrollbar {
-  display: none;
+.perm-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .perm-label {
@@ -761,11 +873,37 @@ body.viewer .keys {
   opacity: 0.55;
 }
 
+/* What the agent is, rather than what can be done to it. A chip stays on
+ * screen for the whole session, where the note is whatever happened last. */
+.perm-flags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.perm-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 3px 8px 3px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  color: var(--danger);
+}
+
+.perm-flag .glyph {
+  width: 13px;
+  height: 13px;
+}
+
 .perm-note {
-  flex: 1 1 auto;
-  min-width: 0;
+  margin: 0;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.45;
 }
 
 .perm-note.warn {
@@ -774,6 +912,13 @@ body.viewer .keys {
 
 .perm-note.danger {
   color: var(--danger);
+}
+
+/* The one command in the app that had no way to be copied, in the one place
+ * where retyping it is least likely to work: it carries an unguessable
+ * ticket, and the phone reading it is not the machine that must run it. */
+#permCommand {
+  align-self: flex-start;
 }
 
 .perm.unsandboxed {

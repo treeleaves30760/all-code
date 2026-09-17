@@ -58,16 +58,16 @@
       empty: 'No sessions yet',
       emptyHow: 'Start one with',
       emptyCommand: 'alc share claude',
+      copy: 'Copy',
       copied: 'Copied',
       deniedTitle: 'This link has expired',
       deniedHow: 'Get a fresh one with',
       deniedCommand: 'alc sessions',
       send: 'Send',
-      composerHint: 'Write a prompt, send it as one block',
+      composerHint: 'Prompt',
       viewer: 'view only',
       operator: 'can type',
       back: 'Back to sessions',
-      running: 'running',
       exited: 'exited',
       live: 'live',
       connecting: 'connecting',
@@ -75,7 +75,6 @@
       ended: 'ended',
       signalled: 'killed by',
       viewers: 'watching',
-      readOnly: 'This link can watch but not type.',
       loadFailed: 'Could not reach alc.',
       denied: 'This link is no longer valid — open a fresh one from `alc sessions`.',
       unsandboxed: 'no permission model',
@@ -86,10 +85,11 @@
       permSent: 'Sent',
       permPicker: 'The agent opened its own picker — finish it in the terminal.',
       permRelaunch: 'Only selectable at launch:',
-      permConfirm: 'Run this on the machine running the agent, then retry:',
+      permConfirm: 'Run this on the machine running the agent, then pick again.',
+      permFixed: 'This agent keeps the mode it was launched with.',
+      permDenied: 'This link can watch but not change the mode.',
       permUnsupported: 'Not available:',
       permUnverified: 'alc has not checked this agent’s flags against an installed copy.',
-      unsandboxedNote: 'This agent gates nothing.',
       usage: 'Usage',
       accounts: 'Accounts',
       byAgent: 'By provider and agent',
@@ -112,24 +112,23 @@
       empty: '目前沒有 session',
       emptyHow: '用這個指令開一個',
       emptyCommand: 'alc share claude',
+      copy: '複製',
       copied: '已複製',
       deniedTitle: '這個連結已失效',
       deniedHow: '用這個指令取得新的',
       deniedCommand: 'alc sessions',
       send: '送出',
-      composerHint: '輸入提示詞，整段送出',
+      composerHint: '提示詞',
       viewer: '唯讀',
       operator: '可輸入',
       back: '回到 session 清單',
-      running: '執行中',
       exited: '已結束',
       live: '已連線',
       connecting: '連線中…',
       reconnecting: '重新連線中…',
-      ended: '已結束',
+      ended: '已斷線',
       signalled: '被中止：',
       viewers: '人在看',
-      readOnly: '這個連結只能觀看，不能輸入。',
       loadFailed: '無法連上 alc。',
       denied: '這個連結已失效 —— 請用 `alc sessions` 取得新的。',
       unsandboxed: '無權限模式',
@@ -140,10 +139,11 @@
       permSent: '已送出',
       permPicker: 'agent 開啟了自己的選單 —— 請在終端機裡完成。',
       permRelaunch: '這個模式只能在啟動時選擇：',
-      permConfirm: '請在跑 agent 的那台機器上執行，然後再試一次：',
+      permConfirm: '請在跑 agent 的那台機器上執行，然後再選一次。',
+      permFixed: '這個 agent 只能用啟動時的模式。',
+      permDenied: '這個連結只能觀看，不能更改模式。',
       permUnsupported: '不支援：',
       permUnverified: 'alc 尚未對照已安裝的版本確認這個 agent 的旗標。',
-      unsandboxedNote: '這個 agent 沒有任何權限控制。',
       usage: '用量',
       accounts: '帳號',
       byAgent: '各 provider 與 agent',
@@ -385,6 +385,83 @@
     return RUNGS.find((rung) => offered.has(rung)) || 'plan';
   }
 
+  /* What the permission bar should show, as data rather than as a sentence.
+   *
+   * The bar used to own one free-text span, and nine different messages took
+   * turns in it. Two unrelated kinds of fact were competing for that turn:
+   * properties of the agent, true for as long as the session lives, and the
+   * outcome of a click, true for a moment. They overwrote each other, which
+   * is why the resync grew a save-and-restore around the note and why the bar
+   * itself had to scroll sideways.
+   *
+   * Each field below is one class of fact, so the renderer can give every one
+   * a place of its own instead of a turn in the same one. Nothing here is
+   * translated: the renderer owns the words, this owns the decision.
+   */
+  function permissionView(caps, card) {
+    const session = card || {};
+    const state = session.permission || {};
+    const set = (caps && caps.set) || {};
+    const modes = (caps && caps.modes) || [];
+
+    const view = {
+      control: 'dead',
+      options: [],
+      order: '',
+      reason: '',
+      deadKind: '',
+      rung: state.rung || '',
+      native: state.native || '',
+      /* This agent gates nothing at all. A property of the agent, not of the
+       * mode, and the one fact here that is about safety rather than about
+       * what a control can do. */
+      ungated: !!session.unsandboxed,
+      /* alc never checked this agent's flags against an installed copy, so it
+       * injected no permission flag at launch. About the whole agent. */
+      unverified: !!caps && !caps.flags_verified,
+      /* alc sent a command and cannot see whether the agent took it. About
+       * this session's current mode, which is why it is not the same doubt as
+       * `unverified` and must not share a marker with it. */
+      assumed: state.confidence === 'assumed',
+    };
+
+    /* `modes` says what the agent has; `set.kind` says whether alc can put it
+     * into one. Both have to hold, and `relaunch-only` fails the second: the
+     * mode is fixed for the life of the process. That is a property of the
+     * whole agent rather than of any one mode, so every option would fail -
+     * which is why the control is dead here rather than partly disabled.
+     * Deciding it now is the point: the bar used to offer the choice, let the
+     * POST round-trip, and only then write a sentence saying it was never
+     * available. */
+    if (!caps || !modes.length || set.kind === 'unsupported' || set.kind === 'relaunch-only') {
+      view.deadKind = set.kind === 'relaunch-only' ? 'relaunch-only' : 'unsupported';
+      // Server-authored and shown verbatim; it is the only account of why the
+      // control is dead, so it is never summarised away.
+      view.reason = set.reason || '';
+      return view;
+    }
+
+    /* Relative movement only, so there is no dropdown to land on a chosen
+     * mode. The order stays visible text: it is the useful half, and a phone
+     * has nowhere to hover. */
+    if (set.kind === 'cycle') {
+      view.control = 'cycle';
+      view.order = set.order || '';
+      return view;
+    }
+
+    view.control = 'pick';
+    view.options = modes.map((mode) => ({
+      value: mode.rung,
+      // alc's rung and the agent's own word, together, always: a shared label
+      // misleads, because `auto` is the loosest setting one agent has and a
+      // middling one for another.
+      label: `${mode.rung} · ${mode.label}`,
+      selected: mode.rung === state.rung,
+    }));
+    return view;
+  }
+
   /* --------------------------------------------------------------- usage */
 
   /* The same threshold `alc usage` paints amber at, so the terminal and the
@@ -452,9 +529,15 @@
 
   /* What an account is, as chips. A per-model window nobody has touched is
    * left out for the same reason `alc usage` leaves it out of its table: a
-   * row of "100% left" is not worth the space. */
+   * row of "100% left" is not worth the space.
+   *
+   * The kind is dropped when it is already the heading. Every starter profile
+   * `impl Default for Config` writes is named after its own kind, so for
+   * anyone who never renamed one the card read "codex" twice on adjacent
+   * lines - a chip that told you only what you had just finished reading. */
   function describeAccount(account) {
-    return [account.kind, account.plan].filter(Boolean);
+    const kind = account.kind === account.profile ? null : account.kind;
+    return [kind, account.plan].filter(Boolean);
   }
 
   function accountWindows(account) {
@@ -509,6 +592,17 @@
       count(row.turns),
       carried ? compactCount((row.input_tokens || 0) + (row.output_tokens || 0)) : '—',
     ];
+  }
+
+  /* Whether the table below needs its caveat.
+   *
+   * A footnote under a column of numbers is the right control for a
+   * measurement caveat - a dash says "no value", and no glyph can say "because
+   * alc did not carry this traffic". But it only earns its place when there is
+   * a dash to explain. Standing under a table whose numbers are all real, it
+   * reads as a doubt about them. */
+  function ledgerNeedsCaveat(rows) {
+    return (Array.isArray(rows) ? rows : []).some((row) => !(Number(row.turns) > 0));
   }
 
   /* ------------------------------------------------------------ geometry */
@@ -621,6 +715,7 @@
     formatExit,
     RUNGS,
     cycleRung,
+    permissionView,
     WARN_PERCENT,
     fill,
     clampPercent,
@@ -633,6 +728,7 @@
     accountNote,
     normalizeUsage,
     ledgerCells,
+    ledgerNeedsCaveat,
     FIT_MIN_FONT,
     FIT_MAX_FONT,
     fitGrid,

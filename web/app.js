@@ -26,7 +26,7 @@
     'bar', 'back', 'subtitle', 'grade', 'link', 'linkLabel',
     'list', 'sessions', 'empty', 'emptyTitle', 'emptyHow', 'emptyCommand',
     'view', 'terminal', 'keys',
-    'perm', 'permLabel', 'permPick', 'permCycle', 'permNote',
+    'perm', 'permLabel', 'permPick', 'permCycle', 'permNote', 'permFlags', 'permCommand',
     'composer', 'compose', 'send', 'toast',
     'usage', 'usageToggle', 'accountsTitle', 'accounts', 'usageNote',
     'usageEmpty', 'usageEmptyTitle', 'usageEmptyHow', 'usageEmptyCommand',
@@ -41,14 +41,14 @@
   el.compose.placeholder = T.composerHint;
   el.emptyTitle.textContent = T.empty;
   el.emptyHow.textContent = T.emptyHow;
-  el.emptyCommand.textContent = T.emptyCommand;
+  commandText(el.emptyCommand, T.emptyCommand);
   el.usageToggle.setAttribute('aria-label', T.usage);
   el.usageToggle.title = T.usage;
   el.accountsTitle.textContent = T.accounts;
   el.ledgerTitle.textContent = T.byAgent;
   el.usageEmptyTitle.textContent = T.usageEmpty;
   el.usageEmptyHow.textContent = T.usageEmptyHow;
-  el.usageEmptyCommand.textContent = T.usageEmptyCommand;
+  commandText(el.usageEmptyCommand, T.usageEmptyCommand);
   el.usageNote.textContent = T.hubNote;
   el.ledgerProvider.textContent = T.provider;
   el.ledgerAgent.textContent = T.agent;
@@ -253,11 +253,11 @@
     if (denied) {
       setText(el.emptyTitle, T.deniedTitle);
       setText(el.emptyHow, T.deniedHow);
-      setText(el.emptyCommand, T.deniedCommand);
+      commandText(el.emptyCommand, T.deniedCommand);
     } else {
       setText(el.emptyTitle, T.empty);
       setText(el.emptyHow, T.emptyHow);
-      setText(el.emptyCommand, T.emptyCommand);
+      commandText(el.emptyCommand, T.emptyCommand);
     }
     el.empty.hidden = !denied && (!loaded || list.length > 0);
   }
@@ -335,22 +335,35 @@
 
   rows.subscribe(renderRows);
 
+  /* A command button holds an icon as well as its command now, so the text
+   * goes into its own span rather than over the whole button. The command is
+   * also the button's accessible name, which on its own announced as "alc
+   * share claude, button" and left what the button does to be guessed. */
+  function commandText(button, command) {
+    const slot = button.querySelector('.command-text');
+    setText(slot || button, command);
+    button.setAttribute('aria-label', `${T.copy}: ${command}`);
+  }
+
   /* Every empty state offers the command that fills it, and every one of
    * them copies. */
   function wireCopy(button) {
     button.addEventListener('click', async () => {
+      const slot = button.querySelector('.command-text');
       try {
-        await navigator.clipboard.writeText(button.textContent);
+        await navigator.clipboard.writeText((slot || button).textContent);
         toast(T.copied);
       } catch {
-        // No clipboard permission (or no clipboard): the command is on screen
-        // to be read either way, so there is nothing to recover from.
+        // No clipboard permission, or an http:// origin, which a LAN hub
+        // normally is: the command is on screen to be read either way, so
+        // there is nothing to recover from.
       }
     });
   }
 
   wireCopy(el.emptyCommand);
   wireCopy(el.usageEmptyCommand);
+  wireCopy(el.permCommand);
 
   /* --------------------------------------------------------- permission */
 
@@ -369,50 +382,96 @@
     return CAPS && CAPS.agents ? CAPS.agents.find((row) => row.agent === agent) : null;
   }
 
+  /* One message at a time, and only what merely happened.
+   *
+   * The bar's three channels are separate on purpose: `flags()` draws what the
+   * agent IS and stays for the session, `note()` explains, and `command()`
+   * offers something to run. Before this they were one span, so a click's
+   * outcome erased a standing warning about the agent - which is why the
+   * resync had to save the note and put it back afterwards. */
   function note(text, level) {
-    setText(el.permNote, text || '');
+    const body = text || '';
+    setText(el.permNote, body);
+    el.permNote.hidden = !body;
     el.permNote.className = `perm-note${level ? ` ${level}` : ''}`;
   }
 
-  /* The control is a pure function of the agent's capabilities. An agent
-   * that can only be cycled gets a relative button and never a dropdown,
-   * because a dropdown would promise alc can land on a chosen mode - and
-   * from Claude Code's `auto` the first press goes somewhere else. */
+  /* A command the user has to run somewhere else. It is a button rather than
+   * a sentence because the ticket in it is unguessable and the device reading
+   * it is not the device that must run it. */
+  function command(text) {
+    el.permCommand.hidden = !text;
+    if (text) commandText(el.permCommand, text);
+  }
+
+  function flag(icon, label) {
+    const chip = document.createElement('span');
+    chip.className = 'perm-flag';
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'glyph');
+    svg.setAttribute('aria-hidden', 'true');
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute('href', `#${icon}`);
+    svg.append(use);
+    const word = document.createElement('span');
+    word.textContent = label;
+    // Icon beside word, never instead of it: this chip is the only carrier of
+    // a safety fact, and the border it sits in is a colour.
+    chip.append(svg, word);
+    return chip;
+  }
+
+  /* The control is a pure function of the agent's capabilities, and core.js
+   * owns that function. An agent that can only be cycled gets a relative
+   * button and never a dropdown, because a dropdown would promise alc can
+   * land on a chosen mode - and from Claude Code's `auto` the first press
+   * goes somewhere else. An agent whose mode is fixed until it is relaunched
+   * gets no live control at all: it used to offer the choice, let the POST
+   * round-trip, and only then write a sentence saying it was never on offer.
+   */
   function renderPermission(card) {
-    const caps = capsFor(card.agent);
+    const view = core.permissionView(capsFor(card.agent), card);
     el.perm.hidden = false;
-    el.perm.classList.toggle('unsandboxed', !!card.unsandboxed);
+    el.perm.classList.toggle('unsandboxed', view.ungated);
     el.permCycle.hidden = true;
     el.permPick.hidden = false;
     el.permPick.disabled = false;
     el.permPick.replaceChildren();
+    command('');
 
-    const state = card.permission || {};
-    const shown = state.rung
-      ? `${state.rung}${state.native ? ` · ${state.native}` : ''}${state.confidence === 'assumed' ? ' ?' : ''}`
+    const shown = view.rung
+      ? `${view.rung}${view.native ? ` · ${view.native}` : ''}${view.assumed ? ' ?' : ''}`
       : T.permUnknown;
     setText(el.permLabel, `${T.permission}: ${shown}`);
 
-    // `modes` describes what the agent HAS; `set.kind` describes whether alc
-    // can put it into one. An agent with modes it cannot be moved between
-    // still needs a dead control, or the dropdown promises a change that
-    // never happens.
-    const settable = caps && caps.set && caps.set.kind !== 'unsupported';
-    if (!caps || !caps.modes.length || !settable) {
+    /* An agent that gates nothing is the one fact here that is about safety
+     * rather than about what a control can do, so it is a chip that stays put
+     * rather than a sentence that the next outcome overwrites. It lives in
+     * this bar and not only in the session row, because the row is off screen
+     * for as long as the terminal is on it. */
+    el.permFlags.replaceChildren();
+    if (view.ungated) el.permFlags.append(flag('i-ungated', T.unsandboxed));
+
+    if (view.control === 'dead') {
       el.permPick.disabled = true;
       const only = document.createElement('option');
       only.textContent = '—';
       el.permPick.append(only);
-      const reason = caps && caps.set && caps.set.reason ? caps.set.reason : '';
-      note(`${T.permUnsupported} ${reason}`, 'danger');
+      // Server-authored and shown verbatim: it is the only account of why the
+      // control is dead. A relaunch-only agent has no such account to give,
+      // and for it the dead control is the whole message.
+      if (view.deadKind === 'relaunch-only') note(T.permFixed, 'warn');
+      else note(view.reason ? `${T.permUnsupported} ${view.reason}` : '', 'danger');
       return;
     }
 
-    if (caps.set.kind === 'cycle') {
+    if (view.control === 'cycle') {
       el.permPick.hidden = true;
       el.permCycle.hidden = false;
       el.permCycle.textContent = T.permCycle;
-      note(`${T.permCycleNote} ${caps.set.order || ''}`, 'warn');
+      // The order is the useful half and stays as text: a phone has nowhere
+      // to hover, so a title would put it out of reach of everyone using one.
+      note(`${T.permCycleNote} ${view.order}`, 'warn');
       return;
     }
 
@@ -420,17 +479,14 @@
     placeholder.textContent = '…';
     placeholder.value = '';
     el.permPick.append(placeholder);
-    for (const mode of caps.modes) {
-      const option = document.createElement('option');
-      option.value = mode.rung;
-      // alc's rung and the agent's own word, together, always.
-      option.textContent = `${mode.rung} · ${mode.label}`;
-      if (mode.rung === state.rung) option.selected = true;
-      el.permPick.append(option);
+    for (const option of view.options) {
+      const node = document.createElement('option');
+      node.value = option.value;
+      node.textContent = option.label;
+      if (option.selected) node.selected = true;
+      el.permPick.append(node);
     }
-    if (card.unsandboxed) note(T.unsandboxedNote, 'danger');
-    else if (!caps.flags_verified) note(T.permUnverified, 'warn');
-    else note('');
+    note(view.unverified ? T.permUnverified : '', 'warn');
   }
 
   async function setPermission(rung, ticket) {
@@ -454,7 +510,10 @@
     try {
       body = await response.json();
     } catch {
-      note(`HTTP ${response.status}`, 'danger');
+      // The server refuses a viewer in text/plain, so parsing it as JSON threw
+      // and the user was shown the literal string `HTTP 403`. A status code is
+      // not a sentence; say which of the two things went wrong instead.
+      note(response.status === 403 ? T.permDenied : T.loadFailed, 'danger');
       return;
     }
     switch (body.outcome) {
@@ -467,15 +526,22 @@
         resyncPermission();
         break;
       case 'picker-open':
+        // A state, not an event: the picker stays open in the terminal until
+        // a human finishes it, so this must not be a toast that fades out
+        // from under them.
         note(T.permPicker, 'warn');
         if (term) term.focus();
         resyncPermission();
         break;
       case 'needs-relaunch':
+        // Reachable only from a hub that reports capabilities this page did
+        // not have when it drew the control; a relaunch-only agent is given a
+        // dead one up front and never gets this far.
         note(`${T.permRelaunch} ${(body.cli || []).join(' ')}`, 'warn');
         break;
       case 'needs-confirmation':
-        note(`${T.permConfirm} alc confirm ${body.ticket}`, 'danger');
+        note(T.permConfirm, 'danger');
+        command(`alc confirm ${body.ticket}`);
         pendingTicket = { ticket: body.ticket, rung: body.rung };
         break;
       case 'unsupported':
@@ -504,16 +570,24 @@
       return;
     }
     if (!attached.value || attached.value.id !== fresh.id) return;
+    /* The note is still one slot, and re-rendering would put the agent's
+     * standing caveat back over the outcome of the change the user just made,
+     * which is the more useful of the two. What no longer has to be rescued
+     * is everything else: the ungated chip and the confirm command are drawn
+     * from their own state and survive the re-render on their own. */
     const keptNote = el.permNote.textContent;
     const keptLevel = el.permNote.className;
+    const keptCommand = el.permCommand.hidden
+      ? ''
+      : el.permCommand.querySelector('.command-text').textContent;
     attached.value = fresh;
     renderPermission(fresh);
-    // renderPermission owns the note, but the outcome of the change the
-    // user just made is more useful than the agent's static caveat.
     if (keptNote) {
       el.permNote.textContent = keptNote;
       el.permNote.className = keptLevel;
+      el.permNote.hidden = false;
     }
+    if (keptCommand) command(keptCommand);
   }
 
   el.permPick.addEventListener('change', () => {
@@ -950,6 +1024,9 @@
     el.back.hidden = true;
     el.grade.hidden = true;
     el.perm.hidden = true;
+    // A ticket is minted for one change on one session. Leaving it here meant
+    // the next session attached to could spend it.
+    pendingTicket = null;
     el.usageToggle.hidden = false;
     document.body.classList.remove('viewer');
     setText(el.subtitle, '');
@@ -1002,9 +1079,30 @@
           const row = document.createElement('div');
           row.className = 'meter-row';
 
+          /* Label and countdown are what the number is about; the number is
+           * the answer. It used to carry `.age` - the 12px muted class a
+           * session's timestamp uses - so the one figure this pane exists to
+           * report was set lighter than the text around it, and the eye fell
+           * back to reading the sentence instead. */
+          const head = document.createElement('div');
+          head.className = 'meter-head';
+
           const label = document.createElement('span');
           label.className = 'meter-label';
           label.textContent = described.label;
+
+          const resets = document.createElement('span');
+          resets.className = 'meter-resets';
+          resets.textContent = described.resets;
+
+          /* The whole phrase, not the bare figure. `{p}% left` and `剩 {p}%`
+           * put the number in different places, and a percentage on its own
+           * beside a bar reads as easily as "63% spent". */
+          const value = document.createElement('span');
+          value.className = 'quota';
+          value.textContent = described.left;
+
+          head.append(label, resets, value);
 
           const track = document.createElement('div');
           track.className = 'meter';
@@ -1018,13 +1116,7 @@
           fill.style.width = `${described.leftPercent}%`;
           track.append(fill);
 
-          const value = document.createElement('span');
-          value.className = 'age';
-          value.textContent = described.resets
-            ? `${described.left}, ${described.resets}`
-            : described.left;
-
-          row.append(label, track, value);
+          row.append(head, track);
           meters.append(row);
         }
         card.append(meters);
@@ -1057,7 +1149,14 @@
       body.append(tr);
     }
     el.ledger.hidden = model.rows.length === 0;
-    el.ledgerNote.textContent = model.rows.length ? T.directOnly : T.ledgerEmpty;
+    /* The caveat explains a dash, so it appears when there is one. A footnote
+     * is the right control for a measurement caveat - `—` says "no value" and
+     * no glyph can say "because alc did not carry this traffic" - but under a
+     * table whose figures are all real it reads as a doubt about them. */
+    const caveat = core.ledgerNeedsCaveat(model.rows) ? T.directOnly : '';
+    const ledgerNote = model.rows.length ? caveat : T.ledgerEmpty;
+    el.ledgerNote.textContent = ledgerNote;
+    el.ledgerNote.hidden = !ledgerNote;
   }
 
   /* Null is drawn rather than skipped: a pane that has never loaded, or whose
