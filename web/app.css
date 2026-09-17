@@ -536,13 +536,28 @@ body[data-pane="usage"] #view {
  * opened alc's own page, is words nobody reads. */
 
 .empty {
-  margin: auto;
   padding: 32px 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
   text-align: center;
+}
+
+/* Centred only where it is the whole pane.
+ *
+ * `margin: auto` belongs to #empty, which is alone inside #list. #usageEmpty
+ * is the fourth of seven children of a column flex container, and no sibling
+ * grows - so an auto margin there absorbed every spare pixel and drove the
+ * ledger's heading, table and caveat to the bottom of the viewport. That
+ * happened in the no-accounts state, which is the first one a new user sees.
+ */
+#empty {
+  margin: auto;
+}
+
+#usageEmpty {
+  padding: 20px 16px 4px;
 }
 
 .empty-mark {
