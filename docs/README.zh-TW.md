@@ -273,7 +273,7 @@ alc --provider codex-work claude
 
 第二張表來自設定目錄裡的 `usage.jsonl`：每次啟動一行，Codex 橋接經手的每個
 回合再一行。alc 沒有經手流量的 provider 顯示 `—` 而不是 0，因為那些 token
-是未知，不是沒有。遠端控制頁面的 ◔ 按鈕後面是同樣這兩個區塊。
+是未知，不是沒有。遠端控制頁面標題列的用量按鈕後面是同樣這兩個區塊。
 
 完整說明請見 [用量](https://treeleaves30760.github.io/all-code/usage)。
 

@@ -124,8 +124,8 @@ sees the turn. Delete the file to start counting again.
 ## On the remote-control page
 
 The [remote-control page](./remote-control.md) has the same two sections behind
-the ◔ button: one meter per window, then the ledger. It refreshes once a minute
-while that pane is open.
+the usage button in its header: one meter per window, then the ledger. It
+refreshes once a minute while that pane is open.
 
 A link that can watch but not type sees the numbers without the email, the
 account id or the credential path. The page is served by the hub, which reads

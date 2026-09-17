@@ -291,7 +291,7 @@ The second table comes from `usage.jsonl` in the config directory: one line per
 launch, and one per turn the Codex bridge carried. A provider alc does not
 carry traffic for shows `—` rather than a zero, because those tokens are
 unknown rather than nil. The remote-control page shows the same two sections
-behind its ◔ button.
+behind the usage button in its header.
 
 [Usage](https://treeleaves30760.github.io/all-code/usage) has the whole thing.
 
