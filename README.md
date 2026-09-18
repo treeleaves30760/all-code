@@ -2,8 +2,8 @@
 
 **Run Claude Code on the Codex/ChatGPT subscription you already pay for** — and
 seven other coding agents besides, on that same login or on any provider you
-point them at. On macOS and Linux, any session can be mirrored to a browser
-page and driven from another device.
+point them at. Any session can be mirrored to a browser page and driven from
+another device.
 
 [![CI](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml/badge.svg)](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/treeleaves30760/all-code?logo=github)](https://github.com/treeleaves30760/all-code/releases/latest)
@@ -131,7 +131,10 @@ every provider works the same way — there is nothing per-agent to support.
 **What the page gives you** is the session list, the live screen, a key bar for
 the keys a phone keyboard does not have (Esc, Tab, Shift+Tab, Ctrl, arrows), and
 a composer that sends a whole prompt as one block instead of fighting a mobile
-keyboard inside a raw terminal.
+keyboard inside a raw terminal. On a wide screen with a session open, a button
+beside Back folds the session list away so the terminal gets the full width — a
+`--tmux` session gets the extra columns, a plain one is drawn larger — and that
+browser remembers the choice.
 
 **Sessions outlive the terminal that started them**, because a background hub
 owns them:
@@ -153,8 +156,9 @@ name a rung with `--permission`. Loosening a session past the ceiling you
 configure needs `alc confirm <ticket>` typed at a terminal on the host machine.
 [Remote control](#remote-control) has the permission ladder and the threat model.
 
-Remote control needs macOS or Linux for now; on Windows `--share` and `alc hub`
-refuse with a message and everything else works normally.
+Remote control works on Windows 10 and 11 as it does on macOS and Linux;
+`--tmux` there needs the native Windows port of tmux, covered in
+[Who owns the size](#who-owns-the-size).
 
 ## Any provider, not just Codex
 
@@ -519,11 +523,39 @@ survives an ssh drop.
 alc runs its own tmux server per session and starts it with no configuration
 file, so your own tmux is untouched, alc's sessions behave the same for
 everybody, and a `~/.tmux.conf` is never a way into a session's environment.
-Running alc from inside tmux is fine. Needs tmux 3.2 or newer; `alc doctor` says
-what you have, and `--tmux` only applies to a shared session — it says so if you
-pass it without one. One caveat worth stating plainly: your local terminal is now a
-direct tmux client rather than a mirror, so it shows the agent's raw output. The
-browser still sees API keys alc injected masked; your own terminal does not.
+Running alc from inside tmux is fine. Needs tmux 3.2 or newer (on Windows, the
+native port below); `alc doctor` says what you have, and `--tmux` only applies to
+a shared session — it says so if you pass it without one. One caveat worth
+stating plainly: your local terminal is now a direct tmux client rather than a
+mirror, so it shows the agent's raw output. The browser still sees API keys alc
+injected masked; your own terminal does not.
+
+**On Windows**, install the native Windows port of tmux, then open a new terminal
+so PATH picks it up:
+
+```powershell
+winget install arndawg.tmux-windows
+```
+
+The **tmux** row of `alc doctor` says whether the native port was found. psmux
+also installs a `tmux.exe`, but alc cannot drive it — it cannot run the command
+sequence alc creates a session with — so alc looks past it on PATH and the two
+can be installed side by side; MSYS2, Cygwin, and WSL builds of tmux are not used
+on Windows either.
+
+The native port passes command lines, environment, and working directory through
+the ANSI code page, so on Windows the tmux pane runs a small launcher — alc
+itself — that collects the agent's exact launch from the hub over loopback.
+Non-ASCII folder names, arguments, and environment values work as a result, and
+the provider API key never enters tmux's own environment. If alc is installed
+under a folder whose path is not plain ASCII, it uses the Windows 8.3 short path;
+on a drive with short names turned off, `--tmux` refuses and says to install alc
+under an ASCII path.
+
+On Windows, stopping a `--tmux` session (`alc kill` or `alc hub stop --drain`)
+ends its tmux server and the agent with it. Windows has no hangup signal, so its
+card shows the session ended without an exit status, where macOS and Linux show
+the signal.
 
 ### Reaching it from a phone
 

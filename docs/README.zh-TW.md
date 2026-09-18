@@ -1,8 +1,8 @@
 # all-code (`alc`)
 
 **用你已經在付錢的 Codex／ChatGPT 訂閱跑 Claude Code** —— 另外七個 coding
-agent 也一樣，用同一個登入，或是你指給它們的任何一家 provider。在 macOS 與
-Linux 上，任何 session 都能鏡像到一個網頁，從另一台裝置操作。
+agent 也一樣，用同一個登入，或是你指給它們的任何一家 provider。任何 session
+都能鏡像到一個網頁，從另一台裝置操作。
 
 [![CI](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml/badge.svg)](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/treeleaves30760/all-code?logo=github)](https://github.com/treeleaves30760/all-code/releases/latest)
@@ -123,7 +123,9 @@ alc session claude-7QK2M9XB4T (claude@all-code)
 
 **頁面給你的**是 session 清單、即時畫面、一列手機鍵盤沒有的按鍵（Esc、Tab、
 Shift+Tab、Ctrl、方向鍵），以及一個把整段提示詞當成一整塊送出的輸入框，省得
-在原始終端機裡跟手機鍵盤纏鬥。
+在原始終端機裡跟手機鍵盤纏鬥。在寬螢幕上打開一個 session 時，返回按鈕旁有一個
+按鈕能把 session 清單收起來，讓終端機用滿整個寬度 —— `--tmux` session 會真的拿到
+多出來的欄數，一般 session 則是畫得更大 —— 這個選擇會記在那個瀏覽器裡。
 
 **Session 活得比啟動它的終端機久**，因為它們由背景的 hub 擁有：
 
@@ -142,8 +144,8 @@ Id 可以只給任何不會有歧義的前綴，就像 git 的短雜湊那樣。
 指定層級。要把 session 放寬到超過你設定的上限，必須在主機的終端機上輸入
 `alc confirm <ticket>`。[遠端控制](#遠端控制)有完整的權限層級與威脅模型。
 
-遠端控制目前需要 macOS 或 Linux；在 Windows 上 `--share` 和 `alc hub` 會直接
-拒絕並說明原因，其他功能都正常。
+遠端控制在 macOS、Linux 與 Windows 10／11 上都能用；在 Windows 上搭配 `--tmux`
+要另外裝原生的 Windows 版 tmux，見[尺寸歸誰決定](#尺寸歸誰決定)。
 
 ## 任何 provider 都行，不只 Codex
 
@@ -480,10 +482,33 @@ alc --share --tmux --codex claude    # 或 -t
 alc 為每個 session 開自己的 tmux server，而且啟動時完全不讀設定檔，所以你原本的
 tmux 完全不受影響，alc 的 session 對每個人的行為都一樣，而 `~/.tmux.conf` 也永遠
 不會變成進入某個 session 環境的途徑。在 tmux 裡面跑 alc 也沒問題。需要 tmux 3.2
-以上；`alc doctor` 會告訴你裝的是哪一版。`--tmux` 只對被共享的 session 有意義 ——
-沒有共享就傳這個旗標，它會直接說。有一點要說清楚：你本機的終端機現在是直接的
-tmux client，不再是鏡像，所以它看到的是 agent 的原始輸出。瀏覽器那邊仍然會把 alc
-注入的 API key 遮蔽掉，你自己的終端機不會。
+以上（Windows 的裝法見下面）；`alc doctor` 會告訴你裝的是哪一版。`--tmux` 只對被
+共享的 session 有意義 —— 沒有共享就傳這個旗標，它會直接說。有一點要說清楚：你本機
+的終端機現在是直接的 tmux client，不再是鏡像，所以它看到的是 agent 的原始輸出。
+瀏覽器那邊仍然會把 alc 注入的 API key 遮蔽掉，你自己的終端機不會。
+
+**在 Windows 上**，`--tmux` 要用原生的 Windows 版 tmux：
+
+```powershell
+winget install arndawg.tmux-windows
+```
+
+裝完請開一個新的終端機，讓 PATH 讀得到它；`alc doctor` 的 **tmux** 那一列會說有沒有
+找到這個原生版本。psmux 也會裝一個 `tmux.exe`，但 alc 驅動不了它 —— 它跑不動 alc
+建立 session 用的那串指令 —— 所以 alc 會越過 PATH 上的 psmux 去找原生版本，兩個
+同時裝著也沒關係；MSYS2、Cygwin、WSL 版的 tmux 在 Windows 上也不會用到。
+
+Windows 版 tmux 用 ANSI 字碼頁傳遞命令列、環境變數與工作目錄，所以在 Windows 上，
+tmux 窗格裡跑的是一個小小的啟動器（就是 alc 自己），由它經 loopback 向 hub 取回
+agent 確切的啟動內容。結果是：非 ASCII 的資料夾名稱、參數與環境變數值在 `--tmux`
+下都能用，provider 的 API key 也從不進入 tmux 自己的環境。如果 alc 本身裝在路徑
+不是純 ASCII 的資料夾，alc 會改用 Windows 的 8.3 短路徑；在關掉短檔名的磁碟上，
+`--tmux` 會拒絕執行，並請你把 alc 裝到 ASCII 路徑底下。
+
+在 Windows 上停掉一個 `--tmux` session（`alc kill` 或 `alc hub stop --drain`）會
+結束它的 tmux server，agent 也跟著結束。Windows 沒有 hangup 訊號，所以這種情況下
+session 卡片只會顯示 session 已結束，沒有結束狀態（macOS／Linux 上仍然會顯示那個
+訊號）。
 
 ### 從手機連上
 

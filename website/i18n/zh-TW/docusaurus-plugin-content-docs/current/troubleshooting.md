@@ -105,6 +105,31 @@ alc hub stop
 在 TUI 之外，`alc remote auto-share on` 設定的是同一個東西，`alc remote status`
 會回報它。某一列顯示 `on (inactive)`，代表共享本身是關的：請執行 `alc remote on`。
 
+## Windows 上的 `--tmux` 找不到 tmux，或找到的版本不對
+
+在 Windows 上，`--tmux` 需要 tmux 的原生 Windows 移植版：
+
+```powershell
+winget install arndawg.tmux-windows
+```
+
+裝完之後開一個新的終端機，讓它讀到更新後的 PATH。`alc doctor` 的 **tmux** 那一列會告訴你
+有沒有找到原生版。
+
+psmux 也會裝一個 `tmux.exe`，但 alc 驅動不了它 —— 它跑不了 alc 用來建立 session 的
+那串指令。兩個可以同時裝著：alc 會越過 PATH 上的 psmux，去找原生版。MSYS2、Cygwin 或
+WSL 版的 tmux，在 Windows 上一樣不會被拿來用。不想裝的話，拿掉 `--tmux` 就好，
+[遠端控制](./remote-control.md)不靠它也能用。
+
+## `alc is installed at …, and tmux for Windows cannot start a program whose path is not plain ASCII`
+
+tmux 的 Windows 移植版用 ANSI 字碼頁傳遞命令列，所以路徑不是純 ASCII 的程式，它根本
+啟動不了。alc 裝在這種資料夾底下時，會改用 Windows 的 8.3 短路徑；只有那顆磁碟
+關掉了短檔名，`--tmux` 才會拒絕。請把 alc 裝到一個純 ASCII 的路徑底下，或拿掉 `--tmux`。
+
+這裡說的是 alc 自己的安裝路徑：專案資料夾、參數與環境變數含有中文之類的非 ASCII
+字元，在 `--tmux` 底下都沒問題。
+
 ## 輸出裡的機密資料
 
 `alc --dry-run` 會遮蔽 API key 與 auth token，`alc config show` 只會顯示某個 profile

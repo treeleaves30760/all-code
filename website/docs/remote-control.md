@@ -30,6 +30,10 @@ alc session claude-7QK2M9XB4T (claude@all-code)
   keys  ctrl-\ then d detaches; the session keeps running
 ```
 
+Remote control works on Windows 10 and 11 as it does on macOS and Linux;
+`--tmux` there needs the native Windows port of tmux, covered in
+[Who owns the size](#who-owns-the-size).
+
 ## Reaching it from a phone
 
 The default binds to loopback. Nothing is exposed until you say so.
@@ -194,6 +198,14 @@ the page does not resize the agent: it draws the real grid as large as it fits,
 centred, with black where the ratio does not match. Resize your terminal and
 the page follows within a few seconds.
 
+On a screen 900px or wider with a session open, the **Hide sessions** button
+beside Back folds the session list away so the terminal gets the page's full
+width, and **Show sessions** brings it back. A plain session is drawn larger; a
+`--tmux` session (below) actually gets the extra columns, because the page owns
+its size. The browser remembers the choice. There is no keyboard shortcut for
+it on purpose: every key belongs to the terminal, and `ctrl-b` is tmux's
+prefix. A phone already shows one pane at a time, so nothing changes there.
+
 `--tmux` is for when the page is the side you will actually use. It runs the
 agent inside tmux, so your terminal and the hub each attach as their own
 client with their own size — and this time the page decides the agent's.
@@ -213,17 +225,40 @@ That last row matters: with `--tmux` your terminal shows what the agent
 actually printed, including a key it echoes. The browser still sees those
 masked.
 
-Needs tmux 3.2 or newer, applies only to a shared session, and runs on macOS
-and Linux. alc starts its own tmux server per session with no configuration
-file, so your own tmux is never touched and an agent cannot reach a session's
-server through a `~/.tmux.conf`. Keystrokes from the page go to the agent's
-pane directly, so a viewer cannot reach tmux's command prompt; your own
-terminal is a full client and can.
+Needs tmux 3.2 or newer and applies only to a shared session. alc starts its
+own tmux server per session with no configuration file, so your own tmux is
+never touched and an agent cannot reach a session's server through a
+`~/.tmux.conf`. Keystrokes from the page go to the agent's pane directly, so a
+viewer cannot reach tmux's command prompt; your own terminal is a full client
+and can.
+
+On Windows, `--tmux` needs the native Windows port of tmux (tested: tmux
+3.6a-win32). Open a new terminal after installing it so PATH picks it up; the
+tmux row of `alc doctor` says whether it was found.
+
+```powershell
+winget install arndawg.tmux-windows
+```
+
+psmux also installs a `tmux.exe`, but alc cannot drive it (it cannot run the
+command sequence alc creates a session with), so alc looks past it on PATH for
+the native port and both can stay installed. MSYS2, Cygwin and WSL builds of
+tmux are not used on Windows either.
+
+The Windows port passes command lines, environment and working directory
+through the ANSI code page, so the pane runs a small alc launcher that collects
+the agent's exact launch from the hub over loopback. Non-ASCII folder names,
+arguments and environment values therefore work, and the provider API key never
+enters tmux's own environment. If alc itself is installed under a path that is
+not plain ASCII, it uses the Windows 8.3 short path; on a drive with short
+names turned off, `--tmux` refuses and says to install alc under an ASCII path.
+
+Stopping a `--tmux` session on Windows (`alc kill` or `alc hub stop --drain`)
+ends its tmux server and the agent with it. Windows has no hangup signal, so the card says the session ended without
+an exit status, where macOS and Linux show the signal.
 
 ## What this does not do
 
-- **Windows is not supported yet.** `--share` and the `alc hub` commands refuse
-  there with a message. Everything else alc does works on Windows.
 - **Approval prompts arrive as terminal text**, not as mobile dialogs.
 - **Every operator link can type at once.** There is no take-control
   arbitration; hand out viewer links for anything you are not driving.
