@@ -113,6 +113,32 @@ Outside the TUI, `alc remote auto-share on` sets the same thing and `alc remote
 status` reports it. A row reading `on (inactive)` means sharing itself is off:
 run `alc remote on`.
 
+## `--tmux` on Windows finds no tmux, or the wrong one
+
+On Windows, `--tmux` needs the native Windows port of tmux. Install it, then
+open a new terminal so PATH picks it up:
+
+```powershell
+winget install arndawg.tmux-windows
+```
+
+psmux also installs a `tmux.exe`, but alc cannot drive it — it cannot run the
+command sequence alc creates a session with. The two can be installed side by
+side; alc looks past psmux on PATH for the native port. MSYS2, Cygwin and WSL
+builds of tmux are not used on Windows either. The **tmux** row of `alc doctor`
+says whether the native port was found. If you would rather not install it,
+drop `--tmux`; [remote control](./remote-control.md) works without it.
+
+## `alc is installed at …, and tmux for Windows cannot start a program whose path is not plain ASCII`
+
+The Windows port of tmux passes command lines through the ANSI code page, so it
+cannot start alc from a folder whose path is not plain ASCII. alc falls back to
+the Windows 8.3 short path when there is one, but this drive has short names
+turned off. Install alc under an ASCII path, or drop `--tmux`.
+
+Only alc's own path is affected: non-ASCII project folders, arguments and
+environment values work under `--tmux`.
+
 ## Secrets in output
 
 `alc --dry-run` redacts API keys and auth tokens, `alc config show` prints only

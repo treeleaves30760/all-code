@@ -124,6 +124,11 @@ test('storage that throws never breaks the page load', () => {
   assert.equal(core.loadToken(fakeLocation('#k=xyz'), history, hostile), 'xyz');
   assert.equal(core.loadToken(fakeLocation(''), history, hostile), null);
   assert.doesNotThrow(() => core.forgetToken(hostile));
+
+  // app.js hands over null when reading the storage property itself threw.
+  assert.equal(core.loadToken(fakeLocation('#k=xyz'), history, null), 'xyz');
+  assert.equal(core.loadToken(fakeLocation(''), history, null), null);
+  assert.doesNotThrow(() => core.forgetToken(null));
 });
 
 test('a fragment without a token is not mistaken for one', () => {
@@ -135,6 +140,48 @@ test('a fragment without a token is not mistaken for one', () => {
 
 test('a token later in the fragment is still found', () => {
   assert.equal(core.parseToken('#a=1&k=tok_en-9'), 'tok_en-9');
+});
+
+/* --------------------------------------------------------------- rail */
+
+test('the rail is shown unless this viewer folded it away', () => {
+  const storage = fakeStorage();
+  assert.equal(core.loadRailFolded(storage), false, 'a first visit gets the page as it was');
+
+  core.saveRailFolded(storage, true);
+  assert.equal(storage.getItem(core.RAIL_KEY), 'folded');
+  assert.equal(core.loadRailFolded(storage), true);
+
+  core.saveRailFolded(storage, false);
+  assert.equal(core.loadRailFolded(storage), false);
+  assert.equal(storage.size, 0, 'unfolding leaves nothing behind');
+});
+
+/* Blocked site data throws on the property read itself, which app.js turns
+ * into null, and a private window can throw on every call. Neither may cost
+ * the page anything but the memory of a fold. */
+test('a fold that cannot be read or written never breaks the page', () => {
+  const hostile = {
+    getItem() {
+      throw new Error('denied');
+    },
+    setItem() {
+      throw new Error('denied');
+    },
+    removeItem() {
+      throw new Error('denied');
+    },
+  };
+  for (const storage of [hostile, null, undefined]) {
+    assert.equal(core.loadRailFolded(storage), false);
+    assert.doesNotThrow(() => core.saveRailFolded(storage, true));
+    assert.doesNotThrow(() => core.saveRailFolded(storage, false));
+  }
+  assert.equal(
+    core.loadRailFolded(fakeStorage({ 'alc.rail': 'yes' })),
+    false,
+    'only the exact value folds it',
+  );
 });
 
 /* ----------------------------------------------------------- sessions */

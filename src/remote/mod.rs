@@ -35,6 +35,7 @@ mod fanout;
 mod hub;
 mod id;
 mod local;
+mod pane;
 mod permission;
 mod pty;
 mod request;
@@ -46,6 +47,8 @@ mod session;
 mod settings;
 mod tmux;
 mod utf8;
+#[cfg(windows)]
+mod win;
 mod wire;
 
 use std::env;
@@ -91,9 +94,6 @@ pub enum RemoteCommand {
 /// Read from the record the hub writes at startup rather than by asking it,
 /// so a caller that only wants to mention the hub in passing - `alc update`,
 /// say - does not open a socket to do it.
-///
-/// Unix only, matching the platforms that can have a hub at all.
-#[cfg(unix)]
 pub fn running_hub(config_dir: &std::path::Path) -> Option<(u32, String)> {
     ctl::read_hub_record(config_dir)
         .ok()
@@ -126,7 +126,6 @@ pub fn share(
         .as_deref()
         .map(str::parse::<caps::SafetyRung>)
         .transpose()?;
-    require_supported_platform()?;
     // Checked before any work: a scripted `alc claude -p … > out.txt` must
     // fail loudly here rather than fill that file with escape sequences.
     require_terminal()?;
@@ -262,7 +261,21 @@ pub(crate) fn attach(
     let input = stream
         .try_clone()
         .context("failed to open the session's input channel")?;
-    local::pump_stdin(input, Arc::clone(&detached), Arc::clone(&finished));
+    let closer = stream
+        .try_clone()
+        .context("failed to open the session's input channel")?;
+    local::pump_stdin(
+        input,
+        Arc::clone(&detached),
+        Arc::clone(&finished),
+        // Tells the hub this terminal has gone, which closes the hub's end
+        // and so ends the relay below, blocked reading the session's output;
+        // see `pump_stdin`. The sending half only: shutting both on a Windows
+        // loopback connection with unread data resets it instead.
+        move || {
+            let _ = closer.shutdown(std::net::Shutdown::Write);
+        },
+    );
 
     let config_dir = store.dir.clone();
     let ctl_secret = secrets.ctl.clone();
@@ -282,6 +295,9 @@ pub(crate) fn attach(
 
     // This thread owns the terminal until the session ends or the user
     // detaches, which is what keeps the process alive.
+    #[cfg(windows)]
+    hub::relay(stream, local::WholeCharacters::new(std::io::stdout()));
+    #[cfg(not(windows))]
     hub::relay(stream, std::io::stdout());
     finished.store(true, Ordering::Release);
     drop(terminal);
@@ -403,6 +419,16 @@ fn exit_code(exit: &ExitInfo) -> u8 {
         .unwrap_or(1)
 }
 
+/// The hidden subcommand a `--tmux` pane runs on Windows, so the parser and
+/// the command line the hub hands tmux name it the same way.
+pub(crate) use pane::SUBCOMMAND as PANE_SUBCOMMAND;
+
+/// Runs a `--tmux` session's pane launcher: collects the agent's launch from
+/// the hub on `port` and runs it, exiting with its status. See `pane`.
+pub fn run_pane(port: u16, token: &str) -> ! {
+    pane::run(port, token)
+}
+
 /// What `--tmux` would do on this machine: the tmux it found, or why it
 /// could not use one.
 ///
@@ -428,33 +454,7 @@ pub fn shares_by_default(store: &Store) -> bool {
 /// Sharing needs a terminal on both ends. `--share` says so loudly when
 /// there is not one; the standing preference just stays out of the way.
 pub fn can_share() -> bool {
-    require_supported_platform().is_ok()
-        && std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-}
-
-/// Refuses on a platform where remote control is not known to work.
-///
-/// Windows is not verified. The hub starts a detached process and talks to
-/// it over a loopback control socket, and on Windows CI that process does
-/// not come up and does not go away - it stalls the job rather than failing.
-/// Shipping that would mean a Windows user's `alc claude --share` hangs and
-/// leaves something running, which is worse than not having the feature.
-///
-/// The code is compiled on Windows and its unit tests run there, so this is
-/// a gate to lift rather than a body of work to redo. Everything else alc
-/// does is unaffected.
-fn require_supported_platform() -> Result<()> {
-    #[cfg(not(unix))]
-    {
-        bail!(
-            "remote control is not available on Windows yet - the session hub is unverified \
-             there. Everything else alc does works normally; follow \
-             https://github.com/treeleaves30760/all-code for when this lands."
-        );
-    }
-    #[cfg(unix)]
-    Ok(())
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
 fn require_terminal() -> Result<()> {
@@ -603,7 +603,6 @@ pub enum HubCommand {
 }
 
 pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
-    require_supported_platform()?;
     let secrets = Secrets::load_or_create(&store.dir)?;
     match command {
         HubCommand::Start {
@@ -834,7 +833,20 @@ pub fn report(store: &Store) -> RemoteReport {
             // refusal names the install command and what the user loses,
             // which is the right length for the moment they typed the flag
             // and the wrong length for a status line they did not ask for.
+            #[cfg(unix)]
             Err(_) => "not found · `--tmux` needs tmux 3.2 or newer".to_owned(),
+            // Not "not found" here: psmux or an MSYS2 tmux may well be on
+            // PATH, and what is missing is the one port that works.
+            #[cfg(windows)]
+            Err(_) if !tmux::native_port_on_path() => {
+                "no native port · `--tmux` needs `winget install arndawg.tmux-windows`".to_owned()
+            }
+            // The port is there and something else is in the way - where alc
+            // itself is installed, say. The dry run prints the whole reason.
+            #[cfg(windows)]
+            Err(_) => "native port found but unusable · `alc --dry-run --share --tmux claude` \
+                       says why"
+                .to_owned(),
         },
     ));
 

@@ -30,6 +30,10 @@
       <symbol id="i-back" viewBox="0 0 16 16">
         <path d="M9.5 3.5 5 8l4.5 4.5" />
       </symbol>
+      <symbol id="i-rail" viewBox="0 0 16 16">
+        <rect x="2.25" y="2.75" width="11.5" height="10.5" rx="1.6" />
+        <path d="M6.25 2.75v10.5" />
+      </symbol>
       <symbol id="i-usage" viewBox="0 0 16 16">
         <path d="M2.4 12.2a6.4 6.4 0 1 1 11.2 0" />
         <path d="M8 9.6 10.9 6" />
@@ -47,6 +51,13 @@
     <header id="bar">
       <button id="back" class="icon" type="button" hidden aria-label="Back">
         <svg class="glyph" aria-hidden="true"><use href="#i-back" /></svg>
+      </button>
+
+      <!-- Folds the session list away so the terminal gets its width. Drawn
+           only on a wide screen with a session open, the one place a list
+           sits beside a terminal; app.css decides that, not this file. -->
+      <button id="railToggle" class="icon" type="button" aria-controls="list" aria-expanded="true">
+        <svg class="glyph" aria-hidden="true"><use href="#i-rail" /></svg>
       </button>
 
       <div id="title">

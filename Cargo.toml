@@ -1,6 +1,6 @@
 [package]
 name = "all-code"
-version = "1.9.2"
+version = "1.10.0"
 edition = "2024"
 rust-version = "1.88"
 description = "One CLI to configure and launch Claude Code, Codex, OpenCode, Pi, Copilot CLI, Goose, Qwen Code, and Kimi Code CLI with multiple LLM providers"
@@ -62,6 +62,20 @@ flate2 = "1.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# The handful of Win32 calls remote control needs on Windows: keeping the
+# hub from inheriting its caller's handles, console modes for the local
+# terminal, and the tmux pane launcher's job object. Already in the lock file
+# through tokio and portable-pty, so it costs no new crate.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 assert_cmd = "2.0"

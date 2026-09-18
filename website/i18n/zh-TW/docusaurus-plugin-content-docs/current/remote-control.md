@@ -31,6 +31,9 @@ alc session claude-7QK2M9XB4T (claude@all-code)
   keys  ctrl-\ then d detaches; the session keeps running
 ```
 
+遠端控制在 macOS、Linux 與 Windows 10／11 上都能用；在 Windows 上搭配 `--tmux`
+要另外裝原生的 Windows 版 tmux，見[尺寸歸誰管](#尺寸歸誰管)。
+
 ## 從手機連上
 
 預設只綁 loopback。在你開口之前，什麼都不會對外。
@@ -188,6 +191,13 @@ hub 起不來的時候，執行 `alc hub start --foreground` 看它說什麼。
 agent 的尺寸：它把真正的字元格線在放得下的範圍內畫到最大、置中，比例對不上的
 地方留黑。你調整終端機大小，頁面幾秒內就跟上。
 
+在寬螢幕上（900px 以上）開著某個 session 時，返回按鈕旁的「隱藏 session 清單」
+按鈕能把 session 清單收起來，讓終端機用滿整個寬度，按「顯示 session 清單」就放
+回來。一般的 session 只是畫得更大；用了下面的 `--tmux`，尺寸歸頁面管，agent 會
+真的拿到多出來的欄數。這個選擇會記在那個瀏覽器裡。這個按鈕刻意沒有快捷鍵，因為
+每一個按鍵都屬於終端機 —— `ctrl-b` 就是 tmux 的 prefix。手機上什麼都沒變，它本來
+就一次只顯示一個窗格。
+
 `--tmux` 是給「你真正要用的其實是頁面那一邊」準備的。它讓 agent 跑在 tmux
 裡，於是你的終端機和 hub 各自以獨立的 client 連上、各有各的尺寸 ——
 而這一次，決定 agent 尺寸的是頁面。
@@ -206,16 +216,38 @@ alc --share --tmux --codex claude    # or -t
 最後一列很重要：用了 `--tmux`，你的終端機顯示的是 agent 真正印出來的東西，
 包括它自己回顯的金鑰。瀏覽器那邊看到的仍然是遮蔽過的。
 
-需要 tmux 3.2 以上，只對分享出去的 session 有作用，而且只跑在 macOS 與 Linux
-上。alc 會為每個 session 啟動它自己的 tmux server，不讀任何設定檔，所以你自己
-的 tmux 完全不會被動到，agent 也沒辦法透過 `~/.tmux.conf` 碰到某個 session 的
-server。從頁面送出的按鍵直接進 agent 的 pane，所以看頁面的人碰不到 tmux 的
-指令列；你自己的終端機是完整的 client，碰得到。
+需要 tmux 3.2 以上，而且只對分享出去的 session 有作用。alc 會為每個 session
+啟動它自己的 tmux server，不讀任何設定檔，所以你自己的 tmux 完全不會被動到，
+agent 也沒辦法透過 `~/.tmux.conf` 碰到某個 session 的 server。從頁面送出的按鍵
+直接進 agent 的 pane，所以看頁面的人碰不到 tmux 的指令列；你自己的終端機是
+完整的 client，碰得到。
+
+Windows 上要用 tmux 的原生 Windows 移植版（測過的是 tmux 3.6a-win32）。裝完
+之後開一個新的終端機，讓它讀到更新後的 PATH；`alc doctor` 的「tmux」那一列會
+告訴你有沒有找到原生版。
+
+```powershell
+winget install arndawg.tmux-windows
+```
+
+psmux 也會裝一個 `tmux.exe`，但 alc 驅動不了它：它跑不了 alc 用來建立 session
+的那一串指令。alc 會跳過 PATH 上的 psmux 去找原生版，所以兩個可以同時裝著。
+MSYS2、Cygwin 與 WSL 的 tmux 在 Windows 上一樣不會被用到。
+
+Windows 版的 tmux 用 ANSI 字碼頁傳遞命令列、環境變數和工作目錄，所以在
+Windows 上，tmux pane 裡跑的是一個小小的啟動器（就是 alc 自己），它透過
+loopback 向 hub 取回 agent 確切的啟動內容。結果是：在 `--tmux` 底下，非 ASCII
+的資料夾名稱、參數和環境變數值都沒問題，provider 的 API key 也永遠不會進到
+tmux 自己的環境裡。如果 alc 本身裝在路徑不是純 ASCII 的資料夾，alc 會改用
+Windows 的 8.3 短路徑；在關掉短檔名的磁碟上，`--tmux` 會拒絕執行，並請你把
+alc 裝到 ASCII 路徑底下。
+
+在 Windows 上停掉一個 `--tmux` session（`alc kill` 或 `alc hub stop --drain`），
+會結束它的 tmux server，agent 也跟著結束。Windows 沒有 hangup 訊號，所以這時 session 卡片只會說 session 已結束，沒有結束狀態；
+macOS 與 Linux 上仍然會顯示那個訊號。
 
 ## 它做不到的事
 
-- **目前還不支援 Windows。** `--share` 和 `alc hub` 那組指令在那裡會直接拒絕
-  並說明原因。alc 其他的事在 Windows 上都能做。
 - **核准提示是以終端機文字出現的**，不是手機上的對話框。
 - **每一條 operator 連結都能同時打字。** 沒有「取得控制權」這種仲裁機制；
   不是你在操作的對象，請發唯讀連結給他們。

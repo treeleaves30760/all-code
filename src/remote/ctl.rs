@@ -16,7 +16,7 @@
 //! infrequent (create, list, kill), and a line-delimited protocol stays
 //! debuggable with nothing but a socket tool.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -193,6 +193,10 @@ pub(crate) enum CtlReply {
     Error {
         message: String,
     },
+    /// The launch a tmux pane's launcher came to collect. See `pane`.
+    PaneLaunch {
+        launch: Box<crate::remote::pane::PaneLaunch>,
+    },
 }
 
 /// Where the control socket lives. Inside the 0700 run directory, so on unix
@@ -296,15 +300,64 @@ pub(crate) fn listen(_config_dir: &Path) -> Result<CtlListener> {
     CtlListener::bind("127.0.0.1:0").context("failed to open the hub's control port")
 }
 
-/// Reads one request off a connection, checking the secret before anything
-/// else is looked at.
-pub(crate) fn read_request<R: BufRead>(reader: &mut R, secret: &str) -> Result<CtlRequest> {
+/// The longest request line the hub will read.
+///
+/// A create carries the client's whole environment, which is the largest
+/// thing alc sends - tens of kilobytes on a busy machine - so this leaves it
+/// ample room while still bounding what a stranger can make the hub hold.
+const MAX_ENVELOPE: u64 = 4 * 1024 * 1024;
+
+/// Who is on the other end of a control connection, once they have shown
+/// what they hold.
+#[derive(Debug)]
+pub(crate) enum Inbound {
+    /// An `alc` command, holding the control secret.
+    Request(CtlRequest),
+    /// A tmux pane's launcher, holding the one-time token it was started
+    /// with and nothing else. The hub hands over the one launch that token
+    /// stands for and nothing more, so the secret that creates processes is
+    /// never on a pane's command line. See `pane`.
+    Pane { token: String },
+}
+
+/// Reads one message off a connection: a pane collecting its launch, or a
+/// request that is checked against the secret before anything else in it is
+/// looked at.
+pub(crate) fn read_inbound<R: BufRead>(reader: &mut R, secret: &str) -> Result<Inbound> {
     let mut line = String::new();
+    // Capped, because nothing on this line has been authenticated yet: on
+    // Windows this is a loopback port any local account can connect to, and
+    // one that never sent a newline would otherwise be read into memory for
+    // as long as it kept sending.
     reader
+        .by_ref()
+        .take(MAX_ENVELOPE)
         .read_line(&mut line)
         .context("failed to read a control request")?;
+    if !line.ends_with('\n') && line.len() as u64 >= MAX_ENVELOPE {
+        bail!("a control request was longer than any request alc sends");
+    }
     let envelope: serde_json::Value =
         serde_json::from_str(line.trim()).context("a control request was not valid JSON")?;
+    if let Some(token) = envelope.get("pane").and_then(serde_json::Value::as_str) {
+        return Ok(Inbound::Pane {
+            token: token.to_owned(),
+        });
+    }
+    read_envelope(&envelope, secret).map(Inbound::Request)
+}
+
+/// Reads one request off a connection, checking the secret before anything
+/// else is looked at.
+#[cfg(test)]
+pub(crate) fn read_request<R: BufRead>(reader: &mut R, secret: &str) -> Result<CtlRequest> {
+    match read_inbound(reader, secret)? {
+        Inbound::Request(request) => Ok(request),
+        Inbound::Pane { .. } => bail!("a pane token is not a control request"),
+    }
+}
+
+fn read_envelope(envelope: &serde_json::Value, secret: &str) -> Result<CtlRequest> {
     let presented = envelope
         .get("secret")
         .and_then(serde_json::Value::as_str)
@@ -360,6 +413,29 @@ mod tests {
     fn an_unknown_operation_is_an_error_rather_than_a_default() {
         let line = r#"{"secret":"s","request":{"op":"detonate"}}"#.to_owned() + "\n";
         assert!(read_request(&mut line.as_bytes(), "s").is_err());
+    }
+
+    /// Nothing on the line is authenticated yet, so a peer that never sends
+    /// a newline gets a refusal rather than the hub's memory.
+    #[test]
+    fn an_endless_request_is_refused_before_it_is_read_whole() {
+        let endless = std::io::repeat(b'x');
+        let mut reader = BufReader::new(endless);
+        let error = read_inbound(&mut reader, "s").unwrap_err();
+        assert!(error.to_string().contains("longer"), "{error}");
+    }
+
+    #[test]
+    fn a_pane_token_is_its_own_credential_and_nothing_else() {
+        let line = r#"{"pane":"00ff"}"#.to_owned() + "\n";
+        assert!(matches!(
+            read_inbound(&mut line.as_bytes(), "s").unwrap(),
+            Inbound::Pane { token } if token == "00ff"
+        ));
+        // A pane token opens no request: the request is still refused
+        // without the secret, whatever else the line carries.
+        let both = r#"{"request":{"op":"list"}}"#.to_owned() + "\n";
+        assert!(read_inbound(&mut both.as_bytes(), "s").is_err());
     }
 
     #[test]

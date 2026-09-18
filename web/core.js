@@ -68,6 +68,10 @@
       viewer: 'view only',
       operator: 'can type',
       back: 'Back to sessions',
+      hideSessions: 'Hide sessions',
+      showSessions: 'Show sessions',
+      sessionsRegion: 'Sessions',
+      terminalRegion: 'Terminal',
       exited: 'exited',
       live: 'live',
       connecting: 'connecting',
@@ -122,6 +126,10 @@
       viewer: '唯讀',
       operator: '可輸入',
       back: '回到 session 清單',
+      hideSessions: '隱藏 session 清單',
+      showSessions: '顯示 session 清單',
+      sessionsRegion: 'Session 清單',
+      terminalRegion: '終端機',
       exited: '已結束',
       live: '已連線',
       connecting: '連線中…',
@@ -226,6 +234,37 @@
       storage.removeItem(TOKEN_KEY);
     } catch {
       // Nothing to do: the in-memory copy is dropped by the caller anyway.
+    }
+  }
+
+  /* ---------------------------------------------------------------- rail */
+
+  /* Whether this viewer has folded the session rail away on a wide screen.
+   *
+   * localStorage, which the token above deliberately avoids: a fold is a
+   * layout preference, not a grant, and it follows the screen - which is
+   * still the same screen tomorrow. Only the folded state is ever written,
+   * and unfolding removes the key, so the default leaves nothing behind.
+   * Anything but that exact value - a first visit, a foreign value, storage
+   * that throws or is not there at all - reads as the rail shown, which is
+   * the page as it always was. */
+  const RAIL_KEY = 'alc.rail';
+
+  function loadRailFolded(storage) {
+    try {
+      return storage.getItem(RAIL_KEY) === 'folded';
+    } catch {
+      return false;
+    }
+  }
+
+  function saveRailFolded(storage, folded) {
+    try {
+      if (folded) storage.setItem(RAIL_KEY, 'folded');
+      else storage.removeItem(RAIL_KEY);
+    } catch {
+      // Private mode, storage disabled, or none at all. The fold still holds
+      // for this page load; only remembering it is lost.
     }
   }
 
@@ -706,6 +745,9 @@
     parseToken,
     loadToken,
     forgetToken,
+    RAIL_KEY,
+    loadRailFolded,
+    saveRailFolded,
     EXIT_GRACE_MS,
     createSessionStore,
     compareRows,
