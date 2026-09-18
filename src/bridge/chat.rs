@@ -1695,6 +1695,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cache_details_do_not_reduce_chat_prompt_totals() {
+        let mut events = tool_events();
+        events.last_mut().unwrap()["response"]["usage"] = json!({
+            "input_tokens": 100, "output_tokens": 9, "total_tokens": 109,
+            "input_tokens_details": {"cached_tokens": 60, "cache_write_tokens": 20},
+            "output_tokens_details": {"reasoning_tokens": 7}
+        });
+        let body = sse(&events);
+        let completion = aggregate(Turn::replay(&[&body]), "gpt-6-astra")
+            .await
+            .unwrap();
+        let expected = json!({"prompt_tokens": 100, "completion_tokens": 9, "total_tokens": 109});
+        assert_eq!(serde_json::to_value(completion.usage).unwrap(), expected);
+        let chunks = streamed(stream_response(
+            Turn::replay(&[&body]),
+            "gpt-6-astra".to_owned(),
+            true,
+        ))
+        .await;
+        let (last, rest) = chunks.split_last().unwrap();
+        assert!(rest.iter().all(|chunk| chunk.get("usage").is_none()));
+        assert_eq!(last["usage"], expected);
+    }
+
+    #[tokio::test]
     async fn a_frame_split_across_chunks_is_still_one_event() {
         let case = Case::load("chat-completions-nonstreaming");
         let body = case.upstream_sse();
