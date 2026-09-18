@@ -455,9 +455,20 @@ pub(crate) struct Usage {
     #[serde(default)]
     pub input_tokens: u64,
     #[serde(default)]
+    pub input_tokens_details: Option<InputTokensDetails>,
+    #[serde(default)]
     pub output_tokens: u64,
     #[serde(default)]
     pub total_tokens: u64,
+}
+
+/// Cache reads and writes are included in the upstream's total input count.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub(crate) struct InputTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_write_tokens: Option<u64>,
 }
 
 /// An item of the response's output, on `output_item.added` / `.done`.
@@ -1082,6 +1093,48 @@ mod tests {
     use super::*;
     use crate::bridge::fixtures::Case;
     use serde_json::json;
+
+    #[test]
+    fn usage_keeps_optional_cache_details_and_inclusive_totals() {
+        for (details, expected) in [
+            (None, None),
+            (Some(Value::Null), None),
+            (Some(json!({})), Some((None, None))),
+            (
+                Some(json!({"cached_tokens": null, "cache_write_tokens": null})),
+                Some((None, None)),
+            ),
+            (
+                Some(json!({"cached_tokens": 0, "cache_write_tokens": 0})),
+                Some((Some(0), Some(0))),
+            ),
+            (Some(json!({"cached_tokens": 60})), Some((Some(60), None))),
+            (
+                Some(json!({"cache_write_tokens": 20})),
+                Some((None, Some(20))),
+            ),
+            (
+                Some(json!({"cached_tokens": 60, "cache_write_tokens": 20, "future_counter": 5})),
+                Some((Some(60), Some(20))),
+            ),
+        ] {
+            let mut raw = json!({"input_tokens": 100, "output_tokens": 9, "total_tokens": 109});
+            if let Some(details) = details {
+                raw["input_tokens_details"] = details;
+            }
+            let usage: Usage = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(usage.input_tokens, 100);
+            assert_eq!(usage.output_tokens, 9);
+            assert_eq!(usage.total_tokens, 109);
+            assert_eq!(
+                usage
+                    .input_tokens_details
+                    .map(|details| (details.cached_tokens, details.cache_write_tokens)),
+                expected,
+                "{raw}"
+            );
+        }
+    }
 
     #[test]
     fn the_websocket_lane_frames_without_an_event_line() {

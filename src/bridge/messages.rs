@@ -229,9 +229,9 @@ pub(crate) struct MessagesResponse {
     pub usage: MessagesUsage,
 }
 
-/// `input_tokens`/`output_tokens` are the upstream's own figures once the
-/// terminal event lands; the cache counters are always zero because Codex
-/// reports caching per item, in a shape Anthropic has no field for.
+/// Anthropic counts ordinary input, cache reads and cache creation separately;
+/// the upstream includes all three in `input_tokens`. Output already includes
+/// reasoning tokens and is passed through unchanged.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub(crate) struct MessagesUsage {
     pub input_tokens: u64,
@@ -244,11 +244,28 @@ pub(crate) struct MessagesUsage {
 
 impl From<Usage> for MessagesUsage {
     fn from(usage: Usage) -> Self {
+        let details = usage.input_tokens_details.unwrap_or_default();
+        let read = details.cached_tokens.unwrap_or_default();
+        let write = details.cache_write_tokens.unwrap_or_default();
+        let Some(input_tokens) = usage
+            .input_tokens
+            .checked_sub(read)
+            .and_then(|remaining| remaining.checked_sub(write))
+        else {
+            // An inconsistent breakdown is unknown, not extra input. Preserve
+            // the gross count rather than inventing a split or failing a turn.
+            return Self {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            };
+        };
         Self {
-            input_tokens: usage.input_tokens,
+            input_tokens,
             output_tokens: usage.output_tokens,
-            cache_creation_input_tokens: Some(0),
-            cache_read_input_tokens: Some(0),
+            cache_creation_input_tokens: Some(write),
+            cache_read_input_tokens: Some(read),
         }
     }
 }
@@ -1501,6 +1518,202 @@ mod tests {
                 assert_eq!(input, &json!({"path": "/etc/hosts"}));
             }
             other => panic!("expected one tool_use block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cache_usage_partitions_input_without_changing_output() {
+        let cases = [
+            (
+                "reads and writes",
+                100,
+                Some(json!({"cached_tokens": 60, "cache_write_tokens": 20})),
+                Some((20_u64, 60, 20_u64)),
+            ),
+            (
+                "reads only",
+                100,
+                Some(json!({"cached_tokens": 60})),
+                Some((40, 60, 0)),
+            ),
+            (
+                "writes only",
+                100,
+                Some(json!({"cache_write_tokens": 20})),
+                Some((80, 0, 20)),
+            ),
+            (
+                "all cached",
+                100,
+                Some(json!({"cached_tokens": 60, "cache_write_tokens": 40})),
+                Some((0, 60, 40)),
+            ),
+            (
+                "zero",
+                0,
+                Some(json!({"cached_tokens": 0, "cache_write_tokens": 0})),
+                Some((0, 0, 0)),
+            ),
+            ("missing details", 100, None, Some((100, 0, 0))),
+            ("null details", 100, Some(Value::Null), Some((100, 0, 0))),
+            ("empty details", 100, Some(json!({})), Some((100, 0, 0))),
+            (
+                "null read",
+                100,
+                Some(json!({"cached_tokens": null, "cache_write_tokens": 20})),
+                Some((80, 0, 20)),
+            ),
+            (
+                "null write",
+                100,
+                Some(json!({"cached_tokens": 60, "cache_write_tokens": null})),
+                Some((40, 60, 0)),
+            ),
+            (
+                "read exceeds input",
+                100,
+                Some(json!({"cached_tokens": 101})),
+                None,
+            ),
+            (
+                "write exceeds input",
+                100,
+                Some(json!({"cache_write_tokens": 101})),
+                None,
+            ),
+            (
+                "combined exceeds input",
+                100,
+                Some(json!({"cached_tokens": 60, "cache_write_tokens": 41})),
+                None,
+            ),
+            (
+                "maximum valid",
+                u64::MAX,
+                Some(json!({"cached_tokens": u64::MAX - 1, "cache_write_tokens": 1})),
+                Some((0, u64::MAX - 1, 1)),
+            ),
+            (
+                "sum overflows",
+                u64::MAX,
+                Some(json!({"cached_tokens": u64::MAX, "cache_write_tokens": 1})),
+                None,
+            ),
+        ];
+        for (name, input, details, expected) in cases {
+            let mut raw = json!({
+                "input_tokens": input, "output_tokens": 9,
+                "output_tokens_details": {"reasoning_tokens": 7}
+            });
+            if let Some(details) = details {
+                raw["input_tokens_details"] = details;
+            }
+            let upstream: Usage = serde_json::from_value(raw).unwrap();
+            let usage = MessagesUsage::from(upstream);
+            let wire = serde_json::to_value(usage).unwrap();
+            assert_eq!(
+                upstream.input_tokens, input,
+                "{name}: upstream stays inclusive"
+            );
+            assert_eq!(
+                usage.output_tokens, 9,
+                "{name}: reasoning is already included"
+            );
+            if let Some((ordinary, read, write)) = expected {
+                assert_eq!(
+                    wire,
+                    json!({
+                        "input_tokens": ordinary, "output_tokens": 9,
+                        "cache_read_input_tokens": read, "cache_creation_input_tokens": write
+                    }),
+                    "{name}"
+                );
+                assert_eq!(
+                    u128::from(ordinary) + u128::from(read) + u128::from(write),
+                    u128::from(input),
+                    "{name}"
+                );
+            } else {
+                assert_eq!(
+                    wire,
+                    json!({"input_tokens": input, "output_tokens": 9}),
+                    "{name}: an invalid breakdown is omitted"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_cache_usage_reaches_streamed_and_collected_messages_once() {
+        for (kind, reason) in [
+            ("response.completed", "end_turn"),
+            ("response.incomplete", "max_tokens"),
+        ] {
+            let terminal = json!({"type": kind, "response": {
+                "id": "resp_cache", "usage": {
+                    "input_tokens": 100, "output_tokens": 9, "total_tokens": 109,
+                    "input_tokens_details": {"cached_tokens": 60, "cache_write_tokens": 20},
+                    "output_tokens_details": {"reasoning_tokens": 7}
+                }
+            }});
+            let source = [
+                json!({"type": "response.created", "response": {"id": "resp_cache"}}),
+                json!({"type": "response.output_text.delta", "output_index": 0,
+                    "content_index": 0, "delta": "cache-ok"}),
+                terminal.clone(),
+                terminal,
+            ];
+            let body: String = source
+                .iter()
+                .map(|event| sse_frame(event["type"].as_str().unwrap(), event))
+                .collect();
+            let mut turn = Turn::new("msg_cache".to_owned(), "gpt-6-astra".to_owned(), 73);
+            let mut events = Vec::new();
+            for frame in upstream::parse_sse(&body) {
+                let event: UpstreamEvent = serde_json::from_str(&frame.data).unwrap();
+                events.extend(turn.accept(&event).unwrap());
+            }
+            assert!(turn.is_finished());
+            assert!(turn.close().is_empty());
+            let wire: String = events
+                .iter()
+                .map(|event| sse_frame(event.name(), event))
+                .collect();
+            let frames: Vec<Value> = upstream::parse_sse(&wire)
+                .iter()
+                .map(|frame| serde_json::from_str(&frame.data).unwrap())
+                .collect();
+            for kind in ["message_start", "message_delta", "message_stop"] {
+                assert_eq!(
+                    frames.iter().filter(|frame| frame["type"] == kind).count(),
+                    1
+                );
+            }
+            assert_eq!(
+                frames[0]["message"]["usage"],
+                json!({"input_tokens": 73, "output_tokens": 0})
+            );
+            assert_eq!(frames.last().unwrap()["type"], "message_stop");
+            let final_frame = frames
+                .iter()
+                .find(|frame| frame["type"] == "message_delta")
+                .unwrap();
+            let expected = json!({
+                "input_tokens": 20, "output_tokens": 9,
+                "cache_read_input_tokens": 60, "cache_creation_input_tokens": 20
+            });
+            assert_eq!(final_frame["usage"], expected);
+            assert_eq!(final_frame["delta"]["stop_reason"], reason);
+            let message = collect(events).unwrap();
+            assert_eq!(serde_json::to_value(message.usage).unwrap(), expected);
+            assert_eq!(message.stop_reason.as_deref(), Some(reason));
+            assert_eq!(message.model, "gpt-6-astra");
+            assert_eq!(
+                serde_json::to_value(message.content).unwrap(),
+                json!([
+                    {"type": "text", "text": "cache-ok"}
+                ])
+            );
         }
     }
 
