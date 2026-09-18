@@ -213,6 +213,14 @@ button.icon {
   line-height: 0;
 }
 
+/* The rail's fold. It is drawn only where there is a rail beside a terminal
+ * to fold - see the wide-screen panes block - and everywhere else it is
+ * absent rather than present and doing nothing. Not `hidden`: whether it
+ * shows is a fact about the layout, so the layout rules decide it. */
+#railToggle {
+  display: none;
+}
+
 /* Drawn rather than typed. The glyphs these replaced were a text arrow and a
  * quarter-filled circle, which is a lot to ask of a font stack that has to
  * cover Latin and Traditional Chinese on whatever the phone happens to ship.
@@ -306,6 +314,45 @@ body[data-pane="usage"] #view {
     border-right: 1px solid var(--line);
   }
 
+  body[data-pane="view"] #railToggle {
+    display: block;
+  }
+
+  /* Folded, the terminal slides over the rail rather than the rail sliding
+   * out from under it. The rail stays laid out underneath at its own width,
+   * so its cards never squeeze and it comes back exactly as it left. The
+   * z-index is what keeps it underneath: an exited card's opacity paints it
+   * above anything that is not positioned, and a flex item can outrank that
+   * without being positioned. */
+  body[data-pane="view"] #view {
+    z-index: 1;
+  }
+
+  body[data-pane="view"][data-rail="folded"] #view {
+    margin-left: calc(-1 * var(--rail));
+  }
+
+  /* The slide answers a press of the toggle and nothing else, so it runs
+   * only while app.js says a press is being answered. Left on for good, it
+   * also played when a folded page was widened past 900px or a tablet turned
+   * to landscape: nobody had asked for anything, a strip of bare page showed
+   * where the rail had been, and tmux was refitted through all of it. An
+   * attach with the rail already folded lands at its final width the same
+   * way. */
+  body[data-pane="view"][data-rail-moving] #view {
+    transition: margin-left 0.2s ease;
+  }
+
+  /* Hidden once the slide has covered it - the delay is the slide's length -
+   * so it is still drawn for as long as any of it shows. Focus and a screen
+   * reader lose it sooner: app.js makes it inert the moment the toggle is
+   * pressed. Unfolding shows it at once, and the terminal uncovers it as it
+   * moves. */
+  body[data-pane="view"][data-rail="folded"] #list {
+    visibility: hidden;
+    transition: visibility 0s linear 0.2s;
+  }
+
   body[data-pane="usage"] #list {
     display: none;
   }
@@ -314,6 +361,13 @@ body[data-pane="usage"] #view {
    * a desktop monitor. */
   #usage {
     max-width: 720px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-pane="view"][data-rail-moving] #view,
+  body[data-pane="view"][data-rail="folded"] #list {
+    transition: none;
   }
 }
 

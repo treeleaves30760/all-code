@@ -23,7 +23,7 @@
 
   const el = {};
   for (const id of [
-    'bar', 'back', 'subtitle', 'grade', 'link', 'linkLabel',
+    'bar', 'back', 'railToggle', 'subtitle', 'grade', 'link', 'linkLabel',
     'list', 'sessions', 'empty', 'emptyTitle', 'emptyHow', 'emptyCommand',
     'view', 'terminal', 'keys',
     'perm', 'permLabel', 'permPick', 'permCycle', 'permNote', 'permFlags', 'permCommand',
@@ -37,6 +37,12 @@
   }
 
   el.back.setAttribute('aria-label', T.back);
+  // The panes are landmarks, and the rail's fold points at #list by name, so
+  // a screen reader announces them in the page's language along with the
+  // button that controls one of them.
+  el.list.setAttribute('aria-label', T.sessionsRegion);
+  el.usage.setAttribute('aria-label', T.usage);
+  el.view.setAttribute('aria-label', T.terminalRegion);
   el.send.textContent = T.send;
   el.compose.placeholder = T.composerHint;
   el.emptyTitle.textContent = T.empty;
@@ -69,8 +75,22 @@
 
   /* -------------------------------------------------------------- state */
 
+  /* Web storage, or null when there is none to be had.
+   *
+   * With site data blocked, reading `window.sessionStorage` or
+   * `window.localStorage` is itself what throws - before any getItem a
+   * callee could have wrapped - and a throw here, at boot, took the whole
+   * page down with it. core's storage helpers already read null as empty. */
+  function storageArea(name) {
+    try {
+      return window[name];
+    } catch {
+      return null;
+    }
+  }
+
   const token = core.signal(
-    core.loadToken(window.location, window.history, window.sessionStorage),
+    core.loadToken(window.location, window.history, storageArea('sessionStorage')),
   );
   const rows = core.signal([]);
   /* idle | connecting | live | reconnecting | ended */
@@ -102,7 +122,7 @@
     if (response.status === 401 || response.status === 403) {
       // A token the server has stopped accepting is worse than none: it
       // would keep failing every poll for the life of the tab.
-      core.forgetToken(window.sessionStorage);
+      core.forgetToken(storageArea('sessionStorage'));
       token.value = null;
       renderRows([]);
       throw new Error('denied');
@@ -968,6 +988,7 @@
     attempt = 0;
     everGreeted = false;
     document.body.dataset.pane = 'view';
+    coverRail();
     el.back.hidden = false;
     // The header is full while a session is open, and back means the session
     // here rather than the accounts.
@@ -1018,6 +1039,8 @@
     autoGrow();
     attached.value = null;
     document.body.dataset.pane = 'list';
+    // The list is the whole page now, and an inert one could not be used.
+    coverRail();
     // The next session decides this for itself, and a stale value would
     // paint the list pane's frame for a mode it is not in.
     delete document.body.dataset.sizing;
@@ -1298,12 +1321,12 @@
 
   /* The box, not the window, is what both modes measure against, and this
    * list of everything that moves it kept growing: the rail appears at
-   * 900px, the composer and the key bar leave with a read-only link or an
-   * exit, the permission bar is the agent's business. Watching the element
-   * is one subscription instead. Nothing loops back: #terminal is a flex item
-   * with `flex: 1 1 0%` and `min-width/height: 0`, so its size comes from the
-   * pane around it and never from the grid inside it - and a transform
-   * changes no layout at all. */
+   * 900px and folds away, the composer and the key bar leave with a
+   * read-only link or an exit, the permission bar is the agent's business.
+   * Watching the element is one subscription instead. Nothing loops back:
+   * #terminal is a flex item with `flex: 1 1 0%` and `min-width/height: 0`,
+   * so its size comes from the pane around it and never from the grid inside
+   * it - and a transform changes no layout at all. */
   if (window.ResizeObserver) new window.ResizeObserver(scheduleRelayout).observe(el.terminal);
   else window.addEventListener('resize', scheduleRelayout);
   window.addEventListener('orientationchange', scheduleRelayout);
@@ -1315,6 +1338,87 @@
   // Which mode this is depends on the grade, and the grade arrives with the
   // hello - after the first attach has already laid the terminal out.
   operator.subscribe(scheduleRelayout);
+
+  /* The session rail, folded away on a wide screen.
+   *
+   * The fold exists to give the terminal the rail's width, which for a
+   * `--tmux` session is the agent's width too, so the terminal is fitted
+   * once, where it comes to rest: a fit partway through the slide would tell
+   * tmux a width it keeps for a fifth of a second, and the agent would
+   * redraw twice. With a ResizeObserver every frame of the slide restarts the
+   * debounce anyway. Without one, nothing is scheduled until the slide says
+   * it is over - a timer started at the press would go off halfway through
+   * it. With no slide to wait for, under reduced motion, the fit is
+   * scheduled at once.
+   *
+   * Remembered per viewer, and written only when pressed, never at boot. No
+   * keyboard shortcut: every chord on this page belongs to the terminal, and
+   * Ctrl+B is tmux's own prefix. */
+  const preferences = storageArea('localStorage');
+  const railFolded = core.signal(core.loadRailFolded(preferences));
+
+  /* Covered means gone: out of the tab order and away from a screen reader
+   * from the moment of the press, not from when the slide ends and the
+   * stylesheet hides it. Tab straight after folding otherwise landed on a
+   * card that went invisible under the focus a moment later, and focus fell
+   * to the page. Asked again on attach and detach, since a rail is only
+   * covered beside a terminal; on a phone it is display:none there already,
+   * and this merely agrees. */
+  function coverRail() {
+    el.list.inert = railFolded.value && document.body.dataset.pane === 'view';
+  }
+
+  railFolded.subscribe((folded) => {
+    document.body.dataset.rail = folded ? 'folded' : 'open';
+    const label = folded ? T.showSessions : T.hideSessions;
+    el.railToggle.setAttribute('aria-expanded', String(!folded));
+    el.railToggle.setAttribute('aria-label', label);
+    el.railToggle.title = label;
+    coverRail();
+  });
+
+  /* The press is answered: the attribute that lets the terminal slide goes,
+   * so a later window resize or attach cannot set the slide off, and the
+   * terminal is fitted where it stopped. */
+  let railSlideTimer = 0;
+  function railSettled() {
+    clearTimeout(railSlideTimer);
+    delete document.body.dataset.railMoving;
+    scheduleRelayout();
+  }
+
+  el.view.addEventListener('transitionend', (event) => {
+    if (event.target === el.view && event.propertyName === 'margin-left') railSettled();
+  });
+
+  // A pointer press leaves focus where it was, which is usually the
+  // terminal: folding is something done mid-sentence, and a focused button
+  // would take the next space typed as a second press.
+  el.railToggle.addEventListener('mousedown', (event) => event.preventDefault());
+
+  el.railToggle.addEventListener('click', () => {
+    // Asked before the fold, which makes the rail inert and can take the
+    // focus out of it before this handler looks.
+    const focusInRail = el.list.contains(document.activeElement);
+    clearTimeout(railSlideTimer);
+    // Set in the same change as the fold: a transition is taken from the
+    // style after the change, so this is what lets this one change animate.
+    document.body.dataset.railMoving = '';
+    railFolded.value = !railFolded.value;
+    core.saveRailFolded(preferences, railFolded.value);
+    // A card that had focus has just gone inert, and focus would fall to the
+    // page with it. The button has not moved, so it is where a keyboard can
+    // press again from.
+    if (railFolded.value && focusInRail) el.railToggle.focus();
+    // The stylesheet decides whether this slides - reduced motion says no -
+    // so it is asked rather than second-guessed. The timer is for a slide
+    // that never reports back: cut short by leaving the session, say.
+    if (parseFloat(getComputedStyle(el.view).transitionDuration) > 0) {
+      railSlideTimer = setTimeout(railSettled, 500);
+    } else {
+      railSettled();
+    }
+  });
 
   /* ---------------------------------------------------------------- boot */
 
