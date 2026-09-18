@@ -414,7 +414,6 @@ fn install_platform(
         let _ = fs::remove_file(backup);
     }
     println!("Updated alc {current} -> {latest}.");
-    #[cfg(unix)]
     warn_about_a_hub_left_behind(&latest.to_string());
     Ok(())
 }
@@ -428,9 +427,9 @@ fn install_platform(
 /// message the user has no reason to expect. Never stopped automatically:
 /// somebody's session is probably running in it.
 ///
-/// Unix only, because a hub is: `remote::share` refuses outright on every
-/// other platform, so there is never one to be left behind.
-#[cfg(unix)]
+/// On Windows the running hub is also what keeps the old binary on disk: it
+/// is renamed out of the way rather than replaced, and cannot be deleted
+/// until the hub stops.
 fn warn_about_a_hub_left_behind(installed: &str) {
     let Ok(config_dir) = crate::config::config_dir() else {
         return;
@@ -543,6 +542,7 @@ try {
         "If replacement fails, details will be written to {}.",
         log_path.display()
     );
+    warn_about_a_hub_left_behind(&latest.to_string());
     Ok(())
 }
 

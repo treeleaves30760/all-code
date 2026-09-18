@@ -37,10 +37,11 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -50,8 +51,9 @@ use anyhow::{Context, Result, bail};
 use crate::config::{Agent, ProviderKind, ReasoningEffort};
 use crate::launch::{self, LaunchSpec};
 use crate::remote::ctl::{
-    self, CreateRequest, CtlReply, CtlRequest, CtlStream, HubRecord, WireSpec,
+    self, CreateRequest, CtlReply, CtlRequest, CtlStream, HubRecord, Inbound, WireSpec,
 };
+use crate::remote::pane::PendingLaunches;
 use crate::remote::pty::PtyCommand;
 use crate::remote::server::{Registry, Server};
 use crate::remote::session::{Session, SessionSpec, TmuxHost};
@@ -64,6 +66,14 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long an exited session's card stays on the page before it is reaped,
 /// so a session that failed at launch can still be read.
 const LINGER: Duration = Duration::from_secs(900);
+
+/// How often an attached terminal's relay looks up from a quiet session to
+/// see whether the terminal has detached.
+const VIEWER_TICK: Duration = Duration::from_millis(250);
+
+/// How long a control connection has to present its request before the hub
+/// gives up on it.
+const ENVELOPE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct Hub {
     config_dir: PathBuf,
@@ -86,6 +96,12 @@ pub(crate) struct Hub {
     /// the reason the comment said `set_var`.)
     spawning: Mutex<()>,
     stop: AtomicBool,
+    /// Launches waiting for a tmux pane's launcher to collect them. Only
+    /// ever filled on Windows; see `pane`.
+    panes: PendingLaunches,
+    /// The loopback port a pane's launcher reaches this hub on.
+    #[cfg(not(unix))]
+    ctl_port: u16,
 }
 
 impl Hub {
@@ -134,6 +150,9 @@ impl Hub {
             port,
             spawning: Mutex::new(()),
             stop: AtomicBool::new(false),
+            panes: PendingLaunches::default(),
+            #[cfg(not(unix))]
+            ctl_port,
         });
 
         let reaper = Arc::clone(&hub);
@@ -168,9 +187,22 @@ impl Hub {
 
     fn serve_control(&self, stream: CtlStream) {
         let Ok(peer) = stream.try_clone() else { return };
+        // Until the envelope has been read and checked, whoever connected is
+        // nobody in particular - on Windows the control channel is a loopback
+        // port any local account can reach - so it gets a deadline as well as
+        // the size cap `read_inbound` applies. Cleared straight after: an
+        // attached terminal's relay reads this connection for as long as the
+        // person stays attached.
+        let _ = peer.set_read_timeout(Some(ENVELOPE_TIMEOUT));
         let mut reader = BufReader::new(stream);
-        let request = match ctl::read_request(&mut reader, &self.secrets.ctl) {
-            Ok(request) => request,
+        let inbound = ctl::read_inbound(&mut reader, &self.secrets.ctl);
+        let _ = peer.set_read_timeout(None);
+        let request = match inbound {
+            Ok(Inbound::Request(request)) => request,
+            Ok(Inbound::Pane { token }) => {
+                let _ = reply(&peer, &self.panes.answer(&token));
+                return;
+            }
             Err(error) => {
                 let _ = reply(
                     &peer,
@@ -327,6 +359,10 @@ impl Hub {
         let _ = out.flush();
 
         let input = Arc::clone(session);
+        // Set when the terminal stops sending, which is what detaching looks
+        // like from here: `alc attach` shuts its end down on the detach keys.
+        let gone = Arc::new(AtomicBool::new(false));
+        let left = Arc::clone(&gone);
         let pump = thread::Builder::new()
             .name("alc-hub-attach-in".to_owned())
             .spawn(move || {
@@ -334,16 +370,40 @@ impl Hub {
                 loop {
                     match reader.read(&mut buffer) {
                         Ok(0) | Err(_) => break,
+                        // An agent that can no longer take input is ending;
+                        // the loop below hears so from the session and ends
+                        // this viewer then, after its last output.
                         Ok(read) => {
-                            if input.input(&buffer[..read]).is_err() {
-                                break;
-                            }
+                            let _ = input.input(&buffer[..read]);
                         }
                     }
                 }
+                left.store(true, Ordering::Release);
+                // A detached terminal is still blocked reading this
+                // connection, and dropping one handle to it closes nothing
+                // while another is open - measured on Windows, where the
+                // detach keys did nothing at all until the agent next drew.
+                // Only the sending half: see the note at the end of the loop.
+                let _ = reader.get_ref().shutdown(std::net::Shutdown::Write);
             });
 
-        while let Ok(frame) = subscription.rx.recv() {
+        loop {
+            // Woken on a tick as well as by output, so a terminal that has
+            // gone is let go of even while the agent is quiet - and so is one
+            // whose session has ended: the Close frame is offered like any
+            // other, and a queue that was full when it came drops it. The
+            // queue is empty whenever the wait times out, and a session
+            // records its exit only after broadcasting its last output, so
+            // nothing is left unsent when this gives up.
+            let frame = match subscription.rx.recv_timeout(VIEWER_TICK) {
+                Ok(frame) => frame,
+                Err(RecvTimeoutError::Timeout)
+                    if !gone.load(Ordering::Acquire) && !session.has_exited() =>
+                {
+                    continue;
+                }
+                Err(_) => break,
+            };
             let written = match &*frame {
                 crate::remote::fanout::Frame::Binary(bytes) if bytes.len() > 9 => {
                     // Strip the wire header: a terminal wants the bytes, not
@@ -360,6 +420,18 @@ impl Hub {
         }
 
         session.unsubscribe(viewer);
+        // The session is over for this terminal. Shut down rather than only
+        // dropped, for the same reason as above: the pump still holds a
+        // handle, so a drop alone would leave the terminal waiting for a key
+        // press before it got its shell back.
+        //
+        // The sending half only, which the terminal reads as the end of the
+        // stream once it has everything before it. Shutting both halves on a
+        // Windows loopback connection that still has unread data resets it,
+        // and the terminal lost the agent's last output - measured, 0 of 4000
+        // bytes arriving. The pump reads on until the terminal closes its
+        // end, which is what the join below waits for.
+        let _ = out.shutdown(std::net::Shutdown::Write);
         drop(out);
         if let Ok(handle) = pump {
             let _ = handle.join();
@@ -466,25 +538,26 @@ impl Hub {
         // Kept alongside `tmux` because `Session::start` takes ownership of
         // it, and the failure path below still has to reach the server.
         let mut orphan: Option<(tmux::Tmux, PathBuf)> = None;
+        // The launch a Windows pane has yet to collect, forgotten on every
+        // failure below: it holds the provider key.
+        let mut uncollected: Option<String> = None;
         let (command, tmux) = match wants_tmux {
             true => {
                 let found = tmux::find()?;
                 let mut session = tmux::Tmux::for_session(&id)?;
+                let (pane, token) = self.pane_command(&found, &prepared, &cwd)?;
+                uncollected = token.clone();
                 // A failed `create` can still have left a server running -
                 // it refuses a launch whose credentials it could not take
                 // back out of that server's environment, which is a check
                 // made after the agent has started.
                 session
-                    .create(
-                        &found.binary,
-                        &prepared.program,
-                        &prepared.spec,
-                        &cwd,
-                        cols,
-                        rows,
-                    )
+                    .create(&found.binary, &pane, &prepared.spec, &cwd, cols, rows)
                     .inspect_err(|_| {
                         let _ = session.stop(&found.binary);
+                        if let Some(token) = &token {
+                            self.panes.forget(token);
+                        }
                     })?;
                 let command = PtyCommand {
                     program: found.binary.clone(),
@@ -536,9 +609,46 @@ impl Hub {
             if let Some(host) = &orphan {
                 let _ = host.0.stop(&host.1);
             }
+            if let Some(token) = &uncollected {
+                self.panes.forget(token);
+            }
         })?;
         self.registry.insert(session);
         Ok(id)
+    }
+
+    /// What a `--tmux` session's pane runs, and the pane token it was given
+    /// if the launch is waiting here to be collected.
+    ///
+    /// On unix that is the agent itself, under the one-line shell that takes
+    /// tmux's address back out of its environment. On Windows it is alc's own
+    /// pane launcher, and the launch is held here until the launcher asks for
+    /// it: tmux for Windows cannot carry the agent's arguments, environment
+    /// or working directory intact (see `pane`).
+    fn pane_command(
+        &self,
+        found: &tmux::Found,
+        prepared: &launch::Prepared,
+        cwd: &Path,
+    ) -> Result<(tmux::PaneCommand, Option<String>)> {
+        #[cfg(unix)]
+        {
+            let _ = (found, cwd);
+            Ok((
+                tmux::PaneCommand::agent(&prepared.program, &prepared.spec),
+                None,
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            let launch =
+                crate::remote::pane::PaneLaunch::resolve(&prepared.program, &prepared.spec, cwd)?;
+            let token = self.panes.hold(launch)?;
+            Ok((
+                tmux::PaneCommand::launcher(&found.launcher, self.ctl_port, &token),
+                Some(token),
+            ))
+        }
     }
 
     /// Removes exited sessions once their cards have had time to be read,
@@ -547,6 +657,9 @@ impl Hub {
         let mut exited: BTreeMap<String, Instant> = BTreeMap::new();
         while !self.stop.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_secs(1));
+            // A pane launch expires on a clock, not only when the next one
+            // is held or taken: it carries the provider key.
+            self.panes.expire();
             for card in self.registry.cards() {
                 if card.state != wire::SessionState::Exited {
                     continue;
@@ -900,14 +1013,12 @@ fn start_detached(config_dir: &Path, bind_lan: bool) -> Result<()> {
         // session that outlives the terminal.
         command.process_group(0);
     }
+    // Not a plain `spawn` on Windows: see `win::spawn_detached` for the two
+    // ways one goes wrong there, one of which kept remote control off the
+    // platform entirely.
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
-
+    crate::remote::win::spawn_detached(&mut command).context("failed to start the hub")?;
+    #[cfg(not(windows))]
     command.spawn().context("failed to start the hub")?;
     Ok(())
 }
@@ -934,14 +1045,34 @@ pub(crate) fn attach_stream(
     stream.write_all(line.as_bytes())?;
     stream.flush()?;
 
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut answer = String::new();
-    reader.read_line(&mut answer)?;
+    let answer = read_reply_line(&mut stream)?;
     match serde_json::from_str::<CtlReply>(answer.trim()) {
         Ok(CtlReply::Ok) => Ok(stream),
         Ok(CtlReply::Error { message }) => bail!("{message}"),
         _ => bail!("the hub answered an attach with something else"),
     }
+}
+
+/// Reads the hub's one-line reply to an attach, and not a byte past it.
+///
+/// The hub sends the screen straight after that line, and a buffered reader
+/// takes whatever has already arrived - measured on Windows, where the two
+/// reach the socket together and the snapshot was read into a buffer that
+/// was then thrown away, so every reattached terminal started blank. A reply
+/// is a few dozen bytes, so reading them one at a time costs nothing.
+fn read_reply_line<R: Read>(stream: &mut R) -> Result<String> {
+    let mut line = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) if byte[0] == b'\n' => break,
+            Ok(_) => line.push(byte[0]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error).context("the hub closed the attach without answering"),
+        }
+    }
+    String::from_utf8(line).context("the hub answered an attach with something alc cannot read")
 }
 
 /// Copies bytes from a reader to a writer until either end closes. Used for
@@ -963,6 +1094,22 @@ pub(crate) fn relay<R: Read, W: Write>(mut from: R, mut to: W) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The screen follows the reply on the same connection, and has to be
+    /// left there for the relay: a terminal that reattached used to start
+    /// blank because the reply's reader had already taken it.
+    #[test]
+    fn reading_an_attach_reply_leaves_the_screen_behind_it_unread() {
+        let mut stream = std::io::Cursor::new(b"{\"reply\":\"ok\"}\n\x1b[2Jthe screen".to_vec());
+        let answer = read_reply_line(&mut stream).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<CtlReply>(&answer),
+            Ok(CtlReply::Ok)
+        ));
+        let mut rest = Vec::new();
+        stream.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, b"\x1b[2Jthe screen");
+    }
 
     #[test]
     fn a_spec_round_trips_through_the_wire_form() {

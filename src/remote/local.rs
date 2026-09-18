@@ -30,6 +30,12 @@ const RESIZE_POLL: Duration = Duration::from_millis(250);
 /// Puts the terminal in raw mode for as long as it is held.
 pub(crate) struct TerminalGuard {
     restored: bool,
+    /// What raw mode means on a unix terminal has to be asked for separately
+    /// on a Windows console: escape sequences interpreted rather than
+    /// printed, and keys delivered as the bytes a terminal would send. See
+    /// `win::VtConsole`.
+    #[cfg(windows)]
+    console: crate::remote::win::VtConsole,
 }
 
 impl TerminalGuard {
@@ -45,8 +51,15 @@ impl TerminalGuard {
         }
         #[cfg(unix)]
         unix_signals::save_and_install()?;
+        // Saved before raw mode, so restoring it undoes both.
+        #[cfg(windows)]
+        let console = crate::remote::win::VtConsole::enable();
         terminal::enable_raw_mode().context("failed to put the terminal into raw mode")?;
-        Ok(Self { restored: false })
+        Ok(Self {
+            restored: false,
+            #[cfg(windows)]
+            console,
+        })
     }
 
     fn restore(&mut self) {
@@ -57,9 +70,13 @@ impl TerminalGuard {
         let _ = terminal::disable_raw_mode();
         let mut stdout = io::stdout();
         // The agent may have left the alternate screen active or the cursor
-        // hidden; the shell the user returns to should have neither.
+        // hidden; the shell the user returns to should have neither. Written
+        // while the console still interprets escape sequences, which on
+        // Windows it stops doing below.
         let _ = stdout.write_all(b"\x1b[?1049l\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1006l");
         let _ = stdout.flush();
+        #[cfg(windows)]
+        self.console.restore();
     }
 }
 
@@ -92,16 +109,35 @@ const DETACH_KEY: u8 = b'd';
 /// crossterm's parsed events would lose bracketed paste, mouse reports and
 /// any sequence crossterm does not model.
 ///
-/// Sets `detached` and returns when the detach sequence is typed, so the
-/// caller can leave the session running rather than ending it.
-pub(crate) fn pump_stdin<W: Write + Send + 'static>(
+/// Sets `detached`, runs `on_detach` and returns when the detach sequence is
+/// typed, so the caller can leave the session running rather than ending it.
+///
+/// `on_detach` is what actually lets go of the session. Returning from this
+/// thread is not enough on its own: the caller is blocked reading the
+/// session's output, and the connection it reads from stays open for as long
+/// as any handle to it does - so the detach keys used to do nothing visible
+/// until the agent happened to exit. The caller shuts the connection down,
+/// which ends its read and tells the hub this viewer has gone.
+pub(crate) fn pump_stdin<W, F>(
     mut sink: W,
     detached: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
-) {
+    on_detach: F,
+) where
+    W: Write + Send + 'static,
+    F: FnOnce() + Send + 'static,
+{
     thread::Builder::new()
         .name("alc-local-stdin".to_owned())
         .spawn(move || {
+            // A Windows console is read around std, which turns a Ctrl+Z into
+            // end of input; see `win::ConsoleInput`.
+            #[cfg(windows)]
+            let mut stdin: Box<dyn Read> = match crate::remote::win::ConsoleInput::open() {
+                Some(console) => Box::new(console),
+                None => Box::new(io::stdin()),
+            };
+            #[cfg(not(windows))]
             let mut stdin = io::stdin();
             let mut buffer = [0_u8; 1024];
             let mut armed = false;
@@ -121,6 +157,7 @@ pub(crate) fn pump_stdin<W: Write + Send + 'static>(
                 }
                 if detach {
                     detached.store(true, Ordering::Release);
+                    on_detach();
                     return;
                 }
             }
@@ -155,6 +192,46 @@ fn split_detach(chunk: &[u8], armed: &mut bool) -> (Vec<u8>, bool) {
         forward.push(byte);
     }
     (forward, false)
+}
+
+/// Writes the relayed session to a Windows console one whole character at a
+/// time.
+///
+/// std writes to a console as UTF-16 and refuses a write that starts in the
+/// middle of a character - on a console whose code page is not UTF-8, which
+/// is most of them (950 on a Traditional Chinese install, 437 in the US). The
+/// relay's chunks are pty reads, cut wherever the read happened to stop, and
+/// one that began with the tail of a box-drawing or CJK character failed the
+/// write: the terminal dropped out of a session that was still running,
+/// without a word. The characters are reassembled here first instead, and a
+/// byte that can never be one is drawn as a replacement character.
+#[cfg(any(windows, test))]
+pub(crate) struct WholeCharacters<W> {
+    inner: W,
+    chunker: crate::remote::utf8::Utf8Chunker,
+}
+
+#[cfg(any(windows, test))]
+impl<W: Write> WholeCharacters<W> {
+    pub(crate) fn new(inner: W) -> Self {
+        Self {
+            inner,
+            chunker: crate::remote::utf8::Utf8Chunker::new(),
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+impl<W: Write> Write for WholeCharacters<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let text = self.chunker.push(bytes);
+        self.inner.write_all(text.as_bytes())?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Reports this terminal's size to `on_change` whenever it changes.
@@ -320,5 +397,23 @@ mod tests {
     fn size_is_never_degenerate() {
         let (cols, rows) = size();
         assert!(cols >= 20 && rows >= 4, "{cols}x{rows}");
+    }
+
+    /// What a Windows console will take: every write whole characters, a
+    /// character split between two relay chunks put back together, and a
+    /// chunk that starts in the middle of one drawn rather than refused.
+    #[test]
+    fn the_console_writer_only_ever_writes_whole_characters() {
+        let mut written = Vec::new();
+        {
+            let mut console = WholeCharacters::new(&mut written);
+            // "中" is e4 b8 ad, split across two writes.
+            console.write_all(b"a\xe4\xb8").unwrap();
+            console.write_all(b"\xadb").unwrap();
+            // An orphan continuation byte, as a chunk that joined the stream
+            // late would start with.
+            console.write_all(b"\xadc").unwrap();
+        }
+        assert_eq!(String::from_utf8(written).unwrap(), "a中b\u{fffd}c");
     }
 }

@@ -99,7 +99,8 @@ struct Cli {
     /// Without it the size is this terminal's and the page scales the
     /// agent's screen to fit its window. Only applies to a shared session:
     /// without one there is only one viewer and nothing to disagree about.
-    /// Needs tmux 3.2 or newer.
+    /// Needs tmux 3.2 or newer; on Windows, the native port
+    /// (`winget install arndawg.tmux-windows`).
     //
     // Deliberately no `env`, unlike `--share`. This flag refuses a launch
     // that is not shared, so an `ALC_TMUX=1` left in a shell profile would
@@ -184,6 +185,18 @@ enum Command {
     Qwen(Passthrough),
     /// Launch Kimi Code CLI.
     Kimi(Passthrough),
+    /// Starts a `--tmux` session's agent from inside its tmux pane, on
+    /// Windows. Not for people: the hub puts this on the pane's command line.
+    #[command(name = remote::PANE_SUBCOMMAND, hide = true)]
+    TmuxPane(TmuxPaneArgs),
+}
+
+#[derive(Debug, Args)]
+struct TmuxPaneArgs {
+    /// The hub's loopback control port.
+    port: u16,
+    /// The one-time token that collects this pane's launch.
+    token: String,
 }
 
 #[derive(Debug, Args)]
@@ -491,6 +504,11 @@ pub fn run() -> Result<u8> {
     if let Command::Update(args) = &cli.command {
         return update::run(args.check, args.force);
     }
+    // Before the configuration is loaded, because the launcher needs none of
+    // it: everything it runs arrives from the hub, already resolved.
+    if let Command::TmuxPane(args) = &cli.command {
+        remote::run_pane(args.port, &args.token);
+    }
     let mut store = Store::load(cli.config_dir.clone())?;
     let sharing = Sharing {
         enabled: cli.share && !cli.no_share,
@@ -507,6 +525,7 @@ pub fn run() -> Result<u8> {
         Command::Usage(args) => usage::run(&store, requested_provider.as_deref(), args.json),
         Command::Models(args) => run_models(&store, args),
         Command::Update(_) => unreachable!("update is handled before config loading"),
+        Command::TmuxPane(_) => unreachable!("the pane launcher is handled before config loading"),
         Command::Remote(args) => run_remote(&store, args),
         Command::Confirm(args) => remote::confirm(&store, &args.ticket),
         Command::Hub(args) => {

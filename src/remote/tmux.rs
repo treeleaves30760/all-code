@@ -83,7 +83,30 @@
 //! command prompt, and `:run-shell` from there is a shell that alc's
 //! permission ceiling and its escalation gate never see. `-H` hands tmux
 //! bytes for the pane and no keys at all.
+//!
+//! # Windows
+//!
+//! tmux has no Windows release of its own, but it has a native port -
+//! `arndawg/tmux-windows`, tmux 3.6 built with MSVC over ConPTY and named
+//! pipes - and that is the one alc drives. It is real tmux, so everything
+//! above holds and was measured holding: the option sequence, `remain-on-exit`
+//! and the pane's exit status, `send-keys -H` byte for byte (the prefix opens
+//! no prompt), `ignore-size`, and `kill-server` taking the agent with it.
+//! Three things differ, and each has its own answer:
+//!
+//! * The pane cannot be handed the agent's launch intact - see `pane` for
+//!   what the port does to a command line, an environment and a working
+//!   directory. It runs alc's own launcher instead, which collects the launch
+//!   from the hub.
+//! * `-S` does not take a path: it reads the basename as a label, so a
+//!   server is always addressed by its `-L` label there. `TMUX_TMPDIR` plays
+//!   no part in where the pipe is, so the reason unix switches to the path
+//!   does not arise.
+//! * psmux also answers to `tmux` on Windows, reporting itself as tmux 3.3 on
+//!   the first line of `-V`, but it cannot run the command sequence a session
+//!   is created with. `find` recognises it and looks further down PATH.
 
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -109,7 +132,6 @@ use crate::remote::wire::ExitInfo;
 /// would have cost those users the feature and bought nothing. tmux's
 /// default of `off` also keeps it swallowing OSC 52, which is alc's own
 /// policy anyway.
-#[cfg(unix)]
 pub(crate) const MIN_VERSION: (u32, u32) = (3, 2);
 
 /// How the pane's own process is started.
@@ -120,6 +142,10 @@ pub(crate) const MIN_VERSION: (u32, u32) = (3, 2);
 /// tmux puts its socket address in `TMUX` for everything it spawns, and
 /// leaving it there means any `tmux` command the agent runs silently targets
 /// alc's server, including `send-keys` into its own pane.
+///
+/// Unix only: Windows has no shell to run it in, and its pane launcher does
+/// the same job (see `pane`).
+#[cfg(unix)]
 const PANE_WRAPPER: &str = r#"unset TMUX TMUX_PANE; exec "$0" "$@""#;
 
 /// How many bytes of input go into one `send-keys`.
@@ -278,6 +304,11 @@ pub(crate) enum Sizing {
 pub(crate) struct Found {
     pub binary: PathBuf,
     pub version: (u32, u32),
+    /// alc itself, as a tmux for Windows pane can start it: the pane runs
+    /// alc's launcher rather than the agent (see `pane`), and the port
+    /// cannot start a program whose path is not plain ASCII.
+    #[cfg(windows)]
+    pub launcher: PathBuf,
 }
 
 impl Found {
@@ -291,31 +322,143 @@ impl Found {
 /// Every refusal names the thing, where alc looked, and what the user loses
 /// by dropping the flag - the session still shares either way; only the two
 /// sizes stop being independent.
-pub(crate) fn find() -> Result<Found> {
-    #[cfg(not(unix))]
-    {
-        bail!(
-            "`--tmux` is not available on Windows; tmux has no Windows port, and the session hub \
-             it would run under is unverified there. Everything else alc does works normally."
-        );
-    }
-    #[cfg(unix)]
-    {
-        find_unix()
-    }
-}
-
 #[cfg(unix)]
-fn find_unix() -> Result<Found> {
+pub(crate) fn find() -> Result<Found> {
     let binary = which::which("tmux").map_err(|_| {
         anyhow::anyhow!(
             "`--tmux` needs tmux on PATH and there is none. Install it \
              (`brew install tmux`, `apt install tmux`, `dnf install tmux`) or drop the flag - \
              sharing works without it, but the size is then this terminal's and the page scales \
-             the agent's screen to fit its window."
+             the agent's screen to fit."
         )
     })?;
-    let version = read_version(&binary)?;
+    let version = parse_version(&read_version(&binary)?)
+        .with_context(|| format!("could not read a version out of `{} -V`", binary.display()))?;
+    require_floor(version)?;
+    Ok(Found { binary, version })
+}
+
+/// Resolves the native Windows port of tmux, or explains what is missing.
+///
+/// Every `tmux` on PATH is considered, not only the first: psmux installs a
+/// `tmux.exe` of its own, and a machine with both should get the one that
+/// works rather than a refusal over the one that happens to come first.
+#[cfg(windows)]
+pub(crate) fn find() -> Result<Found> {
+    const INSTALL: &str = "`winget install arndawg.tmux-windows`";
+    let candidates: Vec<PathBuf> = which::which_all("tmux")
+        .map(Iterator::collect)
+        .unwrap_or_default();
+    let mut refused = None;
+    for binary in candidates {
+        let text = read_version(&binary)?;
+        match windows_port(&text) {
+            Port::Native => {
+                let version = parse_version(&text).with_context(|| {
+                    format!("could not read a version out of `{} -V`", binary.display())
+                })?;
+                require_floor(version)?;
+                let launcher = pane_launcher()?;
+                return Ok(Found {
+                    binary,
+                    version,
+                    launcher,
+                });
+            }
+            port => {
+                refused.get_or_insert((binary, port, text));
+            }
+        }
+    }
+    match refused {
+        None => bail!(
+            "`--tmux` needs tmux on PATH and there is none. On Windows that is the native port: \
+             {INSTALL}, then open a new terminal so PATH picks it up. Or drop the flag - sharing \
+             works without it, but the size is then this terminal's and the page scales the \
+             agent's screen to fit."
+        ),
+        Some((binary, Port::Psmux, _)) => bail!(
+            "the `tmux` on your PATH ({}) is psmux, which answers to the name but cannot run the \
+             command sequence alc starts a session with. `--tmux` needs the native port of tmux \
+             itself: {INSTALL}. It can sit alongside psmux; alc looks past psmux for it. Or drop \
+             the flag.",
+            binary.display()
+        ),
+        Some((binary, _, text)) => bail!(
+            "the `tmux` on your PATH ({}, \"{}\") is not the native Windows port - an MSYS2, \
+             Cygwin or WSL build cannot host a Windows agent in a pane alc can reach. `--tmux` \
+             needs {INSTALL}; alc looks past other builds for it. Or drop the flag.",
+            binary.display(),
+            text.lines().next().unwrap_or_default().trim()
+        ),
+    }
+}
+
+/// Whether the native Windows port is anywhere on PATH, whatever else keeps
+/// `find` from using it - so `alc doctor` can tell "not installed" apart
+/// from "installed, and here is a reason it cannot be used".
+#[cfg(windows)]
+pub(crate) fn native_port_on_path() -> bool {
+    which::which_all("tmux").is_ok_and(|mut candidates| {
+        candidates.any(|binary| {
+            read_version(&binary).is_ok_and(|text| windows_port(&text) == Port::Native)
+        })
+    })
+}
+
+/// Which tmux a Windows `tmux -V` came from.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Port {
+    /// `arndawg/tmux-windows`: "tmux 3.6a-win32".
+    Native,
+    /// psmux's `tmux.exe` alias, whose first line claims to be tmux and whose
+    /// second line admits otherwise.
+    Psmux,
+    /// Anything else - an MSYS2 or Cygwin tmux reports a plain "tmux 3.5a".
+    Other,
+}
+
+#[cfg(any(windows, test))]
+fn windows_port(version_text: &str) -> Port {
+    let text = version_text.to_ascii_lowercase();
+    if text.contains("psmux") {
+        Port::Psmux
+    } else if text
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains("-win32"))
+    {
+        Port::Native
+    } else {
+        Port::Other
+    }
+}
+
+/// alc's own path, in a form tmux for Windows can start.
+///
+/// The port passes a pane's command line through the ANSI code page, and a
+/// program under a non-ASCII path fails to start at all - measured. Most
+/// installs are plain ASCII already; for one that is not, the 8.3 short form
+/// is, where the volume keeps them.
+#[cfg(windows)]
+fn pane_launcher() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("failed to find alc's own path")?;
+    if exe.to_str().is_some_and(str::is_ascii) {
+        return Ok(exe);
+    }
+    match crate::remote::win::short_path(&exe) {
+        Ok(short) if short.to_str().is_some_and(str::is_ascii) => Ok(short),
+        _ => bail!(
+            "alc is installed at {}, and tmux for Windows cannot start a program whose path is \
+             not plain ASCII (this drive keeps no 8.3 short names to fall back on). Install alc \
+             under an ASCII path, or drop `--tmux`.",
+            exe.display()
+        ),
+    }
+}
+
+fn require_floor(version: (u32, u32)) -> Result<()> {
     if version < MIN_VERSION {
         bail!(
             "tmux {}.{} is on your PATH but `--tmux` needs {}.{} or newer, for the client flags \
@@ -327,41 +470,113 @@ fn find_unix() -> Result<Found> {
             MIN_VERSION.1
         );
     }
-    Ok(Found { binary, version })
+    Ok(())
 }
 
-/// Parses `tmux -V`, which prints `tmux 3.4` or `tmux 3.7b`.
+/// Runs `tmux -V` and returns everything it printed.
 ///
-///
-/// The trailing letter is a patch release and is dropped: 3.1c is 3.1 for
-/// every purpose alc has. An unparseable line is an error rather than an
-/// optimistic pass, because the alternative is failing later with tmux's own
-/// message about an option this build has never heard of.
-#[cfg(unix)]
-fn read_version(binary: &Path) -> Result<(u32, u32)> {
+/// All of it, not the first line: psmux's second line is the only place it
+/// says what it is.
+fn read_version(binary: &Path) -> Result<String> {
     let output = Command::new(binary)
         .arg("-V")
         .stdin(Stdio::null())
         .output()
         .with_context(|| format!("failed to run {} -V", binary.display()))?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    parse_version(&text).with_context(|| {
-        format!(
-            "could not read a version out of `{} -V` ({})",
-            binary.display(),
-            text.trim()
-        )
-    })
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-#[cfg(unix)]
+/// Parses `tmux -V`, which prints `tmux 3.4`, `tmux 3.7b` or, from the
+/// Windows port, `tmux 3.6a-win32`.
+///
+/// The trailing letter is a patch release and is dropped: 3.1c is 3.1 for
+/// every purpose alc has. An unparseable line is an error rather than an
+/// optimistic pass, because the alternative is failing later with tmux's own
+/// message about an option this build has never heard of.
 fn parse_version(text: &str) -> Option<(u32, u32)> {
     let digits = text
+        .lines()
+        .next()?
         .trim()
         .trim_start_matches(|character: char| !character.is_ascii_digit());
     let (major, rest) = digits.split_once('.')?;
     let minor: String = rest.chars().take_while(char::is_ascii_digit).collect();
     Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// What a session's pane runs, and what the server that hosts it inherits.
+///
+/// The server's environment is the pane's, so the two are decided together:
+/// on unix both are the agent's, and on Windows neither is.
+pub(crate) struct PaneCommand {
+    argv: Vec<OsString>,
+    env: BTreeMap<OsString, OsString>,
+    env_remove: Vec<OsString>,
+}
+
+impl PaneCommand {
+    /// The agent itself, under the shell line that takes tmux's address
+    /// back out of its environment and then becomes it.
+    ///
+    /// A real argv rather than a shell string: tmux treats a single element
+    /// as something to hand to `sh -c` and word split, so an agent path with
+    /// a space in it would silently never run. Several elements are passed
+    /// through verbatim, which is what the agent's own quoted arguments need.
+    #[cfg(unix)]
+    pub(crate) fn agent(program: &Path, spec: &LaunchSpec) -> Self {
+        let mut argv = vec![
+            OsString::from("/bin/sh"),
+            OsString::from("-c"),
+            OsString::from(PANE_WRAPPER),
+            program.as_os_str().to_owned(),
+        ];
+        argv.extend(spec.args.iter().cloned());
+        Self {
+            argv,
+            env: spec.env.clone(),
+            env_remove: spec.env_remove.clone(),
+        }
+    }
+
+    /// alc's pane launcher, which collects the launch `token` stands for
+    /// from the hub listening on `port` (see `pane`).
+    ///
+    /// Nothing of the launch travels this way: not the agent's arguments,
+    /// which tmux for Windows would mangle, and not its environment, which
+    /// is why the server never holds the provider key on Windows. Each
+    /// element is quoted because the port joins them with spaces for
+    /// `CreateProcess`, and alc's own path may contain one.
+    #[cfg(windows)]
+    pub(crate) fn launcher(launcher: &Path, port: u16, token: &str) -> Self {
+        let argv = [
+            launcher.to_string_lossy().as_ref(),
+            crate::remote::pane::SUBCOMMAND,
+            &port.to_string(),
+            token,
+        ]
+        .iter()
+        .map(|part| OsString::from(crate::remote::pane::quote_windows_arg(part)))
+        .collect();
+        Self {
+            argv,
+            env: BTreeMap::new(),
+            env_remove: Vec::new(),
+        }
+    }
+
+    /// A pane that runs `argv` as it stands, for tests that need tmux's own
+    /// behaviour rather than an agent's.
+    #[cfg(all(test, windows))]
+    fn raw(argv: &[&str]) -> Self {
+        Self {
+            argv: argv
+                .iter()
+                .map(|part| OsString::from(crate::remote::pane::quote_windows_arg(part)))
+                .collect(),
+            env: BTreeMap::new(),
+            env_remove: Vec::new(),
+        }
+    }
 }
 
 impl Tmux {
@@ -405,10 +620,13 @@ impl Tmux {
     ///    is unaffected; what goes away is `tmux show-environment` serving
     ///    them to anything else that can reach the socket - the pane
     ///    included.
+    ///
+    /// `pane` is what the pane runs and what the server's environment gets;
+    /// `spec` is only read here for the credentials to take back out.
     pub(crate) fn create(
         &mut self,
         binary: &Path,
-        program: &Path,
+        pane: &PaneCommand,
         spec: &LaunchSpec,
         cwd: &Path,
         cols: u16,
@@ -459,38 +677,39 @@ impl Tmux {
             command.arg("set-option").args(option).arg(";");
         }
         command.args(["new-session", "-d", "-s", &self.session]);
+        // tmux for Windows refuses to start a pane at all when given `-c`,
+        // whatever the path - measured. Its pane starts in the directory of
+        // the client that started the server instead, which is this command;
+        // the launcher then puts the agent in `cwd` itself, which also covers
+        // a directory the port could not have represented.
+        #[cfg(unix)]
         command.arg("-c").arg(cwd);
+        #[cfg(not(unix))]
+        command.current_dir(cwd);
         command.args(["-x", &cols.max(20).to_string()]);
         command.args(["-y", &rows.max(4).to_string()]);
         command.arg("--");
-        // The pane command, as a real argv rather than a shell string: tmux
-        // treats a single element as something to hand to `sh -c` and word
-        // split, so an agent path with a space in it would silently never
-        // run. Several elements are passed through verbatim, which is what
-        // the agent's own quoted arguments need.
-        command.arg("/bin/sh").arg("-c").arg(PANE_WRAPPER);
-        command.arg(program);
-        command.args(&spec.args);
+        command.args(&pane.argv);
 
-        // The launch's environment, which the server inherits from this
-        // command and hands to the pane. This is the whole reason alc starts
-        // a private server per session: it is how the provider key reaches
-        // the agent without ever appearing in an argv, where `ps` - and on
-        // Linux, another account's `ps` - would read it.
-        for (name, value) in &spec.env {
+        // What the server inherits from this command and hands to the pane.
+        // On unix that is the launch's environment, and this is the whole
+        // reason alc starts a private server per session: it is how the
+        // provider key reaches the agent without ever appearing in an argv,
+        // where `ps` - and on Linux, another account's `ps` - would read it.
+        for (name, value) in &pane.env {
             command.env(name, value);
         }
-        for name in &spec.env_remove {
+        for name in &pane.env_remove {
             command.env_remove(name);
         }
         // Same reasoning as `PtyHost::spawn`: an agent asks the terminal
         // what it can do before it draws, and one that was not told falls
         // back to a rendering that looks broken next to the same agent run
         // directly.
-        if !spec.env.contains_key(OsStr::new("TERM")) {
+        if !pane.env.contains_key(OsStr::new("TERM")) {
             command.env("TERM", "xterm-256color");
         }
-        if !spec.env.contains_key(OsStr::new("COLORTERM")) {
+        if !pane.env.contains_key(OsStr::new("COLORTERM")) {
             command.env("COLORTERM", "truecolor");
         }
         // alc's own server, not the one this shell may already be inside.
@@ -613,8 +832,12 @@ impl Tmux {
     /// How to name this server on a tmux command line: the resolved socket
     /// path once there is one, and the label it was created under until
     /// then.
+    ///
+    /// Always the label on Windows. There `#{socket_path}` names a pipe
+    /// label rather than a file, and `-S` reads its basename as a label of
+    /// its own - so the path would address a different, empty server.
     fn address(&self) -> [&str; 2] {
-        if self.path.is_empty() {
+        if cfg!(windows) || self.path.is_empty() {
             ["-L", &self.label]
         } else {
             ["-S", &self.path]
@@ -818,10 +1041,11 @@ mod live {
     fn start(found: &Found, id: &str, args: &[&str], cols: u16, rows: u16) -> Live {
         let mut tmux = Tmux::for_session(id).unwrap();
         let temp = tempfile::tempdir().unwrap();
+        let spec = spec(args);
         tmux.create(
             &found.binary,
-            Path::new("/bin/sh"),
-            &spec(args),
+            &PaneCommand::agent(Path::new("/bin/sh"), &spec),
+            &spec,
             temp.path(),
             cols,
             rows,
@@ -1050,7 +1274,7 @@ mod live {
         let mut tmux = Tmux::for_session("claude-LIVEBADNAM").unwrap();
         let refused = tmux.create(
             &found.binary,
-            Path::new("/bin/sh"),
+            &PaneCommand::agent(Path::new("/bin/sh"), &spec),
             &spec,
             temp.path(),
             80,
@@ -1087,7 +1311,7 @@ mod live {
         let mut tmux = Tmux::for_session("claude-LIVEKEY001").unwrap();
         tmux.create(
             &found.binary,
-            Path::new("/bin/sh"),
+            &PaneCommand::agent(Path::new("/bin/sh"), &spec),
             &spec,
             temp.path(),
             80,
@@ -1113,7 +1337,343 @@ mod live {
     }
 }
 
-#[cfg(all(test, unix))]
+/// Against the native Windows port of tmux, when there is one on PATH.
+///
+/// Skipped rather than failed without it, for the same reason the unix set
+/// is: CI's Windows image does not ship it. Each test is a claim about the
+/// port that was measured by hand first (see the module note and `pane`),
+/// kept here so a new release of the port that changes one is caught.
+#[cfg(all(test, windows))]
+mod live_windows {
+    use super::*;
+    use crate::launch::LaunchSpec;
+    use crate::remote::ctl::{self, Inbound};
+    use crate::remote::pane::{PaneLaunch, PendingLaunches};
+    use crate::remote::pty::{PtyCommand, PtyHost};
+    use std::ffi::OsString;
+    use std::io::{BufReader, Read, Write};
+    use std::sync::Arc;
+    use std::thread::{self, sleep};
+    use std::time::{Duration, Instant};
+
+    fn tmux() -> Option<Found> {
+        find().ok()
+    }
+
+    /// A `Tmux` whose server is running, plus a guard that stops it.
+    struct Live {
+        tmux: Tmux,
+        binary: PathBuf,
+    }
+
+    impl Drop for Live {
+        fn drop(&mut self) {
+            let _ = self.tmux.stop(&self.binary);
+        }
+    }
+
+    fn start(found: &Found, id: &str, pane: &PaneCommand, cols: u16, rows: u16) -> Live {
+        let mut tmux = Tmux::for_session(id).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        tmux.create(
+            &found.binary,
+            pane,
+            &LaunchSpec::for_test(),
+            temp.path(),
+            cols,
+            rows,
+        )
+        .unwrap();
+        Live {
+            tmux,
+            binary: found.binary.clone(),
+        }
+    }
+
+    fn system32(program: &str) -> String {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_owned());
+        format!("{root}\\System32\\{program}")
+    }
+
+    /// A pane that stays up for `seconds` without needing a console to read.
+    fn sleeper(seconds: u32) -> PaneCommand {
+        PaneCommand::raw(&[
+            &system32("PING.EXE"),
+            "-n",
+            &seconds.to_string(),
+            "127.0.0.1",
+        ])
+    }
+
+    fn wait_for_exit(live: &Live) -> Option<ExitInfo> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            if let Some(exit) = live.tmux.probe(&live.binary).and_then(|snap| snap.exit) {
+                return Some(exit);
+            }
+            sleep(Duration::from_millis(100));
+        }
+        None
+    }
+
+    fn window(live: &Live, expected: (u16, u16)) -> Option<(u16, u16)> {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut last = None;
+        while Instant::now() < deadline {
+            last = live.tmux.probe(&live.binary).and_then(|snap| snap.window);
+            if last == Some(expected) {
+                return last;
+            }
+            sleep(Duration::from_millis(100));
+        }
+        last
+    }
+
+    /// A live tmux client on `live`'s session, held open by a ConPTY.
+    fn attach(found: &Found, argv: Vec<OsString>, cols: u16, rows: u16) -> PtyHost {
+        let mut command = PtyCommand::agent(&found.binary, &LaunchSpec::for_test());
+        command.args = argv;
+        command.env_remove = vec![OsString::from("TMUX"), OsString::from("TMUX_PANE")];
+        let temp = std::env::temp_dir();
+        let (pty, reader) = PtyHost::spawn(&command, &temp, cols, rows).unwrap();
+        thread::spawn(move || {
+            let mut reader = reader;
+            let mut sink = [0_u8; 4096];
+            while reader.read(&mut sink).is_ok_and(|read| read > 0) {}
+        });
+        pty
+    }
+
+    fn alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        const STILL_ACTIVE: u32 = 259;
+        // SAFETY: a handle opened for querying only, closed before return.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut code = 0;
+            let answered = GetExitCodeProcess(handle, &mut code) != 0;
+            CloseHandle(handle);
+            answered && code == STILL_ACTIVE
+        }
+    }
+
+    #[test]
+    fn a_session_starts_at_the_size_it_was_asked_for() {
+        let Some(found) = tmux() else { return };
+        let live = start(&found, "claude-WINSIZE001", &sleeper(30), 96, 28);
+        let snapshot = live.tmux.probe(&found.binary).unwrap();
+        assert_eq!(snapshot.window, Some((96, 28)));
+        assert!(snapshot.exit.is_none());
+        assert!(snapshot.pane_pid.is_some());
+        // Read back for display; the server is addressed by label regardless.
+        assert!(
+            live.tmux.path.contains("alc-claude-winsize001"),
+            "{}",
+            live.tmux.path
+        );
+        assert!(live.tmux.pane.starts_with('%'), "{}", live.tmux.pane);
+    }
+
+    /// The claim `--tmux` rests on, on Windows: the mirror's ConPTY sets the
+    /// window and the local terminal's does not, in either direction.
+    #[test]
+    fn the_mirror_sizes_the_window_and_the_local_terminal_does_not() {
+        let Some(found) = tmux() else { return };
+        let live = start(&found, "claude-WINVOTE001", &sleeper(60), 96, 28);
+
+        let mirror = attach(&found, live.tmux.mirror_argv(), 100, 30);
+        let terminal = attach(&found, live.tmux.terminal_argv(), 70, 20);
+        assert_eq!(
+            window(&live, (100, 30)),
+            Some((100, 30)),
+            "the mirror votes, and it is the only client that does"
+        );
+
+        terminal.resize(60, 16).unwrap();
+        assert_eq!(
+            window(&live, (100, 30)),
+            Some((100, 30)),
+            "a smaller local terminal cannot shrink the window"
+        );
+        terminal.resize(200, 60).unwrap();
+        assert_eq!(
+            window(&live, (100, 30)),
+            Some((100, 30)),
+            "a larger local terminal cannot grow it either"
+        );
+
+        // What a browser resize does: `Session::resize_from_viewer` resizes
+        // the mirror's ConPTY, the port's client notices, and the window
+        // follows.
+        mirror.resize(88, 24).unwrap();
+        assert_eq!(
+            window(&live, (88, 24)),
+            Some((88, 24)),
+            "the page's size reaches tmux through the mirror's pty"
+        );
+    }
+
+    #[test]
+    fn a_failing_agent_is_reported_with_its_own_status() {
+        let Some(found) = tmux() else { return };
+        let pane = PaneCommand::raw(&[&system32("cmd.exe"), "/d", "/c", "exit 42"]);
+        let live = start(&found, "claude-WINEXIT001", &pane, 80, 24);
+        assert_eq!(wait_for_exit(&live).and_then(|exit| exit.code), Some(42));
+    }
+
+    /// `alc kill` on Windows is `kill-server` - there is no hangup to send
+    /// first - so this is the only thing standing between it and an agent
+    /// left running with nobody watching.
+    #[test]
+    fn stopping_the_server_stops_the_agent() {
+        let Some(found) = tmux() else { return };
+        let live = start(&found, "claude-WINKILL001", &sleeper(60), 80, 24);
+        let pid = live.tmux.probe(&found.binary).unwrap().pane_pid.unwrap();
+        assert!(alive(pid), "the agent never started");
+
+        live.tmux.stop(&found.binary).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while alive(pid) && Instant::now() < deadline {
+            sleep(Duration::from_millis(100));
+        }
+        assert!(
+            !alive(pid),
+            "the agent outlived the tmux server that hosted it"
+        );
+    }
+
+    /// A viewer's keystrokes go to the pane as bytes, and tmux's prefix
+    /// among them is only a byte: no command prompt, no new window.
+    #[test]
+    fn a_viewers_prefix_key_does_not_reach_tmuxs_command_prompt() {
+        let Some(found) = tmux() else { return };
+        let live = start(&found, "claude-WINKEYS001", &sleeper(30), 80, 24);
+        // ctrl-b, `c` - "new window" if tmux read it as keys.
+        live.tmux.send(&found.binary, b"\x02c").unwrap();
+        sleep(Duration::from_millis(500));
+        let windows = live
+            .tmux
+            .run(&found.binary, &["list-windows", "-t", "alc"])
+            .unwrap();
+        let listed = String::from_utf8_lossy(&windows.stdout);
+        assert_eq!(listed.lines().count(), 1, "{listed}");
+    }
+
+    /// The agent `the_pane_launcher_runs_the_agent_with_its_launch_intact`
+    /// starts: this test binary, running only this test, which records what
+    /// it was given and exits with a status of its own. Without the variable
+    /// it is an ordinary test that does nothing.
+    #[test]
+    fn probe_agent_records_its_launch() {
+        let Some(out) = std::env::var_os("ALC_PANE_PROBE_OUT") else {
+            return;
+        };
+        // The test binary's own path, then the filter naming this test.
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let seen = serde_json::json!({
+            "args": args,
+            "cwd": std::env::current_dir().unwrap(),
+            "value": std::env::var("ALC_PANE_PROBE_VALUE").ok(),
+            "tmux": std::env::var_os("TMUX").is_some(),
+            "tmux_pane": std::env::var_os("TMUX_PANE").is_some(),
+        });
+        std::fs::write(out, seen.to_string()).unwrap();
+        std::process::exit(7);
+    }
+
+    /// alc's own binary, which `cargo test` builds beside this one.
+    fn alc_binary() -> Option<PathBuf> {
+        let deps = std::env::current_exe().ok()?;
+        let binary = deps.parent()?.parent()?.join("alc.exe");
+        binary.is_file().then_some(binary)
+    }
+
+    /// Everything tmux for Windows was measured mangling, carried through
+    /// the launcher intact: arguments, a non-ASCII working directory and
+    /// environment value, and no address of alc's own server.
+    #[test]
+    fn the_pane_launcher_runs_the_agent_with_its_launch_intact() {
+        let Some(found) = tmux() else { return };
+        let Some(alc) = alc_binary() else {
+            eprintln!("skipped: alc.exe is not built beside the test binary");
+            return;
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join("seen.json");
+        let cwd = temp.path().join("dir \u{e9}\u{4e2d}");
+        std::fs::create_dir(&cwd).unwrap();
+
+        let arguments = [
+            "arg with space",
+            "uni\u{e9}\u{4e2d}",
+            ";",
+            "in\"side",
+            "100%PATH%",
+        ];
+        let mut spec = LaunchSpec::for_test();
+        spec.args = std::iter::once("probe_agent_records_its_launch")
+            .chain(arguments)
+            .map(OsString::from)
+            .collect();
+        spec.env
+            .insert(OsString::from("ALC_PANE_PROBE_OUT"), out.clone().into());
+        spec.env.insert(
+            OsString::from("ALC_PANE_PROBE_VALUE"),
+            OsString::from("val\u{e9}\u{4e2d}\u{6587}"),
+        );
+        let agent = std::env::current_exe().unwrap();
+        let launch = PaneLaunch::resolve(&agent, &spec, &cwd).unwrap();
+        let pending = Arc::new(PendingLaunches::default());
+        let token = pending.hold(launch).unwrap();
+
+        // A stand-in for the hub's control port, answering one pane the way
+        // `Hub::serve_control` does.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let serving = Arc::clone(&pending);
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut peer = stream.try_clone().unwrap();
+            let mut reader = BufReader::new(stream);
+            if let Ok(Inbound::Pane { token }) = ctl::read_inbound(&mut reader, "not-this") {
+                let mut line = serde_json::to_string(&serving.answer(&token)).unwrap();
+                line.push('\n');
+                peer.write_all(line.as_bytes()).unwrap();
+            }
+        });
+
+        let pane = PaneCommand::launcher(&alc, port, &token);
+        let live = start(&found, "claude-WINLAUNCH1", &pane, 100, 30);
+        let exit = wait_for_exit(&live).expect("the agent never finished");
+        assert_eq!(
+            exit.code,
+            Some(7),
+            "the launcher reports the agent's own status"
+        );
+
+        let seen: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(seen["args"], serde_json::json!(arguments));
+        assert_eq!(seen["cwd"], serde_json::json!(cwd));
+        assert_eq!(
+            seen["value"],
+            serde_json::json!("val\u{e9}\u{4e2d}\u{6587}")
+        );
+        assert_eq!(seen["tmux"], serde_json::json!(false));
+        assert_eq!(seen["tmux_pane"], serde_json::json!(false));
+        // Collected once: a replay of the command line tmux still shows for
+        // the pane gets nothing.
+        assert!(pending.take(&token).is_none());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1123,6 +1683,23 @@ mod tests {
         assert_eq!(parse_version("tmux 3.7b\n"), Some((3, 7)));
         assert_eq!(parse_version("tmux next-3.6"), Some((3, 6)));
         assert_eq!(parse_version("tmux 2.9a"), Some((2, 9)));
+        // The native Windows port, and its `\r\n` line ending.
+        assert_eq!(parse_version("tmux 3.6a-win32\r\n"), Some((3, 6)));
+    }
+
+    /// psmux prints two lines, and only the second says what it is. The
+    /// version is read from the first, which is why the port is decided
+    /// from the whole text rather than from the version.
+    #[test]
+    fn psmux_is_told_apart_from_the_tmux_it_claims_to_be() {
+        let psmux = "tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n";
+        assert_eq!(parse_version(psmux), Some((3, 3)));
+        assert_eq!(windows_port(psmux), Port::Psmux);
+        assert_eq!(windows_port("tmux 3.6a-win32\r\n"), Port::Native);
+        // An MSYS2 or Cygwin build cannot host a Windows agent in a pane alc
+        // can reach, however new it is.
+        assert_eq!(windows_port("tmux 3.5a\n"), Port::Other);
+        assert_eq!(windows_port(""), Port::Other);
     }
 
     #[test]
@@ -1156,6 +1733,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_client_addresses_the_socket_by_path_once_there_is_one() {
         // The hub and the shell attaching to it need not agree on
@@ -1189,13 +1767,78 @@ mod tests {
         );
     }
 
+    /// tmux for Windows reads the basename of a `-S` path as a label of its
+    /// own, so the `#{socket_path}` it reports would address a different,
+    /// empty server - measured.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_client_always_addresses_the_server_by_its_label() {
+        let mut tmux = Tmux::for_session("codex-0123456789").unwrap();
+        tmux.path = "tmux-User-alc-codex-0123456789".to_owned();
+        assert_eq!(
+            strings(tmux.mirror_argv())[..2],
+            ["-L", "alc-codex-0123456789"]
+        );
+        assert_eq!(
+            strings(tmux.terminal_argv())[..2],
+            ["-L", "alc-codex-0123456789"]
+        );
+    }
+
     /// The pane wrapper is the only place alc's own tmux address is taken
     /// away from the agent, and it has to keep `exec` so the pane's process
     /// stays the agent itself.
+    #[cfg(unix)]
     #[test]
     fn the_pane_wrapper_unsets_the_socket_address_and_execs() {
         assert!(PANE_WRAPPER.contains("unset TMUX TMUX_PANE"));
         assert!(PANE_WRAPPER.contains("exec \"$0\" \"$@\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_unix_pane_runs_the_agent_under_the_wrapper_with_its_environment() {
+        let mut spec = LaunchSpec::for_test();
+        spec.args = vec![OsString::from("--model"), OsString::from("x y")];
+        spec.env
+            .insert(OsString::from("PROVIDER_KEY"), OsString::from("value"));
+        let pane = PaneCommand::agent(Path::new("/opt/claude"), &spec);
+        assert_eq!(
+            strings(pane.argv),
+            [
+                "/bin/sh",
+                "-c",
+                PANE_WRAPPER,
+                "/opt/claude",
+                "--model",
+                "x y"
+            ]
+        );
+        assert_eq!(
+            pane.env.get(OsStr::new("PROVIDER_KEY")),
+            Some(&OsString::from("value"))
+        );
+    }
+
+    /// Nothing of the launch goes to tmux on Windows - the provider key
+    /// least of all - and the launcher's own path is quoted because the port
+    /// re-splits the joined command line.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_pane_runs_the_launcher_and_carries_no_environment() {
+        let pane =
+            PaneCommand::launcher(Path::new("C:\\Program Files\\alc\\alc.exe"), 51234, "00ff");
+        assert_eq!(
+            strings(pane.argv),
+            [
+                "\"C:\\Program Files\\alc\\alc.exe\"",
+                "__tmux-pane",
+                "51234",
+                "00ff"
+            ]
+        );
+        assert!(pane.env.is_empty());
+        assert!(pane.env_remove.is_empty());
     }
 
     #[test]
