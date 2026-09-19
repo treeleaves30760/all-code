@@ -17,21 +17,97 @@ Install, log in to Codex once, launch. Everything else on this page is optional.
 
 ## Install
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
-```
+### Windows PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
 ```
 
+### macOS
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
+```
+
+### Linux / WSL
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
+```
+
 The installer puts `alc` in `~/.local/bin` (Windows: `%USERPROFILE%\.local\bin`)
 and adds that directory to your user PATH when it can; when it cannot, it
-prints the line to add. `ALC_INSTALL_DIR` chooses another directory;
-`ALC_NO_PATH_UPDATE=1` leaves PATH alone.
+prints the directory to add. On macOS/Linux, restart the terminal or source the
+profile it names; PowerShell updates both User PATH and the current session.
+`ALC_INSTALL_DIR` chooses another directory: custom directories are not added
+to PATH on macOS/Linux, but are added on Windows. Windows PowerShell 5.1 and
+PowerShell 7 are supported, including 32-bit PowerShell on 64-bit Windows.
+
+### Optional tmux setup
+
+After alc is downloaded, SHA-256 verified, and installed, the installer checks
+`tmux -V` for **3.2 or newer**. Compatible versions are left alone. Otherwise it
+tries to install or upgrade tmux using an existing system package manager:
+
+- **Windows:** WinGet, `arndawg.tmux-windows`, user scope, with no forced CPU
+  architecture. The automatic flow accepts package/source agreements and
+  disables interaction. psmux and non-native ports are skipped; an old or
+  unparseable first native port on PATH still blocks later versions.
+- **macOS:** `brew install tmux`, or `brew upgrade tmux` when already installed;
+  Homebrew is never run with sudo.
+- **Linux / WSL:** the first available `apt-get`, `dnf`, `yum`, `pacman`,
+  `zypper`, or `apk`. Non-root installs use cached sudo credentials, or prompt
+  only through a controlling terminal when stdout or stderr is a terminal.
+  Package commands use noninteractive sudo and never read the piped script.
+  pacman does not separately refresh indexes, avoiding a partial upgrade.
+
+**Only `--tmux` needs tmux; ordinary alc and plain `--share` do not.** Missing
+managers, unavailable privileges, unsupported packages/architectures, failed
+installs, or an old PATH entry hiding the new version produce warnings and
+manual instructions, without failing the alc installation. No Homebrew/WinGet
+bootstrap, source build, psmux removal, or tmux configuration changes are made.
+The version is checked again rather than assuming the package operation worked.
+
+PowerShell appends new User/Machine PATH entries without replacing session-only
+paths. If tmux is still missing, restart the terminal and check `tmux -V` and
+`alc doctor`. Manual fallbacks (choose your platform):
+
+```powershell
+winget install --id arndawg.tmux-windows --exact
+```
+
+```sh
+brew install tmux                                      # macOS (upgrade if already installed)
+sudo apt-get update && sudo apt-get install -y tmux     # Debian / Ubuntu / WSL
+sudo dnf install -y tmux                               # Fedora / RHEL (or yum)
+sudo pacman -S --needed tmux                           # Arch; keep the system fully updated
+sudo zypper install tmux                               # openSUSE
+sudo apk add --upgrade tmux                            # Alpine
+```
+
+### Installer opt-outs
+
+`ALC_NO_TMUX_INSTALL=1` skips automatic tmux setup. Independently,
+`ALC_NO_PATH_UPDATE=1` disables **alc's own** PATH edits and session PATH refresh;
+open a new terminal for package-manager PATH changes. WinGet can still modify
+persistent PATH itself. Set **both** to avoid dependency-install side effects as
+well as installer PATH edits:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | ALC_NO_TMUX_INSTALL=1 ALC_NO_PATH_UPDATE=1 sh
+```
+
+```powershell
+$env:ALC_NO_TMUX_INSTALL = '1'
+$env:ALC_NO_PATH_UPDATE = '1'
+irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
+# Optional: clear these overrides for future installs in this session.
+Remove-Item Env:ALC_NO_TMUX_INSTALL, Env:ALC_NO_PATH_UPDATE
+```
 
 From source, with Rust 1.88 or newer: `cargo build --release --locked`. The
-Codex bridge is part of the binary, so nothing else is needed.
+Codex bridge is part of the binary, so nothing else is needed for the bridge.
+Install tmux separately if you want `--tmux` with a source build.
 
 ## First run
 

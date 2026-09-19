@@ -530,11 +530,12 @@ stating plainly: your local terminal is now a direct tmux client rather than a
 mirror, so it shows the agent's raw output. The browser still sees API keys alc
 injected masked; your own terminal does not.
 
-**On Windows**, install the native Windows port of tmux, then open a new terminal
-so PATH picks it up:
+**On Windows**, the alc installer automatically checks for and tries to install
+the native Windows port of tmux. If setup was skipped or could not finish, this
+is the manual fallback; then open a new terminal so PATH picks it up:
 
 ```powershell
-winget install arndawg.tmux-windows
+winget install --id arndawg.tmux-windows --exact
 ```
 
 The **tmux** row of `alc doctor` says whether the native port was found. psmux
@@ -684,16 +685,22 @@ Codex-to-Claude setting precedence are in the
 
 ## Install
 
-macOS, Linux, and WSL:
+### Windows PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
+```
+
+### macOS
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
 ```
 
-Windows PowerShell:
+### Linux / WSL
 
-```powershell
-irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
+```sh
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
 ```
 
 The installer puts `alc` in `~/.local/bin` (Windows:
@@ -703,9 +710,69 @@ installer; PowerShell updates the current session and your User PATH. If PATH
 cannot be changed, the installer prints the exact directory to add manually. To
 install into a different directory, set `ALC_INSTALL_DIR`: on macOS and Linux a
 custom directory is never added to PATH for you, while on Windows it is added to
-your User PATH like the default one. Set `ALC_NO_PATH_UPDATE=1` to disable
-automatic PATH changes explicitly. The Windows installer is tested with both Windows PowerShell
-5.1 and PowerShell 7, including 32-bit PowerShell running on 64-bit Windows.
+your User PATH like the default one. The Windows installer supports Windows
+PowerShell 5.1 and PowerShell 7, including 32-bit PowerShell on 64-bit Windows.
+
+### Optional tmux setup
+
+After downloading, verifying SHA-256, and installing alc, the installer checks
+`tmux -V` for **3.2 or newer**. A compatible install is left alone; otherwise it
+tries to install or upgrade tmux using an existing system package manager:
+
+- **Windows:** WinGet, package `arndawg.tmux-windows`, user scope, without forcing
+  a CPU architecture. The automatic command accepts package and source
+  agreements and disables interaction. It skips psmux and non-native ports;
+  an old or unparseable first native port on PATH still blocks later ones.
+- **macOS:** Homebrew (`brew install tmux`, or `brew upgrade tmux` if already
+  installed). Homebrew is never run with sudo.
+- **Linux / WSL:** the first available `apt-get`, `dnf`, `yum`, `pacman`,
+  `zypper`, or `apk`. Non-root installs use cached sudo credentials, or ask for
+  them only via a controlling terminal when stdout or stderr is a terminal.
+  Package operations use noninteractive sudo and never read the piped script.
+  pacman does not refresh package indexes on its own, avoiding a partial upgrade.
+
+**tmux is only needed for `--tmux`, not ordinary alc or plain `--share`.** No
+Homebrew/WinGet bootstrap, source build, psmux removal, or tmux configuration
+changes are performed. Missing managers, unavailable privileges, unsupported
+packages/architectures, failed installs, and versions still hidden by an older
+PATH entry produce warnings and manual instructions; they do not fail the alc
+installation. The installer rechecks the version instead of assuming success.
+
+PowerShell appends new User/Machine PATH entries to the current session without
+replacing session-only entries. If tmux is still missing, open a new terminal
+and check `tmux -V` and `alc doctor`. Manual fallbacks (choose your platform):
+
+```powershell
+winget install --id arndawg.tmux-windows --exact
+```
+
+```sh
+brew install tmux                                      # macOS (upgrade if already installed)
+sudo apt-get update && sudo apt-get install -y tmux     # Debian / Ubuntu / WSL
+sudo dnf install -y tmux                               # Fedora / RHEL (or yum)
+sudo pacman -S --needed tmux                           # Arch; keep the system fully updated
+sudo zypper install tmux                               # openSUSE
+sudo apk add --upgrade tmux                            # Alpine
+```
+
+### Installer opt-outs
+
+`ALC_NO_TMUX_INSTALL=1` skips automatic tmux setup; `ALC_NO_PATH_UPDATE=1`
+separately stops **alc's own** PATH edits, including session PATH refresh.
+WinGet can still change persistent PATH itself. To avoid dependency-install
+side effects as well as installer PATH edits, set **both**:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | ALC_NO_TMUX_INSTALL=1 ALC_NO_PATH_UPDATE=1 sh
+```
+
+```powershell
+$env:ALC_NO_TMUX_INSTALL = '1'
+$env:ALC_NO_PATH_UPDATE = '1'
+irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
+# Optional: clear these overrides for future installs in this session.
+Remove-Item Env:ALC_NO_TMUX_INSTALL, Env:ALC_NO_PATH_UPDATE
+```
 
 ### Updating
 

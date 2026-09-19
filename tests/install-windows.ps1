@@ -14,6 +14,7 @@ function Assert-True {
 $environmentNames = @(
     'ALC_INSTALL_DIR',
     'ALC_NO_PATH_UPDATE',
+    'ALC_NO_TMUX_INSTALL',
     'PROCESSOR_ARCHITECTURE',
     'PROCESSOR_ARCHITEW6432'
 )
@@ -32,6 +33,7 @@ try {
     $env:PROCESSOR_ARCHITEW6432 = 'AMD64'
     $env:ALC_INSTALL_DIR = $testDir
     $env:ALC_NO_PATH_UPDATE = '1'
+    $env:ALC_NO_TMUX_INSTALL = '1'
 
     $installer = Join-Path (Split-Path -Parent $PSScriptRoot) 'install.ps1'
     $installerSource = Get-Content -Raw -LiteralPath $installer

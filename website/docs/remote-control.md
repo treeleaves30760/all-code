@@ -233,11 +233,13 @@ viewer cannot reach tmux's command prompt; your own terminal is a full client
 and can.
 
 On Windows, `--tmux` needs the native Windows port of tmux (tested: tmux
-3.6a-win32). Open a new terminal after installing it so PATH picks it up; the
-tmux row of `alc doctor` says whether it was found.
+3.6a-win32). The alc installer checks for it and tries to install it automatically;
+see [installation and opt-outs](./getting-started.md#optional-tmux-setup). If setup
+was skipped or failed, use this manual fallback, then open a new terminal so PATH
+picks it up. The tmux row of `alc doctor` says whether it was found.
 
 ```powershell
-winget install arndawg.tmux-windows
+winget install --id arndawg.tmux-windows --exact
 ```
 
 psmux also installs a `tmux.exe`, but alc cannot drive it (it cannot run the

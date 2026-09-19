@@ -32,6 +32,128 @@ download() {
   fi
 }
 
+tmux_ready() {
+  tmux_reason='tmux is not on PATH'
+  command_exists tmux || return 1
+  if ! tmux_version=$(tmux -V </dev/null 2>/dev/null); then
+    tmux_reason='tmux -V failed for the first tmux on PATH'
+    return 1
+  fi
+  # Like alc, read major.minor from the first line, ignoring patch suffixes.
+  if printf '%s\n' "$tmux_version" | awk '
+    NR == 1 {
+      sub(/^[^0-9]*/, "")
+      if (!match($0, /^[0-9]+\.[0-9]+/)) exit 1
+      split(substr($0, 1, RLENGTH), v, ".")
+      exit !(v[1] <= 4294967295 && v[2] <= 4294967295 &&
+             (v[1] > 3 || (v[1] == 3 && v[2] >= 2)))
+    }'; then
+    return 0
+  fi
+  tmux_reason='the first tmux on PATH is older than 3.2 or its version cannot be parsed'
+  return 1
+}
+
+tmux_warning() {
+  printf 'alc installer: warning: %s. alc is installed; only --tmux needs tmux 3.2+.\n' "$1" >&2
+  printf 'Install or upgrade manually, then check PATH and tmux -V:\n  %s\n' "$tmux_manual" >&2
+}
+
+tmux_package() {
+  # Never let a package command read a piped install script or prompt for sudo.
+  if [ "$tmux_use_sudo" = yes ]; then
+    sudo -n "$@" </dev/null
+  else
+    "$@" </dev/null
+  fi
+}
+
+install_tmux() {
+  if [ "${ALC_NO_TMUX_INSTALL:-0}" = 1 ]; then
+    printf 'Skipping tmux dependency setup (ALC_NO_TMUX_INSTALL=1).\n'
+    return
+  fi
+  if tmux_ready; then
+    printf 'tmux is ready for --tmux (3.2 or newer).\n'
+    return
+  fi
+
+  tmux_use_sudo=no
+  if [ "$os" = darwin ]; then
+    tmux_manual='brew install tmux'
+    if ! command_exists brew; then
+      tmux_warning "$tmux_reason; Homebrew is not installed (not installed automatically)"
+      return
+    fi
+    if brew list --versions tmux </dev/null >/dev/null 2>&1; then
+      tmux_manual='brew upgrade tmux'
+      set -- brew upgrade tmux
+    else
+      set -- brew install tmux
+    fi
+  else
+    tmux_manager=''
+    for candidate in apt-get dnf yum pacman zypper apk; do
+      if command_exists "$candidate"; then
+        tmux_manager=$candidate
+        break
+      fi
+    done
+    case "$tmux_manager" in
+      apt-get) set -- apt-get install -y tmux; tmux_manual='sudo apt-get update && sudo apt-get install -y tmux' ;;
+      dnf) set -- dnf install -y tmux; tmux_manual='sudo dnf install -y tmux' ;;
+      yum) set -- yum install -y tmux; tmux_manual='sudo yum install -y tmux' ;;
+      pacman) set -- pacman -S --needed --noconfirm tmux; tmux_manual='sudo pacman -S --needed tmux' ;;
+      zypper) set -- zypper --non-interactive install tmux; tmux_manual='sudo zypper install tmux' ;;
+      apk) set -- apk add --upgrade tmux; tmux_manual='sudo apk add --upgrade tmux' ;;
+      *)
+        tmux_manual='Install tmux 3.2+ with your package manager (e.g. sudo apt-get update && sudo apt-get install -y tmux).'
+        tmux_warning "$tmux_reason; no supported package manager was found"
+        return
+        ;;
+    esac
+    if [ "$(id -u)" != 0 ]; then
+      if ! command_exists sudo; then
+        tmux_warning "$tmux_reason; root privileges or sudo are required"
+        return
+      fi
+      if sudo -n -v </dev/null 2>/dev/null; then
+        tmux_use_sudo=yes
+      elif { [ -t 1 ] || [ -t 2 ]; } && ( : </dev/tty ) 2>/dev/null; then
+        # A controlling terminal is separate from the curl | sh script input.
+        if sudo -v </dev/tty; then
+          tmux_use_sudo=yes
+        else
+          tmux_warning "$tmux_reason; sudo authentication failed"
+          return
+        fi
+      else
+        tmux_warning "$tmux_reason; sudo credentials are unavailable without an interactive terminal"
+        return
+      fi
+    fi
+    if [ "$tmux_manager" = apt-get ]; then
+      if ! tmux_package apt-get update; then
+        tmux_warning 'tmux package index update failed'
+        return
+      fi
+    fi
+  fi
+
+  printf 'Installing or upgrading optional tmux using %s...\n' "$1"
+  if ! tmux_package "$@"; then
+    tmux_warning 'tmux package installation failed'
+  fi
+  # Forget cached executable locations and verify the version alc will see,
+  # including when the manager installed tmux before reporting a later failure.
+  hash -r 2>/dev/null || :
+  if tmux_ready; then
+    printf 'tmux is ready for --tmux (3.2 or newer).\n'
+  else
+    tmux_warning "$tmux_reason after package installation; an older PATH entry may be hiding it"
+  fi
+}
+
 case "$(uname -s)" in
   Linux) os="linux" ;;
   Darwin) os="darwin" ;;
@@ -151,3 +273,5 @@ case "$path_status" in
     printf '  export PATH="%s:$PATH"\n' "$install_dir" >&2
     ;;
 esac
+
+install_tmux

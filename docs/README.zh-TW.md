@@ -145,7 +145,7 @@ Id 可以只給任何不會有歧義的前綴，就像 git 的短雜湊那樣。
 `alc confirm <ticket>`。[遠端控制](#遠端控制)有完整的權限層級與威脅模型。
 
 遠端控制在 macOS、Linux 與 Windows 10／11 上都能用；在 Windows 上搭配 `--tmux`
-要另外裝原生的 Windows 版 tmux，見[尺寸歸誰決定](#尺寸歸誰決定)。
+要有原生 Windows 版 tmux（安裝器會嘗試自動補裝），見[尺寸歸誰決定](#尺寸歸誰決定)。
 
 ## 任何 provider 都行，不只 Codex
 
@@ -487,10 +487,11 @@ tmux 完全不受影響，alc 的 session 對每個人的行為都一樣，而 `
 的終端機現在是直接的 tmux client，不再是鏡像，所以它看到的是 agent 的原始輸出。
 瀏覽器那邊仍然會把 alc 注入的 API key 遮蔽掉，你自己的終端機不會。
 
-**在 Windows 上**，`--tmux` 要用原生的 Windows 版 tmux：
+**在 Windows 上**，alc 安裝器會自動檢查並嘗試補裝原生 Windows 版 tmux。
+若跳過自動補裝或未能完成，以下是手動備援：
 
 ```powershell
-winget install arndawg.tmux-windows
+winget install --id arndawg.tmux-windows --exact
 ```
 
 裝完請開一個新的終端機，讓 PATH 讀得到它；`alc doctor` 的 **tmux** 那一列會說有沒有
@@ -626,16 +627,22 @@ Sharing & remote。在 Codex profile 上，把游標移到 Model 欄位並按 `�
 
 ## 安裝
 
-macOS、Linux、WSL：
+### Windows PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
+```
+
+### macOS
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
 ```
 
-Windows PowerShell：
+### Linux / WSL
 
-```powershell
-irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
+```sh
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
 ```
 
 安裝器會把 `alc` 放進 `~/.local/bin`（Windows 為
@@ -644,9 +651,66 @@ Linux 請重開終端機，或 `source` 安裝器提示的設定檔；PowerShell
 目前的 session 與 User PATH。如果系統不允許修改 PATH，安裝器會明確印出需
 要手動加入的目錄。要安裝到其他目錄，請設定 `ALC_INSTALL_DIR`：在 macOS 與
 Linux 上，自訂目錄永遠不會自動幫你加進 PATH；在 Windows 上則會像預設目錄
-一樣加進你的 User PATH。設定 `ALC_NO_PATH_UPDATE=1` 可以明確關閉自動修改
-PATH。Windows 安裝器已在 Windows PowerShell 5.1 與 PowerShell 7 上測試，
-包含 64 位元 Windows 上執行的 32 位元 PowerShell。
+一樣加進你的 User PATH。Windows 安裝器支援 Windows PowerShell 5.1 與
+PowerShell 7，包含 64 位元 Windows 上執行的 32 位元 PowerShell。
+
+### 選用的 tmux 補裝
+
+下載 alc、通過 SHA-256 驗證並完成安裝之後，安裝器會用 `tmux -V` 檢查是否為
+**3.2 以上**。已有相容版本就不更動；否則會透過現有的系統套件管理器嘗試
+安裝或升級 tmux：
+
+- **Windows：**使用 WinGet 的 `arndawg.tmux-windows` 套件，限使用者範圍，
+  不強制 CPU 架構。自動流程會接受套件與來源同意，並關閉互動提示。會跳過
+  psmux 與非原生移植版；PATH 上第一個原生版若過舊或無法解析，仍會擋住後方新版。
+- **macOS：**使用 Homebrew（`brew install tmux`；已安裝則用
+  `brew upgrade tmux`）。Homebrew 不會透過 sudo 執行。
+- **Linux / WSL：**使用第一個找到的 `apt-get`、`dnf`、`yum`、`pacman`、
+  `zypper` 或 `apk`。非 root 使用者會先用 sudo 快取憑證；只有 controlling
+  terminal 可用且 stdout 或 stderr 是終端機時，才會在該終端機要求密碼。
+  實際套件操作採非互動 sudo，不會讀取管線裡的安裝腳本。pacman 不會單獨
+  更新套件索引，避免 partial upgrade。
+
+**只有 `--tmux` 需要 tmux；一般 alc 與普通 `--share` 不需要。**安裝器不會
+自動安裝 Homebrew／WinGet、不從原始碼編譯、不移除 psmux，也不修改 tmux 設定。
+缺少套件管理器、權限不足、套件／架構不支援、安裝失敗，或新版仍被舊 PATH
+項目遮蔽時，都只會警告並提供手動指令，不會讓 alc 安裝失敗。安裝器會重新
+檢查版本，不會把套件管理器結束當成可用的保證。
+
+PowerShell 會把新增的 User／Machine PATH 項目附加到目前 session，保留只存在
+於 session 的路徑。如果仍找不到 tmux，請重開終端機，檢查 `tmux -V` 與
+`alc doctor`。手動備援指令（依平台選一個）：
+
+```powershell
+winget install --id arndawg.tmux-windows --exact
+```
+
+```sh
+brew install tmux                                      # macOS（已安裝則用 upgrade）
+sudo apt-get update && sudo apt-get install -y tmux     # Debian / Ubuntu / WSL
+sudo dnf install -y tmux                               # Fedora / RHEL（或 yum）
+sudo pacman -S --needed tmux                           # Arch；請保持整個系統更新
+sudo zypper install tmux                               # openSUSE
+sudo apk add --upgrade tmux                            # Alpine
+```
+
+### 停用自動處理
+
+`ALC_NO_TMUX_INSTALL=1` 跳過自動 tmux 補裝；`ALC_NO_PATH_UPDATE=1` 則獨立控制
+**alc 安裝器本身**的 PATH 修改，包含 session PATH 刷新。WinGet 本身仍可能
+修改永久 PATH。若要同時避免補裝依賴的副作用與安裝器修改 PATH，請**兩個都設**：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | ALC_NO_TMUX_INSTALL=1 ALC_NO_PATH_UPDATE=1 sh
+```
+
+```powershell
+$env:ALC_NO_TMUX_INSTALL = '1'
+$env:ALC_NO_PATH_UPDATE = '1'
+irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
+# 選用：清除覆寫，讓此 session 之後的安裝恢復預設行為。
+Remove-Item Env:ALC_NO_TMUX_INSTALL, Env:ALC_NO_PATH_UPDATE
+```
 
 ### 更新
 
