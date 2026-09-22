@@ -473,6 +473,16 @@ fn read_user_settings(value: &OsStr) -> Result<Value> {
     if !parsed.is_object() {
         bail!("`--settings` must be a JSON object");
     }
+    // Claude Code's `env` is an object. Any other `env` would win the merge
+    // over alc's whole block - the endpoint, the blanked credentials, the
+    // model pins - and Claude Code would then send what alc's `apiKeyHelper`
+    // prints to its own default endpoint. The values inside are its to check.
+    if parsed.get("env").is_some_and(|env| !env.is_object()) {
+        bail!(
+            "`--settings` has an `env` that is not an object; Claude Code's `env` maps \
+             variable names to values"
+        );
+    }
     Ok(parsed)
 }
 
@@ -859,5 +869,39 @@ mod tests {
             take_user_settings(&[OsString::from("--settings=\u{feff}{\"theme\":\"dark\"}")])
                 .unwrap();
         assert_eq!(inline.expect("the JSON was read")["theme"], "dark");
+    }
+
+    /// Claude Code's `env` maps variable names to values. Any other `env`
+    /// would replace alc's whole block in the merge, endpoint and all, so it
+    /// is refused, inline or from a file. An empty one changes nothing.
+    #[test]
+    fn settings_whose_env_is_not_an_object_are_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        // The same JSON passed both ways a user can pass it.
+        let forms = |json: &str, name: &str| {
+            let file = temp.path().join(name);
+            std::fs::write(&file, json).unwrap();
+            [
+                vec![OsString::from(format!("--settings={json}"))],
+                vec![OsString::from("--settings"), file.into_os_string()],
+            ]
+        };
+        for (json, name) in [
+            (r#"{"env": null}"#, "null.json"),
+            (r#"{"env": []}"#, "array.json"),
+            (r#"{"env": "x"}"#, "string.json"),
+        ] {
+            for args in forms(json, name) {
+                let error = format!("{:#}", take_user_settings(&args).unwrap_err());
+                assert!(error.contains("`env`"), "{args:?}: {error}");
+            }
+        }
+
+        for args in forms(r#"{"env": {}}"#, "empty.json") {
+            let (_, found) = take_user_settings(&args).unwrap();
+            let mut document = codex();
+            merge_user_settings(&mut document, &found.expect("the settings were read"));
+            assert_eq!(document["env"], codex()["env"], "{args:?}");
+        }
     }
 }
