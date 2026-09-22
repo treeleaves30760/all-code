@@ -40,6 +40,58 @@ fn serve_once(body: String) -> (String, thread::JoinHandle<()>) {
     (format!("http://{address}/latest"), handle)
 }
 
+/// One whole HTTP request, as text: the head up to its blank line, then as
+/// many body bytes as its `Content-Length` says.
+///
+/// Reading once, or only as far as the head, was what made the stubs below
+/// flake on Windows. A short first read answered 404 for a path not yet read;
+/// and a POST whose body arrived in a later packet than its head - alc's
+/// `/api/show` is one - left that body unread, so closing the socket sent a
+/// reset and the client saw a broken connection instead of the answer.
+fn read_request(stream: &mut std::net::TcpStream) -> String {
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let mut wanted = None;
+    loop {
+        if wanted.is_none()
+            && let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+        {
+            let head = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+            let length = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            wanted = Some(end + 4 + length);
+        }
+        if wanted.is_some_and(|total| request.len() >= total) {
+            break;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => request.extend_from_slice(&chunk[..read]),
+        }
+    }
+    String::from_utf8_lossy(&request).into_owned()
+}
+
+/// Answers and closes the way a real server does: the response, the write
+/// side shut, then anything the client still sends read off until it hangs
+/// up, so no byte is left unread when the socket goes - on Windows that
+/// would turn the close into a reset.
+fn respond(mut stream: std::net::TcpStream, status: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    let mut sink = [0_u8; 1024];
+    while matches!(stream.read(&mut sink), Ok(read) if read > 0) {}
+}
+
 /// A stand-in Ollama server that answers the metadata calls alc makes:
 /// `/api/version`, `/api/show`, and `/api/ps` (nothing loaded). It serves
 /// until the test process exits.
@@ -51,24 +103,7 @@ fn serve_ollama() -> String {
             let Ok(mut stream) = stream else {
                 continue;
             };
-            // Read until the end of the request head, not once: a short first
-            // read used to make the stub answer 404 for a path it had not
-            // finished reading, which is what made the doctor test flake.
-            let mut request = Vec::new();
-            let mut chunk = [0_u8; 1024];
-            loop {
-                match stream.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(read) => {
-                        request.extend_from_slice(&chunk[..read]);
-                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            let head = String::from_utf8_lossy(&request);
+            let head = read_request(&mut stream);
             let path = head.split_whitespace().nth(1).unwrap_or("");
             let (status, body) = if path.starts_with("/api/version") {
                 ("200 OK", r#"{"version":"0.33.3"}"#)
@@ -82,19 +117,43 @@ fn serve_ollama() -> String {
             } else {
                 ("404 Not Found", r#"{"error":"not found"}"#)
             };
-            let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
-            // Close the write side rather than dropping the socket: on Windows
-            // a drop with request bytes still unread is a reset, and the client
-            // sees a broken connection instead of the answer.
-            let _ = stream.flush();
-            let _ = stream.shutdown(std::net::Shutdown::Write);
+            respond(stream, status, body);
         }
     });
     format!("http://{address}")
+}
+
+/// The race behind the doctor test's flake, made to happen every time: a
+/// POST whose body arrives after its head. A stub that answered on the head
+/// alone closed with the body unread, and the client got a reset instead of
+/// the answer.
+#[test]
+fn the_fake_ollama_server_answers_a_body_sent_after_its_head() {
+    let base = serve_ollama();
+    let address = base.trim_start_matches("http://");
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let body = r#"{"model":"gemma4:12b"}"#;
+    stream
+        .write_all(
+            format!(
+                "POST /api/show HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    stream.flush().unwrap();
+    thread::sleep(std::time::Duration::from_millis(300));
+    stream.write_all(body.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("the answer, not a reset");
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(response.contains("gemma4.context_length"), "{response}");
 }
 
 fn ollama_profile(temp: &tempfile::TempDir, base_url: &str) {
@@ -1298,9 +1357,7 @@ fn serve_quota() -> String {
             let Ok(mut stream) = stream else {
                 continue;
             };
-            let mut request = [0_u8; 8192];
-            let read = stream.read(&mut request).unwrap_or(0);
-            let head = String::from_utf8_lossy(&request[..read]);
+            let head = read_request(&mut stream);
             let path = head.split_whitespace().nth(1).unwrap_or("");
             let (status, body) = if path.starts_with("/backend-api/wham/usage") {
                 (
@@ -1324,11 +1381,7 @@ fn serve_quota() -> String {
             } else {
                 ("404 Not Found", r#"{"error":"not found"}"#)
             };
-            let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
+            respond(stream, status, body);
         }
     });
     format!("http://{address}")
