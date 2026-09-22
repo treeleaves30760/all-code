@@ -311,7 +311,9 @@ pub(crate) fn helper_command(
                 }
             }
             Ok(format!(
-                "\"{alc}\" --config-dir \"{dir}\" claude-credential {route}"
+                "{} --config-dir {} claude-credential {route}",
+                cmd_quote(alc),
+                cmd_quote(dir)
             ))
         }
         Shell::Sh => Ok(format!(
@@ -321,6 +323,19 @@ pub(crate) fn helper_command(
             sh_quote(route)
         )),
     }
+}
+
+/// `value` in double quotes for a line cmd runs. cmd hands the quotes on as
+/// they are, and alc reads its arguments by the Microsoft C runtime's rules,
+/// which Rust's standard library follows: a backslash is literal unless a run
+/// of them ends at a quote, where each pair stands for one backslash and an
+/// odd one out escapes the quote. So a trailing run is doubled - `"C:\alc\"`
+/// would reach alc as `C:\alc"` and the rest of the line - and never trimmed,
+/// because `C:\` without it is `C:`, the current directory on that drive.
+fn cmd_quote(value: &str) -> String {
+    let body = value.trim_end_matches('\\');
+    let run = &value[body.len()..];
+    format!("\"{body}{run}{run}\"")
 }
 
 fn sh_quote(value: &str) -> String {
@@ -515,6 +530,17 @@ mod tests {
         assert_eq!(
             helper_command(Shell::Cmd, alc, dir, "codex-0123456789ab").unwrap(),
             r#""C:\Program Files\alc\alc.exe" --config-dir "C:\Users\Ada Lovelace\.config\alc" claude-credential codex-0123456789ab"#
+        );
+        // Backslashes right before a quote are read as escapes, so a trailing
+        // run is doubled to keep the quote closing the argument - and kept,
+        // not trimmed, so `C:\` still names the drive root.
+        assert_eq!(
+            helper_command(Shell::Cmd, alc, Path::new(r"C:\alc\"), "codex-0123456789ab").unwrap(),
+            r#""C:\Program Files\alc\alc.exe" --config-dir "C:\alc\\" claude-credential codex-0123456789ab"#
+        );
+        assert_eq!(
+            helper_command(Shell::Cmd, alc, Path::new(r"C:\"), "codex-0123456789ab").unwrap(),
+            r#""C:\Program Files\alc\alc.exe" --config-dir "C:\\" claude-credential codex-0123456789ab"#
         );
         assert_eq!(
             helper_command(
