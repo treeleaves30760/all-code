@@ -764,6 +764,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         provider_kind,
         agent,
         bridge,
+        settings_plan,
         codex_auth_file,
         claude_settings_file,
         file_setup,
@@ -802,6 +803,10 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         // so a shared Codex session gets the same adapter an unshared one
         // does instead of talking straight to the model vendor.
         bridge,
+        // Carried for the same reason, and a costlier one to get wrong: a
+        // Claude Code launch whose settings document never arrived is a
+        // session pointed straight back at Anthropic.
+        settings_plan,
         codex_auth_file: codex_auth_file.map(PathBuf::from),
         claude_settings_file: claude_settings_file.map(PathBuf::from),
         file_setup,
@@ -838,6 +843,7 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         provider_kind,
         agent,
         bridge,
+        settings_plan,
         codex_auth_file,
         claude_settings_file,
         file_setup,
@@ -865,6 +871,7 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         provider_kind: provider_kind.to_string(),
         agent: agent.as_str().to_owned(),
         bridge: bridge.clone(),
+        settings_plan: settings_plan.clone(),
         codex_auth_file: codex_auth_file
             .as_ref()
             .map(|path| text(path.as_os_str(), "Codex credential path"))
@@ -979,11 +986,12 @@ pub(crate) fn hub_cannot_carry(hub_alc: &str, hub_pid: u32, spec: &LaunchSpec) -
     if hub_alc == ours {
         return None;
     }
-    if spec.bridge.is_none() && spec.file_setup.is_empty() {
+    if spec.bridge.is_none() && spec.settings_plan.is_none() && spec.file_setup.is_empty() {
         return None;
     }
     Some(format!(
-        "this session needs the Codex adapter, and the hub that would run it is alc {hub_alc} \
+        "this session needs alc's own wiring for the agent (the Codex adapter or Claude Code's \
+         settings), and the hub that would run it is alc {hub_alc} \
          (pid {hub_pid}) while this is alc {ours}; an older hub drops what it does not recognise \
          and would launch the agent with no adapter behind it. Run `alc hub stop` and retry, or \
          `--no-share` to run this one outside the hub"
@@ -1209,6 +1217,18 @@ mod tests {
         }
     }
 
+    /// The plan is what makes a shared `alc --codex claude` reach Codex at
+    /// all now, so it has to cross the socket whole - route, login path and
+    /// all - because the hub is the process that finishes and writes it.
+    #[test]
+    fn a_claude_settings_plan_crosses_the_wire_whole() {
+        let spec = LaunchSpec::saturated();
+        let back = from_wire(to_wire(&spec).unwrap(), &[]).unwrap();
+        assert_eq!(back.settings_plan, spec.settings_plan);
+        let route = back.codex_route().expect("the route crossed");
+        assert_eq!(route.auth_file, PathBuf::from("/work/codex/auth.json"));
+    }
+
     #[test]
     fn the_clients_environment_reaches_the_child_but_never_overrides_the_launch() {
         // Both halves matter. Without the client's environ the agent runs
@@ -1265,6 +1285,13 @@ mod tests {
         let ours = env!("CARGO_PKG_VERSION");
         assert_eq!(hub_cannot_carry(ours, 4321, &bridged), None);
         assert_eq!(hub_cannot_carry(ours, 4321, &plain), None);
+
+        // Claude Code's settings plan is as easy for an older hub to drop,
+        // and dropping it is as costly: the session would reach Anthropic.
+        let mut planned = LaunchSpec::for_test();
+        planned.settings_plan = LaunchSpec::saturated().settings_plan;
+        assert!(hub_cannot_carry("1.4.1", 4321, &planned).is_some());
+        assert_eq!(hub_cannot_carry(ours, 4321, &planned), None);
     }
 
     #[test]

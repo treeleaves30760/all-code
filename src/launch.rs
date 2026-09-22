@@ -101,6 +101,11 @@ pub struct LaunchSpec {
     pub provider_kind: ProviderKind,
     pub agent: Agent,
     pub bridge: Option<BridgePlan>,
+    /// Claude Code's `--settings` document, when alc points Claude Code away
+    /// from its own login. Built in the user's shell; finished, written and
+    /// put in the arguments by `prepare`, because a Codex route needs the
+    /// bridge's port, which only exists once a bridge does.
+    pub settings_plan: Option<crate::agents::claude_settings::SettingsPlan>,
     /// Where this launch's Codex credentials live, resolved once here in the
     /// environment of the shell the user actually typed into.
     ///
@@ -170,6 +175,17 @@ impl LaunchSpec {
         }
     }
 
+    /// The Codex route this Claude Code launch runs on, if any.
+    pub(crate) fn codex_route(&self) -> Option<&crate::bridge_host::files::RouteRecord> {
+        self.settings_plan.as_ref()?.route.as_ref()
+    }
+
+    /// Whether this launch's model traffic runs through alc's Codex bridge,
+    /// in-process or in the background.
+    pub(crate) fn is_bridged(&self) -> bool {
+        self.bridge.is_some() || self.codex_route().is_some()
+    }
+
     /// A spec in which no field holds a value that a dropped field could
     /// also produce - no `None`, no empty collection, nothing defaulted.
     ///
@@ -194,6 +210,20 @@ impl LaunchSpec {
                 context_window: Some(272_000),
                 options: crate::model_catalog::ModelCatalog::built_in().models,
                 api: BridgeApi::Messages,
+            }),
+            settings_plan: Some(crate::agents::claude_settings::SettingsPlan {
+                document: serde_json::json!({ "env": { "ANTHROPIC_MODEL": "gpt-6-astra" } }),
+                subcommand: Some("agents".to_owned()),
+                route: Some(crate::bridge_host::files::RouteRecord::new(
+                    "codex",
+                    PathBuf::from("/work/codex/auth.json"),
+                    crate::bridge::tiers::ModelTiers {
+                        strongest: "gpt-6-astra".to_owned(),
+                        default: "gpt-6-astra".to_owned(),
+                        cheapest: "gpt-5.6-luna".to_owned(),
+                    },
+                )),
+                offered: vec!["gpt-6-astra".to_owned()],
             }),
             codex_auth_file: Some(PathBuf::from("/work/codex/auth.json")),
             claude_settings_file: Some(PathBuf::from("/work/claude/settings.json")),
@@ -233,6 +263,7 @@ impl LaunchSpec {
             provider_kind: ProviderKind::Codex,
             agent: Agent::Codex,
             bridge: None,
+            settings_plan: None,
             codex_auth_file: None,
             claude_settings_file: None,
             file_setup: Vec::new(),
@@ -293,6 +324,7 @@ pub fn build(
         provider_kind: provider.kind,
         agent,
         bridge: None,
+        settings_plan: None,
         codex_auth_file: None,
         claude_settings_file: None,
         file_setup: Vec::new(),
@@ -324,7 +356,8 @@ pub fn build(
     }
 
     // Claude Code's settings file, resolved in the same shell and for the
-    // same reason. Only for a bridged Claude launch: that is the one
+    // same reason. Only for a Claude launch alc has pointed at Codex - on a
+    // route, or on the in-process bridge it still gets today: that is the one
     // combination whose model ids no plain `claude` can reach, so it is the
     // one whose default is worth putting back.
     //
@@ -337,18 +370,21 @@ pub fn build(
     //
     // Unlike `codex_auth_file` a failure here is not worth a refusal: the
     // path resolving to nothing costs a restore, not a launch.
-    if spec.bridge.is_some() && spec.agent == Agent::Claude {
+    if spec.codex_route().is_some() || (spec.bridge.is_some() && spec.agent == Agent::Claude) {
         spec.claude_settings_file = agents::claude::user_settings_path(provider);
     }
 
     // Recorded once here rather than at each builder's own resolution site:
-    // a bridged launch runs on the plan's model, and every other launch on
-    // the override or the profile default, which is what the builders each
-    // computed. Descriptive only - the agent has already been told.
+    // a bridged launch runs on the plan's model - the in-process bridge's, or
+    // a Codex route's default tier where the route is what carries the
+    // session - and every other launch on the override or the profile
+    // default, which is what the builders each computed. Descriptive only -
+    // the agent has already been told.
     spec.model = spec
         .bridge
         .as_ref()
         .map(|plan| plan.model.clone())
+        .or_else(|| spec.codex_route().map(|route| route.tiers.default.clone()))
         .or_else(|| overrides.model.clone())
         .or_else(|| (!provider.model.trim().is_empty()).then(|| provider.model.clone()));
     spec.effort = overrides.reasoning_effort.or(provider.reasoning_effort);

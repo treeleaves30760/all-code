@@ -123,7 +123,7 @@ impl Ledger {
                 provider: spec.provider_name.clone(),
                 kind: spec.provider_kind,
                 model: spec.model.clone(),
-                bridged: spec.bridge.is_some(),
+                bridged: spec.is_bridged(),
             },
         );
     }
