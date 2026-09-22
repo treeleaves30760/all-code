@@ -215,31 +215,64 @@ pub(crate) fn route_count(config_dir: &Path) -> usize {
     })
 }
 
-/// Points alc's own settings files at a bridge that had to move, answering how
-/// many it rewrote. Only `settings-*.json` files, and only the origin.
-pub(crate) fn move_settings_origin(config_dir: &Path, from: u16, to: u16) -> Result<usize> {
+/// What a move managed.
+pub(crate) struct Moved {
+    /// How many of alc's settings files now name the new port.
+    pub moved: usize,
+    /// The ones that could not be rewritten, each with the reason.
+    pub failed: Vec<String>,
+}
+
+/// Points alc's own settings files at a bridge that had to move. Only
+/// `settings-*.json` files, and only the origin.
+///
+/// A file that cannot be rewritten does not end the move. By the time this
+/// runs the bridge has already remembered the new port and rotated the token,
+/// and nothing ever tries again - so giving up on the first failure left
+/// every file after it naming a port no bridge is on, for good. They are
+/// reported instead, for the caller to say so where it can be seen.
+pub(crate) fn move_settings_origin(config_dir: &Path, from: u16, to: u16) -> Moved {
     let old = format!("http://127.0.0.1:{from}/");
     let new = format!("http://127.0.0.1:{to}/");
-    let Ok(entries) = fs::read_dir(crate::agents::claude_settings::settings_dir(config_dir)) else {
-        return Ok(0);
+    let mut report = Moved {
+        moved: 0,
+        failed: Vec::new(),
     };
-    let mut moved = 0;
+    let Ok(entries) = fs::read_dir(crate::agents::claude_settings::settings_dir(config_dir)) else {
+        return report;
+    };
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
+        // Asked before the file is read, not after: everything else in the
+        // directory belongs to somebody else, and reading one to find that
+        // out is work for nothing.
         let ours = path
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("settings-") && name.ends_with(".json"));
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        if !ours || !text.contains(&old) {
+        if !ours {
             continue;
         }
-        crate::config::atomic_write(&path, text.replace(&old, &new).as_bytes(), true)?;
-        moved += 1;
+        match move_one(&path, &old, &new) {
+            Ok(true) => report.moved += 1,
+            Ok(false) => {}
+            Err(error) => report
+                .failed
+                .push(format!("{} ({error:#})", path.display())),
+        }
     }
-    Ok(moved)
+    report
+}
+
+/// Whether `path` named the old origin, having pointed it at the new one.
+fn move_one(path: &Path, old: &str, new: &str) -> Result<bool> {
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if !text.contains(old) {
+        return Ok(false);
+    }
+    crate::config::atomic_write(path, text.replace(old, new).as_bytes(), true)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -510,10 +543,9 @@ mod tests {
         .unwrap();
         fs::write(&foreign, "http://127.0.0.1:24817/").unwrap();
 
-        assert_eq!(
-            move_settings_origin(temp.path(), 24_817, 25_001).unwrap(),
-            1
-        );
+        let report = move_settings_origin(temp.path(), 24_817, 25_001);
+        assert_eq!(report.moved, 1);
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
         assert!(
             fs::read_to_string(&named)
                 .unwrap()
@@ -524,5 +556,68 @@ mod tests {
             fs::read_to_string(&foreign).unwrap(),
             "http://127.0.0.1:24817/"
         );
+    }
+
+    /// A move that gave up on the first file it could not rewrite left the
+    /// rest naming a port no bridge is on. By the time it runs, `bind` has
+    /// remembered the new port and rotated the token, and nothing ever tries
+    /// again - so every file gets its turn, and the ones that did not take it
+    /// are named rather than swallowed.
+    #[test]
+    fn a_move_that_cannot_rewrite_one_file_still_rewrites_the_rest() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = crate::agents::claude_settings::settings_dir(temp.path());
+        fs::create_dir_all(&dir).unwrap();
+        let document =
+            r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:24817/r/codex-0123456789ab"}}"#;
+        // Read as one directory listing, so the names decide the order: the
+        // last of these comes after both of the awkward ones below, and a
+        // move that stopped at the first would never reach it.
+        let movable = [
+            dir.join("settings-00000000000000aa.json"),
+            dir.join("settings-00000000000000ee.json"),
+        ];
+        for path in &movable {
+            fs::write(path, document).unwrap();
+        }
+        // A name alc writes that is not a file it can read at all.
+        let unreadable = dir.join("settings-00000000000000bb.json");
+        fs::create_dir(&unreadable).unwrap();
+        // And one that reads back but cannot be replaced: Windows refuses to
+        // rename over a read-only file. Unix governs a rename by the
+        // directory instead, so there this one is simply moved and the
+        // unreadable entry above is what carries the test.
+        let unwritable = dir.join("settings-00000000000000cc.json");
+        fs::write(&unwritable, document).unwrap();
+        set_readonly(&unwritable, true);
+
+        let report = move_settings_origin(temp.path(), 24_817, 25_001);
+        for path in &movable {
+            assert!(
+                fs::read_to_string(path).unwrap().contains("25001"),
+                "{}",
+                path.display()
+            );
+        }
+        assert!(
+            report
+                .failed
+                .iter()
+                .any(|note| note.contains("settings-00000000000000bb.json")),
+            "{:?}",
+            report.failed
+        );
+        let write_refused = cfg!(windows);
+        assert_eq!(report.moved, movable.len() + usize::from(!write_refused));
+        assert_eq!(report.failed.len(), 1 + usize::from(write_refused));
+
+        // Left read-only, the file outlives the temporary directory.
+        set_readonly(&unwritable, false);
+    }
+
+    fn set_readonly(path: &Path, readonly: bool) {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(readonly);
+        fs::set_permissions(path, permissions).unwrap();
     }
 }

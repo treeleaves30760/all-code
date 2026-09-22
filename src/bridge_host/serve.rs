@@ -160,6 +160,16 @@ pub(crate) fn router(host: Arc<Host>) -> Router {
         .route("/alc/stop", post(stop))
         .route("/r/{route}/v1/messages", post(messages))
         .route("/r/{route}/v1/messages/count_tokens", post(count_tokens))
+        // Added innermost first, so only a request that got past the token
+        // reaches the activity clock. `/healthz` is unauthenticated on
+        // purpose - a supervisor or a watch loop polling it once a minute
+        // would otherwise hold an idle bridge open for ever - and a request
+        // that presented no token alc issued is nothing this bridge can do
+        // work for either.
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&host),
+            track_activity,
+        ))
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&host),
             require_token,
@@ -167,10 +177,6 @@ pub(crate) fn router(host: Arc<Host>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { (StatusCode::OK, "ok") }))
         .merge(guarded)
-        .layer(middleware::from_fn_with_state(
-            Arc::clone(&host),
-            track_activity,
-        ))
         // A long session's turn carries megabytes; the upstream decides what
         // is too large, as it does for the in-process adapter.
         .layer(DefaultBodyLimit::disable())
@@ -179,16 +185,23 @@ pub(crate) fn router(host: Arc<Host>) -> Router {
 
 async fn require_token(State(host): State<Arc<Host>>, request: Request, next: Next) -> Response {
     let headers = request.headers();
-    let presented = headers
-        .get("x-api-key")
-        .and_then(|value| value.to_str().ok())
-        .or_else(|| {
+    // Every credential the request carries, not the first header that
+    // happens to be present: alc's own Codex document sets
+    // `ANTHROPIC_API_KEY` to the empty string, and a client that forwards
+    // that empty `x-api-key` alongside the bearer the helper gave it is
+    // presenting the right token in the other header.
+    let mut presented = headers
+        .get_all("x-api-key")
+        .into_iter()
+        .filter_map(|value| value.to_str().ok())
+        .chain(
             headers
-                .get(header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "))
-        });
-    if presented.is_some_and(|token| same(token.as_bytes(), host.token.as_bytes())) {
+                .get_all(header::AUTHORIZATION)
+                .into_iter()
+                .filter_map(|value| value.to_str().ok())
+                .filter_map(|value| value.strip_prefix("Bearer ")),
+        );
+    if presented.any(|token| same(token.as_bytes(), host.token.as_bytes())) {
         return next.run(request).await;
     }
     BridgeError::auth(
@@ -357,7 +370,20 @@ fn bind(config_dir: &Path, token: String) -> Result<(TcpListener, u16, String)> 
         let token = match previous {
             Some(old) => {
                 let rotated = files::rotate_token(config_dir)?;
-                files::move_settings_origin(config_dir, old, port)?;
+                let moved = files::move_settings_origin(config_dir, old, port);
+                if !moved.failed.is_empty() {
+                    // Seen only when run in a terminal, like the listening
+                    // line; a detached bridge has no stderr. Serving anyway
+                    // is the point: the files that were rewritten work, and
+                    // one that was not is no worse off for this bridge
+                    // being up.
+                    eprintln!(
+                        "alc bridge: {} of alc's settings files still name 127.0.0.1:{old}, so a \
+                         session started from one will not reach this bridge: {}",
+                        moved.failed.len(),
+                        moved.failed.join("; ")
+                    );
+                }
                 rotated
             }
             None => token,
@@ -424,11 +450,11 @@ mod tests {
         host: Arc<Host>,
         method: &str,
         path: &str,
-        auth: Option<(&str, &str)>,
+        auth: &[(&str, &str)],
     ) -> StatusCode {
         let mut request = axum::http::Request::builder().method(method).uri(path);
-        if let Some((name, value)) = auth {
-            request = request.header(name, value);
+        for (name, value) in auth {
+            request = request.header(*name, *value);
         }
         router(host)
             .oneshot(request.body(Body::from("{}")).unwrap())
@@ -474,11 +500,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let token = "t0ken-for-tests-only-xxxxxxxxxxxxxxxxxxxx";
         assert_eq!(
-            status(host(temp.path()), "GET", "/healthz", None).await,
+            status(host(temp.path()), "GET", "/healthz", &[]).await,
             StatusCode::OK
         );
         assert_eq!(
-            status(host(temp.path()), "GET", "/alc/hello", None).await,
+            status(host(temp.path()), "GET", "/alc/hello", &[]).await,
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(
@@ -486,7 +512,7 @@ mod tests {
                 host(temp.path()),
                 "GET",
                 "/alc/hello",
-                Some(("x-api-key", "wrong"))
+                &[("x-api-key", "wrong")]
             )
             .await,
             StatusCode::UNAUTHORIZED
@@ -496,7 +522,7 @@ mod tests {
                 host(temp.path()),
                 "GET",
                 "/alc/hello",
-                Some(("x-api-key", token))
+                &[("x-api-key", token)]
             )
             .await,
             StatusCode::OK
@@ -507,7 +533,7 @@ mod tests {
                 host(temp.path()),
                 "GET",
                 "/alc/hello",
-                Some(("authorization", &bearer))
+                &[("authorization", &bearer)]
             )
             .await,
             StatusCode::OK
@@ -517,17 +543,90 @@ mod tests {
                 host(temp.path()),
                 "POST",
                 "/r/codex-0123456789ab/v1/messages",
-                None
+                &[]
             )
             .await,
             StatusCode::UNAUTHORIZED
         );
     }
 
+    /// alc's own Codex document sets `ANTHROPIC_API_KEY` to the empty string
+    /// to keep a stray key out of the session, so a client may forward an
+    /// empty `x-api-key` next to the bearer the helper gave it. Taking the
+    /// first header that is present and stopping there answered that request
+    /// 401, with nothing in it to diagnose.
+    #[tokio::test]
+    async fn an_empty_api_key_does_not_hide_a_correct_bearer_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let bearer = format!("Bearer {}", "t0ken-for-tests-only-xxxxxxxxxxxxxxxxxxxx");
+        assert_eq!(
+            status(
+                host(temp.path()),
+                "GET",
+                "/alc/hello",
+                &[("x-api-key", ""), ("authorization", &bearer)]
+            )
+            .await,
+            StatusCode::OK
+        );
+        // And the other half: considering every credential is not accepting
+        // a request that presents none that is right.
+        assert_eq!(
+            status(
+                host(temp.path()),
+                "GET",
+                "/alc/hello",
+                &[("x-api-key", "wrong"), ("authorization", "Bearer wrong")]
+            )
+            .await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// `/healthz` is deliberately unauthenticated, so anything at all can ask
+    /// whether the bridge is up: a supervisor, a monitoring script, a watch
+    /// loop somebody left running. Counting those asks as activity stopped
+    /// the idle hour from ever elapsing.
+    #[tokio::test]
+    async fn asking_whether_the_bridge_is_up_is_not_work_for_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = host(temp.path());
+        // A clock set back far enough that anything the middleware stores
+        // over it is unmistakable.
+        host.activity.last.store(1_000, Ordering::SeqCst);
+
+        for (method, path, auth) in [
+            ("GET", "/healthz", &[][..]),
+            ("GET", "/alc/hello", &[("x-api-key", "wrong")][..]),
+        ] {
+            status(Arc::clone(&host), method, path, auth).await;
+            assert_eq!(
+                host.activity.last.load(Ordering::SeqCst),
+                1_000,
+                "{method} {path} is not a turn"
+            );
+        }
+
+        // The other half: a request that carries the token does count, so
+        // the assertions above are about which requests count and not about
+        // a middleware that stopped counting altogether.
+        assert_eq!(
+            status(
+                Arc::clone(&host),
+                "GET",
+                "/alc/hello",
+                &[("x-api-key", "t0ken-for-tests-only-xxxxxxxxxxxxxxxxxxxx")]
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert!(host.activity.last.load(Ordering::SeqCst) > 1_000);
+    }
+
     #[tokio::test]
     async fn an_unknown_route_is_named_not_served() {
         let temp = tempfile::tempdir().unwrap();
-        let auth = Some(("x-api-key", "t0ken-for-tests-only-xxxxxxxxxxxxxxxxxxxx"));
+        let auth: &[(&str, &str)] = &[("x-api-key", "t0ken-for-tests-only-xxxxxxxxxxxxxxxxxxxx")];
         assert_eq!(
             status(
                 host(temp.path()),

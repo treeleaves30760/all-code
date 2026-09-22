@@ -1023,6 +1023,20 @@ fn doctor_says_how_to_clear_a_claude_default_only_the_bridge_can_serve() {
     assert!(output.contains("clears the line on exit"), "{output}");
 }
 
+/// One section of `alc doctor`'s report, from its heading to the blank line
+/// before the next. Asserting against the whole report says nothing about
+/// which section a phrase came from, which is how a row that had gone missing
+/// could keep its own test passing.
+fn doctor_section<'a>(output: &'a str, heading: &str) -> &'a str {
+    let after = output
+        .split_once(&format!("\n{heading}\n"))
+        .unwrap_or_else(|| panic!("no {heading} section in:\n{output}"))
+        .1;
+    after
+        .split_once("\n\n")
+        .map_or(after, |(section, _)| section)
+}
+
 /// A bridge that is not up is the normal state between sessions, so the
 /// section reports it without counting it as a problem - and it is the one
 /// place that says agent view has been switched off, which is why a user who
@@ -1041,9 +1055,38 @@ fn doctor_reports_the_background_bridge_without_calling_it_a_problem() {
         .args(["doctor"])
         .assert();
     let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    assert!(output.contains("Background sessions"), "{output}");
-    assert!(output.contains("not running"), "{output}");
-    assert!(output.contains("disableAgentView"), "{output}");
+    let section = doctor_section(&output, "Background sessions");
+
+    // The bridge row's own words. `not running` on its own is satisfied by
+    // the remote-control hub's row further down, so it held whether or not
+    // this section said anything at all.
+    assert!(
+        section.contains(
+            "not running · a Claude Code session on a Codex profile starts it when it needs it"
+        ),
+        "{section}"
+    );
+    assert!(section.contains("disableAgentView"), "{section}");
+
+    // And the property the name claims. Doctor marks every row it judges,
+    // and lists every problem again under the summary; this section does
+    // neither, because a bridge between sessions is nothing to fix.
+    for mark in ["✓", "!", "✗"] {
+        assert!(
+            !section.contains(mark),
+            "{mark} against a row that is news, not a problem:\n{section}"
+        );
+    }
+    // Empty when doctor found nothing at all to report, which says the same.
+    let summary = output
+        .rsplit_once("needs attention")
+        .map_or("", |(_, problems)| problems);
+    for named in ["starts it when it needs it", "disableAgentView"] {
+        assert!(
+            !summary.contains(named),
+            "the background-sessions section raised an issue:\n{summary}"
+        );
+    }
 }
 
 /// The snapshot belongs to `launch::prepare`, which a dry run never reaches.
@@ -1593,6 +1636,13 @@ fn write_route(temp: &tempfile::TempDir, auth_file: &std::path::Path) -> &'stati
 
 fn http(port: &str, request: &str) -> String {
     let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    // The one place in this file that talks to a real detached bridge, and
+    // the only read without a deadline of its own. A bridge that stopped
+    // honouring `Connection: close` would hang the suite here rather than
+    // fail it, and a hang reports nothing about where it stopped.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
     stream.write_all(request.as_bytes()).unwrap();
     let mut response = String::new();
     let _ = stream.read_to_string(&mut response);
@@ -1733,6 +1783,27 @@ fn claude_credential_prints_one_line_even_for_a_key_with_a_trailing_newline() {
         .assert()
         .success()
         .stdout("sk-or-test-key\n");
+}
+
+/// Trimming the ends is not the whole contract. A key with a line break
+/// inside it prints two lines however hard the ends are trimmed, and Claude
+/// Code reads the helper's whole stdout as one credential - so the second
+/// line would arrive as part of the secret or be lost with it. There is no
+/// right thing to print, so alc prints nothing and says where it read it.
+#[test]
+fn claude_credential_refuses_a_key_with_a_line_break_inside_it() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "sk-or-first\nsk-or-second")
+        .args(["claude-credential", "profile:openrouter"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("line break"))
+        .stderr(predicate::str::contains("openrouter"))
+        .stderr(predicate::str::contains("OPENROUTER_API_KEY"))
+        // Never the value: a helper's stderr goes to Claude Code's log.
+        .stderr(predicate::str::contains("sk-or-first").not());
 }
 
 /// The sentence a background session shows when `codex login` has expired or
