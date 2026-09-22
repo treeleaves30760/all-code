@@ -32,7 +32,9 @@ Anthropic-compatible endpoint.
 
 Claude Code gets a settings file (`--settings`) holding the endpoint, the model
 variables and the picker, and fetches its credential through `apiKeyHelper` from
-`alc claude-credential`; see [Background sessions](./background-sessions.md).
+`alc claude-credential`; on Claude Code's own login the login answers and the
+file carries the endpoint and the model. See [Background
+sessions](./background-sessions.md).
 An Ollama profile gets more — see [Local models](./local-models.md).
 
 ```sh

@@ -177,9 +177,10 @@ alc --codex claude                            # ← on an empty prompt: still on
 
 **How.** alc hands Claude Code its provider in a settings file, passed with
 `--settings`, which Claude Code keeps for a background session and reads again
-each time it restarts one. The file holds no key: Claude Code asks alc for the
-credential through its `apiKeyHelper` setting, and alc reads it from where it
-always has.
+each time it restarts one. The file holds no key: where the provider needs one,
+Claude Code asks alc for it through its `apiKeyHelper` setting, and alc reads it
+from where it always has. On Claude Code's own login the login answers, and the
+file carries the endpoint and the model.
 
 **The Codex bridge runs on its own now.** A background session outlives the
 `alc` that started it, so the adapter has to as well: one small alc process on a
@@ -202,7 +203,8 @@ sessions run on Anthropic's servers and stay Anthropic features.
 
 `alc claude attach`, `logs`, `stop`, `respawn` and `rm` go straight to Claude
 Code, and so does plain `claude attach`: the session already carries its
-settings file.
+settings file. So do the commands that never reach a model - `mcp`, `doctor`,
+`plugin`, `update` and the like - which start no bridge and count no session.
 
 ## Any provider, not just Codex
 

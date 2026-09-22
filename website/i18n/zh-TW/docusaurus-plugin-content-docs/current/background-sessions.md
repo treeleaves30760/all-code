@@ -98,6 +98,10 @@ Anthropic 的功能。
 Code。直接用 `claude attach <id>` 一樣有效：那個 session 本來就帶著它的設定檔，
 而把它喚醒時，需要橋接的話也會順手把橋接叫起來。
 
+那些根本不會碰到模型的 Claude Code 指令 —— `mcp`、`doctor`、`plugin`、
+`update`、`auth` 之類 —— 也一樣直接交出去。它們不會啟動橋接、不會寫設定檔，
+也不會在 `alc usage` 裡被算成一個 session。
+
 alc 自己的旗標放在 agent 名稱前面，Claude Code 自己的放在後面。兩邊搶同一個
 寫法時 —— `-p`、`--name` —— 把 Claude Code 的那一個放到 `--` 之後：
 

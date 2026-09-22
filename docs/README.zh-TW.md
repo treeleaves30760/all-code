@@ -163,8 +163,9 @@ alc --codex claude                            # 在空提示列上按 ←：一�
 
 **怎麼做到的。** alc 用一份設定檔把 provider 交給 Claude Code，以 `--settings`
 傳入，而 Claude Code 會替背景 session 留著它，每次重新啟動那個 session 時再讀
-一次。檔案裡沒有金鑰：Claude Code 透過它的 `apiKeyHelper` 設定向 alc 要憑證，
-而 alc 就從它本來就在讀的地方讀出來。
+一次。檔案裡沒有金鑰：provider 需要金鑰時，Claude Code 透過它的 `apiKeyHelper`
+設定向 alc 要，而 alc 就從它本來就在讀的地方讀出來。用 Claude Code 自己的登入時，
+由那個登入來回答，檔案裡只放端點與模型。
 
 **Codex 橋接現在自己獨立跑了。** 背景 session 活得比啟動它的那個 `alc` 還久，
 所以轉接器也必須一樣：一個小小的 alc 行程，綁在一個它會一直留著的 loopback
@@ -186,7 +187,9 @@ session 裡是關閉的。`claude ultrareview` 與雲端 session 跑在 Anthropi
 伺服器上，仍然是 Anthropic 的功能。
 
 `alc claude attach`、`logs`、`stop`、`respawn` 與 `rm` 都是直接交給 Claude
-Code，普通的 `claude attach` 也一樣：那個 session 本來就帶著它的設定檔。
+Code，普通的 `claude attach` 也一樣：那個 session 本來就帶著它的設定檔。那些
+根本不會碰到模型的指令 —— `mcp`、`doctor`、`plugin`、`update` 之類 —— 也是
+直接交出去，不會啟動橋接，也不會被算成一個 session。
 
 ## 任何 provider 都行，不只 Codex
 

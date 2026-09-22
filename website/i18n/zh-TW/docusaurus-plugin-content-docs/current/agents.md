@@ -32,7 +32,8 @@ provider 清單，翻譯成你正要啟動的那個 agent 聽得懂的樣子。�
 相容端點。
 
 Claude Code 拿到的是一份設定檔（`--settings`），裡面放的是端點、模型相關變數
-與選單，憑證則透過 `apiKeyHelper` 向 `alc claude-credential` 取得；見[背景
+與選單，憑證則透過 `apiKeyHelper` 向 `alc claude-credential` 取得；用 Claude
+Code 自己的登入時，由那個登入來回答，檔案裡只放端點與模型。見[背景
 session](./background-sessions.md)。Ollama profile 拿到的還更多 ——
 見[本機模型](./local-models.md)。
 

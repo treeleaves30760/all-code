@@ -98,6 +98,10 @@ Anthropic features.
 Claude Code. Plain `claude attach <id>` works just as well: the session already
 carries its settings file, and waking it starts the bridge if it needs one.
 
+So do the Claude Code commands that never reach a model - `mcp`, `doctor`,
+`plugin`, `update`, `auth` and the like. They start no bridge, write no settings
+file and count no session in `alc usage`.
+
 alc's own flags go before the agent's name and Claude Code's go after it. Where
 both want the same spelling - `-p`, `--name` - put Claude Code's after `--`:
 
