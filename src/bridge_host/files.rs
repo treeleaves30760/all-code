@@ -4,18 +4,15 @@
 //! `bridge/routes/<id>.json` (one Codex login a Claude Code session runs on).
 
 use std::fs;
-use std::io::Write;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::bridge::tiers::ModelTiers;
-use crate::remote::{Secrets, generate_token, restricted_dir};
+use crate::remote::{Secrets, create_token, generate_token, restricted_dir};
 
 /// The ports a bridge picks from: below the ranges Linux (32768 and up) and
 /// Windows and macOS (49152 and up) hand out for outgoing connections, so none
@@ -49,78 +46,31 @@ pub(crate) fn read_token(config_dir: &Path) -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
-/// How long a caller that lost the race to create the token file waits for
-/// the winner to write the token into it.
-const TOKEN_WAIT: Duration = Duration::from_secs(2);
-
-/// How often that caller looks while it waits.
-const TOKEN_POLL: Duration = Duration::from_millis(20);
-
-/// The bridge's token, minted by whichever alc asks first.
+/// The bridge's token: the one on disk, or one minted now.
 ///
-/// Minting is exclusive. A launch and a session's `apiKeyHelper` can both find
-/// no token on a fresh configuration, and if each wrote its own, the last write
-/// would win while the other caller went on holding a token that is on no
-/// disk. A bridge started with that one refuses every request carrying the
-/// token everyone else reads. So the file is created with `create_new`:
-/// exactly one caller makes it, and every other adopts what that one writes.
+/// Minted the way the remote-control tokens are, by `create_token`: written in
+/// full under a name of its own, then linked into place by a link that refuses
+/// a name that already exists. Two starters on a fresh configuration - a launch
+/// and a session's `apiKeyHelper`, say - therefore both end up with the one
+/// token on disk, and `bridge.token` is never seen half-written. An empty one
+/// is what something that died left behind, not a token on its way, so it is
+/// cleared rather than waited on.
 pub(crate) fn load_or_create_token(config_dir: &Path) -> Result<String> {
-    if let Some(token) = read_token(config_dir) {
-        return Ok(token);
-    }
-    // Minted before the file exists, so nothing that can fail stands between
-    // creating the file and writing the token into it.
-    let token = generate_token()?;
     restricted_dir(&run_dir(config_dir))?;
     let path = token_path(config_dir);
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = match options.open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            return adopt_token(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(text) if !text.trim().is_empty() => return Ok(text.trim().to_owned()),
+        // Unambiguously stale: `create_token` never publishes an empty file,
+        // so nothing is mid-write here and clearing it is safe.
+        Ok(_) => {
+            let _ = fs::remove_file(&path);
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            return Err(error).with_context(|| format!("failed to create {}", path.display()));
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
         }
-    };
-    if let Err(error) = file
-        .write_all(token.as_bytes())
-        .and_then(|()| file.sync_all())
-    {
-        // Left behind, an empty file would keep every later caller waiting for
-        // a token that is never coming.
-        drop(file);
-        let _ = fs::remove_file(&path);
-        return Err(error).with_context(|| format!("failed to write {}", path.display()));
     }
-    Ok(token)
-}
-
-/// Adopts the token another alc is writing. Its file exists from the moment
-/// that alc creates it and reads empty until the token is in it, so an empty
-/// read here means "not yet" - until it has meant that for `TOKEN_WAIT`.
-fn adopt_token(config_dir: &Path) -> Result<String> {
-    let deadline = Instant::now() + TOKEN_WAIT;
-    loop {
-        if let Some(token) = read_token(config_dir) {
-            return Ok(token);
-        }
-        if Instant::now() >= deadline {
-            bail!(
-                "{} still holds no token {} seconds after another alc created it; \
-                 delete it and try again",
-                token_path(config_dir).display(),
-                TOKEN_WAIT.as_secs()
-            );
-        }
-        thread::sleep(TOKEN_POLL);
-    }
+    create_token(&path)
 }
 
 /// Mints a fresh token, replacing the one on disk. Every session still holding
@@ -232,7 +182,12 @@ pub(crate) fn write_route(config_dir: &Path, route: &RouteRecord) -> Result<()> 
     let dir = routes_dir(config_dir);
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let bytes = serde_json::to_vec_pretty(route).context("failed to encode the bridge route")?;
-    crate::config::atomic_write(&dir.join(format!("{}.json", route.id)), &bytes, false)
+    // Written as a secret, though a route holds none, for the temp file that
+    // comes with it: unguessable and created exclusively, so two launches of
+    // one profile, or a launch and the hub, never share one. A shared temp is
+    // truncated under the other writer and renamed away before it gets there.
+    // Owner-only costs nothing inside the 0700 run directory.
+    crate::config::atomic_write(&dir.join(format!("{}.json", route.id)), &bytes, true)
 }
 
 /// The route named `id`, or `None` when there is none - including when `id` is
@@ -372,31 +327,20 @@ mod tests {
         }
     }
 
-    /// The loser of that race can find the file before the winner has written
-    /// into it. Empty means "not yet": it waits for the token, and gives up -
-    /// leaving the file to whoever created it - only when none arrives.
+    /// A token is published only once it is whole, so an empty or blank
+    /// `bridge.token` is left over from something that died, never a token on
+    /// its way. It is replaced, so no launch and no session's helper is stuck
+    /// behind it.
     #[test]
-    fn a_token_file_still_being_written_is_waited_for_and_never_replaced() {
-        let temp = tempfile::tempdir().unwrap();
-        restricted_dir(&run_dir(temp.path())).unwrap();
-        let path = token_path(temp.path());
-
-        fs::write(&path, "").unwrap();
-        let adopted = std::thread::scope(|scope| {
-            scope.spawn(|| {
-                std::thread::sleep(Duration::from_millis(200));
-                fs::write(&path, "the-winners-token").unwrap();
-            });
-            load_or_create_token(temp.path()).unwrap()
-        });
-        assert_eq!(adopted, "the-winners-token");
-
-        fs::write(&path, "").unwrap();
-        let started = Instant::now();
-        let error = load_or_create_token(temp.path()).unwrap_err().to_string();
-        assert!(started.elapsed() >= TOKEN_WAIT, "{:?}", started.elapsed());
-        assert!(error.contains("bridge.token"), "{error}");
-        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+    fn a_stale_empty_token_file_is_replaced_by_a_real_token() {
+        for stale in ["", "\n"] {
+            let temp = tempfile::tempdir().unwrap();
+            restricted_dir(&run_dir(temp.path())).unwrap();
+            fs::write(token_path(temp.path()), stale).unwrap();
+            let token = load_or_create_token(temp.path()).unwrap();
+            assert!(token.len() >= 40, "{token}");
+            assert_eq!(read_token(temp.path()), Some(token));
+        }
     }
 
     #[test]
@@ -506,6 +450,44 @@ mod tests {
             files_under(temp.path()),
             vec![routes_dir(&config_dir).join(format!("{}.json", honest.id))]
         );
+    }
+
+    /// Two launches of one profile, or a launch and the hub, can write the
+    /// same route at the same moment. Each writer has a temp file of its own,
+    /// so none truncates another's or finds it already renamed away, and the
+    /// route is there, whole, afterwards.
+    #[test]
+    fn concurrent_writers_of_one_route_all_succeed() {
+        let route = RouteRecord::new(
+            "codex",
+            PathBuf::from("/home/ada/.codex/auth.json"),
+            tiers(),
+        );
+        for _ in 0..10 {
+            let temp = tempfile::tempdir().unwrap();
+            let start = std::sync::Barrier::new(8);
+            let writer = || {
+                start.wait();
+                write_route(temp.path(), &route)
+            };
+            let failures: Vec<String> = std::thread::scope(|scope| {
+                let writers: Vec<_> = (0..8).map(|_| scope.spawn(writer)).collect();
+                writers
+                    .into_iter()
+                    .filter_map(|handle| handle.join().unwrap().err())
+                    .map(|error| format!("{error:#}"))
+                    .collect()
+            });
+            assert!(failures.is_empty(), "{failures:#?}");
+            assert_eq!(
+                read_route(temp.path(), &route.id).unwrap(),
+                Some(route.clone())
+            );
+            assert_eq!(
+                files_under(&routes_dir(temp.path())),
+                vec![routes_dir(temp.path()).join(format!("{}.json", route.id))]
+            );
+        }
     }
 
     #[test]

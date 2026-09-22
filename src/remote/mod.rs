@@ -68,7 +68,7 @@ pub(crate) use crate::remote::caps::SafetyRung;
 pub(crate) use crate::remote::settings::{Bind as RemoteBind, RemoteSettings as Settings};
 // The background bridge keeps its token and port in the same 0700 run
 // directory, minted the same way. `Secrets` is also this module's own.
-pub(crate) use crate::remote::settings::{Secrets, generate_token, restricted_dir};
+pub(crate) use crate::remote::settings::{Secrets, create_token, generate_token, restricted_dir};
 use crate::remote::wire::ExitInfo;
 
 /// What `alc remote` was asked to do.
