@@ -1963,6 +1963,27 @@ fn a_codex_claude_launch_runs_on_the_background_bridge_and_leaves_it_running() {
         base.starts_with("http://127.0.0.1:") && base.contains("/r/codex-"),
         "{base}"
     );
+    // The route the document names is only read when a request arrives, so
+    // the base URL and a running bridge both look right even if the launch
+    // never wrote it. Read it back, and check it signs with the login this
+    // launch resolved.
+    let route = base.rsplit_once("/r/").unwrap().1.trim_end_matches('/');
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            temp.path()
+                .join("run")
+                .join("bridge")
+                .join("routes")
+                .join(format!("{route}.json")),
+        )
+        .unwrap_or_else(|error| panic!("no route file for {route}: {error}")),
+    )
+    .unwrap();
+    assert_eq!(record["id"], route);
+    assert_eq!(
+        std::path::Path::new(record["auth_file"].as_str().unwrap()),
+        codex.path().join("auth.json")
+    );
     for name in [
         "CLAUDE_CODE_DISABLE_FAST_MODE",
         "CLAUDE_CODE_DISABLE_ADVISOR_TOOL",
@@ -2017,6 +2038,51 @@ fn a_session_command_goes_straight_to_claude_code() {
         .stderr(predicate::str::contains(
             "manages an existing background session",
         ));
+}
+
+/// A Claude Code command that never opens a model connection used to take
+/// the full launch path: a route file, the hour-lived detached bridge, a
+/// settings document and a session in the usage ledger, all for `claude mcp
+/// list`. It goes straight to Claude Code now, as a session command does.
+#[test]
+fn a_command_that_reaches_no_model_starts_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    for (words, shown) in [
+        (&["mcp", "list"][..], "command: claude mcp list"),
+        (&["--", "--version"][..], "command: claude --version"),
+    ] {
+        let mut args = vec!["--codex", "--dry-run", "claude"];
+        args.extend_from_slice(words);
+        let output = alc(&temp).args(&args).assert().success();
+        let stdout = String::from_utf8_lossy(&output.get_output().stdout).into_owned();
+        assert!(stdout.contains(shown), "{stdout}");
+        assert!(!stdout.contains("--settings"), "{stdout}");
+        assert!(!stdout.contains("adapter:"), "{stdout}");
+    }
+
+    // A real run leaves nothing behind either: no route, no bridge, no
+    // settings document, no session in the ledger.
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    let _bridge = StopTheBridge(&temp);
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args(["--codex", "claude", "mcp", "list"])
+        .assert()
+        .success();
+    let args = std::fs::read_to_string(work.path().join("args.txt")).unwrap();
+    assert_eq!(args.lines().collect::<Vec<_>>(), ["mcp", "list"]);
+    assert!(!temp.path().join("run").join("bridge").exists());
+    assert!(!temp.path().join("claude").exists());
+    assert!(!temp.path().join("usage.jsonl").exists());
+
+    alc(&temp)
+        .args(["--codex", "claude", "--model", "gpt-6-astra", "mcp", "list"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("never reaches a model"));
 }
 
 #[test]

@@ -61,9 +61,10 @@ pub(crate) struct BridgeConfig {
     /// to `max` on the way into [`upstream::Effort`], not forwarded.
     pub effort: Option<ReasoningEffort>,
     /// Whether `/v1/responses` and `/v1/chat/completions` are routed at all.
-    /// Mirrors the vendored bridge's `CCP_CODEX_RESPONSES_API`: Claude Code's
-    /// plan does not set it, and those routes then 404 rather than existing
-    /// unused.
+    /// Mirrors the vendored bridge's `CCP_CODEX_RESPONSES_API`. Every plan the
+    /// in-process bridge is built from sets it now; the one config that does
+    /// not is the background bridge's, for Claude Code, which serves only the
+    /// Messages routes under a router of its own (`crate::bridge_host`).
     pub responses_api: bool,
     /// Who this bridge is serving, so the turns it sees can be attributed to a
     /// provider and an agent in the usage ledger.

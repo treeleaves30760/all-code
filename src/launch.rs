@@ -29,10 +29,13 @@ pub struct LaunchOverrides {
     pub model_options: Vec<ModelInfo>,
 }
 
-/// Which wire protocol the bundled bridge should serve to the launched agent.
+/// Which wire protocol the in-process bridge should serve to the launched
+/// agent.
 ///
-/// `Messages` (Claude Code) and `Responses` (OpenCode, Pi) are constructed
-/// today; `Chat` is produced by the Copilot builder.
+/// `Responses` (OpenCode, Pi) and `Chat` (Copilot) are what the builders
+/// construct. `Messages` is what Claude Code used to be given; Claude Code now
+/// reaches the Codex login through the background bridge over a route of its
+/// own (`crate::bridge_host`), so only test fixtures build it today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BridgeApi {
@@ -41,17 +44,18 @@ pub enum BridgeApi {
     Chat,
 }
 
-/// What the bundled Codex bridge needs to serve a coding-agent session. For
-/// Claude Code the model is only the starting point: it switches models and
-/// reasoning effort per request, so neither is pinned on the bridge. Every
-/// other agent picks one model/effort at launch, which the bridge pins.
+/// What the in-process Codex bridge needs to serve a coding-agent session.
+/// Every agent that uses it picks one model and effort at launch, which the
+/// bridge pins. Claude Code, which switches both per request, does not use
+/// it: it runs on the background bridge, over a route of its own.
 ///
 /// Serialisable because a shared session's plan is carried to the hub, which
 /// is the process that actually starts the bridge ([`crate::remote::hub`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BridgePlan {
     pub model: String,
-    /// Pinned via CCP_CODEX_EFFORT for non-Messages clients; ALWAYS None for Claude.
+    /// Pinned via CCP_CODEX_EFFORT for every client but a `Messages` one,
+    /// which sends its own on each request.
     pub effort: Option<ReasoningEffort>,
     pub context_window: Option<u64>,
     /// Most capable first (catalog order).
@@ -636,8 +640,13 @@ pub(crate) fn settings_preview(
     } else {
         claude_settings::settings_path(config_dir, &bytes)
     };
+    // A remembered port is where the bridge will be, not a sign that it is
+    // there now: a dry run asks nothing of it, so the line says which.
     let bridge = plan.route.as_ref().map(|route| match port {
-        Some(port) => format!("127.0.0.1:{port}, route {}", route.id),
+        Some(port) => format!(
+            "route {}, on 127.0.0.1:{port}, the port it keeps while nothing else takes it",
+            route.id
+        ),
         None => format!("route {}, on a port chosen when it first starts", route.id),
     });
     let mut args = spec.args.clone();
@@ -982,10 +991,12 @@ fn shell_quote(value: &OsStr) -> String {
 
 /// What the bridge needs to serve this one plan.
 ///
-/// Claude Code is the exception every field here is shaped around: it sends
-/// its own model and effort on every request, so pinning either would freeze
-/// a slider the user can see. Every other agent chooses once at launch.
-/// Pure, so the distinction stays asserted rather than assumed.
+/// A `Messages` client sends its own model and effort on every request, so
+/// pinning either would freeze a slider the user can see; every other client
+/// chooses once at launch. Claude Code, the `Messages` client this was shaped
+/// around, now runs on the background bridge instead, so in practice every
+/// plan that reaches here is pinned. Pure, so the distinction stays asserted
+/// rather than assumed.
 fn bridge_config(
     auth_file: PathBuf,
     plan: &BridgePlan,
@@ -1969,48 +1980,138 @@ mod tests {
         }
     }
 
+    /// The default `alc claude` - Claude Code on its own login - was the one
+    /// launch still carried in the environment, so a session sent to the
+    /// background came back on Claude Code's default model instead of the one
+    /// it was launched with. The model, the small model and the context
+    /// window are alc's to keep; the login is Claude Code's to answer.
     #[test]
-    fn claude_on_its_own_login_gets_no_settings_document() {
+    fn claude_on_its_own_login_keeps_its_model_in_a_settings_document() {
         let mut config = Config::default();
+        let anthropic = config.providers.get_mut("anthropic").unwrap();
         // No key variable to read, so an ANTHROPIC_API_KEY in the developer's
         // own shell cannot turn this into a key-based launch.
+        anthropic.api_key_env = None;
+        anthropic.small_model = Some("claude-haiku-4-5".to_owned());
+        let spec = build(
+            &store(config, Credentials::default()),
+            Agent::Claude,
+            Some("anthropic"),
+            &[],
+            &LaunchOverrides {
+                model: Some("claude-opus-5".to_owned()),
+                context_window: Some(200_000),
+                ..LaunchOverrides::default()
+            },
+        )
+        .unwrap();
+        let env = document_env(&spec);
+        assert_eq!(env["ANTHROPIC_MODEL"], "claude-opus-5");
+        assert_eq!(env["ANTHROPIC_SMALL_FAST_MODEL"], "claude-haiku-4-5");
+        assert_eq!(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "200000");
+        assert!(env.contains_key("ANTHROPIC_BASE_URL"));
+        for name in ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"] {
+            assert_eq!(env[name], "", "{name}");
+        }
+
+        // Claude Code's own login answers, so there is no helper, and the key
+        // variables are neither set nor blanked in the document: with no
+        // helper behind it, an empty key is no stand-in for the login. A
+        // stray one is still kept out of the process alc starts.
+        assert!(plan_of(&spec).document.get("apiKeyHelper").is_none());
+        for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
+            assert!(!env.contains_key(name), "{name}");
+            assert!(
+                spec.env_remove.iter().any(|removed| removed == name),
+                "{name}"
+            );
+        }
+        // And nothing is exported any more; the document carries it all.
+        for name in ["ANTHROPIC_MODEL", "ANTHROPIC_BASE_URL"] {
+            assert!(!spec.env.contains_key(OsStr::new(name)), "{name}");
+        }
+    }
+
+    /// Claude Code reads one `--settings`, so on its own login too a user's
+    /// own is merged into alc's rather than passed beside it.
+    #[test]
+    fn claude_on_its_own_login_merges_a_users_own_settings() {
+        let mut config = Config::default();
         config.providers.get_mut("anthropic").unwrap().api_key_env = None;
         let spec = build(
             &store(config, Credentials::default()),
             Agent::Claude,
             Some("anthropic"),
-            &[OsString::from("--settings"), OsString::from("mine.json")],
+            &[
+                OsString::from("--settings"),
+                OsString::from(r#"{"theme":"dark"}"#),
+            ],
             &LaunchOverrides::default(),
         )
         .unwrap();
-        assert!(spec.settings_plan.is_none());
+        assert_eq!(plan_of(&spec).document["theme"], "dark");
         assert!(
-            spec.env_remove
-                .iter()
-                .any(|name| name == "ANTHROPIC_API_KEY")
-        );
-        assert_eq!(
-            spec.args,
-            ["--settings", "mine.json"].map(OsString::from),
-            "their --settings is theirs alone"
+            !spec.args.iter().any(|arg| arg == "--settings"),
+            "{:?}",
+            spec.args
         );
     }
 
     #[test]
     fn session_commands_are_recognised_by_their_first_word() {
-        use crate::agents::claude::is_session_command;
+        use crate::agents::claude::runs_directly;
         for word in ["attach", "logs", "stop", "kill", "respawn", "rm", "daemon"] {
-            assert!(
-                is_session_command(&[OsString::from(word), OsString::from("7c5d")]),
+            assert_eq!(
+                runs_directly(&[OsString::from(word), OsString::from("7c5d")]),
+                Some("manages an existing background session"),
                 "{word}"
             );
         }
-        assert!(!is_session_command(&[OsString::from("agents")]));
-        assert!(!is_session_command(&[
-            OsString::from("--bg"),
-            OsString::from("stop the build")
-        ]));
-        assert!(!is_session_command(&[]));
+        assert_eq!(runs_directly(&[OsString::from("agents")]), None);
+        assert_eq!(
+            runs_directly(&[OsString::from("--bg"), OsString::from("stop the build")]),
+            None
+        );
+        assert_eq!(runs_directly(&[]), None);
+    }
+
+    /// `claude mcp list` or `claude --version` on the full launch path wrote a
+    /// route, started the hour-lived bridge and counted a session in the usage
+    /// ledger, for a command that never opens a model connection. Only the
+    /// first word decides, so a prompt that happens to start with one of
+    /// these words is still a prompt.
+    #[test]
+    fn commands_that_reach_no_model_run_directly() {
+        use crate::agents::claude::runs_directly;
+        for word in [
+            "auth",
+            "auto-mode",
+            "doctor",
+            "import",
+            "install",
+            "mcp",
+            "plugin",
+            "plugins",
+            "project",
+            "setup-token",
+            "ultrareview",
+            "update",
+            "upgrade",
+            "-v",
+            "--version",
+            "-h",
+            "--help",
+        ] {
+            assert_eq!(
+                runs_directly(&[OsString::from(word), OsString::from("list")]),
+                Some("never reaches a model"),
+                "{word}"
+            );
+        }
+        // Agent view dispatches real work, and a prompt is a prompt.
+        for first in ["agents", "-p", "--bg", "update the changelog"] {
+            assert_eq!(runs_directly(&[OsString::from(first)]), None, "{first}");
+        }
     }
 
     #[test]

@@ -211,6 +211,42 @@ pub(crate) fn keyed_document(inputs: &KeyedDocument<'_>) -> Value {
     json!({ "apiKeyHelper": inputs.helper, "env": env })
 }
 
+pub(crate) struct NativeDocument<'a> {
+    pub base_url: &'a str,
+    pub model: &'a str,
+    pub small_model: Option<&'a str>,
+    pub context_window: Option<u64>,
+}
+
+/// Claude Code on its own login. The credential is Claude Code's, so there is
+/// no helper - but the model the session was launched with, its small model
+/// and its context window are alc's, and a background session keeps only what
+/// its settings say.
+///
+/// The key variables are left out rather than blanked. The other documents
+/// blank them because a helper answers in their place; here nothing would, and
+/// an empty key is no stand-in for a login. alc still removes a stray one from
+/// the environment of the process it starts, as it always has.
+pub(crate) fn native_document(inputs: &NativeDocument<'_>) -> Value {
+    let mut env = Map::new();
+    put(&mut env, "ANTHROPIC_BASE_URL", inputs.base_url);
+    for name in CLOUD_PROVIDER_SWITCHES {
+        put(&mut env, name, "");
+    }
+    put(&mut env, "ANTHROPIC_MODEL", inputs.model);
+    if let Some(small) = inputs.small_model {
+        put(&mut env, "ANTHROPIC_SMALL_FAST_MODEL", small);
+    }
+    if let Some(window) = inputs.context_window {
+        put(
+            &mut env,
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            window.to_string(),
+        );
+    }
+    json!({ "env": env })
+}
+
 pub(crate) struct LocalDocument<'a> {
     pub base_url: &'a str,
     pub model: &'a str,

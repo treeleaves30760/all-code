@@ -813,19 +813,13 @@ fn run_claude(
     sharing: Sharing,
 ) -> Result<u8> {
     reject_swallowed_flags(&args.args, Agent::Claude, saw_escape())?;
-    if crate::agents::claude::is_session_command(&args.args) {
+    if let Some(why) = crate::agents::claude::runs_directly(&args.args) {
         let command = args.args[0].to_string_lossy().into_owned();
         if args.model.is_some() || args.effort.is_some() || args.save {
-            bail!(
-                "--model, --effort and --save do not apply to `claude {command}`, which manages an \
-                 existing background session"
-            );
+            bail!("--model, --effort and --save do not apply to `claude {command}`, which {why}");
         }
         if sharing.enabled {
-            bail!(
-                "`claude {command}` manages an existing background session from this terminal; \
-                 it cannot be shared"
-            );
+            bail!("`claude {command}` {why} and runs in this terminal; it cannot be shared");
         }
         return launch::run_session_command(store, requested_provider, &args.args, dry_run);
     }

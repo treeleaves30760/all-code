@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::agents::claude_settings::{
-    self, CodexDocument, KeyedDocument, LocalDocument, SettingsPlan,
+    self, CodexDocument, KeyedDocument, LocalDocument, NativeDocument, SettingsPlan,
 };
 use crate::bridge_host::files::RouteRecord;
 use crate::config::{AuthStyle, Provider, ProviderKind, ReasoningEffort, Store};
@@ -21,10 +21,47 @@ use crate::launch::{
 /// handed alc's model flags, which would land in front of the subcommand.
 const SESSION_COMMANDS: [&str; 7] = ["attach", "logs", "stop", "kill", "respawn", "rm", "daemon"];
 
-pub(crate) fn is_session_command(args: &[OsString]) -> bool {
-    args.first()
-        .and_then(|first| first.to_str())
-        .is_some_and(|first| SESSION_COMMANDS.contains(&first))
+/// Claude Code commands that never open a model connection: they manage the
+/// installation, its settings, its plugins and its logins. On the full launch
+/// path each of them wrote a route, started the hour-lived bridge and counted
+/// a session in the usage ledger. `ultrareview` belongs here too: it runs on
+/// Anthropic's servers under Claude Code's own login, which a provider's
+/// settings document would only get in the way of.
+///
+/// `agents` does not: agent view dispatches real work, on the provider alc
+/// gives it.
+const NO_MODEL_COMMANDS: [&str; 17] = [
+    "auth",
+    "auto-mode",
+    "doctor",
+    "import",
+    "install",
+    "mcp",
+    "plugin",
+    "plugins",
+    "project",
+    "setup-token",
+    "ultrareview",
+    "update",
+    "upgrade",
+    "-v",
+    "--version",
+    "-h",
+    "--help",
+];
+
+/// Why alc hands this invocation to Claude Code as it is, with no provider,
+/// or `None` when it is a session to launch. The reason is worded to finish
+/// alc's refusals of flags that cannot apply to it.
+pub(crate) fn runs_directly(args: &[OsString]) -> Option<&'static str> {
+    let first = args.first()?.to_str()?;
+    if SESSION_COMMANDS.contains(&first) {
+        Some("manages an existing background session")
+    } else if NO_MODEL_COMMANDS.contains(&first) {
+        Some("never reaches a model")
+    } else {
+        None
+    }
 }
 
 pub(crate) fn build(
@@ -52,10 +89,8 @@ pub(crate) fn build(
         );
     }
     let key = store.credentials.key_for(profile_name, provider);
-    if provider.kind != ProviderKind::Codex && on_claudes_own_login(provider, key.as_deref()) {
-        spec.args.extend_from_slice(passthrough);
-        return native_login(spec, profile_name, provider, overrides);
-    }
+    let native =
+        provider.kind != ProviderKind::Codex && on_claudes_own_login(provider, key.as_deref());
 
     let (passthrough, user_settings) = claude_settings::take_user_settings(passthrough)?;
     // `claude agents …` takes alc's defaults as its own options, which have
@@ -72,7 +107,11 @@ pub(crate) fn build(
         codex_plan(spec, store, profile_name, provider, rest, overrides)?
     } else {
         spec.args.extend_from_slice(rest);
-        let document = provider_document(spec, store, profile_name, provider, key, overrides)?;
+        let document = if native {
+            native_document(spec, profile_name, provider, overrides)?
+        } else {
+            provider_document(spec, store, profile_name, provider, key, overrides)?
+        };
         (document, None, Vec::new())
     };
     if let Some(user) = &user_settings {
@@ -104,44 +143,30 @@ fn on_claudes_own_login(provider: &Provider, key: Option<&str>) -> bool {
     }
 }
 
-/// Claude Code on its own login: alc points it at the endpoint and steps
-/// aside. No settings document - a background session's credential is Claude
-/// Code's own, so there is nothing for it to lose.
-fn native_login(
+/// Claude Code on its own login: alc points it at the endpoint and the model,
+/// and the login answers. The credential is Claude Code's, but the model is
+/// alc's - carried in the environment, it was lost the first time a session
+/// went to the background and came back on Claude Code's default.
+fn native_document(
     spec: &mut LaunchSpec,
     profile_name: &str,
     provider: &Provider,
     overrides: &LaunchOverrides,
-) -> Result<()> {
+) -> Result<Value> {
     let base_url = claude_base_url(provider)
         .with_context(|| format!("provider '{profile_name}' needs an Anthropic base URL"))?;
-    spec.env.insert(
-        OsString::from("ANTHROPIC_BASE_URL"),
-        OsString::from(base_url),
-    );
-    let model = overrides.model.as_deref().unwrap_or(&provider.model);
-    spec.env
-        .insert(OsString::from("ANTHROPIC_MODEL"), OsString::from(model));
-    if let Some(small) = provider
-        .small_model
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        spec.env.insert(
-            OsString::from("ANTHROPIC_SMALL_FAST_MODEL"),
-            OsString::from(small),
-        );
-    }
-    if let Some(window) = overrides.context_window {
-        spec.env.insert(
-            OsString::from("CLAUDE_CODE_MAX_CONTEXT_TOKENS"),
-            OsString::from(window.to_string()),
-        );
-    }
     // Do not let an unrelated ambient token override the login.
     spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
     spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-    Ok(())
+    Ok(claude_settings::native_document(&NativeDocument {
+        base_url: &base_url,
+        model: overrides.model.as_deref().unwrap_or(&provider.model),
+        small_model: provider
+            .small_model
+            .as_deref()
+            .filter(|value| !value.is_empty()),
+        context_window: overrides.context_window,
+    }))
 }
 
 fn codex_plan(
