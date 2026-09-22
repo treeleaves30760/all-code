@@ -202,22 +202,24 @@ pub(crate) fn stop(config_dir: &Path) -> Result<Option<u32>> {
 pub(crate) fn status_rows(config_dir: &Path) -> Vec<(&'static str, String)> {
     let ours = env!("CARGO_PKG_VERSION");
     let mut rows = Vec::new();
-    match probe(config_dir) {
-        Some(running) => {
+    let probed = probe(config_dir);
+    let running = probed.is_some();
+    match probed {
+        Some(bridge) => {
             rows.push((
                 "bridge",
                 format!(
                     "running · pid {} · 127.0.0.1:{} · alc {}",
-                    running.pid, running.port, running.alc
+                    bridge.pid, bridge.port, bridge.alc
                 ),
             ));
-            if running.alc != ours {
+            if bridge.alc != ours {
                 rows.push((
                     "version",
                     format!(
                         "started by alc {}; `alc bridge stop` swaps it for alc {ours}, and \
                          sessions reconnect within a minute",
-                        running.alc
+                        bridge.alc
                     ),
                 ));
             }
@@ -228,7 +230,18 @@ pub(crate) fn status_rows(config_dir: &Path) -> Vec<(&'static str, String)> {
                 .to_owned(),
         )),
     }
-    rows.push(("routes", files::route_count(config_dir).to_string()));
+    // The count is wanted either way; only its wording changes when nothing
+    // is up, since a route file left on disk while the bridge is stopped is
+    // not being served by anything.
+    let routes = files::route_count(config_dir);
+    rows.push((
+        "routes",
+        if running {
+            routes.to_string()
+        } else {
+            format!("{routes} · on disk; nothing is being served")
+        },
+    ));
     rows
 }
 

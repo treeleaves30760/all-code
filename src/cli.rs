@@ -713,7 +713,11 @@ fn provider_selector(cli: &Cli) -> Result<Option<String>> {
         bail!("provider shortcut flags are mutually exclusive");
     }
     if cli.provider.is_some() && !selected.is_empty() {
-        bail!("--provider cannot be combined with a provider shortcut flag");
+        bail!(
+            "--provider cannot be combined with a provider shortcut flag; if that `-p` was \
+meant for the agent, put the agent's own flags after `--`, as in \
+`alc --codex claude -- -p \"...\"`"
+        );
     }
     Ok(cli
         .provider
@@ -755,7 +759,17 @@ const ALC_OWNED_FLAGS: [&str; 7] = [
     "-t",
 ];
 
-fn reject_swallowed_flags(args: &[OsString], agent: Agent) -> Result<()> {
+/// True when the user typed `--`, which clap consumes before the passthrough
+/// reaches us: everything after it is the agent's, including flags alc has a
+/// name for.
+fn saw_escape() -> bool {
+    std::env::args_os().any(|argument| argument == "--")
+}
+
+fn reject_swallowed_flags(args: &[OsString], agent: Agent, escaped: bool) -> Result<()> {
+    if escaped {
+        return Ok(());
+    }
     for argument in args {
         let Some(text) = argument.to_str() else {
             continue;
@@ -765,7 +779,7 @@ fn reject_swallowed_flags(args: &[OsString], agent: Agent) -> Result<()> {
             bail!(
                 "`{name}` is alc's own flag but it came after the agent's arguments, \
 where it would be passed to {agent} instead; put it before the agent name, \
-or use `alc share {agent} -- <args>`"
+or put the agent's own flags after `--`, as in `alc {agent} -- <args>`"
             );
         }
     }
@@ -780,7 +794,7 @@ fn run_agent(
     dry_run: bool,
     sharing: Sharing,
 ) -> Result<u8> {
-    reject_swallowed_flags(&args, agent)?;
+    reject_swallowed_flags(&args, agent, saw_escape())?;
     let provider = store.config.resolve(agent, requested_provider)?.1.clone();
     let overrides = if provider.kind == ProviderKind::Codex && agent != Agent::Codex {
         codex_launch_overrides(store, &provider, dry_run)?
@@ -798,7 +812,7 @@ fn run_claude(
     dry_run: bool,
     sharing: Sharing,
 ) -> Result<u8> {
-    reject_swallowed_flags(&args.args, Agent::Claude)?;
+    reject_swallowed_flags(&args.args, Agent::Claude, saw_escape())?;
     if crate::agents::claude::is_session_command(&args.args) {
         let command = args.args[0].to_string_lossy().into_owned();
         if args.model.is_some() || args.effort.is_some() || args.save {
@@ -1595,5 +1609,25 @@ mod tests {
         assert_eq!(non_empty("".into()), None);
         assert_eq!(non_empty("  ".into()), None);
         assert_eq!(non_empty("value".into()), Some("value".into()));
+    }
+
+    #[test]
+    fn an_alc_flag_after_the_agent_is_refused_with_a_way_out() {
+        let args = [OsString::from("--name"), OsString::from("nightly")];
+        let error = reject_swallowed_flags(&args, Agent::Claude, false)
+            .expect_err("--name after the agent belongs to alc");
+        let message = error.to_string();
+        assert!(message.contains("--name"), "{message}");
+        assert!(
+            message.contains("alc claude -- <args>"),
+            "the way out has to be one that works: {message}"
+        );
+    }
+
+    #[test]
+    fn a_double_dash_hands_every_flag_to_the_agent() {
+        let args = [OsString::from("--name"), OsString::from("nightly")];
+        reject_swallowed_flags(&args, Agent::Claude, true)
+            .expect("`--` is the user saying they meant the agent's flag");
     }
 }

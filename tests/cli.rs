@@ -225,7 +225,7 @@ fn a_share_flag_after_the_agents_arguments_is_rejected_with_guidance() {
             .args(["--openrouter", agent, "review this", "--share"])
             .assert()
             .failure()
-            .stderr(predicate::str::contains("alc share"))
+            .stderr(predicate::str::contains("after `--`"))
             .stderr(predicate::str::contains("before the agent name"));
     }
 }
@@ -320,9 +320,23 @@ fn a_tmux_flag_after_the_agents_arguments_is_rejected_with_guidance() {
             .args(["--openrouter", "claude", "review this", flag])
             .assert()
             .failure()
-            .stderr(predicate::str::contains("alc share"))
+            .stderr(predicate::str::contains("after `--`"))
             .stderr(predicate::str::contains("before the agent name"));
     }
+}
+
+/// alc's own `--provider` has the short form `-p` and is global, so it wins
+/// the parse before the agent ever sees its own `-p`; print mode is the
+/// commonest way a user hits this.
+#[test]
+fn a_dash_p_meant_for_the_agent_is_explained() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "claude", "-p", "Reply with the single word pong"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("after `--`"))
+        .stderr(predicate::str::contains("alc --codex claude -- -p"));
 }
 
 /// A row, never an issue: a user who never types `--tmux` must not start
@@ -1646,6 +1660,27 @@ fn the_bridge_starts_on_demand_answers_only_its_token_and_stops() {
         .assert()
         .success()
         .stdout(predicate::str::contains("not running"));
+}
+
+/// A route file left over from an earlier session is not a route being
+/// served; the count is still worth printing, but not as `routes   1` next
+/// to `bridge   not running`, which reads as one route the (absent) bridge
+/// is handling.
+#[test]
+fn the_routes_row_says_a_stopped_bridge_is_serving_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex = tempfile::tempdir().unwrap();
+    std::fs::write(codex.path().join("auth.json"), "{}").unwrap();
+    write_route(&temp, &codex.path().join("auth.json"));
+
+    alc(&temp)
+        .args(["bridge"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"))
+        .stdout(predicate::str::contains(
+            "1 · on disk; nothing is being served",
+        ));
 }
 
 #[test]
