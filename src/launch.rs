@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::agents;
 use crate::bridge::BridgeConfig;
 use crate::config::{
-    Agent, Protocol, Provider, ProviderKind, ReasoningEffort, Store, atomic_write,
+    Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store, atomic_write,
 };
 use crate::model_catalog::ModelInfo;
 
@@ -276,6 +277,19 @@ impl LaunchSpec {
     }
 }
 
+/// Bearer auth for a profile whose kind authenticates nothing by default but
+/// has a key anyway: a vLLM or llama.cpp server started with `--api-key`.
+/// Without it `alc config key` on a vLLM, Ollama, or custom profile saves a key
+/// that every agent builder skips, and the server answers each launch with 401.
+fn with_key_auth<'a>(store: &Store, profile: &str, provider: &'a Provider) -> Cow<'a, Provider> {
+    if provider.auth != AuthStyle::None || store.credentials.key_for(profile, provider).is_none() {
+        return Cow::Borrowed(provider);
+    }
+    let mut provider = provider.clone();
+    provider.auth = AuthStyle::Bearer;
+    Cow::Owned(provider)
+}
+
 pub fn build(
     store: &Store,
     agent: Agent,
@@ -284,6 +298,8 @@ pub fn build(
     overrides: &LaunchOverrides,
 ) -> Result<LaunchSpec> {
     let (profile_name, provider) = store.config.resolve(agent, requested_provider)?;
+    let provider = with_key_auth(store, profile_name, provider);
+    let provider: &Provider = &provider;
     let mut spec = LaunchSpec {
         program: OsString::from(agent.as_str()),
         args: Vec::new(),
@@ -1341,6 +1357,86 @@ mod tests {
                 .map(OsString::from)
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn vllm_store(key: Option<&str>) -> Store {
+        let mut config = Config::default();
+        let mut vllm = Provider::for_kind(ProviderKind::Vllm);
+        vllm.base_url = Some("http://127.0.0.1:8080/v1".into());
+        vllm.model = "qwen3.8-27b".into();
+        config.providers.insert("brandy".into(), vllm);
+        let mut credentials = Credentials::default();
+        if let Some(key) = key {
+            credentials.api_keys.insert("brandy".into(), key.into());
+        }
+        store(config, credentials)
+    }
+
+    fn opencode_options(spec: &LaunchSpec) -> Value {
+        let inline: Value = serde_json::from_str(
+            spec.env[OsStr::new("OPENCODE_CONFIG_CONTENT")]
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        inline["provider"]["alc-brandy"]["options"].clone()
+    }
+
+    fn has_arg(spec: &LaunchSpec, wanted: &str) -> bool {
+        spec.args.iter().any(|arg| arg.to_string_lossy() == wanted)
+    }
+
+    /// A vLLM profile authenticates nothing by default, but a key saved for it
+    /// belongs to a server started with one. Both builders used to skip it,
+    /// and a llama.cpp server behind a key answered every launch with 401.
+    #[test]
+    fn a_key_saved_for_a_vllm_profile_is_sent() {
+        let store = vllm_store(Some("never-print-this"));
+        let overrides = LaunchOverrides::default();
+
+        let opencode = build(&store, Agent::Opencode, Some("brandy"), &[], &overrides).unwrap();
+        assert_eq!(
+            opencode_options(&opencode)["apiKey"],
+            json!("{env:ALC_PROVIDER_API_KEY}")
+        );
+        assert_eq!(
+            opencode.env[OsStr::new("ALC_PROVIDER_API_KEY")],
+            OsString::from("never-print-this")
+        );
+
+        let codex = build(&store, Agent::Codex, Some("brandy"), &[], &overrides).unwrap();
+        assert!(
+            has_arg(
+                &codex,
+                "model_providers.alc_brandy.env_key=\"ALC_PROVIDER_API_KEY\""
+            ),
+            "{:?}",
+            codex.args
+        );
+        assert_eq!(
+            codex.env[OsStr::new("ALC_PROVIDER_API_KEY")],
+            OsString::from("never-print-this")
+        );
+    }
+
+    #[test]
+    fn a_vllm_profile_without_a_key_still_sends_none() {
+        let store = vllm_store(None);
+        let overrides = LaunchOverrides::default();
+
+        let opencode = build(&store, Agent::Opencode, Some("brandy"), &[], &overrides).unwrap();
+        assert!(opencode_options(&opencode).get("apiKey").is_none());
+
+        let codex = build(&store, Agent::Codex, Some("brandy"), &[], &overrides).unwrap();
+        assert!(
+            !codex
+                .args
+                .iter()
+                .any(|arg| arg.to_string_lossy().contains("env_key")),
+            "{:?}",
+            codex.args
+        );
+        assert!(!codex.env.contains_key(OsStr::new("ALC_PROVIDER_API_KEY")));
     }
 
     fn option_value(args: &[OsString], name: &str) -> Option<String> {
