@@ -48,7 +48,7 @@ mod settings;
 mod tmux;
 mod utf8;
 #[cfg(windows)]
-mod win;
+pub(crate) mod win;
 mod wire;
 
 use std::env;
@@ -61,11 +61,14 @@ use anyhow::{Context, Result, bail};
 use crate::config::Store;
 use crate::launch::LaunchSpec;
 use crate::remote::permission::EscalationGate;
-use crate::remote::settings::{Bind, RemoteSettings, Secrets};
+use crate::remote::settings::{Bind, RemoteSettings};
 
 // Re-exported for the configuration TUI, which edits these directly.
 pub(crate) use crate::remote::caps::SafetyRung;
 pub(crate) use crate::remote::settings::{Bind as RemoteBind, RemoteSettings as Settings};
+// The background bridge keeps its token and port in the same 0700 run
+// directory, minted the same way. `Secrets` is also this module's own.
+pub(crate) use crate::remote::settings::{Secrets, generate_token, restricted_dir};
 use crate::remote::wire::ExitInfo;
 
 /// What `alc remote` was asked to do.
