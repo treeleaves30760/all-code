@@ -4,10 +4,13 @@
 //! `bridge/routes/<id>.json` (one Codex login a Claude Code session runs on).
 
 use std::fs;
+use std::io::Write;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -46,16 +49,85 @@ pub(crate) fn read_token(config_dir: &Path) -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
+/// How long a caller that lost the race to create the token file waits for
+/// the winner to write the token into it.
+const TOKEN_WAIT: Duration = Duration::from_secs(2);
+
+/// How often that caller looks while it waits.
+const TOKEN_POLL: Duration = Duration::from_millis(20);
+
+/// The bridge's token, minted by whichever alc asks first.
+///
+/// Minting is exclusive. A launch and a session's `apiKeyHelper` can both find
+/// no token on a fresh configuration, and if each wrote its own, the last write
+/// would win while the other caller went on holding a token that is on no
+/// disk. A bridge started with that one refuses every request carrying the
+/// token everyone else reads. So the file is created with `create_new`:
+/// exactly one caller makes it, and every other adopts what that one writes.
 pub(crate) fn load_or_create_token(config_dir: &Path) -> Result<String> {
-    match read_token(config_dir) {
-        Some(token) => Ok(token),
-        None => rotate_token(config_dir),
+    if let Some(token) = read_token(config_dir) {
+        return Ok(token);
+    }
+    // Minted before the file exists, so nothing that can fail stands between
+    // creating the file and writing the token into it.
+    let token = generate_token()?;
+    restricted_dir(&run_dir(config_dir))?;
+    let path = token_path(config_dir);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return adopt_token(config_dir);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to create {}", path.display()));
+        }
+    };
+    if let Err(error) = file
+        .write_all(token.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
+        // Left behind, an empty file would keep every later caller waiting for
+        // a token that is never coming.
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(error).with_context(|| format!("failed to write {}", path.display()));
+    }
+    Ok(token)
+}
+
+/// Adopts the token another alc is writing. Its file exists from the moment
+/// that alc creates it and reads empty until the token is in it, so an empty
+/// read here means "not yet" - until it has meant that for `TOKEN_WAIT`.
+fn adopt_token(config_dir: &Path) -> Result<String> {
+    let deadline = Instant::now() + TOKEN_WAIT;
+    loop {
+        if let Some(token) = read_token(config_dir) {
+            return Ok(token);
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "{} still holds no token {} seconds after another alc created it; \
+                 delete it and try again",
+                token_path(config_dir).display(),
+                TOKEN_WAIT.as_secs()
+            );
+        }
+        thread::sleep(TOKEN_POLL);
     }
 }
 
-/// Mints a fresh token. Every session still holding the old one is answered
-/// 401 on its next request, and Claude Code runs its helper again on a 401 -
-/// so rotating heals on its own.
+/// Mints a fresh token, replacing the one on disk. Every session still holding
+/// the old one is answered 401 on its next request, and Claude Code runs its
+/// helper again on a 401 - so rotating heals on its own. Only a running bridge
+/// rotates, when it has to move ports; everything else goes through
+/// `load_or_create_token`, which never replaces a token.
 pub(crate) fn rotate_token(config_dir: &Path) -> Result<String> {
     restricted_dir(&run_dir(config_dir))?;
     let token = generate_token()?;
@@ -134,7 +206,28 @@ pub(crate) fn valid_route_id(id: &str) -> bool {
     })
 }
 
+/// Writes `route` under its own name, and only a route alc named.
+///
+/// The hub writes records that arrive over its control socket, so a record is
+/// checked here rather than trusted for having come from `RouteRecord::new`.
+/// A name that is really a path would put a file wherever it points, and a
+/// well-formed name over another profile or login would move every session on
+/// that route to an account it did not start on. Both are refused before any
+/// path is built from the name.
 pub(crate) fn write_route(config_dir: &Path, route: &RouteRecord) -> Result<()> {
+    if !valid_route_id(&route.id) {
+        bail!(
+            "refusing to write bridge route {:?}: alc names a route `codex-` and twelve hex digits",
+            route.id
+        );
+    }
+    let own = route_id(&route.profile, &route.auth_file);
+    if route.id != own {
+        bail!(
+            "refusing to write bridge route {}: the profile and Codex login it holds make route {own}",
+            route.id
+        );
+    }
     restricted_dir(&run_dir(config_dir))?;
     let dir = routes_dir(config_dir);
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
@@ -206,6 +299,24 @@ mod tests {
         }
     }
 
+    /// Every file under `root`, however deep, so a test can say that nothing
+    /// else was written anywhere.
+    fn files_under(root: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(current) = pending.pop() {
+            for entry in fs::read_dir(&current).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        files
+    }
+
     #[test]
     fn the_token_is_minted_once_and_kept_until_rotated() {
         let temp = tempfile::tempdir().unwrap();
@@ -226,6 +337,66 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    /// Two starters on a fresh configuration - a launch and a session's
+    /// helper, say - must come away holding the same token, and it must be
+    /// the one on disk: a bridge started with any other refuses every request
+    /// that carries the one on disk.
+    #[test]
+    fn two_starters_racing_for_the_first_token_agree_on_one() {
+        for _ in 0..20 {
+            let temp = tempfile::tempdir().unwrap();
+            let start = std::sync::Barrier::new(2);
+            let starter = || {
+                start.wait();
+                load_or_create_token(temp.path()).unwrap()
+            };
+            let (first, second) = std::thread::scope(|scope| {
+                let one = scope.spawn(starter);
+                let two = scope.spawn(starter);
+                (one.join().unwrap(), two.join().unwrap())
+            });
+            assert_eq!(first, second);
+            assert_eq!(read_token(temp.path()), Some(first));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(token_path(temp.path()))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(mode & 0o077, 0, "{mode:o}");
+            }
+        }
+    }
+
+    /// The loser of that race can find the file before the winner has written
+    /// into it. Empty means "not yet": it waits for the token, and gives up -
+    /// leaving the file to whoever created it - only when none arrives.
+    #[test]
+    fn a_token_file_still_being_written_is_waited_for_and_never_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        restricted_dir(&run_dir(temp.path())).unwrap();
+        let path = token_path(temp.path());
+
+        fs::write(&path, "").unwrap();
+        let adopted = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(200));
+                fs::write(&path, "the-winners-token").unwrap();
+            });
+            load_or_create_token(temp.path()).unwrap()
+        });
+        assert_eq!(adopted, "the-winners-token");
+
+        fs::write(&path, "").unwrap();
+        let started = Instant::now();
+        let error = load_or_create_token(temp.path()).unwrap_err().to_string();
+        assert!(started.elapsed() >= TOKEN_WAIT, "{:?}", started.elapsed());
+        assert!(error.contains("bridge.token"), "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
     }
 
     #[test]
@@ -284,6 +455,56 @@ mod tests {
             read_route(temp.path(), "../../secrets").unwrap(),
             None,
             "never a path"
+        );
+    }
+
+    #[test]
+    fn a_route_whose_name_is_a_path_is_refused_and_writes_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("alc");
+        let escaping = RouteRecord {
+            id: "../../x".to_owned(),
+            ..RouteRecord::new(
+                "codex",
+                PathBuf::from("/home/ada/.codex/auth.json"),
+                tiers(),
+            )
+        };
+        let refused = write_route(&config_dir, &escaping).unwrap_err().to_string();
+        assert!(refused.contains("../../x"), "{refused}");
+        assert_eq!(files_under(temp.path()), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn a_route_whose_name_is_not_its_own_is_refused_and_writes_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("alc");
+        let honest = RouteRecord::new(
+            "codex",
+            PathBuf::from("/home/ada/.codex/auth.json"),
+            tiers(),
+        );
+        // Well-formed names, each over contents it was not made from: one made
+        // up, and this route's own name over another account's login.
+        let made_up = RouteRecord {
+            id: "codex-0123456789ab".to_owned(),
+            ..honest.clone()
+        };
+        let swapped = RouteRecord {
+            auth_file: PathBuf::from("/home/eve/.codex/auth.json"),
+            ..honest.clone()
+        };
+        for forged in [&made_up, &swapped] {
+            let refused = write_route(&config_dir, forged).unwrap_err().to_string();
+            assert!(refused.contains(&forged.id), "{refused}");
+        }
+        assert_eq!(files_under(temp.path()), Vec::<PathBuf>::new());
+
+        // The record alc made is still written, and only where routes live.
+        write_route(&config_dir, &honest).unwrap();
+        assert_eq!(
+            files_under(temp.path()),
+            vec![routes_dir(&config_dir).join(format!("{}.json", honest.id))]
         );
     }
 
