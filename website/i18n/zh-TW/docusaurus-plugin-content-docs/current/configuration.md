@@ -26,6 +26,21 @@ keywords:
 - `remote.toml`：[遠端控制](./remote-control.md)的設定。
 - `usage.jsonl`：[`alc usage`](./usage.md) 彙整的那份啟動與 turn
   帳本。想重新開始計算，把它刪掉就好。
+- `claude/settings-*.json`：alc 用 `--settings` 交給 Claude Code 的那些設定
+  文件 —— 端點、模型相關變數、選單，以及 `apiKeyHelper` 那一行，裡面沒有任何
+  一種金鑰。每一份都以自己內容的雜湊命名，所以每一次解析到同一份文件的啟動，
+  用的都是同一個檔案；在 Unix 上一律以 `0600` 權限寫入。alc 從不刪除它們，
+  因為[背景 session](./background-sessions.md)每次被 Claude Code 重新啟動時，
+  都會再讀一次自己的那個檔案。沒有背景 session 在跑的時候，把它們刪掉是安全
+  的；刪掉某個還在跑的 session 正在用的那一份，那個 session 就會壞掉，直到它
+  下一次重新啟動為止。把它們留在那裡之前有一件事要知道：你自己傳的
+  `--settings` 會被合併進那份文件，所以你放進自己檔案裡的憑證，也會在 alc
+  那一份裡。
+- `run/bridge.port`、`run/bridge.token`：[背景橋接](./background-sessions.md#背景橋接)
+  正在哪裡聽，以及每一個送到它那裡的請求都必須帶著的那個 token。
+- `run/bridge/routes/`：橋接服務的每一條 route 各一個檔案 —— 它花掉的是哪個
+  provider profile、它的請求用哪一份 Codex `auth.json` 簽署，以及 Claude Code
+  自己的 model id 會落到哪裡。
 
 可用 `ALC_CONFIG_DIR` 覆寫目錄位置。
 

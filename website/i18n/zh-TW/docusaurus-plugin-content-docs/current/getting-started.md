@@ -159,10 +159,11 @@ alc claude -- --model sonnet      # `--` hands even those names to Claude
 
 alc 自己的旗標 —— `--share`、`--no-share`、`--bind-lan`、`--name`、
 `--permission`、`--tmux`、`-t` —— 要寫在 agent 名稱前面。寫在後面，alc
-會直接停下來，而不是把它們交給 agent：
+會直接停下來，而不是把它們交給 agent —— 除非你在 agent 名稱後面緊接著寫上
+`--`，那就表示你指的是 agent 自己的旗標：
 
 ```text
-error: `--share` is alc's own flag but it came after the agent's arguments, where it would be passed to claude instead; put it before the agent name, or use `alc share claude -- <args>`
+error: `--share` is alc's own flag but it came after the agent's arguments, where it would be passed to claude instead; put it before the agent name, or put the agent's own flags after `--`, as in `alc claude -- <args>`
 ```
 
 ## 預覽與檢查

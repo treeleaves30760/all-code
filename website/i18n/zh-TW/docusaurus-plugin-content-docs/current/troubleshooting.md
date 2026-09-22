@@ -91,6 +91,89 @@ alc --codex claude    # clears it on exit; alc passes the model itself
 alc hub stop
 ```
 
+## Your apiKeyHelper script is failing
+
+`alc claude-credential` —— 也就是 alc 寫出來的那份設定檔裡指名的那個 helper ——
+沒有印出憑證就結束時，Claude Code 就會這樣說。有四件事會擋住它：
+
+- **沒有登入 Codex。** 執行 `codex login`，然後再試一次。
+- **一把只有某個 shell 知道的 key。** key 放在環境變數裡的 profile，只有從那個
+  shell 啟動的 session 讀得到，別的都讀不到，所以之後才開始跑的背景 session
+  問了也拿不到東西。請用 `alc config key <profile>` 把它存起來。
+- **橋接起不來。** `alc bridge serve` 會在這個終端機裡直接跑它，並印出它為什麼
+  起不來。
+- **一條不見了的 route。** 橋接手上那個 Codex profile 的紀錄被刪掉了；跑一次
+  `alc --codex claude` 就會重新寫回去。
+
+`alc doctor` 一次就會回報登入狀態、存下來的金鑰與橋接。這個 helper 永遠不會退
+回去用你的 Claude 登入：一個由 alc 設定好的 session，要嘛連上你指定的那個
+provider，要嘛直接說它做不到。
+
+## 橋接換了位置之後，背景 session 連不上
+
+橋接會一直用它挑中的那個 port，但它也可能失去那個 port —— 它關著的時候，port
+被別的程式佔走了，於是橋接回來時換了一個。還在對著舊 port 跑的 session，那裡
+什麼都找不到。把它們重新啟動，它們就會接上新的：
+
+```sh
+claude respawn <id>
+claude respawn --all
+```
+
+## 我派出的 session 是 Anthropic 在回答，不是 Codex
+
+agent view 屬於你當初從哪一個 Claude Code 打開它。從一個普通的 `claude agents`
+派出工作，拿到的就是用你 Anthropic 登入的普通 Claude Code session，不管 alc
+在另一個終端機裡做著什麼。請改成透過 alc 打開 agent view：
+
+```sh
+alc --codex claude agents
+```
+
+那些 session 帶著 alc 寫出來的那份設定檔，而且 Claude Code 每一次重新啟動它們
+時都還帶著。其餘的都在[背景 session](./background-sessions.md)。
+
+## 每一次 Codex 執行都出現的兩則提示
+
+每一次在 Codex profile 上以 print 模式執行，都會往 stderr 寫兩行：一行是
+`CLAUDE_CODE_DISABLE_1M_CONTEXT is set, but the 200K limit isn't enforced for <model>`，
+另一行是 `[claude-code:unrecognized_model]`。兩行都是 Claude Code 在告訴你，它
+不認得 alc 交給它的那個 model id —— 而這正是重點：那是一個 Codex 模型。它們是
+診斷訊息，不是錯誤；session 是好的。
+
+有兩種記載過的解法，alc 兩種都不用。一筆 `modelOverrides` 設定會讓 Claude Code
+在算 context 預算時把那個 Codex id 當成 Claude 模型，反而毀掉 alc 以
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 傳給它的、真正的 Codex window。
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 則會把 session 釘在 200K 來讓第一行閉嘴，
+然後狀態列上的那個百分比就不再有任何意義。
+
+## `/model` 說 `ANTHROPIC_MODEL` 蓋過我的選擇
+
+在一個 alc 的 session 裡挑模型，會回你兩行，第二行是一個警告：
+
+```text
+Set model to GPT-6-Astra and saved as your default for new sessions
+ANTHROPIC_MODEL is set to GPT-5.6-Sol — new sessions use that while it is set
+```
+
+兩行都是真的。你挑的那個只對你正在用的這個 session 有效，而 alc 會替它啟動的
+每一個 session 把模型釘住，所以之後再跑一次 `alc --codex claude`，起點又會是
+alc 的模型，而不是你挑的那一個。要改的是 alc 從哪一個模型起跑：
+
+```sh
+alc --codex claude --model gpt-6-astra
+alc --codex claude --model gpt-6-astra --save
+```
+
+## 用腳本盯著一個背景 session
+
+`claude agents --json --all` 同時帶有 `state` 與 `status`，而會告訴你工作做完了
+沒有的是 `state`：`working` 會變成 `done`。`status` 只會從 `busy` 變成 `idle`。
+
+一段你用 `←` 送到背景的對話，最後會停在 `state: "blocked"` —— 卡片上寫的是
+「Needs input」—— 而不是 `done`，因為它是一個還活著、正在等你下一句話的
+session。
+
 ## `alc update` 找不到釋出的壓縮檔
 
 1.4.0 之前裝好的版本，會去找一個已經不再發布的第二個執行檔。重新跑一次安裝器就好，
