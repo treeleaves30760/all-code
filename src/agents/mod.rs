@@ -1,4 +1,6 @@
 pub mod claude;
+#[allow(dead_code, reason = "wired into claude::build in Task 8")]
+pub mod claude_settings;
 pub mod codex;
 pub mod copilot;
 pub mod goose;
