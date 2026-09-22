@@ -1632,6 +1632,50 @@ mod tests {
         assert!(!codex.env.contains_key(OsStr::new("ALC_PROVIDER_API_KEY")));
     }
 
+    /// A keyed vLLM profile is bearer auth before any builder sees it. On
+    /// Claude Code that has to mean the keyed settings document - the key
+    /// fetched through the helper - and never the `alc` placeholder token a
+    /// keyless endpoint is given: a server started with a key refuses the
+    /// placeholder, and a background session has nothing but the document.
+    #[test]
+    fn a_key_saved_for_a_vllm_profile_reaches_claude_code_through_the_helper() {
+        for key in [Some("never-print-this"), None] {
+            let mut store = vllm_store(key);
+            store
+                .config
+                .providers
+                .get_mut("brandy")
+                .unwrap()
+                .anthropic_base_url = Some("http://127.0.0.1:8080".into());
+            let spec = build(
+                &store,
+                Agent::Claude,
+                Some("brandy"),
+                &[],
+                &LaunchOverrides::default(),
+            )
+            .unwrap();
+            let document = &plan_of(&spec).document;
+            let env = document_env(&spec);
+            let helper = document.get("apiKeyHelper").and_then(Value::as_str);
+            if key.is_some() {
+                assert!(
+                    helper.is_some_and(|line| line.contains("claude-credential")
+                        && line.contains("profile:brandy")),
+                    "{document}"
+                );
+                assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "", "the helper answers");
+                assert!(
+                    !document.to_string().contains("never-print-this"),
+                    "the document never holds the key"
+                );
+            } else {
+                assert!(helper.is_none(), "{document}");
+                assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "alc");
+            }
+        }
+    }
+
     fn option_value(args: &[OsString], name: &str) -> Option<String> {
         let index = args.iter().position(|arg| arg.to_string_lossy() == name)?;
         args.get(index + 1)
