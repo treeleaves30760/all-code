@@ -162,10 +162,11 @@ alc claude -- --model sonnet      # `--` hands even those names to Claude
 
 alc's own flags — `--share`, `--no-share`, `--bind-lan`, `--name`,
 `--permission`, `--tmux`, `-t` — go before the agent name. After it, alc stops
-rather than passing them to the agent:
+rather than passing them to the agent, unless you put `--` straight after the
+agent name, which says you meant the agent's flag:
 
 ```text
-error: `--share` is alc's own flag but it came after the agent's arguments, where it would be passed to claude instead; put it before the agent name, or use `alc share claude -- <args>`
+error: `--share` is alc's own flag but it came after the agent's arguments, where it would be passed to claude instead; put it before the agent name, or put the agent's own flags after `--`, as in `alc claude -- <args>`
 ```
 
 ## Preview and check

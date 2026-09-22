@@ -99,7 +99,9 @@ alc codex                # Codex CLI itself, on its own login, no adapter
 | Codex CLI | native, no bridge | Codex's own picker |
 
 alc starts its own Codex adapter on a loopback port and points only the launched
-agent's process at it — three wire protocols, one login, one process that stops
+agent's process at it — three wire protocols, one login. For Claude Code the
+adapter is a background process its sessions share (see [Background
+sessions](#background-sessions)); for the others it lives inside alc and stops
 when the session does. Claude Code is the only agent that can switch mid-session,
 because it sends the model and effort with every request, so alc never pins
 either on the adapter; the others pick one model and one reasoning effort at
@@ -160,6 +162,48 @@ Remote control works on Windows 10 and 11 as it does on macOS and Linux;
 `--tmux` there needs the native Windows port of tmux, covered in
 [Who owns the size](#who-owns-the-size).
 
+## Background sessions
+
+Claude Code's [agent view](https://code.claude.com/docs/en/agent-view) runs
+sessions in the background - `claude agents`, `claude --bg`, and `←` on an empty
+prompt - under a supervisor of its own that outlives the terminal. Every Claude
+Code session alc starts works there, on the provider alc gave it:
+
+```sh
+alc --codex claude agents                     # agent view; every dispatch runs on Codex
+alc --codex claude --bg "fix the flaky test"  # straight to the background
+alc --codex claude                            # ← on an empty prompt: still on Codex
+```
+
+**How.** alc hands Claude Code its provider in a settings file, passed with
+`--settings`, which Claude Code keeps for a background session and reads again
+each time it restarts one. The file holds no key: Claude Code asks alc for the
+credential through its `apiKeyHelper` setting, and alc reads it from where it
+always has.
+
+**The Codex bridge runs on its own now.** A background session outlives the
+`alc` that started it, so the adapter has to as well: one small alc process on a
+loopback port it keeps, answering only requests that carry its token. A session
+that needs it starts it, and it stops after an hour with nothing to do.
+
+```sh
+alc bridge          # running or not, and where
+alc bridge stop     # stop it now; the next session that needs it starts it
+```
+
+**Every Claude model becomes a Codex model.** Under `alc --codex claude` no
+request reaches a Claude model. The `/model` picker lists Codex models only;
+every alias (`opus`, `sonnet`, `haiku`, `fable`, `best`, `opusplan`) and Claude
+Code's background work land on Codex models; and a Claude model named in full -
+`/model claude-opus-5`, a subagent's `model:`, a fallback chain - is answered by
+the Codex model of the same tier. Fast mode and the advisor exist only on Claude
+models, so they are off in these sessions. `claude ultrareview` and cloud
+sessions run on Anthropic's servers and stay Anthropic features.
+
+`alc claude attach`, `logs`, `stop`, `respawn` and `rm` go straight to Claude
+Code, and so does plain `claude attach`: the session already carries its
+settings file.
+
 ## Any provider, not just Codex
 
 `codex login` is the shortest path, not the only one. Point any of the eight
@@ -206,6 +250,7 @@ and protocol for every kind.
 | `alc rename <id> <name>` | Rename a session's card on the page |
 | `alc kill <id>` | Stop a shared session |
 | `alc hub` | `status`, `start`, `stop --drain` for the process that owns sessions |
+| `alc bridge` | The background bridge Claude Code sessions reach the Codex login through; `status`, `stop` |
 | `alc remote` | `status`, `url`, `on`/`off`, `auto-share`, `allow-host`, `token --rotate` |
 | `alc confirm <ticket>` | Approve a permission change a shared session asked for |
 
@@ -223,12 +268,22 @@ alc --ollama opencode run "fix the failing test"
 ```
 
 To pass an option with one of those same names to Claude itself, put it after
-`--`: `alc claude -- --model sonnet`.
+`--`: `alc claude -- --model sonnet`. A `--settings` you pass is merged into
+alc's, yours winning, because Claude Code reads only one.
 
 alc's own flags — `--share`, `--no-share`, `--bind-lan`, `--name`,
 `--permission`, `--tmux`, `-t` — have to come *before* the agent name. After it
 they would be handed to the agent as prompt text, so alc stops and says so
-instead.
+instead — unless you put `--` straight after the agent name, which says you
+meant the agent's own flag:
+
+```sh
+alc --codex claude -- -p "fix the flaky test"
+alc --codex claude -- --bg --name nightly "run the slow suite"
+```
+
+The `--` goes straight after the agent's name, before all of its flags; later
+in the line it reaches the agent as an argument of its own.
 
 **Previewing.** `alc --codex --dry-run claude` prints the resolved agent and
 provider, the command with secrets redacted, a line for the built-in adapter when
@@ -333,7 +388,7 @@ upsert` when upstream renames or retires a model.
 
 | Agent | Binary | Accepts | alc injects | Codex bridge |
 | --- | --- | --- | --- | --- |
-| [Claude Code](https://code.claude.com/docs/en/setup) | `claude` | Anthropic-compatible endpoint | env (`ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_API_KEY`) | Yes (`/model` picker) |
+| [Claude Code](https://code.claude.com/docs/en/setup) | `claude` | Anthropic-compatible endpoint | `--settings` file (endpoint, model aliases, picker) + `apiKeyHelper` | Yes (`/model` picker) |
 | [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) | `codex` | OpenAI Responses API | flags + `--config` overrides | Yes (native login) |
 | [OpenCode](https://opencode.ai/docs) | `opencode` | Any API-compatible provider | inline `OPENCODE_CONFIG_CONTENT` env | Yes |
 | [Pi](https://github.com/earendil-works/pi) | `pi` | Anthropic-, OpenAI-, or OpenAI-compatible endpoint | `models.json` merge + flags | Yes |
@@ -377,10 +432,12 @@ alc --codex claude --model gpt-5.6-terra --effort medium --save
 
 `--save` stores both in the selected alc provider. Without them the session
 starts on the alc provider's values, then the selected Codex profile's, then the
-model's documented default. A `--model`, `--effort`, or `--settings` placed after
-`--` is forwarded to Claude Code untouched and wins over what alc would inject. A
-model chosen with `/model` applies to that session only; the next launch starts
-from the alc default again, so `alc config` stays the source of truth.
+model's documented default. A `--model` or `--effort` placed after `--` is
+forwarded to Claude Code untouched and wins over what alc would inject; a
+`--settings` of your own is merged into alc's, yours winning, because Claude Code
+reads only one. A model chosen with `/model` applies to that session only; the
+next launch starts from the alc default again, so `alc config` stays the source
+of truth.
 
 **The picker.** alc passes the model list through Claude Code's
 [`modelPicker`](https://code.claude.com/docs/en/settings-reference#modelpicker)
@@ -440,10 +497,11 @@ Claude's generic fallback.
 
 ### How the bridge works
 
-The bridge is alc's own code (`src/bridge/`). It runs inside the `alc` process on
-a random `127.0.0.1` port, points only the launched agent at it, and stops when
-that session ends. It reads and may refresh `~/.codex/auth.json`; credentials are
-never copied into the `alc` config.
+The bridge is alc's own code (`src/bridge/`). For Claude Code it runs as a
+background process of its own on a loopback port it keeps (`alc bridge`); for
+every other agent it runs inside the `alc` process on a random port and stops
+when that session ends. It reads and may refresh `~/.codex/auth.json`;
+credentials are never copied into the `alc` config.
 
 ## Local models
 
@@ -618,6 +676,9 @@ model and is not sandboxed), and whether the current mode was set at launch, rea
 back off the screen, or merely assumed. The page shows the agent's own word
 beside alc's rung — `auto-edit · Accept edits` — because a single
 shared label would mislead.
+
+A shared `alc --codex claude` runs on the same background bridge as an unshared
+one.
 
 ### What this actually grants
 

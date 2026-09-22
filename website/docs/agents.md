@@ -30,10 +30,10 @@ throughout, so it is not repeated below.
 `claude` — [install](https://code.claude.com/docs/en/setup) · accepts an
 Anthropic-compatible endpoint.
 
-alc sets `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, and `ANTHROPIC_API_KEY` (or
-`ANTHROPIC_AUTH_TOKEN` for bearer-style providers such as OpenRouter), plus
-`ANTHROPIC_SMALL_FAST_MODEL` when the profile names a small model. An Ollama
-profile gets more — see [Local models](./local-models.md).
+Claude Code gets a settings file (`--settings`) holding the endpoint, the model
+variables and the picker, and fetches its credential through `apiKeyHelper` from
+`alc claude-credential`; see [Background sessions](./background-sessions.md).
+An Ollama profile gets more — see [Local models](./local-models.md).
 
 ```sh
 alc claude

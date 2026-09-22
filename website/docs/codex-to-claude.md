@@ -51,6 +51,17 @@ chatgpt.com decides, so a model alc does not track is still reachable with
 `--model`. That is why a new model works on the day Codex ships it rather than
 on the day alc catches up.
 
+## Every Claude model becomes a Codex model
+
+Under `alc --codex claude` no request reaches a Claude model: the `/model`
+picker lists these four and nothing else, every alias Claude Code has — `opus`,
+`sonnet`, `haiku`, `fable`, `best`, `opusplan` — lands on one of them, and a
+Claude model named in full is answered by the Codex model of the same tier.
+Claude Code's own background work goes the same way, so a title or a summary is
+Codex quota rather than a request to Anthropic. [Background
+sessions](./background-sessions.md#every-claude-model-becomes-a-codex-model) has
+the whole table, alias by alias.
+
 ## Effort
 
 `/model`'s left and right arrows move the effort slider; `/effort` sets one
@@ -116,10 +127,14 @@ Code assumes for an ID it does not know.
 
 ## How it works
 
-The bridge is alc's own code, running inside the `alc` process on a random
-loopback port, serving only the agent it launched and stopping when that
-session ends. It reads and may refresh `~/.codex/auth.json`; no credential is
-ever copied into alc's own configuration.
+The bridge is alc's own code. For Claude Code it runs as a background process
+of its own on a loopback port it keeps (`alc bridge`), because a session moved
+into the background outlives the `alc` that started it — see [Background
+sessions](./background-sessions.md#the-background-bridge). For every other
+agent it runs inside the `alc` process on a random port, serving only the agent
+it launched and stopping when that session ends. It reads and may refresh
+`~/.codex/auth.json`; no credential is ever copied into alc's own
+configuration.
 
 :::caution[Third-party compatibility layer]
 

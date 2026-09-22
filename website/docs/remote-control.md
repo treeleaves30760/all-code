@@ -278,7 +278,7 @@ an exit status, where macOS and Linux show the signal.
 alc --share <agent>          # mirror this session
 alc --share --tmux <agent>   # ...and let the page own the agent's size
 alc share <agent> -- <args>  # the unambiguous form
-alc share <agent> --name x   # name the card
+alc share <agent> --name x   # name the card (after `--` it is the agent's own)
 alc --no-share <agent>       # never mirror, whatever the settings say
 
 alc remote status
