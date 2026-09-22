@@ -799,6 +799,22 @@ fn run_claude(
     sharing: Sharing,
 ) -> Result<u8> {
     reject_swallowed_flags(&args.args, Agent::Claude)?;
+    if crate::agents::claude::is_session_command(&args.args) {
+        let command = args.args[0].to_string_lossy().into_owned();
+        if args.model.is_some() || args.effort.is_some() || args.save {
+            bail!(
+                "--model, --effort and --save do not apply to `claude {command}`, which manages an \
+                 existing background session"
+            );
+        }
+        if sharing.enabled {
+            bail!(
+                "`claude {command}` manages an existing background session from this terminal; \
+                 it cannot be shared"
+            );
+        }
+        return launch::run_session_command(store, requested_provider, &args.args, dry_run);
+    }
     let (profile_name, provider) = {
         let (name, provider) = store.config.resolve(Agent::Claude, requested_provider)?;
         (name.to_owned(), provider.clone())
@@ -1040,13 +1056,34 @@ fn run_spec(
     }
 
     if dry_run {
+        // Computed before the command line is printed, because it is what
+        // puts `--settings <path>` in the arguments a real run would spawn -
+        // without writing the file or starting the bridge that names it.
+        let preview = launch::settings_preview(&spec, &store.dir)?;
+        let shown = match &preview {
+            Some(preview) => {
+                let mut shown = spec.clone();
+                shown.args = preview.args.clone();
+                shown
+            }
+            None => spec.clone(),
+        };
         println!(
             "agent: {}\nprovider: {} ({})\ncommand: {}",
             spec.agent,
             spec.provider_name,
             spec.provider_kind,
-            spec.redacted_command()
+            shown.redacted_command()
         );
+        if let Some(preview) = &preview {
+            println!("settings: {}", preview.document);
+            if let Some(bridge) = &preview.bridge {
+                println!(
+                    "adapter: background bridge ({}), {bridge}",
+                    launch::bridge_label()
+                );
+            }
+        }
         if let Some(plan) = &spec.bridge {
             println!(
                 "adapter: built in ({}), on an ephemeral loopback port",
@@ -1061,6 +1098,8 @@ fn run_spec(
                     plan.model
                 );
             }
+        }
+        if spec.is_bridged() {
             // A dry run used to be the one path that said nothing at all
             // about where its model list came from, which is why a machine
             // quietly hiding a model looked healthy here.
@@ -1105,7 +1144,7 @@ fn run_spec(
             // how a Codex session once ran with no adapter at all. A dry
             // run that named neither would leave a reader debugging the
             // wrong process.
-            if spec.bridge.is_some() || !spec.file_setup.is_empty() {
+            if spec.is_bridged() || spec.settings_plan.is_some() || !spec.file_setup.is_empty() {
                 println!("share: the hub performs the launch, adapter and setup included");
             }
         }

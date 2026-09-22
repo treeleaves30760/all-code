@@ -223,8 +223,8 @@ impl ModelCatalog {
     /// report, and returns their ids.
     ///
     /// Order is alc's for the models alc ships, never the source's:
-    /// `agents::claude::apply_bridge` turns the first entry into Claude
-    /// Code's `opus` alias and the last into `haiku`, and Codex ranks
+    /// `agents::claude_settings::codex_document` turns the first entry into
+    /// Claude Code's `opus` alias and the last into `haiku`, and Codex ranks
     /// `gpt-5.6-sol` and `gpt-6-astra` at the same priority - so taking the
     /// order from discovery would hand the `opus` alias to whichever of the
     /// two happened to be listed first that day. Anything discovery added
@@ -414,9 +414,9 @@ impl ModelCatalog {
 /// Where a model alc does not ship belongs among the models it does.
 ///
 /// The end of the catalog is a slot, not a spare seat:
-/// `agents::claude::apply_bridge` hands the last entry to Claude Code as
-/// ANTHROPIC_DEFAULT_HAIKU_MODEL and ANTHROPIC_SMALL_FAST_MODEL, and the
-/// picker badges it `budget`. Appending would therefore aim every title,
+/// `agents::claude_settings::codex_document` hands the last entry to Claude
+/// Code as ANTHROPIC_DEFAULT_HAIKU_MODEL and ANTHROPIC_SMALL_FAST_MODEL, and
+/// the picker badges it `budget`. Appending would therefore aim every title,
 /// summary and compaction call at whatever OpenAI shipped most recently - the
 /// day a new frontier model appears, the most expensive model on the list
 /// would quietly become the cheap one. So an addition is placed ahead of the
@@ -485,10 +485,11 @@ fn from_codex_cli(
 ///
 /// Membership is decided by Codex's own `visibility` rather than by a
 /// denylist of slugs: the first entry of a real `codex debug models` answer
-/// is `gpt-reserve`, an internal model, and `agents::claude::apply_bridge`
-/// maps the first entry of this list onto Claude Code's `opus` alias. A
-/// denylist that went stale would silently point `opus` at whatever internal
-/// slug shipped next, so the question asked is the one Codex answers itself.
+/// is `gpt-reserve`, an internal model, and
+/// `agents::claude_settings::codex_document` maps the first entry of this list
+/// onto Claude Code's `opus` alias. A denylist that went stale would silently
+/// point `opus` at whatever internal slug shipped next, so the question asked
+/// is the one Codex answers itself.
 fn discovered_models(raw: &CodexCatalogPayload, floor: &[ModelInfo]) -> Vec<ModelInfo> {
     let bundled = |slug: &str| floor.iter().find(|model| model.id == slug);
 
@@ -874,9 +875,9 @@ mod tests {
         assert!(catalog.find("codex-auto-review").is_none());
     }
 
-    /// `apply_bridge` turns the last entry into Claude Code's cheap alias, so
-    /// a superseded generation arriving at the bottom of the list is not a
-    /// longer picker, it is a quiet downgrade.
+    /// The settings document turns the last entry into Claude Code's cheap
+    /// alias, so a superseded generation arriving at the bottom of the list
+    /// is not a longer picker, it is a quiet downgrade.
     #[test]
     fn a_model_ranked_below_everything_alc_ships_is_not_appended() {
         let catalog = catalog_from(CODEX_CURRENT);
@@ -965,8 +966,8 @@ mod tests {
     }
 
     /// The whole point of the ordering rules, stated once in the terms
-    /// `agents::claude::apply_bridge` reads them in: the head becomes
-    /// Claude Code's `opus` alias and the tail becomes `haiku`.
+    /// `agents::claude_settings::codex_document` reads them in: the head
+    /// becomes Claude Code's `opus` alias and the tail becomes `haiku`.
     #[test]
     fn discovery_can_never_move_a_new_model_into_the_haiku_slot() {
         for priority in ["1", "5", "8"] {

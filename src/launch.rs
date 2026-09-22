@@ -13,6 +13,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::agents;
+use crate::agents::claude_settings;
 use crate::bridge::BridgeConfig;
 use crate::config::{
     Agent, Protocol, Provider, ProviderKind, ReasoningEffort, Store, atomic_write,
@@ -479,45 +480,33 @@ fn needs_an_adapter_and_has_one(spec: &LaunchSpec) -> Result<()> {
     Ok(())
 }
 
-/// Starts the bridge, wires it into `spec`, performs the file setup, and
-/// resolves the program path - everything `execute` used to do inline before
-/// spawning. Splitting it out lets a caller spawn the child itself (under a
-/// pseudo-terminal, say) while keeping the ordering this sequence depends on:
-/// `apply_bridge` must run before `process_file_setup`, because the Pi and
-/// Kimi builders write files whose contents name the bridge's base URL.
+/// Starts the bridge, wires it into `spec`, writes Claude Code's settings
+/// document, performs the file setup, and resolves the program path -
+/// everything `execute` used to do inline before spawning. Splitting it out
+/// lets a caller spawn the child itself (under a pseudo-terminal, say) while
+/// keeping the ordering this sequence depends on: `apply_bridge` must run
+/// before `process_file_setup`, because the Pi and Kimi builders write files
+/// whose contents name the bridge's base URL.
 ///
-/// It is also where the snapshot of Claude Code's own default model is
-/// taken, and that placement is the point: both spawn paths - `execute` here
-/// and `Hub::create` - go through this function and nothing else does, while
-/// `--dry-run` returns before reaching it, so a dry run still reads nothing
-/// and writes nothing.
+/// It is also where the snapshot of Claude Code's own default model is taken
+/// and where its settings file is written, and that placement is the point:
+/// both spawn paths - `execute` here and `Hub::create` - go through this
+/// function and nothing else does, while `--dry-run` returns before reaching
+/// it, so a dry run still takes no snapshot, writes no settings file and
+/// starts no bridge.
 pub(crate) fn prepare(mut spec: LaunchSpec, config_dir: &Path) -> Result<Prepared> {
     needs_an_adapter_and_has_one(&spec)?;
 
     // Before the agent starts, so what is read is what the user had.
-    // `claude_settings_file` is only set for a bridged Claude launch, and
-    // the plan's own options are the list this session put in Claude Code's
-    // picker - which is exactly the set of ids that must not be left behind
-    // as a machine-wide default.
+    // `claude_settings_file` is only set for a bridged Claude launch, and the
+    // plan's `offered` is the list this session put in Claude Code's picker,
+    // the starting model included - which is exactly the set of ids that must
+    // not be left behind as a machine-wide default.
     let claude_default = spec
         .claude_settings_file
         .clone()
-        .zip(spec.bridge.as_ref())
-        .map(|(settings, plan)| {
-            let mut offered: Vec<String> = plan
-                .options
-                .iter()
-                .map(|option| option.id.clone())
-                .collect();
-            // The starting model as well as the picker's rows: `--model`
-            // takes a hand-typed id, and one that is neither in the catalog
-            // nor `gpt-` prefixed would otherwise not be recognised as
-            // alc's doing.
-            if !offered.contains(&plan.model) {
-                offered.push(plan.model.clone());
-            }
-            agents::claude::DefaultModelGuard::arm(settings, offered)
-        });
+        .zip(spec.settings_plan.as_ref().map(|plan| plan.offered.clone()))
+        .map(|(settings, offered)| agents::claude::DefaultModelGuard::arm(settings, offered));
 
     let bridge = if let Some(plan) = spec.bridge.clone() {
         let bridge = Bridge::start(&plan, &spec, config_dir)?;
@@ -526,6 +515,23 @@ pub(crate) fn prepare(mut spec: LaunchSpec, config_dir: &Path) -> Result<Prepare
     } else {
         None
     };
+
+    // Claude Code's settings: finished once the bridge's port is known, then
+    // written by content and put in the arguments - after the subcommand when
+    // there is one, first otherwise.
+    if let Some(plan) = spec.settings_plan.clone() {
+        let origin = match &plan.route {
+            Some(route) => Some(start_route(route, config_dir)?),
+            None => None,
+        };
+        let bytes = claude_settings::finish(&plan, origin.as_deref())?;
+        let path = claude_settings::write_settings(config_dir, &bytes)?;
+        let at = claude_settings::insertion_point(&plan, &spec.args);
+        spec.args.splice(
+            at..at,
+            [OsString::from("--settings"), path.into_os_string()],
+        );
+    }
 
     // Held until the child exits so a failed launch still cleans up.
     let cleanup = CleanupFiles(process_file_setup(&spec)?);
@@ -578,6 +584,147 @@ pub fn execute(spec: LaunchSpec, config_dir: &Path) -> Result<u8> {
         .wait()
         .context("failed to wait for the coding agent")?;
     drop(guards);
+    Ok(exit_code(status))
+}
+
+/// Records a Codex route and makes sure a bridge is up to serve it, answering
+/// the origin the settings document points Claude Code at. A missing login is
+/// refused here, in the user's terminal, as it always was.
+fn start_route(
+    route: &crate::bridge_host::files::RouteRecord,
+    config_dir: &Path,
+) -> Result<String> {
+    if !route.auth_file.is_file() {
+        bail!(
+            "Codex credentials were not found at {}; run `codex login` and retry",
+            route.auth_file.display()
+        );
+    }
+    crate::bridge_host::files::write_route(config_dir, route)?;
+    Ok(crate::bridge_host::ensure(config_dir)?.origin())
+}
+
+/// What a dry run shows of a Claude Code settings document.
+pub(crate) struct SettingsPreview {
+    /// The arguments with `--settings <path>` where `prepare` would put it.
+    pub args: Vec<OsString>,
+    /// The document, compact.
+    pub document: String,
+    /// Where the bridge is, for a Codex route.
+    pub bridge: Option<String>,
+}
+
+/// The settings a launch would hand Claude Code, computed without writing
+/// anything or starting a bridge: a Codex route uses the remembered port, or
+/// says the port is chosen when a bridge first starts.
+pub(crate) fn settings_preview(
+    spec: &LaunchSpec,
+    config_dir: &Path,
+) -> Result<Option<SettingsPreview>> {
+    let Some(plan) = &spec.settings_plan else {
+        return Ok(None);
+    };
+    let port = plan
+        .route
+        .as_ref()
+        .and(crate::bridge_host::files::remembered_port(config_dir));
+    let origin = port.map(|port| format!("http://127.0.0.1:{port}"));
+    let bytes = claude_settings::finish(plan, origin.as_deref())?;
+    let path = if plan.route.is_some() && origin.is_none() {
+        claude_settings::settings_dir(config_dir)
+            .join("settings-<named when the bridge first starts>.json")
+    } else {
+        claude_settings::settings_path(config_dir, &bytes)
+    };
+    let bridge = plan.route.as_ref().map(|route| match port {
+        Some(port) => format!("127.0.0.1:{port}, route {}", route.id),
+        None => format!("route {}, on a port chosen when it first starts", route.id),
+    });
+    let mut args = spec.args.clone();
+    let at = claude_settings::insertion_point(plan, &args);
+    args.splice(
+        at..at,
+        [OsString::from("--settings"), path.into_os_string()],
+    );
+    let mut document: serde_json::Value = serde_json::from_slice(&bytes)?;
+    redact_secret_env(&mut document);
+    // Masked as well as redacted: a key the user pasted into their own
+    // `--settings` under a name nothing recognises is still this launch's
+    // provider key, and `mask` knows it by value.
+    let document = spec.mask(&serde_json::to_string(&document)?);
+    Ok(Some(SettingsPreview {
+        args,
+        document,
+        bridge,
+    }))
+}
+
+/// Hides the values of environment variables whose names say they carry a
+/// credential. alc's own documents hold none - the credential comes from
+/// `apiKeyHelper` - but a `--settings` the user passed is merged into them,
+/// and a dry run prints the result.
+fn redact_secret_env(document: &mut serde_json::Value) {
+    let Some(env) = document
+        .pointer_mut("/env")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    for (name, value) in env.iter_mut() {
+        let upper = name.to_ascii_uppercase();
+        // The one name alc writes itself that reads like a credential and
+        // holds none: `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` says how often
+        // Claude Code reruns the helper, in milliseconds. Hiding it would
+        // withhold a plain setting and, worse, tell the reader that alc's own
+        // document carries a key - which is the one thing this preview exists
+        // to let them check.
+        let secret = upper != "CLAUDE_CODE_API_KEY_HELPER_TTL_MS"
+            && (is_secret_env(OsStr::new(name))
+                || upper.contains("SECRET")
+                || upper.contains("PASSWORD"));
+        if secret && value.as_str().is_some_and(|text| !text.is_empty()) {
+            *value = serde_json::Value::String("<redacted>".to_owned());
+        }
+    }
+}
+
+/// `alc claude attach|logs|stop|kill|respawn|rm|daemon …`: straight to Claude
+/// Code, which manages its background sessions itself. The session already
+/// carries its settings file, and waking it runs the helper that starts the
+/// bridge, so alc adds nothing but the Claude Code config directory a pinned
+/// profile names - and records no launch, because none starts.
+pub(crate) fn run_session_command(
+    store: &Store,
+    requested_provider: Option<&str>,
+    args: &[OsString],
+    dry_run: bool,
+) -> Result<u8> {
+    let (profile_name, provider) = store.config.resolve(Agent::Claude, requested_provider)?;
+    let program = agent_binary_override(Agent::Claude).unwrap_or_else(|| OsString::from("claude"));
+    let config_dir = provider.pinned_claude_config_dir().map(OsString::from);
+    if dry_run {
+        let mut parts = Vec::new();
+        if let Some(dir) = &config_dir {
+            parts.push(format!("CLAUDE_CONFIG_DIR={}", shell_quote(dir)));
+        }
+        parts.push(shell_quote(&program));
+        parts.extend(args.iter().map(|arg| shell_quote(arg)));
+        println!(
+            "agent: claude\nprovider: {profile_name} ({})\ncommand: {}",
+            provider.kind,
+            parts.join(" ")
+        );
+        return Ok(0);
+    }
+    let program = resolve_program(&program, Agent::Claude)?;
+    let mut command = Command::new(&program);
+    command.args(args);
+    if let Some(dir) = &config_dir {
+        command.env("CLAUDE_CONFIG_DIR", dir);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("failed to launch {}", program.display()))?;
     Ok(exit_code(status))
 }
 

@@ -123,8 +123,10 @@ fn dry_run_preserves_agent_arguments() {
         .stdout(predicate::str::contains("exec 'hello world'"));
 }
 
+/// The key never reaches Claude Code at all now: the document names the
+/// helper that fetches it, and a dry run shows the helper, not the key.
 #[test]
-fn openrouter_claude_dry_run_redacts_key() {
+fn openrouter_claude_dry_run_never_shows_the_key() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
         .env("OPENROUTER_API_KEY", "never-print-this")
@@ -132,7 +134,12 @@ fn openrouter_claude_dry_run_redacts_key() {
         .assert()
         .success()
         .stdout(predicate::str::contains("https://openrouter.ai/api"))
-        .stdout(predicate::str::contains("<redacted>"))
+        // `sh` quotes the route it passes the helper; `cmd` does not.
+        .stdout(predicate::str::contains(if cfg!(windows) {
+            "claude-credential profile:openrouter"
+        } else {
+            "claude-credential 'profile:openrouter'"
+        }))
         .stdout(predicate::str::contains("never-print-this").not());
 }
 
@@ -718,16 +725,17 @@ fn ollama_claude_dry_run_pins_aliases_and_reports_the_servers_context() {
         .success();
     let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     for expected in [
-        "API_FORCE_IDLE_TIMEOUT=0",
-        "API_TIMEOUT_MS=1800000",
-        "ANTHROPIC_MODEL=gemma4:12b",
-        "ANTHROPIC_DEFAULT_MODEL=gemma4:12b",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL=gemma4:12b",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL=gemma4:12b",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL=gemma4:12b",
-        "ANTHROPIC_SMALL_FAST_MODEL=gemma4:12b",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-        "CLAUDE_CODE_MAX_CONTEXT_TOKENS=131072",
+        "\"API_FORCE_IDLE_TIMEOUT\":\"0\"",
+        "\"API_TIMEOUT_MS\":\"1800000\"",
+        "\"ANTHROPIC_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_DEFAULT_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_DEFAULT_FABLE_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_DEFAULT_SONNET_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_DEFAULT_OPUS_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_DEFAULT_HAIKU_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_SMALL_FAST_MODEL\":\"gemma4:12b\"",
+        "\"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\":\"1\"",
+        "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"131072\"",
     ] {
         assert!(output.contains(expected), "missing {expected} in {output}");
     }
@@ -743,8 +751,8 @@ fn ollama_claude_keeps_the_users_own_timeout() {
         .args(["--ollama", "--dry-run", "claude"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("API_FORCE_IDLE_TIMEOUT=0"))
-        .stdout(predicate::str::contains("API_TIMEOUT_MS=").not());
+        .stdout(predicate::str::contains("\"API_FORCE_IDLE_TIMEOUT\":\"0\""))
+        .stdout(predicate::str::contains("API_TIMEOUT_MS").not());
 }
 
 #[test]
@@ -757,7 +765,7 @@ fn ollama_claude_dry_run_works_without_a_running_server() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL=gemma4:12b",
+            "\"ANTHROPIC_DEFAULT_HAIKU_MODEL\":\"gemma4:12b\"",
         ))
         .stdout(predicate::str::contains("CLAUDE_CODE_MAX_CONTEXT_TOKENS").not());
 }
@@ -822,7 +830,9 @@ fn codex_to_claude_accepts_explicit_model_and_effort() {
         .success()
         .stdout(predicate::str::contains("--model gpt-5.6-sol"))
         .stdout(predicate::str::contains("--effort max"))
-        .stdout(predicate::str::contains("adapter: built in (alc native)"));
+        .stdout(predicate::str::contains(
+            "adapter: background bridge (alc native)",
+        ));
 }
 
 #[test]
@@ -869,7 +879,9 @@ fn the_bridge_offers_the_model_the_old_one_refused() {
         .args(["--codex", "--dry-run", "claude"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("adapter: built in (alc native)"))
+        .stdout(predicate::str::contains(
+            "adapter: background bridge (alc native)",
+        ))
         .stdout(predicate::str::contains("\"model\":\"gpt-6-astra\""))
         .stdout(predicate::str::contains("WOULD FAIL").not());
 }
@@ -1121,8 +1133,10 @@ fn preset_kind_upsert_prefills_urls_and_supports_claude() {
         .args(["--provider", "ds", "--dry-run", "claude"])
         .assert()
         .success()
+        // The endpoint reaches Claude Code through the settings document now,
+        // so the dry run names it there rather than in the environment.
         .stdout(predicate::str::contains(
-            "https://api.deepseek.com/anthropic",
+            "\"ANTHROPIC_BASE_URL\":\"https://api.deepseek.com/anthropic\"",
         ));
 }
 
@@ -1628,4 +1642,250 @@ fn claude_credential_without_a_key_fails_on_stderr_and_says_how_to_save_one() {
         .assert()
         .failure()
         .stdout("");
+}
+
+/// A stand-in `claude` that writes each argument on its own line to
+/// `ALC_FAKE_ARGS` and its environment to `ALC_FAKE_ENV`, then exits 0.
+fn fake_claude(dir: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let path = dir.join("claude.cmd");
+        std::fs::write(
+            &path,
+            "@echo off\r\nsetlocal\r\n:next\r\nif \"%~1\"==\"\" goto done\r\n>>\"%ALC_FAKE_ARGS%\" echo(%~1\r\nshift\r\ngoto next\r\n:done\r\n>\"%ALC_FAKE_ENV%\" set\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        path
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("claude");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> \"$ALC_FAKE_ARGS\"; done\nenv > \"$ALC_FAKE_ENV\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+}
+
+/// The arguments and environment the fake received, and the settings file it
+/// was handed, parsed.
+fn what_claude_got(work: &std::path::Path) -> (Vec<String>, String, serde_json::Value) {
+    let args: Vec<String> = std::fs::read_to_string(work.join("args.txt"))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let env = std::fs::read_to_string(work.join("env.txt")).unwrap();
+    let at = args
+        .iter()
+        .position(|arg| arg == "--settings")
+        .expect("--settings was passed");
+    let settings = serde_json::from_str(&std::fs::read_to_string(&args[at + 1]).unwrap()).unwrap();
+    (args, env, settings)
+}
+
+#[test]
+fn a_keyed_claude_launch_hands_claude_a_settings_file_and_no_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    alc(&temp)
+        .args(["config", "key", "openrouter", "--stdin"])
+        .write_stdin("sk-or-never-print-this")
+        .assert()
+        .success();
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .env_remove("OPENROUTER_API_KEY")
+        .args(["--openrouter", "--no-share", "claude", "agents"])
+        .assert()
+        .success();
+
+    let (args, env, settings) = what_claude_got(work.path());
+    assert_eq!(args[0], "agents");
+    assert_eq!(args[1], "--settings", "{args:?}");
+    assert_eq!(
+        settings["env"]["ANTHROPIC_BASE_URL"],
+        "https://openrouter.ai/api"
+    );
+    assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "");
+    let helper = settings["apiKeyHelper"].as_str().unwrap();
+    assert!(
+        helper.contains("claude-credential") && helper.contains("profile:openrouter"),
+        "{helper}"
+    );
+    assert!(
+        !env.contains("sk-or-never-print-this"),
+        "the key is not in Claude Code's environment"
+    );
+    assert!(
+        !std::fs::read_to_string(&args[2])
+            .unwrap()
+            .contains("sk-or-never-print-this"),
+        "nor in its settings"
+    );
+}
+
+#[test]
+fn a_codex_claude_launch_runs_on_the_background_bridge_and_leaves_it_running() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let codex = tempfile::tempdir().unwrap();
+    let claude = tempfile::tempdir().unwrap();
+    std::fs::write(codex.path().join("auth.json"), "{}").unwrap();
+    // A fresh catalog, so the launch asks no network for one.
+    std::fs::write(
+        temp.path().join("codex-models.json"),
+        r#"{"schema_version": 1, "refreshed_at": 4102444800, "source": "test", "models": [
+            {"id": "gpt-6-astra", "name": "GPT-6-Astra", "description": "a", "context_window": 272000, "default_effort": "medium", "supported_efforts": ["low","medium","high","xhigh","max"]},
+            {"id": "gpt-5.6-terra", "name": "GPT-5.6-Terra", "description": "b", "context_window": 272000, "default_effort": "medium", "supported_efforts": ["low","medium","high","xhigh","max"]},
+            {"id": "gpt-5.6-luna", "name": "GPT-5.6-Luna", "description": "c", "context_window": 272000, "default_effort": "medium", "supported_efforts": ["low","medium","high","xhigh","max"]}
+        ]}"#,
+    )
+    .unwrap();
+    let fake = fake_claude(work.path());
+    let _stop = StopTheBridge(&temp);
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .env("CODEX_HOME", codex.path())
+        .env("CLAUDE_CONFIG_DIR", claude.path())
+        .args([
+            "--codex",
+            "--no-share",
+            "claude",
+            "--bg",
+            "fix the flaky test",
+        ])
+        .assert()
+        .success();
+
+    let (args, env, settings) = what_claude_got(work.path());
+    assert_eq!(args[0], "--settings", "{args:?}");
+    assert!(
+        args.ends_with(&["--bg".to_owned(), "fix the flaky test".to_owned()]),
+        "{args:?}"
+    );
+    let base = settings["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap();
+    assert!(
+        base.starts_with("http://127.0.0.1:") && base.contains("/r/codex-"),
+        "{base}"
+    );
+    for name in [
+        "CLAUDE_CODE_DISABLE_FAST_MODE",
+        "CLAUDE_CODE_DISABLE_ADVISOR_TOOL",
+        "CLAUDE_CODE_DISABLE_1M_CONTEXT",
+    ] {
+        assert_eq!(settings["env"][name], "1", "{name}");
+    }
+    assert!(
+        settings["env"]["ANTHROPIC_DEFAULT_FABLE_MODEL"]
+            .as_str()
+            .unwrap()
+            .starts_with("gpt-")
+    );
+    assert!(
+        !env.contains("ANTHROPIC_BASE_URL=http://127.0.0.1"),
+        "nothing is exported any more"
+    );
+
+    // alc has exited; the bridge the launch started has not.
+    alc(&temp)
+        .args(["bridge", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("running · pid"));
+}
+
+#[test]
+fn a_session_command_goes_straight_to_claude_code() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args(["--codex", "claude", "attach", "7c5dcf5d"])
+        .assert()
+        .success();
+    let args = std::fs::read_to_string(work.path().join("args.txt")).unwrap();
+    assert_eq!(args.lines().collect::<Vec<_>>(), ["attach", "7c5dcf5d"]);
+    alc(&temp)
+        .args([
+            "--codex",
+            "claude",
+            "--model",
+            "gpt-6-astra",
+            "attach",
+            "7c5d",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "manages an existing background session",
+        ));
+}
+
+#[test]
+fn a_dry_run_of_claude_agents_shows_the_settings_after_the_subcommand() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "--dry-run", "claude", "agents"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "command: claude agents --settings",
+        ))
+        .stdout(predicate::str::contains(
+            "\"ANTHROPIC_DEFAULT_FABLE_MODEL\"",
+        ))
+        // alc's own document holds no credential, and the preview has to say
+        // so: the helper TTL reads like a key by name and is a number of
+        // milliseconds, so it is shown rather than redacted.
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_API_KEY_HELPER_TTL_MS\":\"60000\"",
+        ))
+        .stdout(predicate::str::contains(
+            "adapter: background bridge (alc native)",
+        ));
+    assert!(
+        !temp.path().join("claude").exists(),
+        "a dry run writes nothing"
+    );
+    assert!(
+        !temp.path().join("run").join("bridge").exists(),
+        "and starts nothing"
+    );
+}
+
+/// alc's own document holds no credential, but a `--settings` the user passed
+/// is merged into it, and a dry run prints the result.
+#[test]
+fn a_dry_run_hides_a_credential_the_user_put_in_their_own_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "--codex",
+            "--dry-run",
+            "claude",
+            "--settings",
+            r#"{"env": {"MY_GATEWAY_TOKEN": "never-print-this", "ANTHROPIC_MODEL": "gpt-5.6-luna"}}"#,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"MY_GATEWAY_TOKEN\":\"<redacted>\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"ANTHROPIC_MODEL\":\"gpt-5.6-luna\"",
+        ))
+        .stdout(predicate::str::contains("never-print-this").not());
 }

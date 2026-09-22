@@ -421,10 +421,6 @@ pub(crate) fn settings_path(config_dir: &Path, bytes: &[u8]) -> PathBuf {
 }
 
 /// The document's final bytes, with the bridge's origin filled in.
-#[allow(
-    dead_code,
-    reason = "`launch::prepare` finishes and writes the document, in the next task"
-)]
 pub(crate) fn finish(plan: &SettingsPlan, origin: Option<&str>) -> Result<Vec<u8>> {
     let mut document = plan.document.clone();
     if let Some(origin) = origin
@@ -440,10 +436,6 @@ pub(crate) fn finish(plan: &SettingsPlan, origin: Option<&str>) -> Result<Vec<u8
 
 /// Writes a finished document unless an identical one is already there, and
 /// answers its path. Owner-only: it names the user's endpoints and paths.
-#[allow(
-    dead_code,
-    reason = "`launch::prepare` finishes and writes the document, in the next task"
-)]
 pub(crate) fn write_settings(config_dir: &Path, bytes: &[u8]) -> Result<PathBuf> {
     let path = settings_path(config_dir, bytes);
     if fs::read(&path).is_ok_and(|existing| existing == bytes) {
@@ -456,10 +448,6 @@ pub(crate) fn write_settings(config_dir: &Path, bytes: &[u8]) -> Result<PathBuf>
 }
 
 /// Where `--settings <path>` goes in `args`.
-#[allow(
-    dead_code,
-    reason = "`launch::prepare` puts `--settings` in the arguments, in the next task"
-)]
 pub(crate) fn insertion_point(plan: &SettingsPlan, args: &[OsString]) -> usize {
     plan.subcommand
         .as_deref()

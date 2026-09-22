@@ -21,10 +21,6 @@ use crate::launch::{
 /// handed alc's model flags, which would land in front of the subcommand.
 const SESSION_COMMANDS: [&str; 7] = ["attach", "logs", "stop", "kill", "respawn", "rm", "daemon"];
 
-#[allow(
-    dead_code,
-    reason = "`cli::run_claude` sends these straight through to Claude Code, in the next task"
-)]
 pub(crate) fn is_session_command(args: &[OsString]) -> bool {
     args.first()
         .and_then(|first| first.to_str())

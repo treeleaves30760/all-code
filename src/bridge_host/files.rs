@@ -164,10 +164,6 @@ pub(crate) fn valid_route_id(id: &str) -> bool {
 /// well-formed name over another profile or login would move every session on
 /// that route to an account it did not start on. Both are refused before any
 /// path is built from the name.
-#[allow(
-    dead_code,
-    reason = "`launch::prepare` records the route it starts a bridge for, in the next task"
-)]
 pub(crate) fn write_route(config_dir: &Path, route: &RouteRecord) -> Result<()> {
     if !valid_route_id(&route.id) {
         bail!(
