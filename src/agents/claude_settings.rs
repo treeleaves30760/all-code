@@ -14,12 +14,17 @@
 //! which reads the same `credentials.toml` alc always has - so moving the
 //! wiring onto disk costs no second copy of any key.
 
+use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::bridge::tiers::ModelTiers;
+use crate::bridge_host::files::RouteRecord;
 use crate::model_catalog::ModelInfo;
 
 /// Stands in for the bridge's origin in a Codex document until
@@ -361,10 +366,140 @@ fn model_picker(models: &[ModelInfo]) -> Value {
     json!({ "options": options, "replaceBuiltInOptions": true })
 }
 
+/// A launch's settings document: built in the user's shell, finished and
+/// written by `launch::prepare`, which is also where `--settings` is put in
+/// the arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SettingsPlan {
+    /// The document. On a Codex route its `ANTHROPIC_BASE_URL` starts with
+    /// [`BRIDGE_ORIGIN`] until the bridge's port is known.
+    pub document: Value,
+    /// The Claude Code subcommand `--settings` follows, when there is one
+    /// (`agents`). Otherwise it goes first. Found again in the arguments at
+    /// the last moment rather than remembered as an index, because a shared
+    /// session puts its permission flag in front of everything after `build`.
+    pub subcommand: Option<String>,
+    /// The Codex route this launch runs on, when it runs on the bridge.
+    pub route: Option<RouteRecord>,
+    /// The model ids alc offered this session, for the default-model guard.
+    pub offered: Vec<String>,
+}
+
+/// Where a finished document lives: named by its contents, so identical
+/// launches share one file and no file a live session reads is rewritten.
+pub(crate) fn settings_path(config_dir: &Path, bytes: &[u8]) -> PathBuf {
+    let digest = Sha256::digest(bytes);
+    let name: String = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    settings_dir(config_dir).join(format!("settings-{name}.json"))
+}
+
+/// The document's final bytes, with the bridge's origin filled in.
+pub(crate) fn finish(plan: &SettingsPlan, origin: Option<&str>) -> Result<Vec<u8>> {
+    let mut document = plan.document.clone();
+    if let Some(origin) = origin
+        && let Some(url) = document.pointer_mut("/env/ANTHROPIC_BASE_URL")
+    {
+        let filled = url.as_str().map(|text| text.replace(BRIDGE_ORIGIN, origin));
+        if let Some(filled) = filled {
+            *url = Value::String(filled);
+        }
+    }
+    serde_json::to_vec_pretty(&document).context("failed to encode Claude Code's settings")
+}
+
+/// Writes a finished document unless an identical one is already there, and
+/// answers its path. Owner-only: it names the user's endpoints and paths.
+pub(crate) fn write_settings(config_dir: &Path, bytes: &[u8]) -> Result<PathBuf> {
+    let path = settings_path(config_dir, bytes);
+    if fs::read(&path).is_ok_and(|existing| existing == bytes) {
+        return Ok(path);
+    }
+    let dir = settings_dir(config_dir);
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    crate::config::atomic_write(&path, bytes, true)?;
+    Ok(path)
+}
+
+/// Where `--settings <path>` goes in `args`.
+pub(crate) fn insertion_point(plan: &SettingsPlan, args: &[OsString]) -> usize {
+    plan.subcommand
+        .as_deref()
+        .and_then(|name| args.iter().position(|arg| arg == name))
+        .map_or(0, |at| at + 1)
+}
+
+/// Takes a `--settings` the user passed out of their arguments and answers
+/// what it said. Claude Code honours only the last `--settings`, so leaving
+/// it in would silently replace alc's wiring with theirs.
+pub(crate) fn take_user_settings(args: &[OsString]) -> Result<(Vec<OsString>, Option<Value>)> {
+    let mut kept = Vec::with_capacity(args.len());
+    let mut found = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let text = arg.to_string_lossy();
+        let value = if text == "--settings" {
+            Some(
+                iter.next()
+                    .cloned()
+                    .context("`--settings` needs a file or a JSON object after it")?,
+            )
+        } else {
+            text.strip_prefix("--settings=").map(OsString::from)
+        };
+        match value {
+            Some(value) => found = Some(read_user_settings(&value)?),
+            None => kept.push(arg.clone()),
+        }
+    }
+    Ok((kept, found))
+}
+
+fn read_user_settings(value: &OsStr) -> Result<Value> {
+    let text = value.to_string_lossy();
+    let parsed: Value = if text.trim_start().starts_with('{') {
+        serde_json::from_str(&text).context("the `--settings` JSON you passed does not parse")?
+    } else {
+        let path = Path::new(value);
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("failed to read the `--settings` file {}", path.display()))?;
+        serde_json::from_str(&raw)
+            .with_context(|| format!("{} is not valid JSON", path.display()))?
+    };
+    if !parsed.is_object() {
+        bail!("`--settings` must be a JSON object");
+    }
+    Ok(parsed)
+}
+
+/// Folds the user's settings over alc's: their keys win, and inside `env`
+/// each variable they set wins over alc's.
+pub(crate) fn merge_user_settings(document: &mut Value, user: &Value) {
+    let (Some(ours), Some(theirs)) = (document.as_object_mut(), user.as_object()) else {
+        return;
+    };
+    for (key, value) in theirs {
+        if key == "env"
+            && let (Some(Value::Object(env)), Value::Object(their_env)) =
+                (ours.get_mut("env"), value)
+        {
+            for (name, setting) in their_env {
+                env.insert(name.clone(), setting.clone());
+            }
+            continue;
+        }
+        ours.insert(key.clone(), value.clone());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model_catalog::ModelCatalog;
+    use std::ffi::OsString;
 
     fn env(document: &Value) -> &Map<String, Value> {
         document["env"].as_object().expect("an env block")
@@ -557,5 +692,134 @@ mod tests {
         let error =
             helper_command(Shell::Cmd, Path::new(r"C:\100%\alc.exe"), dir, "r").unwrap_err();
         assert!(error.to_string().contains('%'), "{error}");
+    }
+
+    fn plan(document: Value, subcommand: Option<&str>) -> SettingsPlan {
+        SettingsPlan {
+            document,
+            subcommand: subcommand.map(str::to_owned),
+            route: None,
+            offered: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_finished_document_names_the_bridge_and_its_file_names_its_contents() {
+        let codex_plan = plan(codex(), None);
+        let bytes = finish(&codex_plan, Some("http://127.0.0.1:24817")).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(
+            text.contains("\"http://127.0.0.1:24817/r/codex-0123456789ab\""),
+            "{text}"
+        );
+        assert!(!text.contains(BRIDGE_ORIGIN));
+
+        let dir = Path::new("config");
+        let path = settings_path(dir, &bytes);
+        assert_eq!(path.parent(), Some(dir.join("claude").as_path()));
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.starts_with("settings-") && name.ends_with(".json") && name.len() == 30,
+            "{name}"
+        );
+        assert_eq!(
+            settings_path(dir, &bytes),
+            path,
+            "the same contents, the same file"
+        );
+        let other = finish(&codex_plan, Some("http://127.0.0.1:24818")).unwrap();
+        assert_ne!(
+            settings_path(dir, &other),
+            path,
+            "other contents, another file"
+        );
+    }
+
+    #[test]
+    fn writing_a_document_twice_leaves_one_owner_only_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = finish(&plan(codex(), None), Some("http://127.0.0.1:24817")).unwrap();
+        let first = write_settings(temp.path(), &bytes).unwrap();
+        let second = write_settings(temp.path(), &bytes).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(std::fs::read(&first).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read_dir(settings_dir(temp.path()))
+                .unwrap()
+                .count(),
+            1
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&first).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn settings_go_first_or_right_after_agents() {
+        let args = |list: &[&str]| list.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            insertion_point(&plan(json!({}), None), &args(&["--model", "m"])),
+            0
+        );
+        assert_eq!(
+            insertion_point(
+                &plan(json!({}), Some("agents")),
+                &args(&["agents", "--model", "m"])
+            ),
+            1
+        );
+        // A shared session puts its permission flag in front of everything.
+        assert_eq!(
+            insertion_point(
+                &plan(json!({}), Some("agents")),
+                &args(&["--permission-mode", "default", "agents"])
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn the_users_own_settings_are_taken_out_and_win_the_merge() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("mine.json");
+        std::fs::write(
+            &file,
+            r#"{"env": {"ANTHROPIC_MODEL": "mine"}, "theme": "dark"}"#,
+        )
+        .unwrap();
+        let args = vec![
+            OsString::from("--settings"),
+            file.clone().into_os_string(),
+            OsString::from("-p"),
+            OsString::from("hi"),
+        ];
+        let (kept, user) = take_user_settings(&args).unwrap();
+        assert_eq!(kept, vec![OsString::from("-p"), OsString::from("hi")]);
+        let user = user.expect("the file was read");
+
+        let mut document = codex();
+        merge_user_settings(&mut document, &user);
+        assert_eq!(
+            document["env"]["ANTHROPIC_MODEL"], "mine",
+            "their variable wins"
+        );
+        assert_eq!(
+            document["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-5.6-luna",
+            "ours stay"
+        );
+        assert_eq!(document["theme"], "dark");
+
+        let (_, inline) =
+            take_user_settings(&[OsString::from(r#"--settings={"model":"x"}"#)]).unwrap();
+        assert_eq!(inline.unwrap()["model"], "x");
+
+        let broken =
+            take_user_settings(&[OsString::from("--settings"), OsString::from("{not json")]);
+        assert!(broken.is_err());
+        let missing = take_user_settings(&[OsString::from("--settings")]);
+        assert!(missing.is_err());
     }
 }
