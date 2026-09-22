@@ -30,8 +30,15 @@ impl ModelTiers {
     /// The Codex model to send upstream for `model`, or `None` to send it as
     /// it came.
     pub(crate) fn serve_as(&self, model: &str) -> Option<&str> {
-        let id = model.trim().to_ascii_lowercase();
-        match id.as_str() {
+        let asked = model.trim().to_ascii_lowercase();
+        // A `[1m]` suffix asks for a context window, not another model, so the
+        // tier is the one the name in front of it picks: `opus[1m]` is Opus.
+        // Matching the whole string left every bracketed alias unrecognised
+        // and relayed it to chatgpt.com, which serves none of Claude's.
+        let id = asked
+            .split_once('[')
+            .map_or(asked.as_str(), |(name, _)| name);
+        match id {
             "opus" | "fable" | "best" | "opusplan" => return Some(&self.strongest),
             "haiku" => return Some(&self.cheapest),
             "sonnet" | "default" => return Some(&self.default),
@@ -85,6 +92,13 @@ mod tests {
             ("sonnet", "gpt-5.6-terra"),
             ("default", "gpt-5.6-terra"),
             ("haiku", "gpt-5.6-luna"),
+            // A `[1m]` suffix asks for a context window, not another model,
+            // so each of these is the tier its name alone picks.
+            ("opus[1m]", "gpt-6-astra"),
+            ("opusplan[1m]", "gpt-6-astra"),
+            ("sonnet[1m]", "gpt-5.6-terra"),
+            ("haiku[1m]", "gpt-5.6-luna"),
+            ("claude-sonnet-4-5[1m]", "gpt-5.6-terra"),
         ] {
             assert_eq!(tiers.serve_as(asked), Some(served), "{asked}");
         }
@@ -101,6 +115,10 @@ mod tests {
             "o5-mini",
             "qwen3-coder",
             "my-claude-proxy",
+            // Cutting the context-window suffix off must not turn a model
+            // that is not Claude's into one alc rewrites.
+            "gpt-6-astra[1m]",
+            "qwen3-coder[1m]",
         ] {
             assert_eq!(tiers.serve_as(model), None, "{model}");
         }
