@@ -24,7 +24,8 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::bridge::tiers::ModelTiers;
-use crate::bridge_host::files::RouteRecord;
+use crate::bridge_host::files::{RouteRecord, valid_route_id};
+use crate::config::validate_profile_name;
 use crate::model_catalog::ModelInfo;
 
 /// Stands in for the bridge's origin in a Codex document until
@@ -325,6 +326,7 @@ pub(crate) fn helper_command(
     let dir = config_dir.to_str().context(
         "alc's configuration directory is not valid UTF-8, which Claude Code's settings cannot carry",
     )?;
+    check_route(route)?;
     match shell {
         Shell::Cmd => {
             for (what, value) in [
@@ -351,6 +353,32 @@ pub(crate) fn helper_command(
             sh_quote(route)
         )),
     }
+}
+
+/// Refuses a route alc did not mint.
+///
+/// A route is `codex-` and twelve hex digits, or `profile:` and a profile
+/// name. The charset of a profile name is checked by `Config::validate`,
+/// which runs on a save, in `doctor` and in the TUI - but never on
+/// `Store::load`, so a hand-edited `config.toml` carries whatever it says all
+/// the way here. cmd would split `my profile` into two arguments, expand
+/// `prod%USERNAME%` and run `or&calc` as a command of its own, every time
+/// Claude Code refreshed the credential.
+///
+/// Refused rather than quoted, for both shells alike: a route alc did not
+/// mint is a bug in alc, not something a user typed, and the charset that
+/// survives this check needs no quoting in either shell.
+fn check_route(route: &str) -> Result<()> {
+    let named = route
+        .strip_prefix("profile:")
+        .is_some_and(|profile| validate_profile_name(profile).is_ok());
+    if !named && !valid_route_id(route) {
+        bail!(
+            "refusing to build an apiKeyHelper for route {route:?}: alc's routes are `codex-` and \
+             twelve hex digits, or `profile:` and a profile name of letters, numbers, '-' and '_'"
+        );
+    }
+    Ok(())
 }
 
 /// `value` in double quotes for a line cmd runs. cmd hands the quotes on as
@@ -739,9 +767,61 @@ mod tests {
         );
         // cmd expands %NAME% even inside quotes; there is no spelling that
         // survives, so such a path is refused rather than mangled.
-        let error =
-            helper_command(Shell::Cmd, Path::new(r"C:\100%\alc.exe"), dir, "r").unwrap_err();
+        let error = helper_command(
+            Shell::Cmd,
+            Path::new(r"C:\100%\alc.exe"),
+            dir,
+            "codex-0123456789ab",
+        )
+        .unwrap_err();
         assert!(error.to_string().contains('%'), "{error}");
+    }
+
+    /// The route is the one argument alc builds rather than reads from the
+    /// user's disk - except that a profile name reaches `Store::load` without
+    /// ever passing `Config::validate`, so a hand-edited `config.toml` can put
+    /// a space, a `%` or an `&` in one. cmd would split the first into two
+    /// arguments, expand the second and run the third as a command of its own,
+    /// every time Claude Code refreshed the credential.
+    #[test]
+    fn a_route_alc_did_not_mint_is_refused_for_either_shell() {
+        let alc = Path::new("/usr/local/bin/alc");
+        let dir = Path::new("/home/ada/.config/alc");
+        for shell in [Shell::Cmd, Shell::Sh] {
+            for route in [
+                "codex-0123456789ab",
+                "profile:openrouter",
+                "profile:open_router-2",
+            ] {
+                let line = helper_command(shell, alc, dir, route).unwrap();
+                let tail = match shell {
+                    Shell::Cmd => format!("claude-credential {route}"),
+                    Shell::Sh => format!("claude-credential '{route}'"),
+                };
+                assert!(line.ends_with(&tail), "{shell:?}: {line}");
+            }
+            for route in [
+                "profile:my profile",
+                "profile:or&calc",
+                "profile:prod%USERNAME%",
+                r#"profile:quoted"name"#,
+                "profile:",
+                "codex-0123456789abc",
+                "codex-0123456789AB",
+                "../../etc/passwd",
+                "",
+            ] {
+                let error = helper_command(shell, alc, dir, route)
+                    .unwrap_err()
+                    .to_string();
+                // Spelled as the refusal spells it, so a route whose own
+                // characters would be read as punctuation still reads back.
+                assert!(
+                    error.contains(&format!("{route:?}")),
+                    "{shell:?} {route:?}: {error}"
+                );
+            }
+        }
     }
 
     fn plan(document: Value, subcommand: Option<&str>) -> SettingsPlan {
