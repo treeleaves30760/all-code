@@ -93,6 +93,13 @@ pub(crate) fn build(
 
 /// Whether this launch leaves Claude Code on its own login.
 fn on_claudes_own_login(provider: &Provider, key: Option<&str>) -> bool {
+    // Never a local server, whatever its profile says its auth style is: it
+    // ignores the Authorization header and serves only what it has pulled, so
+    // Claude Code's own login has nothing to mean there - and alc has no
+    // business sending a claude.ai token to localhost.
+    if provider.kind == ProviderKind::Ollama {
+        return false;
+    }
     match provider.auth {
         AuthStyle::Native => true,
         // No configured key means the user selected Claude's native login.
@@ -209,8 +216,11 @@ fn provider_document(
         .as_deref()
         .filter(|value| !value.is_empty());
     let is_set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
-    if provider.auth == AuthStyle::None {
-        let local_server = provider.kind == ProviderKind::Ollama;
+    let local_server = provider.kind == ProviderKind::Ollama;
+    // Nothing to fetch a credential for: a keyless endpoint has none, and a
+    // local server pinned to Claude's own login has nothing to sign with
+    // either - it is still the placeholder token and the pins.
+    if provider.auth == AuthStyle::None || (local_server && provider.auth == AuthStyle::Native) {
         let timeouts = if local_server {
             local_server_timeout_env(is_set)
         } else {
@@ -241,7 +251,7 @@ fn provider_document(
     // Ollama's pins follow the kind, not the auth style, as they always have:
     // an Ollama behind an authenticating proxy still serves only what it
     // has pulled.
-    if provider.kind == ProviderKind::Ollama {
+    if local_server {
         claude_settings::pin_local_server(
             &mut document,
             model,

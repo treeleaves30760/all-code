@@ -1766,6 +1766,33 @@ mod tests {
         );
     }
 
+    /// A local server ignores the Authorization header and serves only what it
+    /// has pulled, so there is no Claude login behind it to fall back to - and
+    /// the pins follow the kind whatever the profile says its auth is.
+    #[test]
+    fn an_ollama_profile_never_runs_on_claude_codes_own_login() {
+        let mut config = Config::default();
+        let ollama = config.providers.get_mut("ollama").unwrap();
+        ollama.auth = crate::config::AuthStyle::Native;
+        ollama.api_key_env = None;
+        let spec = build(
+            &store(config, Credentials::default()),
+            Agent::Claude,
+            Some("ollama"),
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+        let env = document_env(&spec);
+        assert_eq!(env["ANTHROPIC_DEFAULT_FABLE_MODEL"], "qwen3-coder");
+        assert_eq!(env["ANTHROPIC_DEFAULT_OPUS_MODEL"], "qwen3-coder");
+        assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "ollama");
+        assert!(
+            plan_of(&spec).document.get("apiKeyHelper").is_none(),
+            "a local server has no credential to fetch"
+        );
+    }
+
     #[test]
     fn hosted_anthropic_compatible_providers_keep_claudes_own_aliases() {
         let mut credentials = Credentials::default();

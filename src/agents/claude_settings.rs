@@ -613,9 +613,17 @@ mod tests {
         assert_eq!(document["model"], "gpt-5.6-terra");
         assert_eq!(document["apiKeyHelper"], "HELPER");
         assert_eq!(document["modelPicker"]["replaceBuiltInOptions"], true);
+        let rows = document["modelPicker"]["options"]
+            .as_array()
+            .expect("the picker's rows");
+        assert_eq!(rows[0]["model"], "gpt-6-astra");
         assert_eq!(
-            document["modelPicker"]["options"][0]["model"],
-            "gpt-6-astra"
+            rows[0]["label"], "GPT-6 Astra",
+            "the most capable model is listed first"
+        );
+        assert!(
+            rows.iter().all(|row| row.get("capabilities").is_none()),
+            "the setting schema only accepts model, label, and description"
         );
         assert!(
             !env.keys().any(|name| name.contains("EFFORT")),
