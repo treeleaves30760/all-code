@@ -31,6 +31,12 @@ pub(crate) const IDLE_LIMIT: Duration = Duration::from_secs(60 * 60);
 const IDLE_CHECK: Duration = Duration::from_secs(60);
 /// How long an explicit stop waits for streaming turns before it ends them.
 const STOP_GRACE: Duration = Duration::from_secs(5);
+/// How many times a start asks a port it could not bind whether an alc bridge
+/// is there, and how long it waits between asking. Four pauses, a little over
+/// a second, is all the delay this adds by itself; each ask is separately
+/// bounded by the hello timeout.
+const PROBE_TRIES: u32 = 5;
+const PROBE_PAUSE: Duration = Duration::from_millis(300);
 
 pub(crate) struct Host {
     config_dir: PathBuf,
@@ -209,6 +215,11 @@ async fn track_activity(State(host): State<Arc<Host>>, request: Request, next: N
     let guard = InFlight::begin(Arc::clone(&host));
     let response = next.run(request).await;
     let (parts, body) = response.into_parts();
+    // The guard rides the body's stream: it is dropped when the stream is,
+    // which is the last byte of the response or the client walking away -
+    // never when this function returns. Deleting this capture is deleting the
+    // guarantee, which is why two tests drive a real streaming response
+    // through here rather than moving the counter by hand.
     let body = Body::from_stream(body.into_data_stream().map(move |chunk| {
         let _held = &guard;
         chunk
@@ -324,9 +335,16 @@ fn bind(config_dir: &Path, token: String) -> Result<(TcpListener, u16, String)> 
     if let Some(port) = previous {
         match TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => return Ok((listener, port, token)),
-            Err(_) if super::hello(port, &token).is_ok() => {
-                bail!("an alc bridge is already serving on 127.0.0.1:{port}")
+            // Something already holds the port, which is the one case where
+            // asking who is there is worth the wait. See `serving_there`.
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                if serving_there(port, &token) {
+                    bail!("an alc bridge is already serving on 127.0.0.1:{port}")
+                }
             }
+            // `PermissionDenied` is the answer a range Windows reserves for
+            // Hyper-V or WinNAT gives, and nothing is listening on one of
+            // those; no other failure means a bridge is there either. Move.
             Err(_) => {}
         }
     }
@@ -351,6 +369,39 @@ fn bind(config_dir: &Path, token: String) -> Result<(TcpListener, u16, String)> 
         files::PORT_RANGE.start,
         files::PORT_RANGE.end - 1
     )
+}
+
+/// Whether an alc bridge for this configuration is serving on `port`, asked
+/// more than once.
+///
+/// A listening socket answers TCP before its server answers HTTP. From the
+/// moment a sibling start binds the remembered port, the operating system
+/// completes handshakes into its backlog while that sibling is still setting
+/// the socket non-blocking, building its runtime and handing the listener
+/// over - so a hello that connects and then times out means "not answering
+/// yet" at least as often as it means "not an alc bridge". Believing one
+/// timeout would move this start to a port of its own, rotating the token out
+/// from under the sibling about to serve on the remembered one: every request
+/// to it then fails the token check, the helper hands back the rotated token
+/// and that fails too, and the port stays held by a bridge nothing can use
+/// until it idles out an hour later.
+fn serving_there(port: u16, token: &str) -> bool {
+    says_yes(PROBE_TRIES, PROBE_PAUSE, || {
+        super::hello(port, token).is_ok()
+    })
+}
+
+/// Whether `ask` says yes within `tries`, waiting `pause` between attempts.
+fn says_yes(tries: u32, pause: Duration, mut ask: impl FnMut() -> bool) -> bool {
+    for attempt in 0..tries {
+        if attempt > 0 {
+            std::thread::sleep(pause);
+        }
+        if ask() {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -384,6 +435,38 @@ mod tests {
             .await
             .unwrap()
             .status()
+    }
+
+    /// One route answering a body in two chunks, behind the real middleware,
+    /// so what the tests below assert is the middleware's doing and not the
+    /// test's: the in-flight count has no other writer.
+    fn streaming_router(host: &Arc<Host>) -> Router {
+        Router::new()
+            .route(
+                "/stream",
+                get(|| async {
+                    Body::from_stream(futures_util::stream::iter([
+                        Ok::<_, std::io::Error>(Bytes::from_static(b"one")),
+                        Ok(Bytes::from_static(b"two")),
+                    ]))
+                }),
+            )
+            .layer(middleware::from_fn_with_state(
+                Arc::clone(host),
+                track_activity,
+            ))
+    }
+
+    async fn streamed(host: &Arc<Host>) -> Response {
+        streaming_router(host)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -479,6 +562,79 @@ mod tests {
         );
         activity.in_flight.fetch_sub(1, Ordering::SeqCst);
         assert!(activity.idle_for(1_000 + 3_600) >= IDLE_LIMIT);
+    }
+
+    /// The guarantee section 6.5 rests on, driven through the middleware that
+    /// makes it rather than by poking the counter: headers out is not the end
+    /// of a turn, the last byte of its body is.
+    #[tokio::test]
+    async fn a_streaming_turn_is_in_flight_until_its_last_byte() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = host(temp.path());
+        assert_eq!(host.activity.in_flight.load(Ordering::SeqCst), 0);
+
+        let response = streamed(&host).await;
+        assert_eq!(
+            host.activity.in_flight.load(Ordering::SeqCst),
+            1,
+            "the response has only begun"
+        );
+        assert_eq!(
+            host.activity.idle_for(now_secs() + 99_999),
+            Duration::ZERO,
+            "a turn still streaming is not idleness, however long it takes"
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"onetwo");
+        assert_eq!(host.activity.in_flight.load(Ordering::SeqCst), 0);
+        assert!(host.activity.idle_for(now_secs() + 3_600) >= IDLE_LIMIT);
+    }
+
+    /// A client that disconnects mid-turn leaves a body nobody reads to the
+    /// end. It must not hold the bridge awake for the rest of the hour.
+    #[tokio::test]
+    async fn a_client_that_walks_away_mid_turn_lets_the_bridge_go_idle() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = host(temp.path());
+
+        let response = streamed(&host).await;
+        assert_eq!(host.activity.in_flight.load(Ordering::SeqCst), 1);
+        drop(response);
+        assert_eq!(
+            host.activity.in_flight.load(Ordering::SeqCst),
+            0,
+            "an abandoned body is not a turn still running"
+        );
+        assert!(host.activity.idle_for(now_secs() + 3_600) >= IDLE_LIMIT);
+    }
+
+    /// A port that refuses to bind is asked more than once who holds it,
+    /// because a sibling that has bound but is not serving yet answers TCP
+    /// and not HTTP. One timed-out ask is not a free port.
+    #[test]
+    fn a_port_is_asked_until_it_answers_or_the_tries_run_out() {
+        // Answering only on the third ask is the case a single ask gets
+        // wrong: a sibling that bound the port a moment ago and is still
+        // building its runtime.
+        let mut asked = 0;
+        assert!(says_yes(PROBE_TRIES, Duration::ZERO, || {
+            asked += 1;
+            asked == 3
+        }));
+        assert_eq!(asked, 3, "it stops asking once someone answers");
+
+        let mut asked = 0;
+        assert!(!says_yes(PROBE_TRIES, Duration::ZERO, || {
+            asked += 1;
+            false
+        }));
+        assert_eq!(
+            asked, PROBE_TRIES,
+            "and only gives up on the port after every try"
+        );
     }
 
     #[test]
