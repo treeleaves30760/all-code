@@ -109,7 +109,25 @@ function Get-AlcTmuxStatus {
             $process.StartInfo.RedirectStandardInput = $true
             $process.StartInfo.RedirectStandardOutput = $true
             $process.StartInfo.RedirectStandardError = $true
-            $null = $process.Start()
+            # Windows PowerShell writes the console input encoding's byte-order
+            # mark into a redirected stdin the moment the process starts, so on
+            # a UTF-8 console (code page 65001) tmux would get three bytes
+            # instead of the empty stdin alc's own probe gives it. Start it
+            # under an encoding with no preamble and put the console's back.
+            $savedInputEncoding = $null
+            try {
+                if ([Console]::InputEncoding.GetPreamble().Length -gt 0) {
+                    $savedInputEncoding = [Console]::InputEncoding
+                    [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+                }
+            } catch { $savedInputEncoding = $null }
+            try {
+                $null = $process.Start()
+            } finally {
+                if ($null -ne $savedInputEncoding) {
+                    try { [Console]::InputEncoding = $savedInputEncoding } catch { }
+                }
+            }
             $process.StandardInput.Close()
             # Drain stderr concurrently so a diagnostic cannot fill the pipe.
             $stderr = $process.StandardError.ReadToEndAsync()
