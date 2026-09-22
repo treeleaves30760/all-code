@@ -36,6 +36,7 @@ pub(crate) mod messages;
 pub(crate) mod models;
 pub(crate) mod responses;
 pub(crate) mod server;
+pub(crate) mod tiers;
 pub(crate) mod upstream;
 
 #[cfg(test)]
@@ -60,9 +61,10 @@ pub(crate) struct BridgeConfig {
     /// to `max` on the way into [`upstream::Effort`], not forwarded.
     pub effort: Option<ReasoningEffort>,
     /// Whether `/v1/responses` and `/v1/chat/completions` are routed at all.
-    /// Mirrors the vendored bridge's `CCP_CODEX_RESPONSES_API`: Claude Code's
-    /// plan does not set it, and those routes then 404 rather than existing
-    /// unused.
+    /// Mirrors the vendored bridge's `CCP_CODEX_RESPONSES_API`. Every plan the
+    /// in-process bridge is built from sets it now; the one config that does
+    /// not is the background bridge's, for Claude Code, which serves only the
+    /// Messages routes under a router of its own (`crate::bridge_host`).
     pub responses_api: bool,
     /// Who this bridge is serving, so the turns it sees can be attributed to a
     /// provider and an agent in the usage ledger.
@@ -71,6 +73,10 @@ pub(crate) struct BridgeConfig {
     /// Where to append those turn rows. `None` in tests and anywhere the
     /// ledger is deliberately not written.
     pub ledger: Option<PathBuf>,
+    /// Claude Code only: the Codex models Claude's own tiers land on, so a
+    /// request naming a Claude model is answered by Codex rather than refused
+    /// upstream. `None` for every other agent, which pins its model at launch.
+    pub claude_tiers: Option<tiers::ModelTiers>,
 }
 
 /// Everything a handler shares: config, credentials, and one HTTP client.
@@ -80,7 +86,10 @@ pub(crate) struct BridgeConfig {
 /// is visible latency.
 pub(crate) struct BridgeState {
     pub config: BridgeConfig,
-    pub auth: auth::AuthManager,
+    /// Shared by every route over the same `auth.json` in the background
+    /// bridge: a Codex refresh token is single-use, and two managers each
+    /// single-flighting their own refresh would still race each other.
+    pub auth: Arc<auth::AuthManager>,
     pub http: reqwest::Client,
     /// Set once at startup, so recording a turn costs no lookup and no lock.
     pub ledger: Option<Arc<crate::usage::ledger::Ledger>>,
@@ -88,6 +97,12 @@ pub(crate) struct BridgeState {
 
 impl BridgeState {
     pub(crate) fn new(config: BridgeConfig) -> Result<Self> {
+        let auth = Arc::new(auth::AuthManager::new(config.auth_file.clone()));
+        Self::with_auth(config, auth)
+    }
+
+    /// The same, over a credential manager the caller already holds.
+    pub(crate) fn with_auth(config: BridgeConfig, auth: Arc<auth::AuthManager>) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(upstream::USER_AGENT)
             // No total-request timeout: a Codex turn legitimately streams for
@@ -95,7 +110,6 @@ impl BridgeState {
             // tell "thinking" from "hung".
             .build()
             .context("failed to build the Codex bridge's HTTP client")?;
-        let auth = auth::AuthManager::new(config.auth_file.clone());
         // Read once here rather than per turn: it is the id the requests
         // already carry as a header, and reading the file on every frame
         // would be a syscall per turn for a number that cannot change while

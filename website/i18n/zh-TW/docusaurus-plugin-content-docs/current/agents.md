@@ -31,10 +31,11 @@ provider 清單，翻譯成你正要啟動的那個 agent 聽得懂的樣子。�
 `claude` —— [安裝](https://code.claude.com/docs/en/setup) · 支援 Anthropic
 相容端點。
 
-alc 會設定 `ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL` 與 `ANTHROPIC_API_KEY`
-（OpenRouter 這類 bearer 型 provider 則改用 `ANTHROPIC_AUTH_TOKEN`），profile
-有指定 small model 時再加上 `ANTHROPIC_SMALL_FAST_MODEL`。Ollama profile 拿到
-的還更多 —— 見[本機模型](./local-models.md)。
+Claude Code 拿到的是一份設定檔（`--settings`），裡面放的是端點、模型相關變數
+與選單，憑證則透過 `apiKeyHelper` 向 `alc claude-credential` 取得；用 Claude
+Code 自己的登入時，由那個登入來回答，檔案裡只放端點與模型。見[背景
+session](./background-sessions.md)。Ollama profile 拿到的還更多 ——
+見[本機模型](./local-models.md)。
 
 ```sh
 alc claude

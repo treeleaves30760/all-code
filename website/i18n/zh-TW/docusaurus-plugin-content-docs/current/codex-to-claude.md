@@ -50,6 +50,17 @@ Claude Code 會把這幾個列進它自己的 `/model` 選單：
 所以 alc 沒有追蹤的模型，一樣可以用 `--model` 指名使用。這正是為什麼一個新模型
 在 Codex 推出的那天就能用，而不是等 alc 追上的那天。
 
+## 每一個 Claude 模型都變成 Codex 模型
+
+在 `alc --codex claude` 底下，沒有任何一個請求會送到 Claude 模型：`/model`
+選單就列這四個、不會有別的，Claude Code 所有的別名 —— `opus`、`sonnet`、
+`haiku`、`fable`、`best`、`opusplan` —— 都會落在其中一個上，而指名完整名稱的
+Claude 模型，則由同一級的 Codex 模型來回答。Claude Code 自己的背景工作也走同
+一條路，所以一個標題或一份摘要花掉的是 Codex 的額度，而不是一個送去 Anthropic
+的請求。[背景
+session](./background-sessions.md#每一個-claude-模型都變成-codex-模型)有整張
+表，一個別名一個別名地列出來。
+
 ## 推理強度
 
 `/model` 畫面的左右方向鍵可以移動強度滑桿，`/effort` 則能直接指定一個等級。
@@ -110,9 +121,13 @@ alc models --json
 
 ## 運作方式
 
-橋接是 alc 自己的程式碼，跑在 `alc` 行程內、綁在隨機的 loopback port 上，只服務
-它啟動的那個 agent，並在該 session 結束時關閉。它會讀取、必要時更新
-`~/.codex/auth.json`；憑證絕不會被複製進 alc 自己的設定裡。
+橋接是 alc 自己的程式碼。給 Claude Code 用的時候，它是一個獨立的背景行程，綁在
+一個它會一直留著的 loopback port 上（`alc bridge`），因為一個被移到背景的
+session，活得比啟動它的那個 `alc` 還久 —— 見[背景
+session](./background-sessions.md#背景橋接)。其他每一個 agent 則仍然跑在 `alc`
+行程內、綁在隨機的 port 上，只服務它啟動的那個 agent，並在該 session 結束時
+關閉。它會讀取、必要時更新 `~/.codex/auth.json`；憑證絕不會被複製進 alc 自己的
+設定裡。
 
 :::caution[這是第三方相容層]
 

@@ -23,9 +23,10 @@ pub(crate) fn router(state: Arc<BridgeState>) -> Router {
             post(messages::handle_count_tokens),
         );
 
-    // Mirrors the vendored bridge's CCP_CODEX_RESPONSES_API: Claude Code's
-    // plan does not set it, and these routes then 404 rather than sitting
-    // there answering an agent that was never meant to reach them.
+    // Mirrors the vendored bridge's CCP_CODEX_RESPONSES_API: a config without
+    // it gets these routes as 404s rather than answering an agent that was
+    // never meant to reach them. Every plan the builders make sets it today;
+    // Claude Code, the client that did not, runs on the background bridge.
     if state.config.responses_api {
         router = router
             .route("/v1/responses", post(responses::handle))
@@ -68,6 +69,7 @@ mod tests {
                 agent: crate::config::Agent::Claude,
                 provider: "codex".to_owned(),
                 ledger: None,
+                claude_tiers: None,
             })
             .expect("the state builds without touching the auth file"),
         )

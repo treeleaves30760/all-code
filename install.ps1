@@ -72,6 +72,180 @@ function Get-AlcWindowsArchitecture {
     }
 }
 
+function Get-AlcTmuxStatus {
+    # Match alc's runtime: skip other ports, but stop at the first native port
+    # even if its version is old/unparseable. Aliases and functions do not count.
+    # Get-Command's PATH search skips quoted directories, unlike which_all.
+    # Resolve each entry explicitly, in order, without changing the session PATH.
+    # Windows split_paths treats semicolons inside quotes as part of the path,
+    # and removes quotes (even when they surround only part of an entry).
+    $pathEntries = @(
+        $entry = ''
+        $quoted = $false
+        foreach ($character in ([string]$env:Path).ToCharArray()) {
+            if ($character -eq '"') { $quoted = -not $quoted }
+            elseif ($character -eq ';' -and -not $quoted) {
+                if ($entry) { $entry }
+                $entry = ''
+            } else { $entry += $character }
+        }
+        if ($entry) { $entry }
+    )
+    $candidates = @(foreach ($entry in $pathEntries) {
+        try {
+            $name = [IO.Path]::Combine($entry, 'tmux')
+        } catch { continue }
+        Get-Command -Name ([Management.Automation.WildcardPattern]::Escape($name)) `
+            -All -CommandType Application -ErrorAction SilentlyContinue
+    })
+    $reason = 'No native Windows tmux was found on PATH'
+    foreach ($candidate in $candidates) {
+        $process = New-Object System.Diagnostics.Process
+        try {
+            $process.StartInfo.FileName = $candidate.Source
+            $process.StartInfo.Arguments = '-V'
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.CreateNoWindow = $true
+            $process.StartInfo.RedirectStandardInput = $true
+            $process.StartInfo.RedirectStandardOutput = $true
+            $process.StartInfo.RedirectStandardError = $true
+            # Windows PowerShell writes the console input encoding's byte-order
+            # mark into a redirected stdin the moment the process starts, so on
+            # a UTF-8 console (code page 65001) tmux would get three bytes
+            # instead of the empty stdin alc's own probe gives it. Start it
+            # under an encoding with no preamble and put the console's back.
+            $savedInputEncoding = $null
+            try {
+                if ([Console]::InputEncoding.GetPreamble().Length -gt 0) {
+                    $savedInputEncoding = [Console]::InputEncoding
+                    [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+                }
+            } catch { $savedInputEncoding = $null }
+            try {
+                $null = $process.Start()
+            } finally {
+                if ($null -ne $savedInputEncoding) {
+                    try { [Console]::InputEncoding = $savedInputEncoding } catch { }
+                }
+            }
+            $process.StandardInput.Close()
+            # Drain stderr concurrently so a diagnostic cannot fill the pipe.
+            $stderr = $process.StandardError.ReadToEndAsync()
+            $text = $process.StandardOutput.ReadToEnd()
+            $process.WaitForExit()
+            $null = $stderr.GetAwaiter().GetResult()
+        } catch {
+            return [pscustomobject]@{ Ready = $false; Reason = "Could not run $($candidate.Source) -V: $($_.Exception.Message)" }
+        } finally {
+            $process.Dispose()
+        }
+
+        # Runtime reads stdout even when -V exits nonzero. psmux identifies
+        # itself on its second line; -win32 must occur on the first line.
+        $firstLine = ($text -split "`n")[0].Trim()
+        if ($text.ToLowerInvariant().Contains('psmux') -or $firstLine -notmatch '-win32') {
+            $reason = 'Only psmux or non-native tmux builds were found on PATH'
+            continue
+        }
+        $match = [regex]::Match($firstLine, '^[^0-9]*([0-9]+)\.([0-9]+)')
+        [uint32]$major = 0
+        [uint32]$minor = 0
+        if (-not $match.Success -or
+            -not [uint32]::TryParse($match.Groups[1].Value, [ref]$major) -or
+            -not [uint32]::TryParse($match.Groups[2].Value, [ref]$minor)) {
+            return [pscustomobject]@{ Ready = $false; Reason = "Cannot parse the first native tmux version on PATH ($($candidate.Source))" }
+        }
+        if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 2)) {
+            return [pscustomobject]@{ Ready = $false; Reason = "The first native tmux on PATH ($($candidate.Source)) is older than 3.2" }
+        }
+        return [pscustomobject]@{ Ready = $true; Reason = '' }
+    }
+    return [pscustomobject]@{ Ready = $false; Reason = $reason }
+}
+
+function Update-AlcSessionPath {
+    param(
+        [AllowNull()][string]$UserPath = [Environment]::GetEnvironmentVariable('Path', 'User'),
+        [AllowNull()][string]$MachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    )
+    if ($env:ALC_NO_PATH_UPDATE -eq '1') { return }
+    # Append new package-manager entries, preserving session-only paths and
+    # their order. Never replace the current PATH with registry values.
+    foreach ($entry in @(($UserPath + ';' + $MachinePath) -split ';' | Where-Object { $_ })) {
+        try {
+            $directory = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($entry))
+        } catch { continue }
+        if (-not (Test-PathContains -PathValue $env:Path -Directory $directory.TrimEnd('\'))) {
+            if ([string]::IsNullOrEmpty($env:Path)) { $env:Path = $directory }
+            else { $env:Path += ";$directory" }
+        }
+    }
+}
+
+function Install-AlcTmux {
+    if ($env:ALC_NO_TMUX_INSTALL -eq '1') {
+        Write-Host 'Skipping tmux dependency setup (ALC_NO_TMUX_INSTALL=1).'
+        return
+    }
+    $previousExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+    try {
+        $status = Get-AlcTmuxStatus
+        if ($status.Ready) {
+            Write-Host 'Native Windows tmux is ready for --tmux (3.2 or newer).'
+            return
+        }
+        $winget = Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if (-not $winget) {
+            Write-Warning "$($status.Reason); WinGet is not installed (not installed automatically)."
+        } else {
+            Write-Host 'Installing or upgrading optional native tmux with WinGet (accepting package/source agreements)...'
+            # PowerShell 7 can turn nonzero native exits into errors. Record the
+            # actual WinGet result before any PATH refresh or version probe.
+            $PSNativeCommandUseErrorActionPreference = $false
+            try {
+                $savedErrorActionPreference = $ErrorActionPreference
+                try {
+                    # PS5.1 treats redirected native stderr as an error record.
+                    $ErrorActionPreference = 'Continue'
+                    & $winget.Source install --id arndawg.tmux-windows --exact --source winget --scope user --accept-package-agreements --accept-source-agreements --disable-interactivity
+                    $wingetExitCode = $LASTEXITCODE
+                } finally {
+                    $ErrorActionPreference = $savedErrorActionPreference
+                }
+                if ($null -eq $wingetExitCode) {
+                    Write-Warning 'WinGet did not complete.'
+                } elseif ($wingetExitCode -ne 0) {
+                    Write-Warning "WinGet exited with code $wingetExitCode; installation/upgrade may have failed or this architecture may be unsupported."
+                }
+            } catch {
+                Write-Warning "Could not run WinGet: $($_.Exception.Message)"
+            }
+            try { Update-AlcSessionPath } catch {
+                Write-Warning "Could not refresh session PATH: $($_.Exception.Message)"
+            }
+            if ($env:ALC_NO_PATH_UPDATE -eq '1') {
+                Write-Host 'ALC_NO_PATH_UPDATE=1: session PATH was not refreshed. Restart your terminal to pick up any WinGet PATH changes.'
+            }
+            $status = Get-AlcTmuxStatus
+            if ($status.Ready) {
+                Write-Host 'Native Windows tmux is ready for --tmux (3.2 or newer).'
+                return
+            }
+            Write-Warning "$($status.Reason) after WinGet; an older PATH entry may be hiding the installed port."
+        }
+    } catch {
+        Write-Warning "Optional tmux setup failed: $($_.Exception.Message)"
+    } finally {
+        # A best-effort dependency failure must not become the installer exit
+        # status in callers (including CI) that forward LASTEXITCODE.
+        $global:LASTEXITCODE = $previousExitCode
+    }
+    Write-Host 'alc is installed; only --tmux needs native Windows tmux 3.2+. Install/upgrade manually:'
+    Write-Host '  winget install --id arndawg.tmux-windows --exact'
+    Write-Host 'Then restart your terminal and check PATH and tmux -V. Ordinary alc and --share work without tmux.'
+}
+
 $arch = Get-AlcWindowsArchitecture
 $asset = "alc-windows-$arch.zip"
 if ($version -eq 'latest') {
@@ -168,6 +342,8 @@ try {
         Write-Host "  $normalizedInstallDir"
         Write-Host 'Then restart PowerShell, run codex login, and: alc --codex claude'
     }
+
+    Install-AlcTmux
 } finally {
     $resolvedTemp = [IO.Path]::GetFullPath($tempDir)
     if ($resolvedTemp.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and

@@ -32,6 +32,7 @@ pub fn run(store: &Store) -> Result<bool> {
         codex_bridge(store, &theme, &mut issues);
     }
     claude_code_default_model(store, &theme, &mut issues);
+    background_sessions(store, &theme);
     local_models(store, &theme, &mut issues);
     remote(store, &theme, &mut issues);
     summary(&theme, &issues);
@@ -281,6 +282,38 @@ fn claude_code_default_model(store: &Store, theme: &Theme, issues: &mut Vec<Issu
             settings.display()
         )),
     ));
+}
+
+/// The bridge Claude Code sessions reach the Codex login through, and whether
+/// agent view is switched off. Informational: a bridge that is not running is
+/// the normal state between sessions, since the next one starts it.
+fn background_sessions(store: &Store, theme: &Theme) {
+    heading(theme, "Background sessions");
+    let mut rows = crate::bridge_host::status_rows(&store.dir);
+    if let Some(reason) = agent_view_switched_off() {
+        rows.push((
+            "agent view",
+            format!("off ({reason}); Claude Code's own setting, not alc's"),
+        ));
+    }
+    pairs(&rows);
+}
+
+/// Why Claude Code's agent view is off, when it is.
+fn agent_view_switched_off() -> Option<String> {
+    if env::var_os("CLAUDE_CODE_DISABLE_AGENT_VIEW").is_some_and(|value| !value.is_empty()) {
+        return Some("CLAUDE_CODE_DISABLE_AGENT_VIEW".to_owned());
+    }
+    let settings = crate::agents::claude::resolve_claude_config_dir(
+        None,
+        env::var_os("CLAUDE_CONFIG_DIR"),
+        crate::launch::home_dir(),
+    )?
+    .join("settings.json");
+    let text = std::fs::read_to_string(&settings).ok()?;
+    let document: serde_json::Value = serde_json::from_str(&text).ok()?;
+    (document.get("disableAgentView") == Some(&serde_json::Value::Bool(true)))
+        .then(|| format!("disableAgentView in {}", settings.display()))
 }
 
 fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {

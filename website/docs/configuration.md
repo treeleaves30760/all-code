@@ -25,6 +25,23 @@ Files:
 - `remote.toml`: the [remote-control](./remote-control.md) settings.
 - `usage.jsonl`: the launch and turn ledger [`alc usage`](./usage.md)
   aggregates. Delete it to start counting again.
+- `claude/settings-*.json`: the settings documents alc hands Claude Code with
+  `--settings` — the endpoint, the model variables, the picker and the
+  `apiKeyHelper` line, and no key of any kind. Each is named after a hash of its
+  own contents, so every launch that resolves to the same document reuses the
+  same file; each is written mode `0600` on Unix. alc never deletes them,
+  because a [background session](./background-sessions.md) reads its file again
+  every time Claude Code restarts it. Removing them is safe while no background
+  session is running; delete one a live session uses and that session breaks
+  until its next launch. One thing to know before you leave them there: a
+  `--settings` of your own is merged into the document, so a credential you put
+  in your file is in alc's copy too.
+- `run/bridge.port`, `run/bridge.token`: where the [background
+  bridge](./background-sessions.md#the-background-bridge) is listening, and the
+  token every request to it must carry.
+- `run/bridge/routes/`: one file per route the bridge serves — the provider
+  profile it spends, the Codex `auth.json` its requests are signed with, and
+  where Claude Code's own model ids land.
 
 Override the directory with `ALC_CONFIG_DIR`.
 

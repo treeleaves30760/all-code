@@ -145,6 +145,12 @@ pub(crate) struct WireSpec {
     /// on the old build. `hub::spawn_or_join` refuses such a hub instead.
     #[serde(default)]
     pub bridge: Option<crate::launch::BridgePlan>,
+    /// Claude Code's settings document and the Codex route behind it. The hub
+    /// finishes and writes it, and starts the bridge the route needs, so it
+    /// has to arrive whole - `hub::spawn_or_join` refuses a hub too old to
+    /// know the field rather than let it be dropped in silence.
+    #[serde(default)]
+    pub settings_plan: Option<crate::agents::claude_settings::SettingsPlan>,
     /// The Codex `auth.json` the client resolved in its own shell, so the
     /// hub does not go looking for one in the environment it happens to
     /// have. A path, never a credential.

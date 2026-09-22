@@ -32,7 +32,7 @@ alc session claude-7QK2M9XB4T (claude@all-code)
 ```
 
 遠端控制在 macOS、Linux 與 Windows 10／11 上都能用；在 Windows 上搭配 `--tmux`
-要另外裝原生的 Windows 版 tmux，見[尺寸歸誰管](#尺寸歸誰管)。
+要有原生 Windows 版 tmux（安裝器會嘗試自動補裝），見[尺寸歸誰管](#尺寸歸誰管)。
 
 ## 從手機連上
 
@@ -222,12 +222,13 @@ agent 也沒辦法透過 `~/.tmux.conf` 碰到某個 session 的 server。從頁
 直接進 agent 的 pane，所以看頁面的人碰不到 tmux 的指令列；你自己的終端機是
 完整的 client，碰得到。
 
-Windows 上要用 tmux 的原生 Windows 移植版（測過的是 tmux 3.6a-win32）。裝完
-之後開一個新的終端機，讓它讀到更新後的 PATH；`alc doctor` 的「tmux」那一列會
-告訴你有沒有找到原生版。
+Windows 上要用 tmux 的原生 Windows 移植版（測過的是 tmux 3.6a-win32）。alc
+安裝器會自動檢查並嘗試補裝，詳見[安裝與停用選項](./getting-started.md#選用的-tmux-補裝)。
+若跳過補裝或未能完成，以下是手動備援；裝完之後開一個新的終端機，讓它讀到
+更新後的 PATH。`alc doctor` 的「tmux」那一列會告訴你有沒有找到原生版。
 
 ```powershell
-winget install arndawg.tmux-windows
+winget install --id arndawg.tmux-windows --exact
 ```
 
 psmux 也會裝一個 `tmux.exe`，但 alc 驅動不了它：它跑不了 alc 用來建立 session
@@ -263,7 +264,7 @@ macOS 與 Linux 上仍然會顯示那個訊號。
 alc --share <agent>          # mirror this session
 alc --share --tmux <agent>   # ...and let the page own the agent's size
 alc share <agent> -- <args>  # the unambiguous form
-alc share <agent> --name x   # name the card
+alc share <agent> --name x   # name the card (after `--` it is the agent's own)
 alc --no-share <agent>       # never mirror, whatever the settings say
 
 alc remote status

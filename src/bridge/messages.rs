@@ -1171,6 +1171,18 @@ fn collect(events: Vec<MessagesEvent>) -> Result<MessagesResponse, BridgeError> 
 // Handlers
 // ---------------------------------------------------------------------------
 
+/// Replaces a Claude model id with the Codex model of the same tier, when this
+/// bridge serves Claude Code. See [`super::tiers`].
+fn serve_codex_model(config: &super::BridgeConfig, request: &mut MessagesRequest) {
+    if let Some(served) = config
+        .claude_tiers
+        .as_ref()
+        .and_then(|tiers| tiers.serve_as(&request.model))
+    {
+        request.model = served.to_owned();
+    }
+}
+
 /// `POST /v1/messages`.
 ///
 /// Raw bytes rather than `Json<T>` so that a body this bridge cannot read is
@@ -1187,7 +1199,8 @@ pub(crate) async fn handle_messages(
 }
 
 async fn messages(state: &BridgeState, body: &Bytes) -> Result<Response, BridgeError> {
-    let request = parse(body)?;
+    let mut request = parse(body)?;
+    serve_codex_model(&state.config, &mut request);
     let upstream_request = to_upstream(&request)?;
     let turn = Turn::new(
         message_id(),
@@ -1209,10 +1222,13 @@ async fn messages(state: &BridgeState, body: &Bytes) -> Result<Response, BridgeE
 /// worth of typing — and the answer is only used to decide whether to compact,
 /// not to bill anyone.
 pub(crate) async fn handle_count_tokens(
-    State(_state): State<Arc<BridgeState>>,
+    State(state): State<Arc<BridgeState>>,
     body: Bytes,
 ) -> Response {
-    match parse(&body).and_then(|request| to_upstream(&request)) {
+    match parse(&body).and_then(|mut request| {
+        serve_codex_model(&state.config, &mut request);
+        to_upstream(&request)
+    }) {
         Ok(request) => axum::Json(CountTokensResponse {
             input_tokens: estimate_input_tokens(&request),
         })
@@ -1955,5 +1971,46 @@ mod tests {
             }
             other => panic!("expected one tool_use block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_claude_model_is_served_by_the_codex_model_of_its_tier() {
+        let config = crate::bridge::BridgeConfig {
+            auth_file: std::path::PathBuf::from("/nonexistent/auth.json"),
+            effort: None,
+            responses_api: false,
+            agent: crate::config::Agent::Claude,
+            provider: "codex".to_owned(),
+            ledger: None,
+            claude_tiers: Some(crate::bridge::tiers::ModelTiers {
+                strongest: "gpt-6-astra".to_owned(),
+                default: "gpt-5.6-terra".to_owned(),
+                cheapest: "gpt-5.6-luna".to_owned(),
+            }),
+        };
+        let request = |model: &str| -> MessagesRequest {
+            serde_json::from_value(serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .unwrap()
+        };
+
+        let mut asked = request("claude-opus-5");
+        serve_codex_model(&config, &mut asked);
+        assert_eq!(asked.model, "gpt-6-astra");
+
+        let mut gpt = request("gpt-5.6-sol");
+        serve_codex_model(&config, &mut gpt);
+        assert_eq!(gpt.model, "gpt-5.6-sol", "a Codex model is never rewritten");
+
+        // Every other agent pins its model; nothing here may second-guess it.
+        let pinned = crate::bridge::BridgeConfig {
+            claude_tiers: None,
+            ..config
+        };
+        let mut untouched = request("claude-opus-5");
+        serve_codex_model(&pinned, &mut untouched);
+        assert_eq!(untouched.model, "claude-opus-5");
     }
 }

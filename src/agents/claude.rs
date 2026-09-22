@@ -4,14 +4,65 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use serde_json::{Value, json};
+use serde_json::Value;
 
+use crate::agents::claude_settings::{
+    self, CodexDocument, KeyedDocument, LocalDocument, NativeDocument, SettingsPlan,
+};
+use crate::bridge_host::files::RouteRecord;
 use crate::config::{AuthStyle, Provider, ProviderKind, ReasoningEffort, Store};
 use crate::launch::{
-    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, has_model_override, has_option,
-    key_or_error, missing_key, resolve_codex_effort, resolve_codex_model,
+    LaunchOverrides, LaunchSpec, has_model_override, has_option, key_or_error,
+    resolve_codex_effort, resolve_codex_model,
 };
-use crate::model_catalog::ModelInfo;
+
+/// Claude Code subcommands that manage a background session by its id. They
+/// talk to Claude Code's own supervisor, need no provider, and must not be
+/// handed alc's model flags, which would land in front of the subcommand.
+const SESSION_COMMANDS: [&str; 7] = ["attach", "logs", "stop", "kill", "respawn", "rm", "daemon"];
+
+/// Claude Code commands that never open a model connection: they manage the
+/// installation, its settings, its plugins and its logins. On the full launch
+/// path each of them wrote a route, started the hour-lived bridge and counted
+/// a session in the usage ledger. `ultrareview` belongs here too: it runs on
+/// Anthropic's servers under Claude Code's own login, which a provider's
+/// settings document would only get in the way of.
+///
+/// `agents` does not: agent view dispatches real work, on the provider alc
+/// gives it.
+const NO_MODEL_COMMANDS: [&str; 17] = [
+    "auth",
+    "auto-mode",
+    "doctor",
+    "import",
+    "install",
+    "mcp",
+    "plugin",
+    "plugins",
+    "project",
+    "setup-token",
+    "ultrareview",
+    "update",
+    "upgrade",
+    "-v",
+    "--version",
+    "-h",
+    "--help",
+];
+
+/// Why alc hands this invocation to Claude Code as it is, with no provider,
+/// or `None` when it is a session to launch. The reason is worded to finish
+/// alc's refusals of flags that cannot apply to it.
+pub(crate) fn runs_directly(args: &[OsString]) -> Option<&'static str> {
+    let first = args.first()?.to_str()?;
+    if SESSION_COMMANDS.contains(&first) {
+        Some("manages an existing background session")
+    } else if NO_MODEL_COMMANDS.contains(&first) {
+        Some("never reaches a model")
+    } else {
+        None
+    }
+}
 
 pub(crate) fn build(
     spec: &mut LaunchSpec,
@@ -31,150 +82,215 @@ pub(crate) fn build(
             .insert(OsString::from("CLAUDE_CONFIG_DIR"), OsString::from(dir));
     }
 
-    if provider.kind == ProviderKind::Codex {
-        if !overrides.model_options.is_empty()
-            && !has_option(passthrough, "--settings", "--settings")
-        {
-            spec.args.extend([
-                OsString::from("--settings"),
-                OsString::from(claude_model_picker_settings(&overrides.model_options)?),
-            ]);
-        }
-        let model = overrides
-            .model
-            .clone()
-            .unwrap_or(resolve_codex_model(provider)?);
-        let effort = overrides
-            .reasoning_effort
-            .or(provider.reasoning_effort)
-            .or(resolve_codex_effort(provider)?)
-            .unwrap_or(ReasoningEffort::Medium);
-        spec.bridge = Some(BridgePlan {
-            model: model.clone(),
-            // Claude Code sends the effort with every request, so pinning it
-            // on the bridge would freeze the in-session effort slider.
-            effort: None,
-            context_window: overrides.context_window,
-            options: overrides.model_options.clone(),
-            api: BridgeApi::Messages,
-        });
-        if !has_model_override(passthrough) {
-            spec.args
-                .extend([OsString::from("--model"), OsString::from(model)]);
-        }
-        if !has_option(passthrough, "--effort", "--effort") {
-            spec.args
-                .extend([OsString::from("--effort"), OsString::from(effort.as_str())]);
-        }
-        spec.args.extend_from_slice(passthrough);
-        return Ok(());
-    }
-
-    spec.args.extend_from_slice(passthrough);
-    if !provider.speaks_anthropic() {
+    if provider.kind != ProviderKind::Codex && !provider.speaks_anthropic() {
         bail!(
             "provider '{profile_name}' speaks {}, but Claude Code needs Anthropic Messages; use an Anthropic-compatible endpoint, OpenRouter, Ollama, or `alc --codex claude`",
             provider.protocol
         );
     }
+    let key = store.credentials.key_for(profile_name, provider);
+    let native =
+        provider.kind != ProviderKind::Codex && on_claudes_own_login(provider, key.as_deref());
 
+    let (passthrough, user_settings) = claude_settings::take_user_settings(passthrough)?;
+    // `claude agents …` takes alc's defaults as its own options, which have
+    // to come after the subcommand to be its dispatch defaults.
+    let subcommand = passthrough
+        .first()
+        .filter(|first| *first == "agents")
+        .map(|first| first.to_string_lossy().into_owned());
+    let lead = usize::from(subcommand.is_some());
+    spec.args.extend_from_slice(&passthrough[..lead]);
+    let rest = &passthrough[lead..];
+
+    let (mut document, route, offered) = if provider.kind == ProviderKind::Codex {
+        codex_plan(spec, store, profile_name, provider, rest, overrides)?
+    } else {
+        spec.args.extend_from_slice(rest);
+        let document = if native {
+            native_document(spec, profile_name, provider, overrides)?
+        } else {
+            provider_document(spec, store, profile_name, provider, key, overrides)?
+        };
+        (document, None, Vec::new())
+    };
+    if let Some(user) = &user_settings {
+        claude_settings::merge_user_settings(&mut document, user);
+    }
+    spec.settings_plan = Some(SettingsPlan {
+        document,
+        subcommand,
+        route,
+        offered,
+    });
+    Ok(())
+}
+
+/// Whether this launch leaves Claude Code on its own login.
+fn on_claudes_own_login(provider: &Provider, key: Option<&str>) -> bool {
+    // Never a local server, whatever its profile says its auth style is: it
+    // ignores the Authorization header and serves only what it has pulled, so
+    // Claude Code's own login has nothing to mean there - and alc has no
+    // business sending a claude.ai token to localhost.
+    if provider.kind == ProviderKind::Ollama {
+        return false;
+    }
+    match provider.auth {
+        AuthStyle::Native => true,
+        // No configured key means the user selected Claude's native login.
+        AuthStyle::ApiKey => key.is_none() && provider.kind == ProviderKind::Anthropic,
+        AuthStyle::Bearer | AuthStyle::None => false,
+    }
+}
+
+/// Claude Code on its own login: alc points it at the endpoint and the model,
+/// and the login answers. The credential is Claude Code's, but the model is
+/// alc's - carried in the environment, it was lost the first time a session
+/// went to the background and came back on Claude Code's default.
+fn native_document(
+    spec: &mut LaunchSpec,
+    profile_name: &str,
+    provider: &Provider,
+    overrides: &LaunchOverrides,
+) -> Result<Value> {
     let base_url = claude_base_url(provider)
         .with_context(|| format!("provider '{profile_name}' needs an Anthropic base URL"))?;
-    spec.env.insert(
-        OsString::from("ANTHROPIC_BASE_URL"),
-        OsString::from(base_url),
-    );
+    // Do not let an unrelated ambient token override the login.
+    spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
+    spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
+    Ok(claude_settings::native_document(&NativeDocument {
+        base_url: &base_url,
+        model: overrides.model.as_deref().unwrap_or(&provider.model),
+        small_model: provider
+            .small_model
+            .as_deref()
+            .filter(|value| !value.is_empty()),
+        context_window: overrides.context_window,
+    }))
+}
+
+fn codex_plan(
+    spec: &mut LaunchSpec,
+    store: &Store,
+    profile_name: &str,
+    provider: &Provider,
+    rest: &[OsString],
+    overrides: &LaunchOverrides,
+) -> Result<(Value, Option<RouteRecord>, Vec<String>)> {
+    let model = match &overrides.model {
+        Some(model) => model.clone(),
+        None => resolve_codex_model(provider)?,
+    };
+    let effort = overrides
+        .reasoning_effort
+        .or(provider.reasoning_effort)
+        .or(resolve_codex_effort(provider)?)
+        .unwrap_or(ReasoningEffort::Medium);
+    if !has_model_override(rest) {
+        spec.args
+            .extend([OsString::from("--model"), OsString::from(&model)]);
+    }
+    if !has_option(rest, "--effort", "--effort") {
+        spec.args
+            .extend([OsString::from("--effort"), OsString::from(effort.as_str())]);
+    }
+    spec.args.extend_from_slice(rest);
+
+    // Resolved here, in the user's shell: a CODEX_HOME set for this project
+    // must be the login the route signs with, wherever the bridge runs.
+    let auth_file = crate::launch::codex_auth_file(provider)?;
+    spec.codex_auth_file = Some(auth_file.clone());
+    let options = &overrides.model_options;
+    let tiers = claude_settings::tiers_for(&model, options);
+    let route = RouteRecord::new(profile_name, auth_file, tiers.clone());
+    let document = claude_settings::codex_document(&CodexDocument {
+        model: &model,
+        options,
+        context_window: overrides.context_window,
+        tiers: &tiers,
+        route: &route.id,
+        helper: helper(store, &route.id)?,
+    });
+    // The starting model as well as the picker's rows: `--model` takes a
+    // hand-typed id, and one outside the catalog must still be recognised as
+    // alc's doing by the default-model guard.
+    let mut offered: Vec<String> = options.iter().map(|option| option.id.clone()).collect();
+    if !offered.contains(&model) {
+        offered.push(model);
+    }
+    Ok((document, Some(route), offered))
+}
+
+fn provider_document(
+    spec: &mut LaunchSpec,
+    store: &Store,
+    profile_name: &str,
+    provider: &Provider,
+    key: Option<String>,
+    overrides: &LaunchOverrides,
+) -> Result<Value> {
+    let base_url = claude_base_url(provider)
+        .with_context(|| format!("provider '{profile_name}' needs an Anthropic base URL"))?;
     let model = overrides.model.as_deref().unwrap_or(&provider.model);
     let small_model = provider
         .small_model
         .as_deref()
         .filter(|value| !value.is_empty());
-    spec.env
-        .insert(OsString::from("ANTHROPIC_MODEL"), OsString::from(model));
-    if let Some(small_model) = small_model {
-        spec.env.insert(
-            OsString::from("ANTHROPIC_SMALL_FAST_MODEL"),
-            OsString::from(small_model),
+    let is_set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
+    let local_server = provider.kind == ProviderKind::Ollama;
+    // Nothing to fetch a credential for: a keyless endpoint has none, and a
+    // local server pinned to Claude's own login has nothing to sign with
+    // either - it is still the placeholder token and the pins.
+    if provider.auth == AuthStyle::None || (local_server && provider.auth == AuthStyle::Native) {
+        let timeouts = if local_server {
+            local_server_timeout_env(is_set)
+        } else {
+            Vec::new()
+        };
+        return Ok(claude_settings::local_document(&LocalDocument {
+            base_url: &base_url,
+            model,
+            small_model,
+            context_window: overrides.context_window,
+            placeholder: if local_server { "ollama" } else { "alc" },
+            local_server,
+            timeouts: &timeouts,
+        }));
+    }
+    let key = key_or_error(profile_name, provider, key)?;
+    // Recorded so a shared session can scrub it from the screen; never put in
+    // the environment or the document - Claude Code asks for it at run time.
+    spec.mark_secret_value(&key);
+    let mut document = claude_settings::keyed_document(&KeyedDocument {
+        base_url: &base_url,
+        model,
+        small_model,
+        context_window: overrides.context_window,
+        key_env: provider.api_key_env.as_deref(),
+        helper: helper(store, &format!("profile:{profile_name}"))?,
+    });
+    // Ollama's pins follow the kind, not the auth style, as they always have:
+    // an Ollama behind an authenticating proxy still serves only what it
+    // has pulled.
+    if local_server {
+        claude_settings::pin_local_server(
+            &mut document,
+            model,
+            small_model,
+            &local_server_timeout_env(is_set),
         );
     }
-    if let Some(context_window) = overrides.context_window {
-        spec.env.insert(
-            OsString::from("CLAUDE_CODE_MAX_CONTEXT_TOKENS"),
-            OsString::from(context_window.to_string()),
-        );
-    }
-    if provider.kind == ProviderKind::Ollama {
-        apply_local_server_env(spec, model, small_model);
-    }
-
-    let key = store.credentials.key_for(profile_name, provider);
-    match provider.auth {
-        AuthStyle::ApiKey => {
-            if let Some(key) = key {
-                spec.set_secret_env("ANTHROPIC_API_KEY", key);
-                spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-            } else if provider.kind != ProviderKind::Anthropic {
-                missing_key(profile_name, provider)?;
-            } else {
-                // No configured key means the user selected Claude's native
-                // login. Do not let an unrelated ambient token override it.
-                spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
-                spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-            }
-        }
-        AuthStyle::Bearer => {
-            let key = key_or_error(profile_name, provider, key)?;
-            spec.set_secret_env("ANTHROPIC_AUTH_TOKEN", key);
-            // Claude Code and OpenRouter both require this to be explicitly empty.
-            spec.env
-                .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::new());
-        }
-        AuthStyle::Native => {
-            spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
-            spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-        }
-        AuthStyle::None => {
-            let token = if provider.kind == ProviderKind::Ollama {
-                "ollama"
-            } else {
-                "alc"
-            };
-            spec.env.insert(
-                OsString::from("ANTHROPIC_AUTH_TOKEN"),
-                OsString::from(token),
-            );
-            spec.env
-                .insert(OsString::from("ANTHROPIC_API_KEY"), OsString::new());
-        }
-    }
-    Ok(())
+    Ok(document)
 }
 
-/// Everything Claude Code has to be told about a local Ollama server that it
-/// would otherwise assume from Anthropic's API.
-fn apply_local_server_env(spec: &mut LaunchSpec, model: &str, small_model: Option<&str>) {
-    let small = small_model.unwrap_or(model);
-    for (name, value) in [
-        // Ollama serves only the models that were pulled, so every alias
-        // Claude Code resolves on its own (`haiku` for background work, the
-        // picker's Default row, `/model sonnet`) has to land on this one
-        // instead of a Claude model id the server answers with 404.
-        ("ANTHROPIC_DEFAULT_MODEL", model),
-        ("ANTHROPIC_DEFAULT_SONNET_MODEL", model),
-        ("ANTHROPIC_DEFAULT_OPUS_MODEL", model),
-        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", small),
-        ("ANTHROPIC_SMALL_FAST_MODEL", small),
-        // A local server answers one request at a time, so the session-title
-        // and similar side requests would queue ahead of the real one for
-        // minutes.
-        ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
-    ] {
-        spec.env.insert(OsString::from(name), OsString::from(value));
-    }
-    let is_set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
-    for (name, value) in local_server_timeout_env(is_set) {
-        spec.env.insert(OsString::from(name), OsString::from(value));
-    }
+/// The helper line for `route`, naming this very alc and its configuration
+/// directory by absolute path.
+fn helper(store: &Store, route: &str) -> Result<String> {
+    let alc = env::current_exe()
+        .context("failed to find alc's own path for Claude Code's apiKeyHelper")?;
+    let dir = std::path::absolute(&store.dir)
+        .with_context(|| format!("failed to resolve {}", store.dir.display()))?;
+    claude_settings::helper_command(claude_settings::Shell::HOST, &alc, &dir, route)
 }
 
 /// Talking to any host other than Anthropic's, Claude Code leaves its
@@ -197,84 +313,6 @@ pub(crate) fn local_server_timeout_env(
         .into_iter()
         .filter(|(name, _)| !is_set(name))
         .collect()
-}
-
-/// Claude Code lists these rows in `/model`, so the user picks the GPT model
-/// inside the session instead of before launch.
-fn claude_model_picker_settings(models: &[ModelInfo]) -> Result<String> {
-    let options: Vec<Value> = models
-        .iter()
-        .map(|model| {
-            json!({
-                "model": model.id,
-                "label": model.name,
-                "description": model.description,
-            })
-        })
-        .collect();
-    serde_json::to_string(&json!({
-        "modelPicker": {
-            "options": options,
-            // Claude's own lineup cannot be served through the Codex adapter.
-            "replaceBuiltInOptions": true,
-        }
-    }))
-    .context("failed to encode the Claude Code model picker")
-}
-
-pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
-    // Claude Code resolves its built-in aliases even when the picker lists GPT
-    // models, so every alias has to land on a model the adapter can serve.
-    let strongest = plan
-        .options
-        .first()
-        .map_or(plan.model.as_str(), |model| model.id.as_str());
-    let cheapest = plan
-        .options
-        .last()
-        .map_or(plan.model.as_str(), |model| model.id.as_str());
-    for (name, value) in [
-        ("ANTHROPIC_MODEL", plan.model.as_str()),
-        // Keeps the picker's Default row on a model the adapter can serve.
-        ("ANTHROPIC_DEFAULT_MODEL", plan.model.as_str()),
-        ("ANTHROPIC_DEFAULT_SONNET_MODEL", plan.model.as_str()),
-        ("ANTHROPIC_DEFAULT_OPUS_MODEL", strongest),
-        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", cheapest),
-        ("ANTHROPIC_SMALL_FAST_MODEL", cheapest),
-    ] {
-        spec.env.insert(OsString::from(name), OsString::from(value));
-    }
-    spec.env.insert(
-        OsString::from("ANTHROPIC_BASE_URL"),
-        OsString::from(base_url),
-    );
-    // Clients older than the `modelPicker` setting still get one selectable
-    // GPT entry from the documented custom-model variables.
-    spec.env.insert(
-        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION"),
-        OsString::from(plan.model.clone()),
-    );
-    spec.env.insert(
-        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
-        OsString::from(format!("{} via Codex", plan.model)),
-    );
-    spec.env.insert(
-        OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
-        OsString::from("Selected by all-code using your Codex login"),
-    );
-    if let Some(context_window) = plan.context_window {
-        spec.env.insert(
-            OsString::from("CLAUDE_CODE_MAX_CONTEXT_TOKENS"),
-            OsString::from(context_window.to_string()),
-        );
-    }
-    spec.env.insert(
-        OsString::from("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
-        OsString::from("1"),
-    );
-    spec.env_remove.push(OsString::from("ANTHROPIC_API_KEY"));
-    spec.env_remove.push(OsString::from("ANTHROPIC_AUTH_TOKEN"));
-    Ok(())
 }
 
 /// Claude Code's own user-level settings file.

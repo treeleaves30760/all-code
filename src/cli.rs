@@ -169,6 +169,13 @@ enum Command {
     Kill(SessionRef),
     /// Rename a shared session's card.
     Rename(RenameArgs),
+    /// Show or stop the background bridge Claude Code sessions reach the Codex
+    /// login through.
+    Bridge(BridgeArgs),
+    /// Prints the credential a Claude Code session asks for through
+    /// `apiKeyHelper`. Not for people: alc writes this into its settings files.
+    #[command(name = "claude-credential", hide = true)]
+    ClaudeCredential(ClaudeCredentialArgs),
     /// Launch Claude Code.
     Claude(ClaudeArgs),
     /// Launch Codex CLI.
@@ -269,6 +276,30 @@ enum HubCommand {
     },
     /// Report whether a hub is running and where its page is.
     Status,
+}
+
+#[derive(Debug, Args)]
+struct BridgeArgs {
+    #[command(subcommand)]
+    command: Option<BridgeCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum BridgeCommand {
+    /// Report whether the bridge is running, where, and which alc started it.
+    Status,
+    /// Stop the bridge now; sessions start it again when they next need it.
+    Stop,
+    /// Run the bridge in this terminal. alc starts it this way itself, and it
+    /// is how to see why one will not come up.
+    #[command(hide = true)]
+    Serve,
+}
+
+#[derive(Debug, Args)]
+struct ClaudeCredentialArgs {
+    /// `codex-<id>` or `profile:<name>`, as alc wrote it.
+    route: String,
 }
 
 #[derive(Debug, Args)]
@@ -553,6 +584,12 @@ pub fn run() -> Result<u8> {
                 name: args.name,
             },
         ),
+        Command::Bridge(args) => run_bridge(&store, args),
+        Command::ClaudeCredential(args) => {
+            // Exactly one line on stdout: Claude Code sends all of it as the key.
+            println!("{}", crate::bridge_host::credential(&store, &args.route)?);
+            Ok(0)
+        }
         Command::Share(args) => {
             let sharing = Sharing {
                 enabled: !cli.no_share,
@@ -676,7 +713,11 @@ fn provider_selector(cli: &Cli) -> Result<Option<String>> {
         bail!("provider shortcut flags are mutually exclusive");
     }
     if cli.provider.is_some() && !selected.is_empty() {
-        bail!("--provider cannot be combined with a provider shortcut flag");
+        bail!(
+            "--provider cannot be combined with a provider shortcut flag; if that `-p` was \
+meant for the agent, put the agent's own flags after `--`, as in \
+`alc --codex claude -- -p \"...\"`"
+        );
     }
     Ok(cli
         .provider
@@ -718,7 +759,17 @@ const ALC_OWNED_FLAGS: [&str; 7] = [
     "-t",
 ];
 
-fn reject_swallowed_flags(args: &[OsString], agent: Agent) -> Result<()> {
+/// True when the user typed `--`, which clap consumes before the passthrough
+/// reaches us: everything after it is the agent's, including flags alc has a
+/// name for.
+fn saw_escape() -> bool {
+    std::env::args_os().any(|argument| argument == "--")
+}
+
+fn reject_swallowed_flags(args: &[OsString], agent: Agent, escaped: bool) -> Result<()> {
+    if escaped {
+        return Ok(());
+    }
     for argument in args {
         let Some(text) = argument.to_str() else {
             continue;
@@ -728,7 +779,7 @@ fn reject_swallowed_flags(args: &[OsString], agent: Agent) -> Result<()> {
             bail!(
                 "`{name}` is alc's own flag but it came after the agent's arguments, \
 where it would be passed to {agent} instead; put it before the agent name, \
-or use `alc share {agent} -- <args>`"
+or put the agent's own flags after `--`, as in `alc {agent} -- <args>`"
             );
         }
     }
@@ -743,7 +794,7 @@ fn run_agent(
     dry_run: bool,
     sharing: Sharing,
 ) -> Result<u8> {
-    reject_swallowed_flags(&args, agent)?;
+    reject_swallowed_flags(&args, agent, saw_escape())?;
     let provider = store.config.resolve(agent, requested_provider)?.1.clone();
     let overrides = if provider.kind == ProviderKind::Codex && agent != Agent::Codex {
         codex_launch_overrides(store, &provider, dry_run)?
@@ -761,7 +812,17 @@ fn run_claude(
     dry_run: bool,
     sharing: Sharing,
 ) -> Result<u8> {
-    reject_swallowed_flags(&args.args, Agent::Claude)?;
+    reject_swallowed_flags(&args.args, Agent::Claude, saw_escape())?;
+    if let Some(why) = crate::agents::claude::runs_directly(&args.args) {
+        let command = args.args[0].to_string_lossy().into_owned();
+        if args.model.is_some() || args.effort.is_some() || args.save {
+            bail!("--model, --effort and --save do not apply to `claude {command}`, which {why}");
+        }
+        if sharing.enabled {
+            bail!("`claude {command}` {why} and runs in this terminal; it cannot be shared");
+        }
+        return launch::run_session_command(store, requested_provider, &args.args, dry_run);
+    }
     let (profile_name, provider) = {
         let (name, provider) = store.config.resolve(Agent::Claude, requested_provider)?;
         (name.to_owned(), provider.clone())
@@ -1003,13 +1064,34 @@ fn run_spec(
     }
 
     if dry_run {
+        // Computed before the command line is printed, because it is what
+        // puts `--settings <path>` in the arguments a real run would spawn -
+        // without writing the file or starting the bridge that names it.
+        let preview = launch::settings_preview(&spec, &store.dir)?;
+        let shown = match &preview {
+            Some(preview) => {
+                let mut shown = spec.clone();
+                shown.args = preview.args.clone();
+                shown
+            }
+            None => spec.clone(),
+        };
         println!(
             "agent: {}\nprovider: {} ({})\ncommand: {}",
             spec.agent,
             spec.provider_name,
             spec.provider_kind,
-            spec.redacted_command()
+            shown.redacted_command()
         );
+        if let Some(preview) = &preview {
+            println!("settings: {}", preview.document);
+            if let Some(bridge) = &preview.bridge {
+                println!(
+                    "adapter: background bridge ({}), {bridge}",
+                    launch::bridge_label()
+                );
+            }
+        }
         if let Some(plan) = &spec.bridge {
             println!(
                 "adapter: built in ({}), on an ephemeral loopback port",
@@ -1024,6 +1106,8 @@ fn run_spec(
                     plan.model
                 );
             }
+        }
+        if spec.is_bridged() {
             // A dry run used to be the one path that said nothing at all
             // about where its model list came from, which is why a machine
             // quietly hiding a model looked healthy here.
@@ -1068,7 +1152,7 @@ fn run_spec(
             // how a Codex session once ran with no adapter at all. A dry
             // run that named neither would leave a reader debugging the
             // wrong process.
-            if spec.bridge.is_some() || !spec.file_setup.is_empty() {
+            if spec.is_bridged() || spec.settings_plan.is_some() || !spec.file_setup.is_empty() {
                 println!("share: the hub performs the launch, adapter and setup included");
             }
         }
@@ -1106,6 +1190,27 @@ fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {
         }
     };
     remote::run_command(store, command)
+}
+
+fn run_bridge(store: &Store, args: BridgeArgs) -> Result<u8> {
+    match args.command {
+        None | Some(BridgeCommand::Status) => {
+            for (label, value) in crate::bridge_host::status_rows(&store.dir) {
+                println!("{label:<8} {value}");
+            }
+            Ok(0)
+        }
+        Some(BridgeCommand::Stop) => {
+            match crate::bridge_host::stop(&store.dir)? {
+                Some(pid) => println!(
+                    "Stopped the bridge (pid {pid}); Claude Code sessions start it again when they next need it."
+                ),
+                None => println!("No bridge was running."),
+            }
+            Ok(0)
+        }
+        Some(BridgeCommand::Serve) => crate::bridge_host::serve(&store.dir),
+    }
 }
 
 fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {
@@ -1498,5 +1603,25 @@ mod tests {
         assert_eq!(non_empty("".into()), None);
         assert_eq!(non_empty("  ".into()), None);
         assert_eq!(non_empty("value".into()), Some("value".into()));
+    }
+
+    #[test]
+    fn an_alc_flag_after_the_agent_is_refused_with_a_way_out() {
+        let args = [OsString::from("--name"), OsString::from("nightly")];
+        let error = reject_swallowed_flags(&args, Agent::Claude, false)
+            .expect_err("--name after the agent belongs to alc");
+        let message = error.to_string();
+        assert!(message.contains("--name"), "{message}");
+        assert!(
+            message.contains("alc claude -- <args>"),
+            "the way out has to be one that works: {message}"
+        );
+    }
+
+    #[test]
+    fn a_double_dash_hands_every_flag_to_the_agent() {
+        let args = [OsString::from("--name"), OsString::from("nightly")];
+        reject_swallowed_flags(&args, Agent::Claude, true)
+            .expect("`--` is the user saying they meant the agent's flag");
     }
 }

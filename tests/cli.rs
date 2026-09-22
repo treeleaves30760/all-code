@@ -51,9 +51,24 @@ fn serve_ollama() -> String {
             let Ok(mut stream) = stream else {
                 continue;
             };
-            let mut request = [0_u8; 8192];
-            let read = stream.read(&mut request).unwrap_or(0);
-            let head = String::from_utf8_lossy(&request[..read]);
+            // Read until the end of the request head, not once: a short first
+            // read used to make the stub answer 404 for a path it had not
+            // finished reading, which is what made the doctor test flake.
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let head = String::from_utf8_lossy(&request);
             let path = head.split_whitespace().nth(1).unwrap_or("");
             let (status, body) = if path.starts_with("/api/version") {
                 ("200 OK", r#"{"version":"0.33.3"}"#)
@@ -72,6 +87,11 @@ fn serve_ollama() -> String {
                 body.len()
             );
             let _ = stream.write_all(response.as_bytes());
+            // Close the write side rather than dropping the socket: on Windows
+            // a drop with request bytes still unread is a reset, and the client
+            // sees a broken connection instead of the answer.
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
         }
     });
     format!("http://{address}")
@@ -123,8 +143,10 @@ fn dry_run_preserves_agent_arguments() {
         .stdout(predicate::str::contains("exec 'hello world'"));
 }
 
+/// The key never reaches Claude Code at all now: the document names the
+/// helper that fetches it, and a dry run shows the helper, not the key.
 #[test]
-fn openrouter_claude_dry_run_redacts_key() {
+fn openrouter_claude_dry_run_never_shows_the_key() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
         .env("OPENROUTER_API_KEY", "never-print-this")
@@ -132,7 +154,12 @@ fn openrouter_claude_dry_run_redacts_key() {
         .assert()
         .success()
         .stdout(predicate::str::contains("https://openrouter.ai/api"))
-        .stdout(predicate::str::contains("<redacted>"))
+        // `sh` quotes the route it passes the helper; `cmd` does not.
+        .stdout(predicate::str::contains(if cfg!(windows) {
+            "claude-credential profile:openrouter"
+        } else {
+            "claude-credential 'profile:openrouter'"
+        }))
         .stdout(predicate::str::contains("never-print-this").not());
 }
 
@@ -198,7 +225,7 @@ fn a_share_flag_after_the_agents_arguments_is_rejected_with_guidance() {
             .args(["--openrouter", agent, "review this", "--share"])
             .assert()
             .failure()
-            .stderr(predicate::str::contains("alc share"))
+            .stderr(predicate::str::contains("after `--`"))
             .stderr(predicate::str::contains("before the agent name"));
     }
 }
@@ -293,9 +320,23 @@ fn a_tmux_flag_after_the_agents_arguments_is_rejected_with_guidance() {
             .args(["--openrouter", "claude", "review this", flag])
             .assert()
             .failure()
-            .stderr(predicate::str::contains("alc share"))
+            .stderr(predicate::str::contains("after `--`"))
             .stderr(predicate::str::contains("before the agent name"));
     }
+}
+
+/// alc's own `--provider` has the short form `-p` and is global, so it wins
+/// the parse before the agent ever sees its own `-p`; print mode is the
+/// commonest way a user hits this.
+#[test]
+fn a_dash_p_meant_for_the_agent_is_explained() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "claude", "-p", "Reply with the single word pong"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("after `--`"))
+        .stderr(predicate::str::contains("alc --codex claude -- -p"));
 }
 
 /// A row, never an issue: a user who never types `--tmux` must not start
@@ -718,16 +759,17 @@ fn ollama_claude_dry_run_pins_aliases_and_reports_the_servers_context() {
         .success();
     let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     for expected in [
-        "API_FORCE_IDLE_TIMEOUT=0",
-        "API_TIMEOUT_MS=1800000",
-        "ANTHROPIC_MODEL=gemma4:12b",
-        "ANTHROPIC_DEFAULT_MODEL=gemma4:12b",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL=gemma4:12b",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL=gemma4:12b",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL=gemma4:12b",
-        "ANTHROPIC_SMALL_FAST_MODEL=gemma4:12b",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-        "CLAUDE_CODE_MAX_CONTEXT_TOKENS=131072",
+        "\"API_FORCE_IDLE_TIMEOUT\":\"0\"",
+        "\"API_TIMEOUT_MS\":\"1800000\"",
+        "\"ANTHROPIC_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_DEFAULT_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_DEFAULT_FABLE_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_DEFAULT_SONNET_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_DEFAULT_OPUS_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_DEFAULT_HAIKU_MODEL\":\"gemma4:12b\"",
+        "\"ANTHROPIC_SMALL_FAST_MODEL\":\"gemma4:12b\"",
+        "\"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\":\"1\"",
+        "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"131072\"",
     ] {
         assert!(output.contains(expected), "missing {expected} in {output}");
     }
@@ -743,8 +785,8 @@ fn ollama_claude_keeps_the_users_own_timeout() {
         .args(["--ollama", "--dry-run", "claude"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("API_FORCE_IDLE_TIMEOUT=0"))
-        .stdout(predicate::str::contains("API_TIMEOUT_MS=").not());
+        .stdout(predicate::str::contains("\"API_FORCE_IDLE_TIMEOUT\":\"0\""))
+        .stdout(predicate::str::contains("API_TIMEOUT_MS").not());
 }
 
 #[test]
@@ -757,7 +799,7 @@ fn ollama_claude_dry_run_works_without_a_running_server() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL=gemma4:12b",
+            "\"ANTHROPIC_DEFAULT_HAIKU_MODEL\":\"gemma4:12b\"",
         ))
         .stdout(predicate::str::contains("CLAUDE_CODE_MAX_CONTEXT_TOKENS").not());
 }
@@ -822,7 +864,9 @@ fn codex_to_claude_accepts_explicit_model_and_effort() {
         .success()
         .stdout(predicate::str::contains("--model gpt-5.6-sol"))
         .stdout(predicate::str::contains("--effort max"))
-        .stdout(predicate::str::contains("adapter: built in (alc native)"));
+        .stdout(predicate::str::contains(
+            "adapter: background bridge (alc native)",
+        ));
 }
 
 #[test]
@@ -869,7 +913,9 @@ fn the_bridge_offers_the_model_the_old_one_refused() {
         .args(["--codex", "--dry-run", "claude"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("adapter: built in (alc native)"))
+        .stdout(predicate::str::contains(
+            "adapter: background bridge (alc native)",
+        ))
         .stdout(predicate::str::contains("\"model\":\"gpt-6-astra\""))
         .stdout(predicate::str::contains("WOULD FAIL").not());
 }
@@ -975,6 +1021,72 @@ fn doctor_says_how_to_clear_a_claude_default_only_the_bridge_can_serve() {
     // alone would pass against the wording this replaced, because the row
     // above the remediation has always named that command.
     assert!(output.contains("clears the line on exit"), "{output}");
+}
+
+/// One section of `alc doctor`'s report, from its heading to the blank line
+/// before the next. Asserting against the whole report says nothing about
+/// which section a phrase came from, which is how a row that had gone missing
+/// could keep its own test passing.
+fn doctor_section<'a>(output: &'a str, heading: &str) -> &'a str {
+    let after = output
+        .split_once(&format!("\n{heading}\n"))
+        .unwrap_or_else(|| panic!("no {heading} section in:\n{output}"))
+        .1;
+    after
+        .split_once("\n\n")
+        .map_or(after, |(section, _)| section)
+}
+
+/// A bridge that is not up is the normal state between sessions, so the
+/// section reports it without counting it as a problem - and it is the one
+/// place that says agent view has been switched off, which is why a user who
+/// turned it off in Claude Code sees no background session from alc either.
+#[test]
+fn doctor_reports_the_background_bridge_without_calling_it_a_problem() {
+    let temp = tempfile::tempdir().unwrap();
+    let claude = tempfile::tempdir().unwrap();
+    std::fs::write(
+        claude.path().join("settings.json"),
+        r#"{"disableAgentView": true}"#,
+    )
+    .unwrap();
+    let assert = alc(&temp)
+        .env("CLAUDE_CONFIG_DIR", claude.path())
+        .args(["doctor"])
+        .assert();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let section = doctor_section(&output, "Background sessions");
+
+    // The bridge row's own words. `not running` on its own is satisfied by
+    // the remote-control hub's row further down, so it held whether or not
+    // this section said anything at all.
+    assert!(
+        section.contains(
+            "not running · a Claude Code session on a Codex profile starts it when it needs it"
+        ),
+        "{section}"
+    );
+    assert!(section.contains("disableAgentView"), "{section}");
+
+    // And the property the name claims. Doctor marks every row it judges,
+    // and lists every problem again under the summary; this section does
+    // neither, because a bridge between sessions is nothing to fix.
+    for mark in ["✓", "!", "✗"] {
+        assert!(
+            !section.contains(mark),
+            "{mark} against a row that is news, not a problem:\n{section}"
+        );
+    }
+    // Empty when doctor found nothing at all to report, which says the same.
+    let summary = output
+        .rsplit_once("needs attention")
+        .map_or("", |(_, problems)| problems);
+    for named in ["starts it when it needs it", "disableAgentView"] {
+        assert!(
+            !summary.contains(named),
+            "the background-sessions section raised an issue:\n{summary}"
+        );
+    }
 }
 
 /// The snapshot belongs to `launch::prepare`, which a dry run never reaches.
@@ -1121,8 +1233,10 @@ fn preset_kind_upsert_prefills_urls_and_supports_claude() {
         .args(["--provider", "ds", "--dry-run", "claude"])
         .assert()
         .success()
+        // The endpoint reaches Claude Code through the settings document now,
+        // so the dry run names it there rather than in the environment.
         .stdout(predicate::str::contains(
-            "https://api.deepseek.com/anthropic",
+            "\"ANTHROPIC_BASE_URL\":\"https://api.deepseek.com/anthropic\"",
         ));
 }
 
@@ -1494,4 +1608,535 @@ fn a_dry_run_records_no_launch() {
         !temp.path().join("usage.jsonl").exists(),
         "a dry run must not write a ledger row"
     );
+}
+
+/// Stops a bridge a test started, however the test ends: a detached process
+/// outliving its test would hold the temporary directory open on Windows and
+/// linger on every platform.
+struct StopTheBridge<'a>(&'a tempfile::TempDir);
+
+impl Drop for StopTheBridge<'_> {
+    fn drop(&mut self) {
+        let _ = alc(self.0).args(["bridge", "stop"]).output();
+    }
+}
+
+fn write_route(temp: &tempfile::TempDir, auth_file: &std::path::Path) -> &'static str {
+    let routes = temp.path().join("run").join("bridge").join("routes");
+    std::fs::create_dir_all(&routes).unwrap();
+    let route = serde_json::json!({
+        "id": "codex-0123456789ab",
+        "profile": "codex",
+        "auth_file": auth_file,
+        "tiers": {"strongest": "gpt-6-astra", "default": "gpt-5.6-terra", "cheapest": "gpt-5.6-luna"}
+    });
+    std::fs::write(routes.join("codex-0123456789ab.json"), route.to_string()).unwrap();
+    "codex-0123456789ab"
+}
+
+fn http(port: &str, request: &str) -> String {
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    // The one place in this file that talks to a real detached bridge, and
+    // the only read without a deadline of its own. A bridge that stopped
+    // honouring `Connection: close` would hang the suite here rather than
+    // fail it, and a hang reports nothing about where it stopped.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    response
+}
+
+#[test]
+fn the_bridge_starts_on_demand_answers_only_its_token_and_stops() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex = tempfile::tempdir().unwrap();
+    std::fs::write(codex.path().join("auth.json"), "{}").unwrap();
+    alc(&temp)
+        .args(["bridge", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+
+    let route = write_route(&temp, &codex.path().join("auth.json"));
+    let _stop = StopTheBridge(&temp);
+    let output = alc(&temp)
+        .args(["claude-credential", route])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let printed = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        printed.lines().count(),
+        1,
+        "the credential and nothing else: {printed:?}"
+    );
+    let token = std::fs::read_to_string(temp.path().join("run").join("bridge.token")).unwrap();
+    assert_eq!(printed.trim(), token.trim());
+
+    alc(&temp)
+        .args(["bridge", "status"])
+        .assert()
+        .success()
+        // "not running" contains "running": assert the running row itself.
+        .stdout(predicate::str::contains("running · pid"))
+        .stdout(predicate::str::contains("routes"));
+
+    let port = std::fs::read_to_string(temp.path().join("run").join("bridge.port")).unwrap();
+    let health = http(
+        port.trim(),
+        "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+    let refused = http(
+        port.trim(),
+        "POST /r/codex-0123456789ab/v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+    );
+    assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+
+    alc(&temp)
+        .args(["bridge", "stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stopped the bridge"));
+    alc(&temp)
+        .args(["bridge", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+}
+
+/// A route file left over from an earlier session is not a route being
+/// served; the count is still worth printing, but not as `routes   1` next
+/// to `bridge   not running`, which reads as one route the (absent) bridge
+/// is handling.
+#[test]
+fn the_routes_row_says_a_stopped_bridge_is_serving_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex = tempfile::tempdir().unwrap();
+    std::fs::write(codex.path().join("auth.json"), "{}").unwrap();
+    write_route(&temp, &codex.path().join("auth.json"));
+
+    alc(&temp)
+        .args(["bridge"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"))
+        .stdout(predicate::str::contains(
+            "1 · on disk; nothing is being served",
+        ));
+}
+
+#[test]
+fn claude_credential_prints_a_saved_key_and_nothing_else() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["config", "key", "openrouter", "--stdin"])
+        .write_stdin("sk-or-test-never-print")
+        .assert()
+        .success();
+    alc(&temp)
+        .env_remove("OPENROUTER_API_KEY")
+        .args(["claude-credential", "profile:openrouter"])
+        .assert()
+        .success()
+        .stdout("sk-or-test-never-print\n");
+}
+
+#[test]
+fn claude_credential_without_a_key_fails_on_stderr_and_says_how_to_save_one() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env_remove("OPENROUTER_API_KEY")
+        .args(["claude-credential", "profile:openrouter"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("alc config key openrouter"));
+    alc(&temp)
+        .args(["claude-credential", "codex-000000000000"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("no route"));
+    alc(&temp)
+        .args(["claude-credential", "../../etc/passwd"])
+        .assert()
+        .failure()
+        .stdout("");
+}
+
+/// Claude Code reads the helper's whole stdout as the credential, so a key
+/// exported with a trailing newline must still print as one line.
+#[test]
+fn claude_credential_prints_one_line_even_for_a_key_with_a_trailing_newline() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "sk-or-test-key\n")
+        .args(["claude-credential", "profile:openrouter"])
+        .assert()
+        .success()
+        .stdout("sk-or-test-key\n");
+}
+
+/// Trimming the ends is not the whole contract. A key with a line break
+/// inside it prints two lines however hard the ends are trimmed, and Claude
+/// Code reads the helper's whole stdout as one credential - so the second
+/// line would arrive as part of the secret or be lost with it. There is no
+/// right thing to print, so alc prints nothing and says where it read it.
+#[test]
+fn claude_credential_refuses_a_key_with_a_line_break_inside_it() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "sk-or-first\nsk-or-second")
+        .args(["claude-credential", "profile:openrouter"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("line break"))
+        .stderr(predicate::str::contains("openrouter"))
+        .stderr(predicate::str::contains("OPENROUTER_API_KEY"))
+        // Never the value: a helper's stderr goes to Claude Code's log.
+        .stderr(predicate::str::contains("sk-or-first").not());
+}
+
+/// The sentence a background session shows when `codex login` has expired or
+/// never happened is fixed by the spec, and nothing else asserts it.
+#[test]
+fn claude_credential_names_the_missing_codex_login_without_starting_a_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex = tempfile::tempdir().unwrap();
+    let missing = codex.path().join("auth.json");
+    let route = write_route(&temp, &missing);
+    alc(&temp)
+        .args(["claude-credential", route])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "Codex credentials were not found at",
+        ))
+        .stderr(predicate::str::contains("codex login"));
+    assert!(
+        !temp.path().join("run").join("bridge.port").exists(),
+        "a refusal must not leave a bridge behind"
+    );
+}
+
+/// A stand-in `claude` that writes each argument on its own line to
+/// `ALC_FAKE_ARGS` and its environment to `ALC_FAKE_ENV`, then exits 0.
+fn fake_claude(dir: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let path = dir.join("claude.cmd");
+        std::fs::write(
+            &path,
+            "@echo off\r\nsetlocal\r\n:next\r\nif \"%~1\"==\"\" goto done\r\n>>\"%ALC_FAKE_ARGS%\" echo(%~1\r\nshift\r\ngoto next\r\n:done\r\n>\"%ALC_FAKE_ENV%\" set\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        path
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("claude");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> \"$ALC_FAKE_ARGS\"; done\nenv > \"$ALC_FAKE_ENV\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+}
+
+/// The arguments and environment the fake received, and the settings file it
+/// was handed, parsed.
+fn what_claude_got(work: &std::path::Path) -> (Vec<String>, String, serde_json::Value) {
+    let args: Vec<String> = std::fs::read_to_string(work.join("args.txt"))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let env = std::fs::read_to_string(work.join("env.txt")).unwrap();
+    let at = args
+        .iter()
+        .position(|arg| arg == "--settings")
+        .expect("--settings was passed");
+    let settings = serde_json::from_str(&std::fs::read_to_string(&args[at + 1]).unwrap()).unwrap();
+    (args, env, settings)
+}
+
+#[test]
+fn a_keyed_claude_launch_hands_claude_a_settings_file_and_no_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    alc(&temp)
+        .args(["config", "key", "openrouter", "--stdin"])
+        .write_stdin("sk-or-never-print-this")
+        .assert()
+        .success();
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .env_remove("OPENROUTER_API_KEY")
+        .args(["--openrouter", "--no-share", "claude", "agents"])
+        .assert()
+        .success();
+
+    let (args, env, settings) = what_claude_got(work.path());
+    assert_eq!(args[0], "agents");
+    assert_eq!(args[1], "--settings", "{args:?}");
+    assert_eq!(
+        settings["env"]["ANTHROPIC_BASE_URL"],
+        "https://openrouter.ai/api"
+    );
+    assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "");
+    let helper = settings["apiKeyHelper"].as_str().unwrap();
+    assert!(
+        helper.contains("claude-credential") && helper.contains("profile:openrouter"),
+        "{helper}"
+    );
+    assert!(
+        !env.contains("sk-or-never-print-this"),
+        "the key is not in Claude Code's environment"
+    );
+    assert!(
+        !std::fs::read_to_string(&args[2])
+            .unwrap()
+            .contains("sk-or-never-print-this"),
+        "nor in its settings"
+    );
+}
+
+#[test]
+fn a_codex_claude_launch_runs_on_the_background_bridge_and_leaves_it_running() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let codex = tempfile::tempdir().unwrap();
+    let claude = tempfile::tempdir().unwrap();
+    std::fs::write(codex.path().join("auth.json"), "{}").unwrap();
+    // A fresh catalog, so the launch asks no network for one.
+    std::fs::write(
+        temp.path().join("codex-models.json"),
+        r#"{"schema_version": 1, "refreshed_at": 4102444800, "source": "test", "models": [
+            {"id": "gpt-6-astra", "name": "GPT-6-Astra", "description": "a", "context_window": 272000, "default_effort": "medium", "supported_efforts": ["low","medium","high","xhigh","max"]},
+            {"id": "gpt-5.6-terra", "name": "GPT-5.6-Terra", "description": "b", "context_window": 272000, "default_effort": "medium", "supported_efforts": ["low","medium","high","xhigh","max"]},
+            {"id": "gpt-5.6-luna", "name": "GPT-5.6-Luna", "description": "c", "context_window": 272000, "default_effort": "medium", "supported_efforts": ["low","medium","high","xhigh","max"]}
+        ]}"#,
+    )
+    .unwrap();
+    let fake = fake_claude(work.path());
+    let _stop = StopTheBridge(&temp);
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .env("CODEX_HOME", codex.path())
+        .env("CLAUDE_CONFIG_DIR", claude.path())
+        .args([
+            "--codex",
+            "--no-share",
+            "claude",
+            "--bg",
+            "fix the flaky test",
+        ])
+        .assert()
+        .success();
+
+    let (args, env, settings) = what_claude_got(work.path());
+    assert_eq!(args[0], "--settings", "{args:?}");
+    assert!(
+        args.ends_with(&["--bg".to_owned(), "fix the flaky test".to_owned()]),
+        "{args:?}"
+    );
+    let base = settings["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap();
+    assert!(
+        base.starts_with("http://127.0.0.1:") && base.contains("/r/codex-"),
+        "{base}"
+    );
+    // The route the document names is only read when a request arrives, so
+    // the base URL and a running bridge both look right even if the launch
+    // never wrote it. Read it back, and check it signs with the login this
+    // launch resolved.
+    let route = base.rsplit_once("/r/").unwrap().1.trim_end_matches('/');
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            temp.path()
+                .join("run")
+                .join("bridge")
+                .join("routes")
+                .join(format!("{route}.json")),
+        )
+        .unwrap_or_else(|error| panic!("no route file for {route}: {error}")),
+    )
+    .unwrap();
+    assert_eq!(record["id"], route);
+    assert_eq!(
+        std::path::Path::new(record["auth_file"].as_str().unwrap()),
+        codex.path().join("auth.json")
+    );
+    for name in [
+        "CLAUDE_CODE_DISABLE_FAST_MODE",
+        "CLAUDE_CODE_DISABLE_ADVISOR_TOOL",
+        "CLAUDE_CODE_DISABLE_1M_CONTEXT",
+    ] {
+        assert_eq!(settings["env"][name], "1", "{name}");
+    }
+    assert!(
+        settings["env"]["ANTHROPIC_DEFAULT_FABLE_MODEL"]
+            .as_str()
+            .unwrap()
+            .starts_with("gpt-")
+    );
+    assert!(
+        !env.contains("ANTHROPIC_BASE_URL=http://127.0.0.1"),
+        "nothing is exported any more"
+    );
+
+    // alc has exited; the bridge the launch started has not.
+    alc(&temp)
+        .args(["bridge", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("running · pid"));
+}
+
+#[test]
+fn a_session_command_goes_straight_to_claude_code() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args(["--codex", "claude", "attach", "7c5dcf5d"])
+        .assert()
+        .success();
+    let args = std::fs::read_to_string(work.path().join("args.txt")).unwrap();
+    assert_eq!(args.lines().collect::<Vec<_>>(), ["attach", "7c5dcf5d"]);
+    alc(&temp)
+        .args([
+            "--codex",
+            "claude",
+            "--model",
+            "gpt-6-astra",
+            "attach",
+            "7c5d",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "manages an existing background session",
+        ));
+}
+
+/// A Claude Code command that never opens a model connection used to take
+/// the full launch path: a route file, the hour-lived detached bridge, a
+/// settings document and a session in the usage ledger, all for `claude mcp
+/// list`. It goes straight to Claude Code now, as a session command does.
+#[test]
+fn a_command_that_reaches_no_model_starts_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    for (words, shown) in [
+        (&["mcp", "list"][..], "command: claude mcp list"),
+        (&["--", "--version"][..], "command: claude --version"),
+    ] {
+        let mut args = vec!["--codex", "--dry-run", "claude"];
+        args.extend_from_slice(words);
+        let output = alc(&temp).args(&args).assert().success();
+        let stdout = String::from_utf8_lossy(&output.get_output().stdout).into_owned();
+        assert!(stdout.contains(shown), "{stdout}");
+        assert!(!stdout.contains("--settings"), "{stdout}");
+        assert!(!stdout.contains("adapter:"), "{stdout}");
+    }
+
+    // A real run leaves nothing behind either: no route, no bridge, no
+    // settings document, no session in the ledger.
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    let _bridge = StopTheBridge(&temp);
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args(["--codex", "claude", "mcp", "list"])
+        .assert()
+        .success();
+    let args = std::fs::read_to_string(work.path().join("args.txt")).unwrap();
+    assert_eq!(args.lines().collect::<Vec<_>>(), ["mcp", "list"]);
+    assert!(!temp.path().join("run").join("bridge").exists());
+    assert!(!temp.path().join("claude").exists());
+    assert!(!temp.path().join("usage.jsonl").exists());
+
+    alc(&temp)
+        .args(["--codex", "claude", "--model", "gpt-6-astra", "mcp", "list"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("never reaches a model"));
+}
+
+#[test]
+fn a_dry_run_of_claude_agents_shows_the_settings_after_the_subcommand() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "--dry-run", "claude", "agents"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "command: claude agents --settings",
+        ))
+        .stdout(predicate::str::contains(
+            "\"ANTHROPIC_DEFAULT_FABLE_MODEL\"",
+        ))
+        // alc's own document holds no credential, and the preview has to say
+        // so: the helper TTL reads like a key by name and is a number of
+        // milliseconds, so it is shown rather than redacted.
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_API_KEY_HELPER_TTL_MS\":\"60000\"",
+        ))
+        .stdout(predicate::str::contains(
+            "adapter: background bridge (alc native)",
+        ));
+    assert!(
+        !temp.path().join("claude").exists(),
+        "a dry run writes nothing"
+    );
+    assert!(
+        !temp.path().join("run").join("bridge").exists(),
+        "and starts nothing"
+    );
+}
+
+/// alc's own document holds no credential, but a `--settings` the user passed
+/// is merged into it, and a dry run prints the result.
+#[test]
+fn a_dry_run_hides_a_credential_the_user_put_in_their_own_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "--codex",
+            "--dry-run",
+            "claude",
+            "--settings",
+            r#"{"env": {"MY_GATEWAY_TOKEN": "never-print-this", "ANTHROPIC_MODEL": "gpt-5.6-luna"}}"#,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"MY_GATEWAY_TOKEN\":\"<redacted>\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"ANTHROPIC_MODEL\":\"gpt-5.6-luna\"",
+        ))
+        .stdout(predicate::str::contains("never-print-this").not());
 }

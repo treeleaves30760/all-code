@@ -93,10 +93,11 @@ alc codex                # Codex CLI 本身，用它自己的登入，沒有轉�
 | Codex CLI | 原生，不經橋接 | Codex 自己的選單 |
 
 alc 會在 loopback port 上啟動自己的 Codex 轉接器，並只讓啟動的那個 agent
-行程指向它 —— 三種 wire protocol、一個登入、一個隨 session 一起結束的行程。
-Claude Code 是唯一能在 session 進行中切換的 agent，因為它每次請求都會帶上
-模型與推理強度，所以 alc 從不會把任何一項鎖在轉接器上；其他 agent 都是在
-啟動時選定一個模型和一個推理強度。
+行程指向它 —— 三種 wire protocol、一個登入。Claude Code 的轉接器是一個由它
+的 session 共用的背景行程（見[背景 session](#背景-session)）；其他 agent 的
+則住在 alc 裡面，隨 session 一起結束。Claude Code 是唯一能在 session 進行中
+切換的 agent，因為它每次請求都會帶上模型與推理強度，所以 alc 從不會把任何
+一項鎖在轉接器上；其他 agent 都是在啟動時選定一個模型和一個推理強度。
 
 下方的 [Codex 橋接](#codex-橋接)有模型清單、強度分級，以及轉接器拿你的憑證
 做了什麼。
@@ -145,7 +146,50 @@ Id 可以只給任何不會有歧義的前綴，就像 git 的短雜湊那樣。
 `alc confirm <ticket>`。[遠端控制](#遠端控制)有完整的權限層級與威脅模型。
 
 遠端控制在 macOS、Linux 與 Windows 10／11 上都能用；在 Windows 上搭配 `--tmux`
-要另外裝原生的 Windows 版 tmux，見[尺寸歸誰決定](#尺寸歸誰決定)。
+要有原生 Windows 版 tmux（安裝器會嘗試自動補裝），見[尺寸歸誰決定](#尺寸歸誰決定)。
+
+## 背景 session
+
+Claude Code 的 [agent view](https://code.claude.com/docs/en/agent-view) 會把
+session 放到背景跑 —— `claude agents`、`claude --bg`，以及在空的提示列上按
+`←` —— 由它自己的一個 supervisor 管著，活得比終端機久。alc 啟動的每一個
+Claude Code session 在那裡都能用，而且跑在 alc 給它的 provider 上：
+
+```sh
+alc --codex claude agents                     # agent view；每一次派出都跑在 Codex 上
+alc --codex claude --bg "fix the flaky test"  # 直接送到背景
+alc --codex claude                            # 在空提示列上按 ←：一樣跑在 Codex 上
+```
+
+**怎麼做到的。** alc 用一份設定檔把 provider 交給 Claude Code，以 `--settings`
+傳入，而 Claude Code 會替背景 session 留著它，每次重新啟動那個 session 時再讀
+一次。檔案裡沒有金鑰：provider 需要金鑰時，Claude Code 透過它的 `apiKeyHelper`
+設定向 alc 要，而 alc 就從它本來就在讀的地方讀出來。用 Claude Code 自己的登入時，
+由那個登入來回答，檔案裡只放端點與模型。
+
+**Codex 橋接現在自己獨立跑了。** 背景 session 活得比啟動它的那個 `alc` 還久，
+所以轉接器也必須一樣：一個小小的 alc 行程，綁在一個它會一直留著的 loopback
+port 上，只回答帶著它 token 的請求。需要它的 session 會把它叫起來，而它閒著
+一小時沒事做就會停掉。
+
+```sh
+alc bridge          # 在不在跑，以及在哪裡
+alc bridge stop     # 現在就停掉；下一個需要它的 session 會再把它叫起來
+```
+
+**每一個 Claude 模型都變成 Codex 模型。** 在 `alc --codex claude` 底下，沒有
+任何一個請求會送到 Claude 模型。`/model` 選單只列出 Codex 模型；所有別名
+（`opus`、`sonnet`、`haiku`、`fable`、`best`、`opusplan`）以及 Claude Code
+自己的背景工作，都會落在 Codex 模型上；而指名完整名稱的 Claude 模型 ——
+`/model claude-opus-5`、subagent 的 `model:`、fallback 鏈 —— 則由同一級的
+Codex 模型來回答。fast mode 與 advisor 只存在於 Claude 模型上，所以在這些
+session 裡是關閉的。`claude ultrareview` 與雲端 session 跑在 Anthropic 的
+伺服器上，仍然是 Anthropic 的功能。
+
+`alc claude attach`、`logs`、`stop`、`respawn` 與 `rm` 都是直接交給 Claude
+Code，普通的 `claude attach` 也一樣：那個 session 本來就帶著它的設定檔。那些
+根本不會碰到模型的指令 —— `mcp`、`doctor`、`plugin`、`update` 之類 —— 也是
+直接交出去，不會啟動橋接，也不會被算成一個 session。
 
 ## 任何 provider 都行，不只 Codex
 
@@ -191,6 +235,7 @@ OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本�
 | `alc rename <id> <name>` | 替頁面上某個 session 的卡片改名 |
 | `alc kill <id>` | 停掉一個共享的 session |
 | `alc hub` | 對擁有 session 的那個行程下 `status`、`start`、`stop --drain` |
+| `alc bridge` | Claude Code 的 session 用來連上 Codex 登入的那個背景橋接；`status`、`stop` |
 | `alc remote` | `status`、`url`、`on`/`off`、`auto-share`、`allow-host`、`token --rotate` |
 | `alc confirm <ticket>` | 核准某個共享 session 提出的權限變更 |
 
@@ -208,12 +253,22 @@ alc --ollama opencode run "fix the failing test"
 ```
 
 如果要把同名參數交給 Claude 本身，請放在 `--` 後面：
-`alc claude -- --model sonnet`。
+`alc claude -- --model sonnet`。你自己傳的 `--settings` 會被合併進 alc 那
+一份，衝突時以你的為準，因為 Claude Code 只讀一份。
 
 alc 自己的旗標 —— `--share`、`--no-share`、`--bind-lan`、`--name`、
 `--permission`、`--tmux`、`-t` —— 必須放在 agent 名稱**之前**。放在後面
 的話，它們會被當成 prompt 文字交給 agent，所以 alc 會就此停下來，並直接
-告訴你。
+告訴你 —— 除非你在 agent 名稱後面緊接著寫上 `--`，那就表示你指的是 agent
+自己的旗標：
+
+```sh
+alc --codex claude -- -p "fix the flaky test"
+alc --codex claude -- --bg --name nightly "run the slow suite"
+```
+
+`--` 要緊接在 agent 名稱後面，排在它所有旗標之前；寫得比那更後面，它就會
+變成一個參數本身，被傳到 agent 手上。
 
 **預覽。** `alc --codex --dry-run claude` 會印出解析後的 agent 與
 provider、機密已遮蔽的指令、啟動有用到內建轉接器時的那一行，以及它會
@@ -312,7 +367,7 @@ ID，等上游改名或棄用某個模型時，再用 `alc config upsert` 修改
 
 | Agent | 執行檔 | 支援端點 | alc 注入內容 | Codex 橋接 |
 | --- | --- | --- | --- | --- |
-| [Claude Code](https://code.claude.com/docs/en/setup) | `claude` | Anthropic 相容端點 | env（`ANTHROPIC_BASE_URL`／`ANTHROPIC_MODEL`／`ANTHROPIC_API_KEY`） | 可（`/model` 選單） |
+| [Claude Code](https://code.claude.com/docs/en/setup) | `claude` | Anthropic 相容端點 | `--settings` 檔案（端點、模型別名、選單）+ `apiKeyHelper` | 可（`/model` 選單） |
 | [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) | `codex` | OpenAI Responses API | 旗標 + `--config` 覆寫 | 可（原生登入） |
 | [OpenCode](https://opencode.ai/docs) | `opencode` | 任何 API 相容的 provider | 行內 `OPENCODE_CONFIG_CONTENT` 環境變數 | 可 |
 | [Pi](https://github.com/earendil-works/pi) | `pi` | Anthropic、OpenAI，或 OpenAI 相容端點 | 合併進 `models.json` + 旗標 | 可 |
@@ -353,9 +408,10 @@ alc --codex claude --model gpt-5.6-terra --effort medium --save
 
 `--save` 會把兩者都存進選定的 alc provider。沒有這些參數時，session 的起始值
 依序取自 alc provider、選定的 Codex profile、模型自己文件上的預設值。放在 `--`
-之後的 `--model`、`--effort`、`--settings` 會原樣交給 Claude Code，並蓋過 alc
-原本要注入的值。用 `/model` 選的模型只影響那一次 session；下次啟動又會從 alc
-的預設值開始，所以 `alc config` 仍然是唯一的真實來源。
+之後的 `--model` 或 `--effort` 會原樣交給 Claude Code，並蓋過 alc 原本要注入的
+值；你自己傳的 `--settings` 則會被合併進 alc 那一份，衝突時以你的為準，因為
+Claude Code 只讀一份。用 `/model` 選的模型只影響那一次 session；下次啟動又會從
+alc 的預設值開始，所以 `alc config` 仍然是唯一的真實來源。
 
 **選單。** alc 會透過 Claude Code 的
 [`modelPicker`](https://code.claude.com/docs/en/settings-reference#modelpicker)
@@ -407,9 +463,11 @@ Claude 的通用預設值。
 
 ### 橋接怎麼運作
 
-橋接是 alc 自己的程式碼（`src/bridge/`）。它跑在 `alc` 行程內、綁在隨機的
-`127.0.0.1` port，只讓啟動的那個 agent 指向它，並在該 session 結束時關閉。它會
-讀取並可能更新 `~/.codex/auth.json`；憑證不會被複製到 `alc` 的設定裡。
+橋接是 alc 自己的程式碼（`src/bridge/`）。給 Claude Code 用的時候，它是一個
+獨立的背景行程，綁在一個它會一直留著的 loopback port 上（`alc bridge`）；其他
+每一個 agent 則是跑在 `alc` 行程內、綁在隨機的 port 上，並在該 session 結束時
+關閉。它會讀取並可能更新 `~/.codex/auth.json`；憑證不會被複製到 `alc` 的設定
+裡。
 
 ## 本機模型
 
@@ -487,10 +545,11 @@ tmux 完全不受影響，alc 的 session 對每個人的行為都一樣，而 `
 的終端機現在是直接的 tmux client，不再是鏡像，所以它看到的是 agent 的原始輸出。
 瀏覽器那邊仍然會把 alc 注入的 API key 遮蔽掉，你自己的終端機不會。
 
-**在 Windows 上**，`--tmux` 要用原生的 Windows 版 tmux：
+**在 Windows 上**，alc 安裝器會自動檢查並嘗試補裝原生 Windows 版 tmux。
+若跳過自動補裝或未能完成，以下是手動備援：
 
 ```powershell
-winget install arndawg.tmux-windows
+winget install --id arndawg.tmux-windows --exact
 ```
 
 裝完請開一個新的終端機，讓 PATH 讀得到它；`alc doctor` 的 **tmux** 那一列會說有沒有
@@ -565,6 +624,8 @@ ticket 五分鐘後過期，而 `alc confirm` 在沒有控制終端機的情況�
 假設的。頁面會把 agent 自己的說法擺在 alc 的層級旁邊
 （`auto-edit · Accept edits`），因為只用一個共同標籤會誤導人。
 
+一個被共享的 `alc --codex claude`，跑的是和沒被共享的那一個同一個背景橋接。
+
 ### 共享實際上授予了什麼
 
 一個能對 coding agent 輸入的網頁，等於你機器上的遠端程式碼執行，所以值得把模型
@@ -626,16 +687,22 @@ Sharing & remote。在 Codex profile 上，把游標移到 Model 欄位並按 `�
 
 ## 安裝
 
-macOS、Linux、WSL：
+### Windows PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
+```
+
+### macOS
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
 ```
 
-Windows PowerShell：
+### Linux / WSL
 
-```powershell
-irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
+```sh
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
 ```
 
 安裝器會把 `alc` 放進 `~/.local/bin`（Windows 為
@@ -644,9 +711,66 @@ Linux 請重開終端機，或 `source` 安裝器提示的設定檔；PowerShell
 目前的 session 與 User PATH。如果系統不允許修改 PATH，安裝器會明確印出需
 要手動加入的目錄。要安裝到其他目錄，請設定 `ALC_INSTALL_DIR`：在 macOS 與
 Linux 上，自訂目錄永遠不會自動幫你加進 PATH；在 Windows 上則會像預設目錄
-一樣加進你的 User PATH。設定 `ALC_NO_PATH_UPDATE=1` 可以明確關閉自動修改
-PATH。Windows 安裝器已在 Windows PowerShell 5.1 與 PowerShell 7 上測試，
-包含 64 位元 Windows 上執行的 32 位元 PowerShell。
+一樣加進你的 User PATH。Windows 安裝器支援 Windows PowerShell 5.1 與
+PowerShell 7，包含 64 位元 Windows 上執行的 32 位元 PowerShell。
+
+### 選用的 tmux 補裝
+
+下載 alc、通過 SHA-256 驗證並完成安裝之後，安裝器會用 `tmux -V` 檢查是否為
+**3.2 以上**。已有相容版本就不更動；否則會透過現有的系統套件管理器嘗試
+安裝或升級 tmux：
+
+- **Windows：**使用 WinGet 的 `arndawg.tmux-windows` 套件，限使用者範圍，
+  不強制 CPU 架構。自動流程會接受套件與來源同意，並關閉互動提示。會跳過
+  psmux 與非原生移植版；PATH 上第一個原生版若過舊或無法解析，仍會擋住後方新版。
+- **macOS：**使用 Homebrew（`brew install tmux`；已安裝則用
+  `brew upgrade tmux`）。Homebrew 不會透過 sudo 執行。
+- **Linux / WSL：**使用第一個找到的 `apt-get`、`dnf`、`yum`、`pacman`、
+  `zypper` 或 `apk`。非 root 使用者會先用 sudo 快取憑證；只有 controlling
+  terminal 可用且 stdout 或 stderr 是終端機時，才會在該終端機要求密碼。
+  實際套件操作採非互動 sudo，不會讀取管線裡的安裝腳本。pacman 不會單獨
+  更新套件索引，避免 partial upgrade。
+
+**只有 `--tmux` 需要 tmux；一般 alc 與普通 `--share` 不需要。**安裝器不會
+自動安裝 Homebrew／WinGet、不從原始碼編譯、不移除 psmux，也不修改 tmux 設定。
+缺少套件管理器、權限不足、套件／架構不支援、安裝失敗，或新版仍被舊 PATH
+項目遮蔽時，都只會警告並提供手動指令，不會讓 alc 安裝失敗。安裝器會重新
+檢查版本，不會把套件管理器結束當成可用的保證。
+
+PowerShell 會把新增的 User／Machine PATH 項目附加到目前 session，保留只存在
+於 session 的路徑。如果仍找不到 tmux，請重開終端機，檢查 `tmux -V` 與
+`alc doctor`。手動備援指令（依平台選一個）：
+
+```powershell
+winget install --id arndawg.tmux-windows --exact
+```
+
+```sh
+brew install tmux                                      # macOS（已安裝則用 upgrade）
+sudo apt-get update && sudo apt-get install -y tmux     # Debian / Ubuntu / WSL
+sudo dnf install -y tmux                               # Fedora / RHEL（或 yum）
+sudo pacman -S --needed tmux                           # Arch；請保持整個系統更新
+sudo zypper install tmux                               # openSUSE
+sudo apk add --upgrade tmux                            # Alpine
+```
+
+### 停用自動處理
+
+`ALC_NO_TMUX_INSTALL=1` 跳過自動 tmux 補裝；`ALC_NO_PATH_UPDATE=1` 則獨立控制
+**alc 安裝器本身**的 PATH 修改，包含 session PATH 刷新。WinGet 本身仍可能
+修改永久 PATH。若要同時避免補裝依賴的副作用與安裝器修改 PATH，請**兩個都設**：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | ALC_NO_TMUX_INSTALL=1 ALC_NO_PATH_UPDATE=1 sh
+```
+
+```powershell
+$env:ALC_NO_TMUX_INSTALL = '1'
+$env:ALC_NO_PATH_UPDATE = '1'
+irm https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.ps1 | iex
+# 選用：清除覆寫，讓此 session 之後的安裝恢復預設行為。
+Remove-Item Env:ALC_NO_TMUX_INSTALL, Env:ALC_NO_PATH_UPDATE
+```
 
 ### 更新
 

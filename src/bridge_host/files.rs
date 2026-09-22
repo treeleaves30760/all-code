@@ -1,0 +1,623 @@
+//! Where the background bridge keeps its state, all in `<config>/run/`:
+//! `bridge.port` (the port, chosen once), `bridge.token` (0600, the token every
+//! model request must carry), `bridge.lock` (held while one is starting) and
+//! `bridge/routes/<id>.json` (one Codex login a Claude Code session runs on).
+
+use std::fs;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::bridge::tiers::ModelTiers;
+use crate::remote::{Secrets, create_token, generate_token, restricted_dir};
+
+/// The ports a bridge picks from: below the ranges Linux (32768 and up) and
+/// Windows and macOS (49152 and up) hand out for outgoing connections, so none
+/// of those can be sitting on it while the bridge is down.
+pub(crate) const PORT_RANGE: Range<u16> = 20_000..30_000;
+
+pub(crate) fn run_dir(config_dir: &Path) -> PathBuf {
+    Secrets::run_dir(config_dir)
+}
+
+pub(crate) fn port_path(config_dir: &Path) -> PathBuf {
+    run_dir(config_dir).join("bridge.port")
+}
+
+pub(crate) fn token_path(config_dir: &Path) -> PathBuf {
+    run_dir(config_dir).join("bridge.token")
+}
+
+pub(crate) fn lock_path(config_dir: &Path) -> PathBuf {
+    run_dir(config_dir).join("bridge.lock")
+}
+
+pub(crate) fn routes_dir(config_dir: &Path) -> PathBuf {
+    run_dir(config_dir).join("bridge").join("routes")
+}
+
+pub(crate) fn read_token(config_dir: &Path) -> Option<String> {
+    fs::read_to_string(token_path(config_dir))
+        .ok()
+        .map(|token| token.trim().to_owned())
+        .filter(|token| !token.is_empty())
+}
+
+/// The bridge's token: the one on disk, or one minted now.
+///
+/// Minted the way the remote-control tokens are, by `create_token`: written in
+/// full under a name of its own, then linked into place by a link that refuses
+/// a name that already exists. Two starters on a fresh configuration - a launch
+/// and a session's `apiKeyHelper`, say - therefore both end up with the one
+/// token on disk, and `bridge.token` is never seen half-written. An empty one
+/// is what something that died left behind, not a token on its way, so it is
+/// cleared rather than waited on.
+pub(crate) fn load_or_create_token(config_dir: &Path) -> Result<String> {
+    restricted_dir(&run_dir(config_dir))?;
+    let path = token_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(text) if !text.trim().is_empty() => return Ok(text.trim().to_owned()),
+        // Unambiguously stale: `create_token` never publishes an empty file,
+        // so nothing is mid-write here and clearing it is safe.
+        Ok(_) => {
+            let _ = fs::remove_file(&path);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    }
+    create_token(&path)
+}
+
+/// Mints a fresh token, replacing the one on disk. Every session still holding
+/// the old one is answered 401 on its next request, and Claude Code runs its
+/// helper again on a 401 - so rotating heals on its own. Only a running bridge
+/// rotates, when it has to move ports; everything else goes through
+/// `load_or_create_token`, which never replaces a token.
+pub(crate) fn rotate_token(config_dir: &Path) -> Result<String> {
+    restricted_dir(&run_dir(config_dir))?;
+    let token = generate_token()?;
+    crate::config::atomic_write(&token_path(config_dir), token.as_bytes(), true)?;
+    Ok(token)
+}
+
+pub(crate) fn remembered_port(config_dir: &Path) -> Option<u16> {
+    fs::read_to_string(port_path(config_dir))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+        .filter(|port| PORT_RANGE.contains(port))
+}
+
+pub(crate) fn remember_port(config_dir: &Path, port: u16) -> Result<()> {
+    restricted_dir(&run_dir(config_dir))?;
+    crate::config::atomic_write(&port_path(config_dir), port.to_string().as_bytes(), false)
+}
+
+pub(crate) fn choose_port() -> Result<u16> {
+    let mut bytes = [0_u8; 2];
+    getrandom::fill(&mut bytes)
+        .context("failed to read operating-system randomness for the bridge's port")?;
+    let span = PORT_RANGE.end - PORT_RANGE.start;
+    Ok(PORT_RANGE.start + u16::from_le_bytes(bytes) % span)
+}
+
+/// One Codex login a Claude Code session runs on, written by the launch that
+/// resolved it in the user's own shell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RouteRecord {
+    pub id: String,
+    /// The alc profile, which the usage ledger credits.
+    pub profile: String,
+    /// The Codex `auth.json` this route's requests sign with.
+    pub auth_file: PathBuf,
+    /// Where Claude's own model ids land; see `bridge::tiers`.
+    pub tiers: ModelTiers,
+}
+
+impl RouteRecord {
+    pub(crate) fn new(profile: &str, auth_file: PathBuf, tiers: ModelTiers) -> Self {
+        Self {
+            id: route_id(profile, &auth_file),
+            profile: profile.to_owned(),
+            auth_file,
+            tiers,
+        }
+    }
+}
+
+/// `codex-` and twelve hex digits of the profile and the login it names, so two
+/// Codex homes are two routes and a session keeps the account it started on.
+pub(crate) fn route_id(profile: &str, auth_file: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(profile.as_bytes());
+    hasher.update([0]);
+    hasher.update(auth_file.to_string_lossy().as_bytes());
+    let hex: String = hasher
+        .finalize()
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("codex-{hex}")
+}
+
+pub(crate) fn valid_route_id(id: &str) -> bool {
+    id.strip_prefix("codex-").is_some_and(|hex| {
+        hex.len() == 12
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+/// Writes `route` under its own name, and only a route alc named.
+///
+/// The hub writes records that arrive over its control socket, so a record is
+/// checked here rather than trusted for having come from `RouteRecord::new`.
+/// A name that is really a path would put a file wherever it points, and a
+/// well-formed name over another profile or login would move every session on
+/// that route to an account it did not start on. Both are refused before any
+/// path is built from the name.
+pub(crate) fn write_route(config_dir: &Path, route: &RouteRecord) -> Result<()> {
+    if !valid_route_id(&route.id) {
+        bail!(
+            "refusing to write bridge route {:?}: alc names a route `codex-` and twelve hex digits",
+            route.id
+        );
+    }
+    let own = route_id(&route.profile, &route.auth_file);
+    if route.id != own {
+        bail!(
+            "refusing to write bridge route {}: the profile and Codex login it holds make route {own}",
+            route.id
+        );
+    }
+    restricted_dir(&run_dir(config_dir))?;
+    let dir = routes_dir(config_dir);
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let bytes = serde_json::to_vec_pretty(route).context("failed to encode the bridge route")?;
+    // Written as a secret, though a route holds none, for the temp file that
+    // comes with it: unguessable and created exclusively, so two launches of
+    // one profile, or a launch and the hub, never share one. A shared temp is
+    // truncated under the other writer and renamed away before it gets there.
+    // Owner-only costs nothing inside the 0700 run directory.
+    crate::config::atomic_write(&dir.join(format!("{}.json", route.id)), &bytes, true)
+}
+
+/// The route named `id`, or `None` when there is none - including when `id` is
+/// not a route name at all, so a request path can never reach another file.
+pub(crate) fn read_route(config_dir: &Path, id: &str) -> Result<Option<RouteRecord>> {
+    if !valid_route_id(id) {
+        return Ok(None);
+    }
+    let path = routes_dir(config_dir).join(format!("{id}.json"));
+    match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .with_context(|| format!("{} is not a route alc can read", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+pub(crate) fn route_count(config_dir: &Path) -> usize {
+    fs::read_dir(routes_dir(config_dir)).map_or(0, |entries| {
+        entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .count()
+    })
+}
+
+/// What a move managed.
+pub(crate) struct Moved {
+    /// How many of alc's settings files now name the new port.
+    pub moved: usize,
+    /// The ones that could not be rewritten, each with the reason.
+    pub failed: Vec<String>,
+}
+
+/// Points alc's own settings files at a bridge that had to move. Only
+/// `settings-*.json` files, and only the origin.
+///
+/// A file that cannot be rewritten does not end the move. By the time this
+/// runs the bridge has already remembered the new port and rotated the token,
+/// and nothing ever tries again - so giving up on the first failure left
+/// every file after it naming a port no bridge is on, for good. They are
+/// reported instead, for the caller to say so where it can be seen.
+pub(crate) fn move_settings_origin(config_dir: &Path, from: u16, to: u16) -> Moved {
+    let old = format!("http://127.0.0.1:{from}/");
+    let new = format!("http://127.0.0.1:{to}/");
+    let mut report = Moved {
+        moved: 0,
+        failed: Vec::new(),
+    };
+    let Ok(entries) = fs::read_dir(crate::agents::claude_settings::settings_dir(config_dir)) else {
+        return report;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        // Asked before the file is read, not after: everything else in the
+        // directory belongs to somebody else, and reading one to find that
+        // out is work for nothing.
+        let ours = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("settings-") && name.ends_with(".json"));
+        if !ours {
+            continue;
+        }
+        match move_one(&path, &old, &new) {
+            Ok(true) => report.moved += 1,
+            Ok(false) => {}
+            Err(error) => report
+                .failed
+                .push(format!("{} ({error:#})", path.display())),
+        }
+    }
+    report
+}
+
+/// Whether `path` named the old origin, having pointed it at the new one.
+fn move_one(path: &Path, old: &str, new: &str) -> Result<bool> {
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if !text.contains(old) {
+        return Ok(false);
+    }
+    crate::config::atomic_write(path, text.replace(old, new).as_bytes(), true)?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tiers() -> ModelTiers {
+        ModelTiers {
+            strongest: "gpt-6-astra".to_owned(),
+            default: "gpt-5.6-terra".to_owned(),
+            cheapest: "gpt-5.6-luna".to_owned(),
+        }
+    }
+
+    /// Every file under `root`, however deep, so a test can say that nothing
+    /// else was written anywhere.
+    fn files_under(root: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(current) = pending.pop() {
+            for entry in fs::read_dir(&current).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        files
+    }
+
+    #[test]
+    fn the_token_is_minted_once_and_kept_until_rotated() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(read_token(temp.path()), None);
+        let first = load_or_create_token(temp.path()).unwrap();
+        assert!(first.len() >= 40, "{first}");
+        assert_eq!(load_or_create_token(temp.path()).unwrap(), first);
+        let rotated = rotate_token(temp.path()).unwrap();
+        assert_ne!(rotated, first);
+        assert_eq!(read_token(temp.path()), Some(rotated));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(token_path(temp.path()))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    /// Two starters on a fresh configuration - a launch and a session's
+    /// helper, say - must come away holding the same token, and it must be
+    /// the one on disk: a bridge started with any other refuses every request
+    /// that carries the one on disk.
+    #[test]
+    fn two_starters_racing_for_the_first_token_agree_on_one() {
+        for _ in 0..20 {
+            let temp = tempfile::tempdir().unwrap();
+            let start = std::sync::Barrier::new(2);
+            let starter = || {
+                start.wait();
+                load_or_create_token(temp.path()).unwrap()
+            };
+            let (first, second) = std::thread::scope(|scope| {
+                let one = scope.spawn(starter);
+                let two = scope.spawn(starter);
+                (one.join().unwrap(), two.join().unwrap())
+            });
+            assert_eq!(first, second);
+            assert_eq!(read_token(temp.path()), Some(first));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(token_path(temp.path()))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(mode & 0o077, 0, "{mode:o}");
+            }
+        }
+    }
+
+    /// A token is published only once it is whole, so an empty or blank
+    /// `bridge.token` is left over from something that died, never a token on
+    /// its way. It is replaced, so no launch and no session's helper is stuck
+    /// behind it.
+    #[test]
+    fn a_stale_empty_token_file_is_replaced_by_a_real_token() {
+        for stale in ["", "\n"] {
+            let temp = tempfile::tempdir().unwrap();
+            restricted_dir(&run_dir(temp.path())).unwrap();
+            fs::write(token_path(temp.path()), stale).unwrap();
+            let token = load_or_create_token(temp.path()).unwrap();
+            assert!(token.len() >= 40, "{token}");
+            assert_eq!(read_token(temp.path()), Some(token));
+        }
+    }
+
+    #[test]
+    fn the_port_is_chosen_from_the_range_and_remembered() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(remembered_port(temp.path()), None);
+        for _ in 0..200 {
+            assert!(PORT_RANGE.contains(&choose_port().unwrap()));
+        }
+        remember_port(temp.path(), 24_817).unwrap();
+        assert_eq!(remembered_port(temp.path()), Some(24_817));
+        // A value outside the range is not one alc wrote.
+        fs::write(port_path(temp.path()), "8080").unwrap();
+        assert_eq!(remembered_port(temp.path()), None);
+    }
+
+    #[test]
+    fn a_route_is_named_by_its_profile_and_login_and_round_trips() {
+        let a = route_id("codex", Path::new("/home/ada/.codex/auth.json"));
+        assert!(valid_route_id(&a), "{a}");
+        assert_eq!(
+            a,
+            route_id("codex", Path::new("/home/ada/.codex/auth.json"))
+        );
+        assert_ne!(
+            a,
+            route_id("codex", Path::new("/home/ada/.codex-work/auth.json"))
+        );
+        assert_ne!(a, route_id("work", Path::new("/home/ada/.codex/auth.json")));
+        for bad in [
+            "",
+            "codex-",
+            "codex-0123456789AB",
+            "codex-../../etc",
+            "profile:x",
+            "codex-0123456789abc",
+        ] {
+            assert!(!valid_route_id(bad), "{bad}");
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let route = RouteRecord::new(
+            "codex",
+            PathBuf::from("/home/ada/.codex/auth.json"),
+            tiers(),
+        );
+        assert_eq!(route_count(temp.path()), 0);
+        write_route(temp.path(), &route).unwrap();
+        assert_eq!(
+            read_route(temp.path(), &route.id).unwrap(),
+            Some(route.clone())
+        );
+        assert_eq!(route_count(temp.path()), 1);
+        assert_eq!(read_route(temp.path(), "codex-000000000000").unwrap(), None);
+        assert_eq!(
+            read_route(temp.path(), "../../secrets").unwrap(),
+            None,
+            "never a path"
+        );
+    }
+
+    #[test]
+    fn a_route_whose_name_is_a_path_is_refused_and_writes_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("alc");
+        let escaping = RouteRecord {
+            id: "../../x".to_owned(),
+            ..RouteRecord::new(
+                "codex",
+                PathBuf::from("/home/ada/.codex/auth.json"),
+                tiers(),
+            )
+        };
+        let refused = write_route(&config_dir, &escaping).unwrap_err().to_string();
+        assert!(refused.contains("../../x"), "{refused}");
+        assert_eq!(files_under(temp.path()), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn a_route_whose_name_is_not_its_own_is_refused_and_writes_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("alc");
+        let honest = RouteRecord::new(
+            "codex",
+            PathBuf::from("/home/ada/.codex/auth.json"),
+            tiers(),
+        );
+        // Well-formed names, each over contents it was not made from: one made
+        // up, and this route's own name over another account's login.
+        let made_up = RouteRecord {
+            id: "codex-0123456789ab".to_owned(),
+            ..honest.clone()
+        };
+        let swapped = RouteRecord {
+            auth_file: PathBuf::from("/home/eve/.codex/auth.json"),
+            ..honest.clone()
+        };
+        for forged in [&made_up, &swapped] {
+            let refused = write_route(&config_dir, forged).unwrap_err().to_string();
+            assert!(refused.contains(&forged.id), "{refused}");
+        }
+        assert_eq!(files_under(temp.path()), Vec::<PathBuf>::new());
+
+        // The record alc made is still written, and only where routes live.
+        write_route(&config_dir, &honest).unwrap();
+        assert_eq!(
+            files_under(temp.path()),
+            vec![routes_dir(&config_dir).join(format!("{}.json", honest.id))]
+        );
+    }
+
+    /// Two launches of one profile, or a launch and the hub, can write the
+    /// same route at the same moment. Each writer has a temp file of its own,
+    /// so none truncates another's or finds it already renamed away, and the
+    /// route is there, whole, afterwards.
+    #[test]
+    fn concurrent_writers_of_one_route_all_succeed() {
+        let route = RouteRecord::new(
+            "codex",
+            PathBuf::from("/home/ada/.codex/auth.json"),
+            tiers(),
+        );
+        for _ in 0..10 {
+            let temp = tempfile::tempdir().unwrap();
+            let start = std::sync::Barrier::new(8);
+            let writer = || {
+                start.wait();
+                write_route(temp.path(), &route)
+            };
+            let failures: Vec<String> = std::thread::scope(|scope| {
+                let writers: Vec<_> = (0..8).map(|_| scope.spawn(writer)).collect();
+                writers
+                    .into_iter()
+                    .filter_map(|handle| handle.join().unwrap().err())
+                    .map(|error| format!("{error:#}"))
+                    .collect()
+            });
+            assert!(failures.is_empty(), "{failures:#?}");
+            assert_eq!(
+                read_route(temp.path(), &route.id).unwrap(),
+                Some(route.clone())
+            );
+            assert_eq!(
+                files_under(&routes_dir(temp.path())),
+                vec![routes_dir(temp.path()).join(format!("{}.json", route.id))]
+            );
+        }
+    }
+
+    #[test]
+    fn a_move_rewrites_only_alcs_settings_files_that_name_the_old_port() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = crate::agents::claude_settings::settings_dir(temp.path());
+        fs::create_dir_all(&dir).unwrap();
+        let named = dir.join("settings-00000000000000aa.json");
+        let other = dir.join("settings-00000000000000bb.json");
+        let foreign = dir.join("notes.json");
+        fs::write(
+            &named,
+            r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:24817/r/codex-0123456789ab"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            &other,
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://openrouter.ai/api"}}"#,
+        )
+        .unwrap();
+        fs::write(&foreign, "http://127.0.0.1:24817/").unwrap();
+
+        let report = move_settings_origin(temp.path(), 24_817, 25_001);
+        assert_eq!(report.moved, 1);
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert!(
+            fs::read_to_string(&named)
+                .unwrap()
+                .contains("http://127.0.0.1:25001/r/codex-0123456789ab")
+        );
+        assert!(fs::read_to_string(&other).unwrap().contains("openrouter"));
+        assert_eq!(
+            fs::read_to_string(&foreign).unwrap(),
+            "http://127.0.0.1:24817/"
+        );
+    }
+
+    /// A move that gave up on the first file it could not rewrite left the
+    /// rest naming a port no bridge is on. By the time it runs, `bind` has
+    /// remembered the new port and rotated the token, and nothing ever tries
+    /// again - so every file gets its turn, and the ones that did not take it
+    /// are named rather than swallowed.
+    #[test]
+    fn a_move_that_cannot_rewrite_one_file_still_rewrites_the_rest() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = crate::agents::claude_settings::settings_dir(temp.path());
+        fs::create_dir_all(&dir).unwrap();
+        let document =
+            r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:24817/r/codex-0123456789ab"}}"#;
+        // Read as one directory listing, so the names decide the order: the
+        // last of these comes after both of the awkward ones below, and a
+        // move that stopped at the first would never reach it.
+        let movable = [
+            dir.join("settings-00000000000000aa.json"),
+            dir.join("settings-00000000000000ee.json"),
+        ];
+        for path in &movable {
+            fs::write(path, document).unwrap();
+        }
+        // A name alc writes that is not a file it can read at all.
+        let unreadable = dir.join("settings-00000000000000bb.json");
+        fs::create_dir(&unreadable).unwrap();
+        // And one that reads back but cannot be replaced: Windows refuses to
+        // rename over a read-only file. Unix governs a rename by the
+        // directory instead, so there this one is simply moved and the
+        // unreadable entry above is what carries the test.
+        let unwritable = dir.join("settings-00000000000000cc.json");
+        fs::write(&unwritable, document).unwrap();
+        set_readonly(&unwritable, true);
+
+        let report = move_settings_origin(temp.path(), 24_817, 25_001);
+        for path in &movable {
+            assert!(
+                fs::read_to_string(path).unwrap().contains("25001"),
+                "{}",
+                path.display()
+            );
+        }
+        assert!(
+            report
+                .failed
+                .iter()
+                .any(|note| note.contains("settings-00000000000000bb.json")),
+            "{:?}",
+            report.failed
+        );
+        let write_refused = cfg!(windows);
+        assert_eq!(report.moved, movable.len() + usize::from(!write_refused));
+        assert_eq!(report.failed.len(), 1 + usize::from(write_refused));
+
+        // Left read-only, the file outlives the temporary directory.
+        set_readonly(&unwritable, false);
+    }
+
+    fn set_readonly(path: &Path, readonly: bool) {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(readonly);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+}

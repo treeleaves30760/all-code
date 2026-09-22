@@ -11,7 +11,7 @@ const sidebars = {
       type: 'category',
       label: 'Guides',
       collapsible: false,
-      items: ['codex-to-claude', 'local-models', 'remote-control', 'usage'],
+      items: ['codex-to-claude', 'background-sessions', 'local-models', 'remote-control', 'usage'],
     },
     {
       type: 'category',

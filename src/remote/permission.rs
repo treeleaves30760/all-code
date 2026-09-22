@@ -285,14 +285,15 @@ pub(crate) fn arm_at_launch(spec: &mut LaunchSpec, requested: Option<SafetyRung>
         return PermState::unknown();
     };
 
-    for argument in mode.cli {
-        spec.args.insert(0, OsString::from(*argument));
-    }
-    // Inserted at the front one at a time above reverses them; put the run
-    // back in order.
-    if !mode.cli.is_empty() {
-        let count = mode.cli.len();
-        spec.args[..count].reverse();
+    // After `agents` when that is the subcommand: there the flag is agent
+    // view's default for the sessions it dispatches, and in front of it the
+    // flag is not agent view's at all.
+    let at = usize::from(
+        spec.agent == crate::config::Agent::Claude
+            && spec.args.first().is_some_and(|first| first == "agents"),
+    );
+    for (offset, argument) in mode.cli.iter().enumerate() {
+        spec.args.insert(at + offset, OsString::from(*argument));
     }
     if let Some((name, value)) = mode.env {
         spec.env.insert(OsString::from(name), OsString::from(value));
@@ -546,6 +547,28 @@ mod launch_tests {
                 OsString::from("--permission-mode"),
                 OsString::from("manual")
             ]
+        );
+    }
+
+    /// Agent view takes `--permission-mode` as the default for the sessions it
+    /// dispatches, and only after the subcommand; in front of it the flag is
+    /// not agent view's at all.
+    #[test]
+    fn claude_agents_takes_the_permission_flag_after_the_subcommand() {
+        let mut spec = launch_spec(Agent::Claude);
+        spec.args = vec![OsString::from("agents")];
+        arm_at_launch(&mut spec, None);
+        assert_eq!(
+            spec.args,
+            ["agents", "--permission-mode", "manual"].map(OsString::from)
+        );
+
+        let mut spec = launch_spec(Agent::Claude);
+        spec.args = vec![OsString::from("-p"), OsString::from("hi")];
+        arm_at_launch(&mut spec, None);
+        assert_eq!(
+            spec.args,
+            ["--permission-mode", "manual", "-p", "hi"].map(OsString::from)
         );
     }
 

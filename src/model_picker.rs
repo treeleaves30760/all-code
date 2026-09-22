@@ -212,11 +212,11 @@ fn draw_models(frame: &mut ratatui::Frame, app: &PickerApp, area: Rect) {
         .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
         .split(area);
     // Badged by position, not by slug. The catalog is already ordered most
-    // capable first - that order is what `agents::claude::apply_bridge` hands
-    // Claude Code's `opus` and `haiku` aliases - so a model that shipped this
-    // morning gets an honest badge instead of reading `[custom]` on the day
-    // it arrives, which is how the old slug list told users a real model was
-    // something unofficial.
+    // capable first - that order is what
+    // `agents::claude_settings::codex_document` hands Claude Code's `opus` and
+    // `haiku` aliases - so a model that shipped this morning gets an honest
+    // badge instead of reading `[custom]` on the day it arrives, which is how
+    // the old slug list told users a real model was something unofficial.
     let last = app.catalog.models.len().saturating_sub(1);
     let items = app.catalog.models.iter().enumerate().map(|(index, model)| {
         let badge = match index {

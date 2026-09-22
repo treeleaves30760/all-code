@@ -354,8 +354,9 @@ fn role_token(run_dir: &Path, (env_name, file_name): (&str, &str)) -> Result<Str
 /// observable in a half-written state, because it does not exist under its
 /// real name until it is complete. That is what lets `role_token` treat an
 /// empty one as stale and clear it, rather than having to wonder whether
-/// somebody is mid-write.
-fn create_token(path: &Path) -> Result<String> {
+/// somebody is mid-write. The background bridge mints its token here too, and
+/// relies on the same property.
+pub(crate) fn create_token(path: &Path) -> Result<String> {
     let token = generate_token()?;
     let mut suffix = [0_u8; 9];
     getrandom::fill(&mut suffix)

@@ -415,6 +415,7 @@ fn install_platform(
     }
     println!("Updated alc {current} -> {latest}.");
     warn_about_a_hub_left_behind(&latest.to_string());
+    warn_about_a_bridge_left_behind(&latest.to_string());
     Ok(())
 }
 
@@ -443,6 +444,28 @@ fn warn_about_a_hub_left_behind(installed: &str) {
     println!(
         "A hub from alc {version} is still running (pid {pid}); shared sessions are refused \
          until it is replaced. Run `alc hub stop` when its sessions are done."
+    );
+}
+
+/// Says so when the background bridge is from the version just replaced. It
+/// keeps serving - a Codex turn may be streaming through it - until it has
+/// been idle for an hour or is stopped; sessions start the new one within a
+/// minute after that.
+fn warn_about_a_bridge_left_behind(installed: &str) {
+    let Ok(config_dir) = crate::config::config_dir() else {
+        return;
+    };
+    let Some(running) = crate::bridge_host::probe(&config_dir) else {
+        return;
+    };
+    if running.alc == installed {
+        return;
+    }
+    println!(
+        "The background bridge from alc {} is still running (pid {}); it keeps serving until it \
+         has been idle for an hour. `alc bridge stop` swaps it now, and Claude Code sessions \
+         start the new one within a minute.",
+        running.alc, running.pid
     );
 }
 
@@ -543,6 +566,7 @@ try {
         log_path.display()
     );
     warn_about_a_hub_left_behind(&latest.to_string());
+    warn_about_a_bridge_left_behind(&latest.to_string());
     Ok(())
 }
 

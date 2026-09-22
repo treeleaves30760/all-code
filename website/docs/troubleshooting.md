@@ -98,6 +98,97 @@ of another version. `alc doctor` names one that is behind:
 alc hub stop
 ```
 
+## Your apiKeyHelper script is failing
+
+Claude Code says this when `alc claude-credential` — the helper named in the
+settings file alc wrote — exits without printing a credential. Four things stop
+it:
+
+- **No Codex login.** Run `codex login` and retry.
+- **A key only one shell knew.** A profile whose key lives in an environment
+  variable is readable by the sessions started from that shell and by nothing
+  else, so a background session started later asks and gets nothing. Save it
+  with `alc config key <profile>`.
+- **The bridge will not start.** `alc bridge serve` runs it in this terminal
+  and prints why it would not come up.
+- **A route that is gone.** The bridge's record of that Codex profile was
+  removed; one `alc --codex claude` writes it again.
+
+`alc doctor` reports the login, the saved keys and the bridge in one pass. The
+helper never falls back to your Claude login: a session alc set up either
+reaches the provider you asked for or says it could not.
+
+## A background session cannot connect after the bridge moved
+
+The bridge keeps the port it picked, but it can lose it — another program takes
+the port while the bridge is down, and the bridge comes back on a new one.
+Sessions still running against the old port find nothing there. Restart them
+and they pick the new port up:
+
+```sh
+claude respawn <id>
+claude respawn --all
+```
+
+## Sessions I dispatched answer from Anthropic, not Codex
+
+Agent view belongs to the Claude Code you opened it from. Dispatch from a plain
+`claude agents` and you get plain Claude Code sessions on your Anthropic login,
+whatever alc is doing in another terminal. Open agent view through alc instead:
+
+```sh
+alc --codex claude agents
+```
+
+Those sessions carry the settings file alc wrote, and keep it every time Claude
+Code restarts them. [Background sessions](./background-sessions.md) has the
+rest.
+
+## Two notices on every Codex run
+
+Every print-mode run on a Codex profile writes two lines to stderr: one saying
+`CLAUDE_CODE_DISABLE_1M_CONTEXT is set, but the 200K limit isn't enforced for <model>`,
+and one reading `[claude-code:unrecognized_model]`. Both are Claude Code telling
+you it does not recognise the model id alc gave it, which is the point: the
+model is a Codex model. They are diagnostics, not errors; the session is
+working.
+
+Two documented cures exist and alc uses neither. A `modelOverrides` entry would
+make Claude Code treat the Codex id as a Claude model for context budgeting,
+undoing the real Codex window alc passes it as
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS`. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` would
+silence the first line by pinning the session to 200K, and then the status
+line's percentage stops meaning anything.
+
+## `/model` says `ANTHROPIC_MODEL` overrides my choice
+
+Picking a model in an alc session answers with two lines, the second of them a
+warning:
+
+```text
+Set model to GPT-6-Astra and saved as your default for new sessions
+ANTHROPIC_MODEL is set to GPT-5.6-Sol — new sessions use that while it is set
+```
+
+Both are true. Your pick applies to the session you are in, and alc pins the
+model for every session it starts, so a later `alc --codex claude` starts on
+alc's model again rather than the one you chose. Change what alc starts on:
+
+```sh
+alc --codex claude --model gpt-6-astra
+alc --codex claude --model gpt-6-astra --save
+```
+
+## Watching a background session from a script
+
+`claude agents --json --all` carries both `state` and `status`, and the one
+that says whether the work finished is `state`: `working` becomes `done`.
+`status` only goes `busy` to `idle`.
+
+A conversation you sent to the background with `←` ends at `state: "blocked"` —
+"Needs input" on the card — rather than `done`, because it is a live session
+waiting for your next turn.
+
 ## `alc update` cannot find the release archive
 
 An installation from before 1.4.0 looks for a second binary that no longer

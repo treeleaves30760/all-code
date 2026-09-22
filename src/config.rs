@@ -963,10 +963,10 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], secret: bool) -> Result<()
     file.sync_all()?;
     drop(file);
 
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path).with_context(|| format!("failed to replace {}", path.display()))?;
-    }
+    // `rename` replaces an existing file on every platform alc supports - on
+    // Windows through `MOVEFILE_REPLACE_EXISTING` - so no remove comes first,
+    // and none is wanted: it would only open a moment with no file at `path`,
+    // and race a second writer of the same file into access-denied errors.
     let renamed = fs::rename(&temp, path)
         .with_context(|| format!("failed to move {} to {}", temp.display(), path.display()));
     if renamed.is_err() {
