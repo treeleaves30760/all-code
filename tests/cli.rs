@@ -51,9 +51,24 @@ fn serve_ollama() -> String {
             let Ok(mut stream) = stream else {
                 continue;
             };
-            let mut request = [0_u8; 8192];
-            let read = stream.read(&mut request).unwrap_or(0);
-            let head = String::from_utf8_lossy(&request[..read]);
+            // Read until the end of the request head, not once: a short first
+            // read used to make the stub answer 404 for a path it had not
+            // finished reading, which is what made the doctor test flake.
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let head = String::from_utf8_lossy(&request);
             let path = head.split_whitespace().nth(1).unwrap_or("");
             let (status, body) = if path.starts_with("/api/version") {
                 ("200 OK", r#"{"version":"0.33.3"}"#)
@@ -72,6 +87,11 @@ fn serve_ollama() -> String {
                 body.len()
             );
             let _ = stream.write_all(response.as_bytes());
+            // Close the write side rather than dropping the socket: on Windows
+            // a drop with request bytes still unread is a reset, and the client
+            // sees a broken connection instead of the answer.
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
         }
     });
     format!("http://{address}")
