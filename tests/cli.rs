@@ -989,6 +989,29 @@ fn doctor_says_how_to_clear_a_claude_default_only_the_bridge_can_serve() {
     assert!(output.contains("clears the line on exit"), "{output}");
 }
 
+/// A bridge that is not up is the normal state between sessions, so the
+/// section reports it without counting it as a problem - and it is the one
+/// place that says agent view has been switched off, which is why a user who
+/// turned it off in Claude Code sees no background session from alc either.
+#[test]
+fn doctor_reports_the_background_bridge_without_calling_it_a_problem() {
+    let temp = tempfile::tempdir().unwrap();
+    let claude = tempfile::tempdir().unwrap();
+    std::fs::write(
+        claude.path().join("settings.json"),
+        r#"{"disableAgentView": true}"#,
+    )
+    .unwrap();
+    let assert = alc(&temp)
+        .env("CLAUDE_CONFIG_DIR", claude.path())
+        .args(["doctor"])
+        .assert();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(output.contains("Background sessions"), "{output}");
+    assert!(output.contains("not running"), "{output}");
+    assert!(output.contains("disableAgentView"), "{output}");
+}
+
 /// The snapshot belongs to `launch::prepare`, which a dry run never reaches.
 /// Taking it in `launch::build` instead would have `--dry-run` reading, and
 /// eventually rewriting, a file the user only asked alc to describe.
@@ -1642,6 +1665,42 @@ fn claude_credential_without_a_key_fails_on_stderr_and_says_how_to_save_one() {
         .assert()
         .failure()
         .stdout("");
+}
+
+/// Claude Code reads the helper's whole stdout as the credential, so a key
+/// exported with a trailing newline must still print as one line.
+#[test]
+fn claude_credential_prints_one_line_even_for_a_key_with_a_trailing_newline() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENROUTER_API_KEY", "sk-or-test-key\n")
+        .args(["claude-credential", "profile:openrouter"])
+        .assert()
+        .success()
+        .stdout("sk-or-test-key\n");
+}
+
+/// The sentence a background session shows when `codex login` has expired or
+/// never happened is fixed by the spec, and nothing else asserts it.
+#[test]
+fn claude_credential_names_the_missing_codex_login_without_starting_a_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex = tempfile::tempdir().unwrap();
+    let missing = codex.path().join("auth.json");
+    let route = write_route(&temp, &missing);
+    alc(&temp)
+        .args(["claude-credential", route])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "Codex credentials were not found at",
+        ))
+        .stderr(predicate::str::contains("codex login"));
+    assert!(
+        !temp.path().join("run").join("bridge.port").exists(),
+        "a refusal must not leave a bridge behind"
+    );
 }
 
 /// A stand-in `claude` that writes each argument on its own line to

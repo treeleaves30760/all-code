@@ -234,7 +234,17 @@ pub(crate) fn status_rows(config_dir: &Path) -> Vec<(&'static str, String)> {
 
 /// What `alc claude-credential <route>` prints: the bridge's token for a Codex
 /// route, after making sure a bridge is up, or a profile's API key.
+///
+/// Trimmed however it was resolved. Claude Code reads the helper's whole
+/// stdout as the credential, and `Credentials::key_for` hands back an
+/// environment variable exactly as the shell exported it - so a key exported
+/// with a trailing newline would print two lines and break the one-line
+/// contract every background session depends on.
 pub(crate) fn credential(store: &Store, route: &str) -> Result<String> {
+    Ok(resolve_credential(store, route)?.trim().to_owned())
+}
+
+fn resolve_credential(store: &Store, route: &str) -> Result<String> {
     if let Some(profile) = route.strip_prefix("profile:") {
         let provider = store.config.providers.get(profile).with_context(|| {
             format!(
