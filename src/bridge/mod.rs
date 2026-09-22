@@ -85,7 +85,10 @@ pub(crate) struct BridgeConfig {
 /// is visible latency.
 pub(crate) struct BridgeState {
     pub config: BridgeConfig,
-    pub auth: auth::AuthManager,
+    /// Shared by every route over the same `auth.json` in the background
+    /// bridge: a Codex refresh token is single-use, and two managers each
+    /// single-flighting their own refresh would still race each other.
+    pub auth: Arc<auth::AuthManager>,
     pub http: reqwest::Client,
     /// Set once at startup, so recording a turn costs no lookup and no lock.
     pub ledger: Option<Arc<crate::usage::ledger::Ledger>>,
@@ -93,6 +96,12 @@ pub(crate) struct BridgeState {
 
 impl BridgeState {
     pub(crate) fn new(config: BridgeConfig) -> Result<Self> {
+        let auth = Arc::new(auth::AuthManager::new(config.auth_file.clone()));
+        Self::with_auth(config, auth)
+    }
+
+    /// The same, over a credential manager the caller already holds.
+    pub(crate) fn with_auth(config: BridgeConfig, auth: Arc<auth::AuthManager>) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(upstream::USER_AGENT)
             // No total-request timeout: a Codex turn legitimately streams for
@@ -100,7 +109,6 @@ impl BridgeState {
             // tell "thinking" from "hung".
             .build()
             .context("failed to build the Codex bridge's HTTP client")?;
-        let auth = auth::AuthManager::new(config.auth_file.clone());
         // Read once here rather than per turn: it is the id the requests
         // already carry as a header, and reading the file on every frame
         // would be a syscall per turn for a number that cannot change while
