@@ -36,8 +36,8 @@ background after `/model opus` keeps the model you just picked. Under
 
 Claude Code keeps one thing for a background session: the flags it was launched
 with, which it reads again every time it restarts the session. So alc passes the
-provider as a settings file - `--settings ~/.config/alc/claude/settings-<hash>.json`
-- instead of the environment variables it used before, which the supervisor
+provider as a settings file, `--settings ~/.config/alc/claude/settings-<hash>.json`,
+instead of the environment variables it used before, which the supervisor
 drops.
 
 | In the file | What it does |
