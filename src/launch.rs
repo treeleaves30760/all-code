@@ -820,6 +820,7 @@ fn bridge_config(
         agent,
         provider,
         ledger,
+        claude_tiers: None,
     }
 }
 

@@ -36,6 +36,7 @@ pub(crate) mod messages;
 pub(crate) mod models;
 pub(crate) mod responses;
 pub(crate) mod server;
+pub(crate) mod tiers;
 pub(crate) mod upstream;
 
 #[cfg(test)]
@@ -71,6 +72,10 @@ pub(crate) struct BridgeConfig {
     /// Where to append those turn rows. `None` in tests and anywhere the
     /// ledger is deliberately not written.
     pub ledger: Option<PathBuf>,
+    /// Claude Code only: the Codex models Claude's own tiers land on, so a
+    /// request naming a Claude model is answered by Codex rather than refused
+    /// upstream. `None` for every other agent, which pins its model at launch.
+    pub claude_tiers: Option<tiers::ModelTiers>,
 }
 
 /// Everything a handler shares: config, credentials, and one HTTP client.

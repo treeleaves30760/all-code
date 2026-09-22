@@ -68,6 +68,7 @@ mod tests {
                 agent: crate::config::Agent::Claude,
                 provider: "codex".to_owned(),
                 ledger: None,
+                claude_tiers: None,
             })
             .expect("the state builds without touching the auth file"),
         )
