@@ -29,11 +29,6 @@ pub(crate) use serve::run as serve;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(2);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STALE_LOCK: Duration = Duration::from_secs(30);
-/// How long a starter that took a stale lock over waits before reading its
-/// own mark back. Long enough that a second starter which judged the same
-/// lock stale has written its mark by then, and short enough to disappear
-/// next to the process spawn it precedes.
-const LOCK_SETTLE: Duration = Duration::from_millis(250);
 
 /// What a running bridge says about itself.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -159,9 +154,11 @@ struct Lock {
 }
 
 impl Lock {
-    /// Gives the lock up, and only if it is still this starter's: one that
-    /// judged it stale may have written its own mark over it, and removing
-    /// that would free the name under a starter with a bridge coming up.
+    /// Gives the lock up, and only if it is still this starter's. A lock is
+    /// held for the length of a start, well inside the half minute before
+    /// anyone may take it over - but should a start ever outlast that, the
+    /// lock is another starter's by then, and removing it would free the name
+    /// under a bridge that is coming up.
     fn release(self) {
         if mark_of(&self.path).as_deref() == Some(self.mark.as_str()) {
             let _ = fs::remove_file(&self.path);
@@ -171,40 +168,30 @@ impl Lock {
 
 /// Takes the starting lock, or `None` when another alc holds it.
 ///
-/// Claiming it and being sure of it are two things. `create_new` settles it
-/// outright when nothing is there, but a lock a dead starter left behind has
-/// to be taken over, and two starters can judge one dead at the same moment.
-/// Freeing the name first is what let both of them have it - each removed the
-/// other's fresh lock and created its own - so a stale lock is taken over by
-/// writing over it instead. The name is then only ever free while nobody
-/// holds it, the two takers' writes land one after the other, and whose mark
-/// is in the file a moment later says which of them may go on. The other
-/// waits, exactly as it would have for a lock that was alive.
+/// `create_new` settles it outright when nothing is there. A lock that a dead
+/// starter left behind has to be taken over, and several starters can judge
+/// the same one dead at once - Claude Code's supervisor reviving a handful of
+/// background sessions is enough. Every way of taking it over in one step
+/// lost that race: freeing the name and creating it again let each taker
+/// remove another's fresh lock, and writing a mark over it and reading it
+/// back a moment later lost to a taker that stalled for longer than the
+/// moment, which a loaded Windows runner did. So a takeover happens under a
+/// lock of its own, and whoever holds that one asks again whether the
+/// starting lock is still dead before writing over it. Every other taker
+/// finds the takeover lock held or the starting lock alive again, and waits
+/// for the bridge as it would have for any live lock.
 fn take_lock(lock: &Path) -> Result<Option<Lock>> {
-    let Some(claimed) = claim(lock)? else {
-        return Ok(None);
-    };
-    thread::sleep(LOCK_SETTLE);
-    Ok(confirm(claimed))
-}
-
-/// Writes this starter's mark into the lock, if the lock is free or dead.
-fn claim(lock: &Path) -> Result<Option<Lock>> {
     let mark = owner_mark()?;
-    match OpenOptions::new().write(true).create_new(true).open(lock) {
-        Ok(mut file) => file
-            .write_all(mark.as_bytes())
-            .with_context(|| format!("failed to write {}", lock.display()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if !lock_is_stale(lock) {
-                return Ok(None);
-            }
-            // Written as a secret, though a mark is none, for the temp file
-            // that comes with it: unguessable and created exclusively, so two
-            // starters taking the same stale lock over do not share one and
-            // truncate each other's half-written mark into the lock.
-            crate::config::atomic_write(lock, mark.as_bytes(), true)?;
+    match create_new(lock) {
+        Ok(mut file) => {
+            file.write_all(mark.as_bytes())
+                .with_context(|| format!("failed to write {}", lock.display()))?;
+            return Ok(Some(Lock {
+                path: lock.to_owned(),
+                mark,
+            }));
         }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         // A run directory that is read-only or full is not another alc
         // holding the lock. Saying so sent the reader looking for a second
         // alc that was never there, after a ten-second wait for it.
@@ -212,15 +199,69 @@ fn claim(lock: &Path) -> Result<Option<Lock>> {
             return Err(error).with_context(|| format!("failed to create {}", lock.display()));
         }
     }
-    Ok(Some(Lock {
-        path: lock.to_owned(),
-        mark,
-    }))
+    if !lock_is_stale(lock) {
+        return Ok(None);
+    }
+    take_over(lock, mark)
 }
 
-/// The claim back, if the mark in the lock is still this starter's.
-fn confirm(claimed: Lock) -> Option<Lock> {
-    (mark_of(&claimed.path).as_deref() == Some(claimed.mark.as_str())).then_some(claimed)
+/// Writes over a dead starter's lock, one taker at a time.
+fn take_over(lock: &Path, mark: String) -> Result<Option<Lock>> {
+    let takeover = takeover_path(lock);
+    // Held only for the few steps below, so one that has gone stale belongs
+    // to a taker that died between them; without this it would stop every
+    // takeover after it.
+    if lock_is_stale(&takeover) {
+        let _ = fs::remove_file(&takeover);
+    }
+    match create_new(&takeover) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to create {}", takeover.display()));
+        }
+    }
+    let taken = (|| {
+        // Asked again now that nobody else can be taking it over: the taker
+        // before this one may have done it already, and then the lock is alive.
+        if !lock_is_stale(lock) {
+            return Ok(None);
+        }
+        // Written as a secret, though a mark is none, for the temp file that
+        // comes with it: unguessable and created exclusively.
+        crate::config::atomic_write(lock, mark.as_bytes(), true)?;
+        Ok(Some(Lock {
+            path: lock.to_owned(),
+            mark,
+        }))
+    })();
+    let _ = fs::remove_file(&takeover);
+    taken
+}
+
+/// The lock a takeover of `lock` is made under: its name, and `.takeover`.
+fn takeover_path(lock: &Path) -> PathBuf {
+    let mut name = lock.file_name().unwrap_or_default().to_owned();
+    name.push(".takeover");
+    lock.with_file_name(name)
+}
+
+/// `create_new`, asked again for a moment when Windows refuses it as access
+/// denied. It does that while a file of the same name is being deleted and
+/// another process still has it open - a lock being given up, which clears as
+/// soon as that handle closes. A refusal that outlasts the retries is a real
+/// one, and is reported as such.
+fn create_new(path: &Path) -> std::io::Result<fs::File> {
+    let mut tries = 0;
+    loop {
+        match OpenOptions::new().write(true).create_new(true).open(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied && tries < 20 => {
+                tries += 1;
+                thread::sleep(Duration::from_millis(25));
+            }
+            result => return result,
+        }
+    }
 }
 
 /// What a starter writes into the lock so it can know it again: this process,
@@ -501,30 +542,51 @@ mod tests {
         }
     }
 
-    /// The same race with the timing taken out of it, which is what the
-    /// concurrent test above cannot promise to reproduce. A second starter
-    /// that read the stale lock's age a moment before this one took it over
-    /// writes its own mark; from there the file says whose it is, and the
-    /// starter whose mark is gone stands down rather than spawning a second
-    /// bridge.
+    /// The race with the timing taken out of it. A taker that judged the
+    /// starting lock dead at the same moment as another finds the takeover
+    /// already in hand, and stands down rather than writing over it - so the
+    /// dead lock is taken over once, by whoever holds the takeover.
     #[test]
-    fn a_starter_whose_mark_was_written_over_stands_down() {
+    fn a_takeover_already_in_hand_is_not_joined() {
         let temp = tempfile::tempdir().unwrap();
         let lock = stale_lock(temp.path());
-        let mine = claim(&lock).unwrap().expect("a dead lock is there to take");
-        assert_eq!(mark_of(&lock).as_deref(), Some(mine.mark.as_str()));
-
         let theirs = "4242 0123456789abcdef";
         fs::write(&lock, theirs).unwrap();
+        let file = fs::File::options().write(true).open(&lock).unwrap();
+        file.set_modified(SystemTime::now() - STALE_LOCK - Duration::from_secs(5))
+            .unwrap();
+        drop(file);
+        fs::write(takeover_path(&lock), "").unwrap();
+
         assert!(
-            confirm(mine).is_none(),
-            "the lock stopped being this starter's"
+            take_lock(&lock).unwrap().is_none(),
+            "another taker holds the takeover"
         );
         assert_eq!(
             mark_of(&lock).as_deref(),
             Some(theirs),
-            "and standing down leaves the other starter's lock alone"
+            "and standing down leaves the lock as it found it"
         );
+    }
+
+    /// The takeover lock is held for a few steps and removed. One that is
+    /// still there half a minute later belongs to a taker that died between
+    /// them, and must not stop every takeover after it.
+    #[test]
+    fn a_takeover_left_by_a_taker_that_died_is_taken_over_too() {
+        let temp = tempfile::tempdir().unwrap();
+        let lock = stale_lock(temp.path());
+        let takeover = takeover_path(&lock);
+        let file = fs::File::create(&takeover).unwrap();
+        file.set_modified(SystemTime::now() - STALE_LOCK - Duration::from_secs(5))
+            .unwrap();
+        drop(file);
+
+        let held = take_lock(&lock)
+            .unwrap()
+            .expect("both locks are dead, so this taker gets the starting lock");
+        assert_eq!(mark_of(&lock).as_deref(), Some(held.mark.as_str()));
+        assert!(!takeover.exists(), "and the takeover lock is gone again");
     }
 
     /// The lock a live starter holds is not up for grabs, however many ask -
