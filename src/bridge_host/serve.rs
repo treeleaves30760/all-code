@@ -27,7 +27,7 @@ use super::files;
 /// How long a bridge with nothing to do stays up. The helper Claude Code runs
 /// before a request starts it again, so this only decides how long an idle
 /// process lingers.
-pub(crate) const IDLE_LIMIT: Duration = Duration::from_secs(60 * 60);
+const IDLE_LIMIT: Duration = Duration::from_secs(60 * 60);
 const IDLE_CHECK: Duration = Duration::from_secs(60);
 /// How long an explicit stop waits for streaming turns before it ends them.
 const STOP_GRACE: Duration = Duration::from_secs(5);

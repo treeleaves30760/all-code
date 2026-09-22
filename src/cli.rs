@@ -169,6 +169,13 @@ enum Command {
     Kill(SessionRef),
     /// Rename a shared session's card.
     Rename(RenameArgs),
+    /// Show or stop the background bridge Claude Code sessions reach the Codex
+    /// login through.
+    Bridge(BridgeArgs),
+    /// Prints the credential a Claude Code session asks for through
+    /// `apiKeyHelper`. Not for people: alc writes this into its settings files.
+    #[command(name = "claude-credential", hide = true)]
+    ClaudeCredential(ClaudeCredentialArgs),
     /// Launch Claude Code.
     Claude(ClaudeArgs),
     /// Launch Codex CLI.
@@ -269,6 +276,30 @@ enum HubCommand {
     },
     /// Report whether a hub is running and where its page is.
     Status,
+}
+
+#[derive(Debug, Args)]
+struct BridgeArgs {
+    #[command(subcommand)]
+    command: Option<BridgeCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum BridgeCommand {
+    /// Report whether the bridge is running, where, and which alc started it.
+    Status,
+    /// Stop the bridge now; sessions start it again when they next need it.
+    Stop,
+    /// Run the bridge in this terminal. alc starts it this way itself, and it
+    /// is how to see why one will not come up.
+    #[command(hide = true)]
+    Serve,
+}
+
+#[derive(Debug, Args)]
+struct ClaudeCredentialArgs {
+    /// `codex-<id>` or `profile:<name>`, as alc wrote it.
+    route: String,
 }
 
 #[derive(Debug, Args)]
@@ -553,6 +584,12 @@ pub fn run() -> Result<u8> {
                 name: args.name,
             },
         ),
+        Command::Bridge(args) => run_bridge(&store, args),
+        Command::ClaudeCredential(args) => {
+            // Exactly one line on stdout: Claude Code sends all of it as the key.
+            println!("{}", crate::bridge_host::credential(&store, &args.route)?);
+            Ok(0)
+        }
         Command::Share(args) => {
             let sharing = Sharing {
                 enabled: !cli.no_share,
@@ -1106,6 +1143,27 @@ fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {
         }
     };
     remote::run_command(store, command)
+}
+
+fn run_bridge(store: &Store, args: BridgeArgs) -> Result<u8> {
+    match args.command {
+        None | Some(BridgeCommand::Status) => {
+            for (label, value) in crate::bridge_host::status_rows(&store.dir) {
+                println!("{label:<8} {value}");
+            }
+            Ok(0)
+        }
+        Some(BridgeCommand::Stop) => {
+            match crate::bridge_host::stop(&store.dir)? {
+                Some(pid) => println!(
+                    "Stopped the bridge (pid {pid}); Claude Code sessions start it again when they next need it."
+                ),
+                None => println!("No bridge was running."),
+            }
+            Ok(0)
+        }
+        Some(BridgeCommand::Serve) => crate::bridge_host::serve(&store.dir),
+    }
 }
 
 fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {

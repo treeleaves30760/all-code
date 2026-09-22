@@ -1495,3 +1495,137 @@ fn a_dry_run_records_no_launch() {
         "a dry run must not write a ledger row"
     );
 }
+
+/// Stops a bridge a test started, however the test ends: a detached process
+/// outliving its test would hold the temporary directory open on Windows and
+/// linger on every platform.
+struct StopTheBridge<'a>(&'a tempfile::TempDir);
+
+impl Drop for StopTheBridge<'_> {
+    fn drop(&mut self) {
+        let _ = alc(self.0).args(["bridge", "stop"]).output();
+    }
+}
+
+fn write_route(temp: &tempfile::TempDir, auth_file: &std::path::Path) -> &'static str {
+    let routes = temp.path().join("run").join("bridge").join("routes");
+    std::fs::create_dir_all(&routes).unwrap();
+    let route = serde_json::json!({
+        "id": "codex-0123456789ab",
+        "profile": "codex",
+        "auth_file": auth_file,
+        "tiers": {"strongest": "gpt-6-astra", "default": "gpt-5.6-terra", "cheapest": "gpt-5.6-luna"}
+    });
+    std::fs::write(routes.join("codex-0123456789ab.json"), route.to_string()).unwrap();
+    "codex-0123456789ab"
+}
+
+fn http(port: &str, request: &str) -> String {
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    response
+}
+
+#[test]
+fn the_bridge_starts_on_demand_answers_only_its_token_and_stops() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex = tempfile::tempdir().unwrap();
+    std::fs::write(codex.path().join("auth.json"), "{}").unwrap();
+    alc(&temp)
+        .args(["bridge", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+
+    let route = write_route(&temp, &codex.path().join("auth.json"));
+    let _stop = StopTheBridge(&temp);
+    let output = alc(&temp)
+        .args(["claude-credential", route])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let printed = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        printed.lines().count(),
+        1,
+        "the credential and nothing else: {printed:?}"
+    );
+    let token = std::fs::read_to_string(temp.path().join("run").join("bridge.token")).unwrap();
+    assert_eq!(printed.trim(), token.trim());
+
+    alc(&temp)
+        .args(["bridge", "status"])
+        .assert()
+        .success()
+        // "not running" contains "running": assert the running row itself.
+        .stdout(predicate::str::contains("running · pid"))
+        .stdout(predicate::str::contains("routes"));
+
+    let port = std::fs::read_to_string(temp.path().join("run").join("bridge.port")).unwrap();
+    let health = http(
+        port.trim(),
+        "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+    let refused = http(
+        port.trim(),
+        "POST /r/codex-0123456789ab/v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+    );
+    assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+
+    alc(&temp)
+        .args(["bridge", "stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stopped the bridge"));
+    alc(&temp)
+        .args(["bridge", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+}
+
+#[test]
+fn claude_credential_prints_a_saved_key_and_nothing_else() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["config", "key", "openrouter", "--stdin"])
+        .write_stdin("sk-or-test-never-print")
+        .assert()
+        .success();
+    alc(&temp)
+        .env_remove("OPENROUTER_API_KEY")
+        .args(["claude-credential", "profile:openrouter"])
+        .assert()
+        .success()
+        .stdout("sk-or-test-never-print\n");
+}
+
+#[test]
+fn claude_credential_without_a_key_fails_on_stderr_and_says_how_to_save_one() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env_remove("OPENROUTER_API_KEY")
+        .args(["claude-credential", "profile:openrouter"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("alc config key openrouter"));
+    alc(&temp)
+        .args(["claude-credential", "codex-000000000000"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("no route"));
+    alc(&temp)
+        .args(["claude-credential", "../../etc/passwd"])
+        .assert()
+        .failure()
+        .stdout("");
+}
