@@ -1,5 +1,4 @@
 pub mod claude;
-#[allow(dead_code, reason = "wired into claude::build in Task 8")]
 pub mod claude_settings;
 pub mod codex;
 pub mod copilot;
@@ -11,7 +10,7 @@ pub mod qwen;
 
 use std::ffi::OsString;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::config::{Agent, Provider, Store};
 use crate::launch::{BridgePlan, LaunchOverrides, LaunchSpec};
@@ -47,7 +46,13 @@ pub fn build(
 pub fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
     let agent = spec.agent;
     match agent {
-        Agent::Claude => claude::apply_bridge(spec, base_url, plan),
+        // Claude Code reaches the Codex login through the background bridge
+        // and a settings file, never an in-process adapter; see
+        // `bridge_host`. A plan reaching here is a builder bug.
+        Agent::Claude => bail!(
+            "Claude Code was handed an in-process adapter plan, which alc no longer builds for it; \
+             this is an alc bug - please report it"
+        ),
         Agent::Codex => Ok(()),
         Agent::Copilot => copilot::apply_bridge(spec, base_url, plan),
         Agent::Opencode => opencode::apply_bridge(spec, base_url, plan),

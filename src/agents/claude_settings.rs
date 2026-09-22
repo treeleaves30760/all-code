@@ -246,32 +246,55 @@ pub(crate) fn local_document(inputs: &LocalDocument<'_>) -> Value {
             window.to_string(),
         );
     }
+    let mut document = json!({ "env": env });
     if inputs.local_server {
-        let small = inputs.small_model.unwrap_or(inputs.model);
-        for (name, value) in [
-            // Ollama serves only the models that were pulled, so every alias
-            // Claude Code resolves on its own has to land on this one instead
-            // of a Claude model id the server answers with 404.
-            ("ANTHROPIC_DEFAULT_MODEL", inputs.model),
-            ("ANTHROPIC_DEFAULT_FABLE_MODEL", inputs.model),
-            ("ANTHROPIC_DEFAULT_SONNET_MODEL", inputs.model),
-            ("ANTHROPIC_DEFAULT_OPUS_MODEL", inputs.model),
-            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", small),
-            ("ANTHROPIC_SMALL_FAST_MODEL", small),
-            // One request at a time: side requests would queue ahead of the
-            // real one for minutes.
-            ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
-        ] {
-            put(&mut env, name, value);
-        }
-        for (name, value) in CLAUDE_ONLY_FEATURES_OFF {
-            put(&mut env, name, value);
-        }
-        for (name, value) in inputs.timeouts {
-            put(&mut env, name, *value);
-        }
+        pin_local_server(
+            &mut document,
+            inputs.model,
+            inputs.small_model,
+            inputs.timeouts,
+        );
     }
-    json!({ "env": env })
+    document
+}
+
+/// Adds what an Ollama server needs on top of any document: every alias on its
+/// one model, non-essential traffic off, the Claude-only features off, and the
+/// timeouts the user has not set. Follows the provider's kind, not its auth
+/// style: an Ollama behind an authenticating proxy still serves only what it
+/// has pulled.
+pub(crate) fn pin_local_server(
+    document: &mut Value,
+    model: &str,
+    small_model: Option<&str>,
+    timeouts: &[(&'static str, &'static str)],
+) {
+    let Some(env) = document.get_mut("env").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let small = small_model.unwrap_or(model);
+    for (name, value) in [
+        // Ollama serves only the models that were pulled, so every alias
+        // Claude Code resolves on its own has to land on this one instead of a
+        // Claude model id the server answers with 404.
+        ("ANTHROPIC_DEFAULT_MODEL", model),
+        ("ANTHROPIC_DEFAULT_FABLE_MODEL", model),
+        ("ANTHROPIC_DEFAULT_SONNET_MODEL", model),
+        ("ANTHROPIC_DEFAULT_OPUS_MODEL", model),
+        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", small),
+        ("ANTHROPIC_SMALL_FAST_MODEL", small),
+        // One request at a time: side requests would queue ahead of the real
+        // one for minutes.
+        ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+    ] {
+        put(env, name, value);
+    }
+    for (name, value) in CLAUDE_ONLY_FEATURES_OFF {
+        put(env, name, value);
+    }
+    for (name, value) in timeouts {
+        put(env, name, *value);
+    }
 }
 
 /// The shell Claude Code runs `apiKeyHelper` through.
@@ -398,6 +421,10 @@ pub(crate) fn settings_path(config_dir: &Path, bytes: &[u8]) -> PathBuf {
 }
 
 /// The document's final bytes, with the bridge's origin filled in.
+#[allow(
+    dead_code,
+    reason = "`launch::prepare` finishes and writes the document, in the next task"
+)]
 pub(crate) fn finish(plan: &SettingsPlan, origin: Option<&str>) -> Result<Vec<u8>> {
     let mut document = plan.document.clone();
     if let Some(origin) = origin
@@ -413,6 +440,10 @@ pub(crate) fn finish(plan: &SettingsPlan, origin: Option<&str>) -> Result<Vec<u8
 
 /// Writes a finished document unless an identical one is already there, and
 /// answers its path. Owner-only: it names the user's endpoints and paths.
+#[allow(
+    dead_code,
+    reason = "`launch::prepare` finishes and writes the document, in the next task"
+)]
 pub(crate) fn write_settings(config_dir: &Path, bytes: &[u8]) -> Result<PathBuf> {
     let path = settings_path(config_dir, bytes);
     if fs::read(&path).is_ok_and(|existing| existing == bytes) {
@@ -425,6 +456,10 @@ pub(crate) fn write_settings(config_dir: &Path, bytes: &[u8]) -> Result<PathBuf>
 }
 
 /// Where `--settings <path>` goes in `args`.
+#[allow(
+    dead_code,
+    reason = "`launch::prepare` puts `--settings` in the arguments, in the next task"
+)]
 pub(crate) fn insertion_point(plan: &SettingsPlan, args: &[OsString]) -> usize {
     plan.subcommand
         .as_deref()

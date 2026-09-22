@@ -356,10 +356,8 @@ pub fn build(
     }
 
     // Claude Code's settings file, resolved in the same shell and for the
-    // same reason. Only for a Claude launch alc has pointed at Codex - on a
-    // route, or on the in-process bridge it still gets today: that is the one
-    // combination whose model ids no plain `claude` can reach, so it is the
-    // one whose default is worth putting back.
+    // same reason. Only for a Claude launch on a Codex route: that is the one
+    // combination whose model ids no plain `claude` can reach.
     //
     // Deliberately not extended to a local-server launch (Ollama, vLLM),
     // which can pin a local model id the same way. Those ids are not
@@ -370,7 +368,7 @@ pub fn build(
     //
     // Unlike `codex_auth_file` a failure here is not worth a refusal: the
     // path resolving to nothing costs a restore, not a launch.
-    if spec.codex_route().is_some() || (spec.bridge.is_some() && spec.agent == Agent::Claude) {
+    if spec.codex_route().is_some() {
         spec.claude_settings_file = agents::claude::user_settings_path(provider);
     }
 
@@ -469,7 +467,7 @@ impl Prepared {
 /// loses it stops rather than mis-launches.
 fn needs_an_adapter_and_has_one(spec: &LaunchSpec) -> Result<()> {
     let needed = spec.provider_kind == ProviderKind::Codex && spec.agent != Agent::Codex;
-    if needed && spec.bridge.is_none() {
+    if needed && !spec.is_bridged() {
         bail!(
             "this {} launch runs on the Codex adapter, but the launch reached the point of \
              spawning without one; refusing rather than starting {} against a model it cannot \
@@ -1386,6 +1384,17 @@ mod tests {
             .map(|value| value.to_string_lossy().into_owned())
     }
 
+    fn plan_of(spec: &LaunchSpec) -> &crate::agents::claude_settings::SettingsPlan {
+        spec.settings_plan.as_ref().expect("a settings plan")
+    }
+
+    fn document_env(spec: &LaunchSpec) -> serde_json::Map<String, Value> {
+        plan_of(spec).document["env"]
+            .as_object()
+            .expect("an env block")
+            .clone()
+    }
+
     #[test]
     fn codex_to_claude_lists_every_model_in_the_claude_picker() {
         let catalog = ModelCatalog::built_in();
@@ -1404,16 +1413,12 @@ mod tests {
         )
         .unwrap();
 
-        let settings = option_value(&spec.args, "--settings").expect("--settings is injected");
-        let parsed: Value = serde_json::from_str(&settings).expect("valid settings JSON");
-        let picker = &parsed["modelPicker"];
-        let rows = picker["options"]
+        let picker = &plan_of(&spec).document["modelPicker"];
+        let ids: Vec<_> = picker["options"]
             .as_array()
-            .expect("modelPicker options")
-            .clone();
-        let ids: Vec<_> = rows
+            .unwrap()
             .iter()
-            .map(|row| row["model"].as_str().expect("model id"))
+            .map(|row| row["model"].as_str().unwrap())
             .collect();
         assert_eq!(
             ids,
@@ -1424,19 +1429,10 @@ mod tests {
                 "gpt-5.6-luna"
             ]
         );
-        assert_eq!(
-            rows[0]["label"].as_str(),
-            Some("GPT-6 Astra"),
-            "the most capable model is listed first"
-        );
-        assert_eq!(
-            picker["replaceBuiltInOptions"],
-            json!(true),
-            "the Claude lineup cannot be served through the Codex adapter"
-        );
+        assert_eq!(picker["replaceBuiltInOptions"], json!(true));
         assert!(
-            rows.iter().all(|row| row.get("capabilities").is_none()),
-            "the setting schema only accepts model, label, and description"
+            !spec.args.iter().any(|arg| arg == "--settings"),
+            "prepare puts it in"
         );
     }
 
@@ -1473,13 +1469,14 @@ mod tests {
             ..LaunchOverrides::default()
         };
         let passthrough = [
-            OsString::from("--model"),
-            OsString::from("gpt-5.6-luna"),
-            OsString::from("--effort"),
-            OsString::from("low"),
-            OsString::from("--settings"),
-            OsString::from("{}"),
-        ];
+            "--model",
+            "gpt-5.6-luna",
+            "--effort",
+            "low",
+            "--settings",
+            r#"{"theme":"dark"}"#,
+        ]
+        .map(OsString::from);
         let spec = build(
             &store(Config::default(), Credentials::default()),
             Agent::Claude,
@@ -1495,11 +1492,15 @@ mod tests {
             .map(|value| value.to_string_lossy())
             .collect::<Vec<_>>()
             .join(" ");
-        assert_eq!(rendered, "--model gpt-5.6-luna --effort low --settings {}");
+        assert_eq!(
+            rendered, "--model gpt-5.6-luna --effort low",
+            "their flags win; their --settings is merged, not forwarded"
+        );
+        assert_eq!(plan_of(&spec).document["theme"], "dark");
     }
 
     #[test]
-    fn codex_to_claude_hands_the_adapter_a_model_but_never_a_fixed_effort() {
+    fn codex_to_claude_runs_on_a_route_and_never_pins_an_effort() {
         let overrides = LaunchOverrides {
             model: Some("gpt-5.6-sol".into()),
             reasoning_effort: Some(ReasoningEffort::Max),
@@ -1515,25 +1516,61 @@ mod tests {
         )
         .unwrap();
 
-        let plan = spec.bridge.expect("Codex adapter plan");
-        assert_eq!(plan.model, "gpt-5.6-sol");
-        assert_eq!(plan.context_window, Some(272_000));
-        assert_eq!(plan.api, BridgeApi::Messages);
-        assert_eq!(plan.effort, None);
-        // Claude Code sends the effort with every request, so pinning it here
-        // would freeze the in-session effort slider.
         assert!(
-            !spec
-                .env
+            spec.bridge.is_none(),
+            "Claude Code never gets an in-process adapter now"
+        );
+        let route = spec.codex_route().expect("a Codex route");
+        assert!(crate::bridge_host::files::valid_route_id(&route.id));
+        assert_eq!(route.tiers.default, "gpt-5.6-sol");
+        assert_eq!(
+            spec.codex_auth_file.as_deref(),
+            Some(route.auth_file.as_path())
+        );
+        assert!(spec.is_bridged());
+        assert!(
+            !document_env(&spec)
                 .keys()
-                .any(|name| name.to_string_lossy().contains("EFFORT")),
-            "no environment variable may pin reasoning effort"
+                .any(|name| name.contains("EFFORT"))
+        );
+        assert!(
+            spec.env
+                .keys()
+                .all(|name| !name.to_string_lossy().starts_with("ANTHROPIC_")),
+            "nothing exported"
         );
     }
 
     #[test]
+    fn claude_agents_takes_alcs_defaults_after_the_subcommand() {
+        let overrides = LaunchOverrides {
+            model: Some("gpt-5.6-sol".into()),
+            reasoning_effort: Some(ReasoningEffort::High),
+            model_options: ModelCatalog::built_in().models,
+            ..LaunchOverrides::default()
+        };
+        let spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Claude,
+            Some("codex"),
+            &[OsString::from("agents")],
+            &overrides,
+        )
+        .unwrap();
+
+        let rendered = spec
+            .args
+            .iter()
+            .map(|value| value.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(rendered, "agents --model gpt-5.6-sol --effort high");
+        assert_eq!(plan_of(&spec).subcommand.as_deref(), Some("agents"));
+    }
+
+    #[test]
     fn claude_aliases_map_onto_the_codex_model_tiers() {
-        let mut spec = build(
+        let spec = build(
             &store(Config::default(), Credentials::default()),
             Agent::Claude,
             Some("codex"),
@@ -1545,30 +1582,25 @@ mod tests {
             },
         )
         .unwrap();
-        let plan = spec.bridge.clone().expect("Codex adapter plan");
 
-        agents::claude::apply_bridge(&mut spec, "http://127.0.0.1:9", &plan).unwrap();
-
-        let value = |name: &str| spec.env[OsStr::new(name)].to_string_lossy().into_owned();
+        let env = document_env(&spec);
+        let value = |name: &str| env[name].as_str().unwrap().to_owned();
         assert_eq!(value("ANTHROPIC_MODEL"), "gpt-5.6-terra");
         // The picker's Default row would otherwise resolve to a Claude model
         // that the Codex adapter cannot serve.
         assert_eq!(value("ANTHROPIC_DEFAULT_MODEL"), "gpt-5.6-terra");
         assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "gpt-5.6-luna");
         assert_eq!(value("ANTHROPIC_DEFAULT_SONNET_MODEL"), "gpt-5.6-terra");
-        // `opus` follows the catalog's most capable model, so a new
+        // `opus` and `fable` follow the catalog's most capable model, so a new
         // generation reaches the alias without another mapping to maintain.
         assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "gpt-6-astra");
+        assert_eq!(value("ANTHROPIC_DEFAULT_FABLE_MODEL"), "gpt-6-astra");
         assert!(
-            !spec
-                .env
-                .contains_key(OsStr::new("CLAUDE_CODE_SUBAGENT_MODEL")),
+            !env.contains_key("CLAUDE_CODE_SUBAGENT_MODEL"),
             "subagents follow the model chosen in the session"
         );
         assert!(
-            !spec
-                .env
-                .contains_key(OsStr::new("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")),
+            !env.contains_key("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"),
             "gateway discovery drops non-Claude model IDs, so alc lists them itself"
         );
     }
@@ -1603,7 +1635,7 @@ mod tests {
         let mut credentials = Credentials::default();
         credentials
             .api_keys
-            .insert("openrouter".into(), "secret".into());
+            .insert("openrouter".into(), "secret-openrouter-key".into());
         let spec = build(
             &store(Config::default(), credentials),
             Agent::Claude,
@@ -1612,52 +1644,69 @@ mod tests {
             &LaunchOverrides::default(),
         )
         .unwrap();
-        assert_eq!(
-            spec.env[OsStr::new("ANTHROPIC_BASE_URL")],
-            OsString::from("https://openrouter.ai/api")
+        let env = document_env(&spec);
+        assert_eq!(env["ANTHROPIC_BASE_URL"], "https://openrouter.ai/api");
+        assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "");
+        let helper = plan_of(&spec).document["apiKeyHelper"].as_str().unwrap();
+        assert!(
+            helper.contains("claude-credential") && helper.contains("profile:openrouter"),
+            "{helper}"
         );
-        assert_eq!(
-            spec.env[OsStr::new("ANTHROPIC_AUTH_TOKEN")],
-            OsString::from("secret")
+        assert!(
+            !serde_json::to_string(&plan_of(&spec).document)
+                .unwrap()
+                .contains("secret-openrouter-key")
+        );
+        assert!(
+            !spec
+                .env
+                .values()
+                .any(|value| value == "secret-openrouter-key")
+        );
+        // Still recorded, so a shared session can scrub it from the screen.
+        assert!(
+            spec.secret_values
+                .iter()
+                .any(|value| value == "secret-openrouter-key")
         );
     }
 
     fn ollama_claude_env(
         config: Config,
         overrides: &LaunchOverrides,
-    ) -> BTreeMap<OsString, OsString> {
-        build(
+    ) -> serde_json::Map<String, Value> {
+        let spec = build(
             &store(config, Credentials::default()),
             Agent::Claude,
             Some("ollama"),
             &[],
             overrides,
         )
-        .unwrap()
-        .env
+        .unwrap();
+        document_env(&spec)
     }
 
     #[test]
     fn ollama_claude_pins_every_alias_to_the_local_model() {
         let env = ollama_claude_env(Config::default(), &LaunchOverrides::default());
-        let value = |name: &str| env[OsStr::new(name)].to_string_lossy().into_owned();
-        assert_eq!(value("ANTHROPIC_BASE_URL"), "http://localhost:11434");
-        assert_eq!(value("ANTHROPIC_AUTH_TOKEN"), "ollama");
-        assert_eq!(value("ANTHROPIC_API_KEY"), "");
+        assert_eq!(env["ANTHROPIC_BASE_URL"], "http://localhost:11434");
+        assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "ollama");
+        assert_eq!(env["ANTHROPIC_API_KEY"], "");
         // Ollama serves only pulled models, so none of Claude Code's own
         // aliases may reach it as a Claude model id.
         for name in [
             "ANTHROPIC_MODEL",
             "ANTHROPIC_DEFAULT_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
             "ANTHROPIC_SMALL_FAST_MODEL",
         ] {
-            assert_eq!(value(name), "qwen3-coder", "{name}");
+            assert_eq!(env[name], "qwen3-coder", "{name}");
         }
-        assert_eq!(value("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"), "1");
-        assert!(!env.contains_key(OsStr::new("CLAUDE_CODE_MAX_CONTEXT_TOKENS")));
+        assert_eq!(env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1");
+        assert!(!env.contains_key("CLAUDE_CODE_MAX_CONTEXT_TOKENS"));
     }
 
     #[test]
@@ -1665,11 +1714,10 @@ mod tests {
         let mut config = Config::default();
         config.providers.get_mut("ollama").unwrap().small_model = Some("qwen3:4b".into());
         let env = ollama_claude_env(config, &LaunchOverrides::default());
-        let value = |name: &str| env[OsStr::new(name)].to_string_lossy().into_owned();
-        assert_eq!(value("ANTHROPIC_DEFAULT_SONNET_MODEL"), "qwen3-coder");
-        assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "qwen3-coder");
-        assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "qwen3:4b");
-        assert_eq!(value("ANTHROPIC_SMALL_FAST_MODEL"), "qwen3:4b");
+        assert_eq!(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "qwen3-coder");
+        assert_eq!(env["ANTHROPIC_DEFAULT_OPUS_MODEL"], "qwen3-coder");
+        assert_eq!(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "qwen3:4b");
+        assert_eq!(env["ANTHROPIC_SMALL_FAST_MODEL"], "qwen3:4b");
     }
 
     #[test]
@@ -1679,9 +1727,42 @@ mod tests {
             ..LaunchOverrides::default()
         };
         let env = ollama_claude_env(Config::default(), &overrides);
+        assert_eq!(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "65536");
+    }
+
+    /// The pins follow the kind, as they always have: an Ollama behind an
+    /// authenticating proxy still serves only what it has pulled.
+    #[test]
+    fn an_ollama_profile_with_a_key_keeps_its_pins_and_gets_a_helper() {
+        let mut config = Config::default();
+        let ollama = config.providers.get_mut("ollama").unwrap();
+        ollama.auth = crate::config::AuthStyle::Bearer;
+        ollama.api_key_env = None;
+        let mut credentials = Credentials::default();
+        credentials
+            .api_keys
+            .insert("ollama".into(), "proxy-key-12345678".into());
+        let spec = build(
+            &store(config, credentials),
+            Agent::Claude,
+            Some("ollama"),
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+        let env = document_env(&spec);
+        assert_eq!(env["ANTHROPIC_DEFAULT_FABLE_MODEL"], "qwen3-coder");
+        assert_eq!(env["ANTHROPIC_DEFAULT_OPUS_MODEL"], "qwen3-coder");
+        assert_eq!(env["CLAUDE_CODE_DISABLE_FAST_MODE"], "1");
         assert_eq!(
-            env[OsStr::new("CLAUDE_CODE_MAX_CONTEXT_TOKENS")],
-            OsString::from("65536")
+            env["ANTHROPIC_AUTH_TOKEN"], "",
+            "the helper supplies the key, not a placeholder"
+        );
+        assert!(
+            plan_of(&spec).document["apiKeyHelper"]
+                .as_str()
+                .unwrap()
+                .contains("profile:ollama")
         );
     }
 
@@ -1699,16 +1780,63 @@ mod tests {
             &LaunchOverrides::default(),
         )
         .unwrap();
+        let env = document_env(&spec);
         for name in [
             "ANTHROPIC_DEFAULT_MODEL",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
             "ANTHROPIC_SMALL_FAST_MODEL",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+            "CLAUDE_CODE_DISABLE_FAST_MODE",
             "API_FORCE_IDLE_TIMEOUT",
             "API_TIMEOUT_MS",
         ] {
-            assert!(!spec.env.contains_key(OsStr::new(name)), "{name}");
+            assert!(!env.contains_key(name), "{name}");
         }
+    }
+
+    #[test]
+    fn claude_on_its_own_login_gets_no_settings_document() {
+        let mut config = Config::default();
+        // No key variable to read, so an ANTHROPIC_API_KEY in the developer's
+        // own shell cannot turn this into a key-based launch.
+        config.providers.get_mut("anthropic").unwrap().api_key_env = None;
+        let spec = build(
+            &store(config, Credentials::default()),
+            Agent::Claude,
+            Some("anthropic"),
+            &[OsString::from("--settings"), OsString::from("mine.json")],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+        assert!(spec.settings_plan.is_none());
+        assert!(
+            spec.env_remove
+                .iter()
+                .any(|name| name == "ANTHROPIC_API_KEY")
+        );
+        assert_eq!(
+            spec.args,
+            ["--settings", "mine.json"].map(OsString::from),
+            "their --settings is theirs alone"
+        );
+    }
+
+    #[test]
+    fn session_commands_are_recognised_by_their_first_word() {
+        use crate::agents::claude::is_session_command;
+        for word in ["attach", "logs", "stop", "kill", "respawn", "rm", "daemon"] {
+            assert!(
+                is_session_command(&[OsString::from(word), OsString::from("7c5d")]),
+                "{word}"
+            );
+        }
+        assert!(!is_session_command(&[OsString::from("agents")]));
+        assert!(!is_session_command(&[
+            OsString::from("--bg"),
+            OsString::from("stop the build")
+        ]));
+        assert!(!is_session_command(&[]));
     }
 
     #[test]
@@ -2135,6 +2263,18 @@ mod tests {
             api: BridgeApi::Messages,
         });
         assert!(needs_an_adapter_and_has_one(&spec).is_ok());
+
+        // Claude Code runs on a route of the background bridge instead of an
+        // in-process adapter; a plan without a route is the same bug again.
+        let mut routed = empty_spec();
+        routed.provider_kind = ProviderKind::Codex;
+        routed.agent = Agent::Claude;
+        routed.settings_plan = LaunchSpec::saturated().settings_plan;
+        assert!(needs_an_adapter_and_has_one(&routed).is_ok());
+        if let Some(plan) = routed.settings_plan.as_mut() {
+            plan.route = None;
+        }
+        assert!(needs_an_adapter_and_has_one(&routed).is_err());
 
         // `alc codex` on the same profile talks to Codex directly, and a
         // plain provider needs no adapter at all.

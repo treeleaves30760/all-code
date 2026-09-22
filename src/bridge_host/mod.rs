@@ -20,10 +20,6 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::Store;
 
-#[allow(
-    dead_code,
-    reason = "the Claude launch writes the route records it reads back here, in the next task"
-)]
 pub(crate) mod files;
 mod serve;
 
