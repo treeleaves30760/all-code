@@ -460,19 +460,28 @@ pub(crate) fn take_user_settings(args: &[OsString]) -> Result<(Vec<OsString>, Op
 
 fn read_user_settings(value: &OsStr) -> Result<Value> {
     let text = value.to_string_lossy();
-    let parsed: Value = if text.trim_start().starts_with('{') {
-        serde_json::from_str(&text).context("the `--settings` JSON you passed does not parse")?
+    let inline = without_byte_order_mark(&text);
+    let parsed: Value = if inline.trim_start().starts_with('{') {
+        serde_json::from_str(inline).context("the `--settings` JSON you passed does not parse")?
     } else {
         let path = Path::new(value);
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read the `--settings` file {}", path.display()))?;
-        serde_json::from_str(&raw)
+        serde_json::from_str(without_byte_order_mark(&raw))
             .with_context(|| format!("{} is not valid JSON", path.display()))?
     };
     if !parsed.is_object() {
         bail!("`--settings` must be a JSON object");
     }
     Ok(parsed)
+}
+
+/// `text` without the one byte-order mark it may start with. Windows
+/// PowerShell 5.1 writes one at the start of every file it saves as UTF-8,
+/// and JSON lets a reader ignore it, but `serde_json` refuses it. A user's own
+/// settings must not be turned away for how their editor saved them.
+fn without_byte_order_mark(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
 /// Folds the user's settings over alc's: their keys win, and inside `env`
@@ -821,5 +830,34 @@ mod tests {
         assert!(broken.is_err());
         let missing = take_user_settings(&[OsString::from("--settings")]);
         assert!(missing.is_err());
+    }
+
+    /// Windows PowerShell 5.1 starts every file it saves as UTF-8 with a
+    /// byte-order mark. A user's own settings are not refused for one, from a
+    /// file or as JSON on the command line.
+    #[test]
+    fn settings_saved_with_a_byte_order_mark_are_still_read_and_merged() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("saved-by-powershell.json");
+        let mut contents = vec![0xEF, 0xBB, 0xBF];
+        contents.extend_from_slice(br#"{"theme":"dark"}"#);
+        std::fs::write(&file, &contents).unwrap();
+
+        let (kept, found) =
+            take_user_settings(&[OsString::from("--settings"), file.into_os_string()]).unwrap();
+        assert!(kept.is_empty(), "{kept:?}");
+        let user = found.expect("the file was read");
+        let mut document = codex();
+        merge_user_settings(&mut document, &user);
+        assert_eq!(document["theme"], "dark");
+        assert_eq!(
+            document["env"]["ANTHROPIC_MODEL"], "gpt-5.6-terra",
+            "ours stay"
+        );
+
+        let (_, inline) =
+            take_user_settings(&[OsString::from("--settings=\u{feff}{\"theme\":\"dark\"}")])
+                .unwrap();
+        assert_eq!(inline.expect("the JSON was read")["theme"], "dark");
     }
 }
