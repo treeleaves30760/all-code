@@ -1179,11 +1179,12 @@ mod tests {
     #[test]
     fn a_bridged_launch_keeps_its_bridge_and_its_file_setup() {
         let mut spec = LaunchSpec::for_test();
+        let options = crate::model_catalog::ModelCatalog::built_in().models;
         spec.bridge = Some(crate::launch::BridgePlan {
             model: "gpt-6-astra".to_owned(),
             effort: None,
             context_window: Some(272_000),
-            options: crate::model_catalog::ModelCatalog::built_in().models,
+            options: options.clone(),
             api: crate::launch::BridgeApi::Messages,
         });
         spec.codex_auth_file = Some(PathBuf::from("/work/codex/auth.json"));
@@ -1207,7 +1208,7 @@ mod tests {
         assert_eq!(plan.model, "gpt-6-astra");
         assert_eq!(plan.api, crate::launch::BridgeApi::Messages);
         assert_eq!(plan.context_window, Some(272_000));
-        assert_eq!(plan.options.len(), 4);
+        assert_eq!(plan.options, options);
         match back.file_setup.as_slice() {
             [crate::launch::FileSetup::WriteTemp { path, secret, .. }] => {
                 assert_eq!(path, &PathBuf::from("/tmp/alc-kimi.json"));

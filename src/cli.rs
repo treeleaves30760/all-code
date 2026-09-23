@@ -927,7 +927,7 @@ fn resolve_codex_defaults(
 
 /// The loosest effort the bundled bridge can actually carry.
 ///
-/// GPT-6 and the newer GPT-5.6 models accept `ultra`, and the bundled
+/// Every Codex model but the two Lunas accepts `ultra`, and the bundled
 /// claude-codex helper does not - its own effort enum stops at `max`, so a
 /// request carrying `ultra` is refused. Every bridged agent's effort reaches
 /// that helper one way or another: pinned through `CCP_CODEX_EFFORT` for the

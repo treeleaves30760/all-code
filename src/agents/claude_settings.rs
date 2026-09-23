@@ -641,8 +641,8 @@ mod tests {
         assert_eq!(value("ANTHROPIC_DEFAULT_FABLE_MODEL"), "gpt-6-astra");
         assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "gpt-6-astra");
         assert_eq!(value("ANTHROPIC_DEFAULT_SONNET_MODEL"), "gpt-5.6-terra");
-        assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "gpt-5.6-luna");
-        assert_eq!(value("ANTHROPIC_SMALL_FAST_MODEL"), "gpt-5.6-luna");
+        assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "gpt-6-luna");
+        assert_eq!(value("ANTHROPIC_SMALL_FAST_MODEL"), "gpt-6-luna");
         assert_eq!(value("CLAUDE_CODE_MAX_CONTEXT_TOKENS"), "272000");
         for name in [
             "CLAUDE_CODE_DISABLE_1M_CONTEXT",
@@ -973,7 +973,7 @@ mod tests {
             "their variable wins"
         );
         assert_eq!(
-            document["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-5.6-luna",
+            document["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-6-luna",
             "ours stay"
         );
         assert_eq!(document["theme"], "dark");

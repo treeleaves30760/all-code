@@ -928,6 +928,36 @@ fn codex_to_claude_accepts_explicit_model_and_effort() {
         ));
 }
 
+/// Nothing chosen anywhere - no model on the alc profile, none in the Codex
+/// config - starts Claude Code on GPT-6 Sol at its own default effort. The
+/// Codex home is a fresh directory, so the developer's own
+/// `~/.codex/config.toml` cannot decide the answer.
+#[test]
+fn codex_to_claude_starts_on_gpt_6_sol_when_nothing_names_a_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("CODEX_HOME", codex_home.path())
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model gpt-6-sol"))
+        .stdout(predicate::str::contains("--effort medium"));
+}
+
+/// The `openai` profile a fresh config starts with names GPT-6 Sol, which
+/// replaces GPT-5.6 Terra: ranked above it, and cheaper per output token.
+#[test]
+fn the_openai_profile_starts_on_gpt_6_sol() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("OPENAI_API_KEY", "secret")
+        .args(["--openai", "--dry-run", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("codex --model gpt-6-sol"));
+}
+
 #[test]
 fn generic_gpt_56_alias_uses_bridge_supported_sol() {
     let temp = tempfile::tempdir().unwrap();
@@ -953,6 +983,9 @@ fn codex_to_claude_offers_every_gpt_model_inside_claude_code() {
         .args(["--codex", "--dry-run", "claude"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("\"model\":\"gpt-6-astra\""))
+        .stdout(predicate::str::contains("\"model\":\"gpt-6-sol\""))
+        .stdout(predicate::str::contains("\"model\":\"gpt-6-luna\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-5.6-luna\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-5.6-terra\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-5.6-sol\""))
@@ -1013,8 +1046,10 @@ fn a_cache_written_by_an_older_alc_cannot_hide_a_model_alc_ships() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"model\":\"gpt-6-astra\""))
+        .stdout(predicate::str::contains("\"model\":\"gpt-6-sol\""))
+        .stdout(predicate::str::contains("\"model\":\"gpt-6-luna\""))
         .stdout(predicate::str::contains(
-            "catalog: gpt-6-astra restored from the catalog alc ships",
+            "catalog: gpt-6-astra, gpt-6-sol, gpt-6-luna restored from the catalog alc ships",
         ));
 }
 
@@ -1188,6 +1223,8 @@ fn bundled_model_catalog_is_available_offline() {
         .args(["models"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("gpt-6-sol"))
+        .stdout(predicate::str::contains("gpt-6-luna"))
         .stdout(predicate::str::contains("gpt-5.6-luna"))
         .stdout(predicate::str::contains("gpt-5.6-terra"))
         .stdout(predicate::str::contains("gpt-5.6-sol"))

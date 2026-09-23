@@ -770,7 +770,7 @@ pub(crate) fn resolve_codex_model(provider: &Provider) -> Result<String> {
             }
         }
     }
-    Ok("gpt-5.6-terra".to_owned())
+    Ok("gpt-6-sol".to_owned())
 }
 
 pub(crate) fn normalize_codex_model(model: &str) -> String {
@@ -1722,9 +1722,11 @@ mod tests {
             ids,
             [
                 "gpt-6-astra",
+                "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
-                "gpt-5.6-luna"
+                "gpt-5.6-luna",
+                "gpt-6-luna"
             ]
         );
         assert_eq!(picker["replaceBuiltInOptions"], json!(true));
@@ -1887,7 +1889,9 @@ mod tests {
         // The picker's Default row would otherwise resolve to a Claude model
         // that the Codex adapter cannot serve.
         assert_eq!(value("ANTHROPIC_DEFAULT_MODEL"), "gpt-5.6-terra");
-        assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "gpt-5.6-luna");
+        // `haiku` and Claude Code's background work land on the cheapest
+        // model Codex serves, which is the newest Luna, not the older one.
+        assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "gpt-6-luna");
         assert_eq!(value("ANTHROPIC_DEFAULT_SONNET_MODEL"), "gpt-5.6-terra");
         // `opus` and `fable` follow the catalog's most capable model, so a new
         // generation reaches the alias without another mapping to maintain.
@@ -2411,6 +2415,18 @@ mod tests {
 
         assert_eq!(codex_home_for(&provider).as_deref(), Some(home.path()));
         assert_eq!(resolve_codex_model(&provider).unwrap(), "gpt-5.6-luna");
+    }
+
+    /// Nothing names a model - not the profile, not the Codex config it
+    /// reads - so the session starts on GPT-6 Sol, the model Codex moves
+    /// GPT-5.6 Terra users to.
+    #[test]
+    fn a_codex_profile_that_names_no_model_starts_on_gpt_6_sol() {
+        let home = tempfile::tempdir().unwrap();
+        let mut provider = Provider::for_kind(ProviderKind::Codex);
+        provider.codex_home = Some(home.path().display().to_string());
+
+        assert_eq!(resolve_codex_model(&provider).unwrap(), "gpt-6-sol");
     }
 
     #[test]

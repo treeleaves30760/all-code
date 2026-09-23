@@ -497,7 +497,7 @@ mod tests {
         assert_eq!(value["apiKey"], json!("alc"));
 
         let models = value["models"].as_array().expect("models array");
-        assert_eq!(models.len(), 4);
+        assert_eq!(models.len(), 6);
         for model in models {
             assert_eq!(model["reasoning"], json!(true));
             assert!(model["contextWindow"].is_u64());
@@ -510,9 +510,11 @@ mod tests {
             ids,
             [
                 "gpt-6-astra",
+                "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
-                "gpt-5.6-luna"
+                "gpt-5.6-luna",
+                "gpt-6-luna"
             ]
         );
     }
