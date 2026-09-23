@@ -46,6 +46,7 @@ pub(crate) fn build(
         // The seven OpenAI-chat presets have no bespoke OpenCode provider id
         // of their own, so they are injected the same way as vLLM/Custom.
         ProviderKind::Vllm
+        | ProviderKind::Llamacpp
         | ProviderKind::Deepseek
         | ProviderKind::Moonshot
         | ProviderKind::Zai
@@ -85,7 +86,11 @@ pub(crate) fn build(
         let base_url = openai_style_base_url(provider)
             .with_context(|| format!("provider '{profile_name}' needs a base URL"))?;
         let package = match (provider.kind, provider.protocol) {
-            (ProviderKind::Ollama, _) => "@ai-sdk/openai-compatible",
+            // llama-server's streamed Responses events are not the ones the
+            // OpenAI SDK waits for (OpenCode fails with "text part … not
+            // found"), and its Chat Completions route is the one it has always
+            // had, so OpenCode takes that one as it does on Ollama.
+            (ProviderKind::Ollama | ProviderKind::Llamacpp, _) => "@ai-sdk/openai-compatible",
             (_, Protocol::AnthropicMessages) => "@ai-sdk/anthropic",
             (_, Protocol::OpenaiResponses | Protocol::Dual) => "@ai-sdk/openai",
             (_, Protocol::OpenaiChat) => "@ai-sdk/openai-compatible",

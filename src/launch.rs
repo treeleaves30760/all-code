@@ -842,11 +842,15 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 /// A provider's base URL as an OpenAI-compatible client expects it: Ollama's
 /// default `/api` root does not itself serve the OpenAI-shaped routes, so an
 /// `/v1` suffix is appended when the configured URL does not already end in
-/// one. Every other provider kind is returned unchanged (trailing slash
-/// trimmed). Shared by every agent builder that speaks OpenAI chat/responses.
+/// one - and for llama.cpp too, whose root is what Claude Code is given, so a
+/// profile written with the root still reaches the OpenAI routes. Every other
+/// provider kind is returned unchanged (trailing slash trimmed). Shared by
+/// every agent builder that speaks OpenAI chat/responses.
 pub(crate) fn openai_style_base_url(provider: &Provider) -> Option<String> {
     let base = provider.effective_base_url()?.trim_end_matches('/');
-    if provider.kind == ProviderKind::Ollama && !base.ends_with("/v1") {
+    if matches!(provider.kind, ProviderKind::Ollama | ProviderKind::Llamacpp)
+        && !base.ends_with("/v1")
+    {
         Some(format!("{base}/v1"))
     } else {
         Some(base.to_owned())
@@ -1674,6 +1678,168 @@ mod tests {
                 assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "alc");
             }
         }
+    }
+
+    fn llamacpp_store(key: Option<&str>) -> Store {
+        let mut config = Config::default();
+        let mut llamacpp = Provider::for_kind(ProviderKind::Llamacpp);
+        llamacpp.base_url = Some("http://127.0.0.1:8080/v1".into());
+        llamacpp.model = "qwen3.8-27b".into();
+        // Nothing in the test's environment may stand in for the saved key.
+        llamacpp.api_key_env = None;
+        config.providers.insert("brandy".into(), llamacpp);
+        let mut credentials = Credentials::default();
+        if let Some(key) = key {
+            credentials.api_keys.insert("brandy".into(), key.into());
+        }
+        store(config, credentials)
+    }
+
+    /// The whole Claude Code setup a llama-server needs, keyed or not: its
+    /// root rather than `/v1`, every alias on its one model, the capability
+    /// switches its chat template needs, and timeouts that outlast a long
+    /// prompt read.
+    #[test]
+    fn a_llama_cpp_profile_runs_claude_code_on_its_one_model() {
+        for key in [Some("never-print-this"), None] {
+            let spec = build(
+                &llamacpp_store(key),
+                Agent::Claude,
+                Some("brandy"),
+                &[],
+                &LaunchOverrides {
+                    context_window: Some(262_144),
+                    ..LaunchOverrides::default()
+                },
+            )
+            .unwrap();
+            let document = &plan_of(&spec).document;
+            let env = document_env(&spec);
+            assert_eq!(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:8080");
+            for name in [
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_DEFAULT_MODEL",
+                "ANTHROPIC_DEFAULT_FABLE_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "ANTHROPIC_SMALL_FAST_MODEL",
+            ] {
+                assert_eq!(env[name], "qwen3.8-27b", "{name} with key {key:?}");
+            }
+            assert_eq!(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "262144");
+            assert_eq!(env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1");
+            if std::env::var_os("CLAUDE_CODE_MODEL_CAPABILITIES").is_none() {
+                assert_eq!(
+                    env["CLAUDE_CODE_MODEL_CAPABILITIES"],
+                    "-mid_conv_system,-mid_conv_tool_change"
+                );
+            }
+            if std::env::var_os("CLAUDE_STREAM_IDLE_TIMEOUT_MS").is_none() {
+                assert_eq!(env["CLAUDE_STREAM_IDLE_TIMEOUT_MS"], "1800000");
+            }
+            match key {
+                Some(_) => {
+                    assert!(
+                        document["apiKeyHelper"]
+                            .as_str()
+                            .is_some_and(|line| line.contains("profile:brandy")),
+                        "{document}"
+                    );
+                    assert!(!document.to_string().contains("never-print-this"));
+                }
+                None => assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "alc"),
+            }
+        }
+    }
+
+    /// Ollama renders its own templates, which take a system message
+    /// anywhere, so its sessions keep the request shape they always had.
+    #[test]
+    fn only_a_server_that_renders_the_models_chat_template_turns_capabilities_off() {
+        use crate::agents::claude::local_server_env;
+        let names = |kind| {
+            local_server_env(kind, |_| false)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        for kind in [ProviderKind::Llamacpp, ProviderKind::Vllm] {
+            assert!(
+                names(kind).contains(&"CLAUDE_CODE_MODEL_CAPABILITIES"),
+                "{kind}"
+            );
+        }
+        assert!(!names(ProviderKind::Ollama).contains(&"CLAUDE_CODE_MODEL_CAPABILITIES"));
+        assert!(
+            local_server_env(ProviderKind::Llamacpp, |name| {
+                name == "CLAUDE_CODE_MODEL_CAPABILITIES"
+            })
+            .iter()
+            .all(|(name, _)| *name != "CLAUDE_CODE_MODEL_CAPABILITIES"),
+            "a value the user set is theirs"
+        );
+    }
+
+    #[test]
+    fn opencode_reads_llama_cpp_through_chat_completions() {
+        let spec = build(
+            &llamacpp_store(Some("k")),
+            Agent::Opencode,
+            Some("brandy"),
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+        let inline: Value = serde_json::from_str(
+            spec.env[OsStr::new("OPENCODE_CONFIG_CONTENT")]
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            inline["provider"]["alc-brandy"]["npm"],
+            json!("@ai-sdk/openai-compatible")
+        );
+        assert_eq!(
+            inline["provider"]["alc-brandy"]["options"]["baseURL"],
+            json!("http://127.0.0.1:8080/v1")
+        );
+    }
+
+    #[test]
+    fn a_llama_cpp_root_url_still_reaches_the_openai_routes() {
+        let mut store = llamacpp_store(None);
+        store.config.providers.get_mut("brandy").unwrap().base_url =
+            Some("http://127.0.0.1:8080/".into());
+        let codex = build(
+            &store,
+            Agent::Codex,
+            Some("brandy"),
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+        assert!(
+            has_arg(
+                &codex,
+                "model_providers.alc_brandy.base_url=\"http://127.0.0.1:8080/v1\""
+            ),
+            "{:?}",
+            codex.args
+        );
+        let claude = build(
+            &store,
+            Agent::Claude,
+            Some("brandy"),
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            document_env(&claude)["ANTHROPIC_BASE_URL"],
+            "http://127.0.0.1:8080"
+        );
     }
 
     fn option_value(args: &[OsString], name: &str) -> Option<String> {
@@ -2833,6 +2999,11 @@ mod tests {
             vllm.enabled = true;
             vllm.model = "test-model".into();
         }
+        let mut llamacpp = Provider::for_kind(ProviderKind::Llamacpp);
+        llamacpp.model = "test-model".into();
+        config.providers.insert("llamacpp".into(), llamacpp.clone());
+        llamacpp.protocol = Protocol::OpenaiChat;
+        config.providers.insert("llamacpp-chat".into(), llamacpp);
         for kind in [
             ProviderKind::Deepseek,
             ProviderKind::Moonshot,

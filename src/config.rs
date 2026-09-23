@@ -173,6 +173,7 @@ pub enum ProviderKind {
     Codex,
     Ollama,
     Vllm,
+    Llamacpp,
     Deepseek,
     Moonshot,
     Zai,
@@ -184,13 +185,14 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Anthropic,
         Self::Openai,
         Self::Openrouter,
         Self::Codex,
         Self::Ollama,
         Self::Vllm,
+        Self::Llamacpp,
         Self::Deepseek,
         Self::Moonshot,
         Self::Zai,
@@ -209,6 +211,7 @@ impl ProviderKind {
             Self::Codex => "codex",
             Self::Ollama => "ollama",
             Self::Vllm => "vllm",
+            Self::Llamacpp => "llamacpp",
             Self::Deepseek => "deepseek",
             Self::Moonshot => "moonshot",
             Self::Zai => "zai",
@@ -226,7 +229,9 @@ impl ProviderKind {
             Self::Openai | Self::Vllm => Protocol::OpenaiResponses,
             Self::Openrouter => Protocol::Dual,
             Self::Codex => Protocol::CodexNative,
-            Self::Ollama => Protocol::Dual,
+            // llama-server answers all three: Chat Completions and Responses
+            // under `/v1`, Anthropic Messages beside them.
+            Self::Ollama | Self::Llamacpp => Protocol::Dual,
             Self::Deepseek
             | Self::Moonshot
             | Self::Zai
@@ -245,6 +250,7 @@ impl ProviderKind {
             Self::Openrouter => Some("https://openrouter.ai/api/v1"),
             Self::Ollama => Some("http://localhost:11434"),
             Self::Vllm => Some("http://localhost:8000/v1"),
+            Self::Llamacpp => Some("http://localhost:8080/v1"),
             Self::Deepseek => Some("https://api.deepseek.com/v1"),
             Self::Moonshot => Some("https://api.moonshot.ai/v1"),
             Self::Zai => Some("https://api.z.ai/api/paas/v4"),
@@ -280,8 +286,20 @@ impl ProviderKind {
             Self::Groq => Some("GROQ_API_KEY"),
             Self::Xai => Some("XAI_API_KEY"),
             Self::Google => Some("GEMINI_API_KEY"),
+            // The variable llama-server itself reads `--api-key` from, so a
+            // key exported for the server reaches the agents too.
+            Self::Llamacpp => Some("LLAMA_API_KEY"),
             Self::Codex | Self::Ollama | Self::Vllm | Self::Custom => None,
         }
+    }
+
+    /// A server someone runs for themselves: it serves only the models it
+    /// loaded, answers a handful of requests at a time, and has no account to
+    /// sign in to. Each of the three also answers Anthropic Messages at its
+    /// root, beside the OpenAI routes under `/v1`, so Claude Code can drive it
+    /// whichever OpenAI flavour the profile names for the other agents.
+    pub fn is_local_server(self) -> bool {
+        matches!(self, Self::Ollama | Self::Vllm | Self::Llamacpp)
     }
 }
 
@@ -302,6 +320,9 @@ impl std::str::FromStr for ProviderKind {
             "codex" => Ok(Self::Codex),
             "ollama" => Ok(Self::Ollama),
             "vllm" | "v-llm" => Ok(Self::Vllm),
+            "llamacpp" | "llama.cpp" | "llama-cpp" | "llama_cpp" | "llama-server" => {
+                Ok(Self::Llamacpp)
+            }
             "deepseek" => Ok(Self::Deepseek),
             "moonshot" | "moonshotai" => Ok(Self::Moonshot),
             "zai" | "z-ai" => Ok(Self::Zai),
@@ -311,7 +332,7 @@ impl std::str::FromStr for ProviderKind {
             "google" | "gemini" => Ok(Self::Google),
             "custom" => Ok(Self::Custom),
             _ => bail!(
-                "unknown provider kind '{value}'; expected anthropic, openai, openrouter, codex, ollama, vllm, deepseek, moonshot, zai, minimax, groq, xai, google, or custom"
+                "unknown provider kind '{value}'; expected anthropic, openai, openrouter, codex, ollama, vllm, llamacpp, deepseek, moonshot, zai, minimax, groq, xai, google, or custom"
             ),
         }
     }
@@ -472,7 +493,7 @@ impl Provider {
             ProviderKind::Groq => "llama-3.3-70b-versatile",
             ProviderKind::Xai => "grok-build-0.1",
             ProviderKind::Google => "gemini-3.7-flash",
-            ProviderKind::Vllm | ProviderKind::Custom => "",
+            ProviderKind::Vllm | ProviderKind::Llamacpp | ProviderKind::Custom => "",
         };
         let auth = match kind {
             ProviderKind::Anthropic => AuthStyle::ApiKey,
@@ -486,7 +507,10 @@ impl Provider {
             | ProviderKind::Xai
             | ProviderKind::Google => AuthStyle::Bearer,
             ProviderKind::Codex => AuthStyle::Native,
-            ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::Custom => AuthStyle::None,
+            ProviderKind::Ollama
+            | ProviderKind::Vllm
+            | ProviderKind::Llamacpp
+            | ProviderKind::Custom => AuthStyle::None,
         };
         Self {
             kind,
@@ -551,20 +575,30 @@ impl Provider {
     }
 
     pub fn effective_anthropic_base_url(&self) -> Option<&str> {
-        self.anthropic_base_url
+        let url = self
+            .anthropic_base_url
             .as_deref()
             .filter(|value| !value.is_empty())
             .or_else(|| {
-                if self.protocol.supports_anthropic() {
+                if self.protocol.supports_anthropic() || self.kind.is_local_server() {
                     self.effective_base_url()
                 } else {
                     None
                 }
-            })
+            })?;
+        if !self.kind.is_local_server() {
+            return Some(url);
+        }
+        // A local server's Anthropic surface is its root, and every client of
+        // it appends `/v1/messages` itself. The `/v1` an OpenAI-style base URL
+        // ends in would have them ask for `/v1/v1/messages`.
+        let url = url.trim_end_matches('/');
+        Some(url.strip_suffix("/v1").unwrap_or(url))
     }
 
     pub fn speaks_anthropic(&self) -> bool {
         self.protocol.supports_anthropic()
+            || self.kind.is_local_server()
             || self
                 .anthropic_base_url
                 .as_deref()
@@ -727,6 +761,19 @@ impl Config {
     ) -> Result<(&'a str, &'a Provider)> {
         let requested = requested.unwrap_or_else(|| self.defaults.get(agent));
         if let Some((name, provider)) = self.providers.get_key_value(requested) {
+            // Said before compatibility: a disabled profile supports nothing,
+            // and blaming its protocol - the starter vLLM template's, say -
+            // sends someone looking for a problem it does not have.
+            if !provider.enabled {
+                let model = if provider.model.trim().is_empty() {
+                    " --model <id>"
+                } else {
+                    ""
+                };
+                bail!(
+                    "provider '{name}' is turned off; turn it on with `alc config upsert {name} --enable{model}`"
+                );
+            }
             if !provider.supports(agent) {
                 bail!(
                     "provider '{name}' ({}) is not compatible with {agent}; {}. Run `alc doctor` for the compatibility matrix",
@@ -1232,6 +1279,141 @@ enabled = true
                 "{kind}"
             );
         }
+    }
+
+    #[test]
+    fn llama_cpp_is_a_kind_of_its_own_with_llama_servers_defaults() {
+        for spelling in [
+            "llamacpp",
+            "llama.cpp",
+            "Llama-CPP",
+            "llama_cpp",
+            "llama-server",
+        ] {
+            assert_eq!(
+                spelling.parse::<ProviderKind>().unwrap(),
+                ProviderKind::Llamacpp,
+                "{spelling}"
+            );
+        }
+        let provider = Provider::for_kind(ProviderKind::Llamacpp);
+        assert_eq!(provider.kind.to_string(), "llamacpp");
+        assert_eq!(
+            provider.base_url.as_deref(),
+            Some("http://localhost:8080/v1")
+        );
+        assert_eq!(provider.protocol, Protocol::Dual);
+        assert_eq!(provider.auth, AuthStyle::None);
+        assert_eq!(provider.api_key_env.as_deref(), Some("LLAMA_API_KEY"));
+        assert!(
+            provider.model.is_empty(),
+            "the model is the server's to name"
+        );
+        let saved = toml::to_string(&provider).unwrap();
+        assert!(saved.contains("kind = \"llamacpp\""), "{saved}");
+    }
+
+    /// llama.cpp, vLLM and Ollama all answer Anthropic Messages at their root,
+    /// so Claude Code is theirs whichever OpenAI flavour a profile names for
+    /// the other agents - including the chat-only vLLM profiles people wrote
+    /// for a llama-server before alc knew the kind.
+    #[test]
+    fn a_local_server_serves_claude_at_its_root_whatever_its_protocol() {
+        let model = |kind, base: &str, protocol| {
+            let mut provider = Provider::for_kind(kind);
+            provider.model = "qwen3.8-27b".into();
+            provider.base_url = Some(base.into());
+            provider.protocol = protocol;
+            provider
+        };
+        for (provider, root) in [
+            (
+                model(
+                    ProviderKind::Llamacpp,
+                    "http://127.0.0.1:8080/v1",
+                    Protocol::Dual,
+                ),
+                "http://127.0.0.1:8080",
+            ),
+            (
+                model(
+                    ProviderKind::Vllm,
+                    "http://gpu:8000/v1/",
+                    Protocol::OpenaiChat,
+                ),
+                "http://gpu:8000",
+            ),
+            (
+                model(
+                    ProviderKind::Vllm,
+                    "http://gpu:8000/v1",
+                    Protocol::OpenaiResponses,
+                ),
+                "http://gpu:8000",
+            ),
+            (
+                model(
+                    ProviderKind::Ollama,
+                    "http://gpu-box:11434/v1",
+                    Protocol::Dual,
+                ),
+                "http://gpu-box:11434",
+            ),
+            (
+                model(
+                    ProviderKind::Ollama,
+                    "http://localhost:11434",
+                    Protocol::Dual,
+                ),
+                "http://localhost:11434",
+            ),
+        ] {
+            assert!(provider.speaks_anthropic(), "{}", provider.kind);
+            assert!(provider.supports(Agent::Claude), "{}", provider.kind);
+            assert_eq!(
+                provider.effective_anthropic_base_url(),
+                Some(root),
+                "{}",
+                provider.kind
+            );
+        }
+
+        // A hosted endpoint keeps its URL exactly as configured.
+        let mut openrouter = Provider::for_kind(ProviderKind::Openrouter);
+        openrouter.base_url = Some("https://openrouter.ai/api/v1".into());
+        assert_eq!(
+            openrouter.effective_anthropic_base_url(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert!(!Provider::for_kind(ProviderKind::Openai).speaks_anthropic());
+    }
+
+    #[test]
+    fn llama_cpp_reaches_every_agent() {
+        let mut provider = Provider::for_kind(ProviderKind::Llamacpp);
+        provider.model = "qwen3.8-27b".into();
+        for agent in Agent::ALL {
+            assert!(provider.supports(agent), "{agent}");
+        }
+        // A chat-only profile still gives up Codex, which needs Responses.
+        provider.protocol = Protocol::OpenaiChat;
+        assert!(!provider.supports(Agent::Codex));
+        assert!(provider.supports(Agent::Claude));
+    }
+
+    #[test]
+    fn a_turned_off_profile_says_so_rather_than_blaming_its_protocol() {
+        let config = Config::default();
+        let error = config
+            .resolve(Agent::Claude, Some("vllm"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("provider 'vllm' is turned off")
+                && error.contains("alc config upsert vllm --enable --model <id>"),
+            "{error}"
+        );
+        assert!(!error.contains("not compatible"), "{error}");
     }
 }
 

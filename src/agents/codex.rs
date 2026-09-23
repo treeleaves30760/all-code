@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use crate::config::{AuthStyle, Provider, ProviderKind, Store};
 use crate::launch::{
     LaunchOverrides, LaunchSpec, has_effort_override, has_model_override, has_option, key_or_error,
-    toml_string,
+    openai_style_base_url, toml_string,
 };
 
 pub(crate) fn build(
@@ -75,8 +75,7 @@ pub(crate) fn build(
             provider.protocol
         );
     }
-    let base_url = provider
-        .effective_base_url()
+    let base_url = openai_style_base_url(provider)
         .with_context(|| format!("provider '{profile_name}' needs a base URL"))?;
     let provider_id = codex_provider_id(profile_name);
 
@@ -104,7 +103,7 @@ pub(crate) fn build(
     push_codex_config(
         &mut spec.args,
         &format!("model_providers.{provider_id}.base_url"),
-        toml_string(base_url),
+        toml_string(&base_url),
     );
     push_codex_config(
         &mut spec.args,

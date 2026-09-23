@@ -156,6 +156,80 @@ fn the_fake_ollama_server_answers_a_body_sent_after_its_head() {
     assert!(response.contains("gemma4.context_length"), "{response}");
 }
 
+/// A stand-in llama-server started with `--api-key test-key`: it refuses
+/// anything without that key, lists one model, reports a per-slot context in
+/// `/props`, and has an Anthropic Messages route that refuses an empty body
+/// the way the real one does. It serves until the test process exits.
+fn serve_llamacpp() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake llama-server");
+    let address = listener.local_addr().expect("fake llama-server address");
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let request = read_request(&mut stream);
+            let mut words = request.split_whitespace();
+            let (method, path) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
+            let keyed = request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-key");
+            let (status, body) = if !keyed {
+                (
+                    "401 Unauthorized",
+                    r#"{"error":{"message":"Invalid API Key","type":"authentication_error","code":401}}"#,
+                )
+            } else if method == "GET" && path == "/v1/models" {
+                (
+                    "200 OK",
+                    r#"{"object":"list","data":[{"id":"qwen3.8-27b","aliases":["qwen3.8-27b"],"owned_by":"llamacpp","meta":{"n_ctx":262144,"n_ctx_train":262144}}]}"#,
+                )
+            } else if method == "GET" && path == "/props" {
+                (
+                    "200 OK",
+                    r#"{"default_generation_settings":{"n_ctx":65536},"total_slots":4,"build_info":"b1234-test"}"#,
+                )
+            } else if method == "POST" && path == "/v1/messages" {
+                (
+                    "500 Internal Server Error",
+                    r#"{"error":{"code":500,"message":"'messages' is required","type":"server_error"}}"#,
+                )
+            } else {
+                (
+                    "404 Not Found",
+                    r#"{"error":{"message":"File Not Found","type":"not_found_error","code":404}}"#,
+                )
+            };
+            respond(stream, status, body);
+        }
+    });
+    format!("http://{address}/v1")
+}
+
+fn llamacpp_profile(temp: &tempfile::TempDir, base_url: &str, key: Option<&str>) {
+    alc(temp)
+        .args([
+            "config",
+            "upsert",
+            "brandy",
+            "--kind",
+            "llama.cpp",
+            "--model",
+            "qwen3.8-27b",
+            "--base-url",
+            base_url,
+        ])
+        .assert()
+        .success();
+    if let Some(key) = key {
+        alc(temp)
+            .args(["config", "key", "brandy", "--stdin"])
+            .write_stdin(key)
+            .assert()
+            .success();
+    }
+}
+
 fn ollama_profile(temp: &tempfile::TempDir, base_url: &str) {
     alc(temp).args(["config", "init"]).assert().success();
     alc(temp)
@@ -873,6 +947,97 @@ fn doctor_checks_the_ollama_model() {
     assert!(output.contains("gemma4:12b"), "{output}");
     assert!(output.contains("tools"), "{output}");
     assert!(output.contains("131072 tokens of context"), "{output}");
+}
+
+#[test]
+fn llamacpp_claude_dry_run_asks_the_server_for_its_context_with_the_key() {
+    let temp = tempfile::tempdir().unwrap();
+    llamacpp_profile(&temp, &serve_llamacpp(), Some("test-key"));
+    let assert = alc(&temp)
+        .env_remove("LLAMA_API_KEY")
+        .env_remove("CLAUDE_CODE_MODEL_CAPABILITIES")
+        .env_remove("CLAUDE_STREAM_IDLE_TIMEOUT_MS")
+        .args(["--llamacpp", "--dry-run", "claude"])
+        .assert()
+        .success();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    for expected in [
+        "provider: brandy (llamacpp)",
+        "\"ANTHROPIC_BASE_URL\":\"http://127.0.0.1:",
+        "\"ANTHROPIC_DEFAULT_HAIKU_MODEL\":\"qwen3.8-27b\"",
+        "\"ANTHROPIC_DEFAULT_OPUS_MODEL\":\"qwen3.8-27b\"",
+        // The per-slot context from /props, not the model's metadata.
+        "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"65536\"",
+        "\"CLAUDE_CODE_MODEL_CAPABILITIES\":\"-mid_conv_system,-mid_conv_tool_change\"",
+        "\"CLAUDE_STREAM_IDLE_TIMEOUT_MS\":\"1800000\"",
+        "claude-credential",
+    ] {
+        assert!(output.contains(expected), "missing {expected} in {output}");
+    }
+    assert!(!output.contains("/v1\",\"ANTHROPIC_DEFAULT"), "{output}");
+    assert!(
+        !output.contains("test-key"),
+        "the key never reaches the plan"
+    );
+}
+
+#[test]
+fn llamacpp_claude_dry_run_works_without_a_running_server() {
+    let temp = tempfile::tempdir().unwrap();
+    llamacpp_profile(&temp, "http://127.0.0.1:9/v1", None);
+    alc(&temp)
+        .env_remove("LLAMA_API_KEY")
+        .args(["--llama-cpp", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"ANTHROPIC_BASE_URL\":\"http://127.0.0.1:9\"",
+        ))
+        // No key saved, so nothing for Claude Code to fetch one with.
+        .stdout(predicate::str::contains("apiKeyHelper").not())
+        .stdout(predicate::str::contains("CLAUDE_CODE_MAX_CONTEXT_TOKENS").not());
+}
+
+#[test]
+fn doctor_checks_the_llamacpp_server() {
+    let temp = tempfile::tempdir().unwrap();
+    llamacpp_profile(&temp, &serve_llamacpp(), Some("test-key"));
+    let assert = alc(&temp)
+        .env_remove("LLAMA_API_KEY")
+        .args(["doctor"])
+        .assert();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(output.contains("llama.cpp and vLLM"), "{output}");
+    assert!(output.contains("llama.cpp b1234-test"), "{output}");
+    assert!(output.contains("65536 tokens of context"), "{output}");
+    assert!(output.contains("Anthropic Messages"), "{output}");
+}
+
+#[test]
+fn doctor_names_the_missing_key_for_a_llamacpp_server() {
+    let temp = tempfile::tempdir().unwrap();
+    llamacpp_profile(&temp, &serve_llamacpp(), None);
+    let assert = alc(&temp)
+        .env_remove("LLAMA_API_KEY")
+        .args(["doctor"])
+        .assert()
+        .failure();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(output.contains("wants an API key (401)"), "{output}");
+    assert!(output.contains("alc config key brandy"), "{output}");
+}
+
+#[test]
+fn a_turned_off_profile_is_reported_as_turned_off() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--vllm", "--dry-run", "claude"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("provider 'vllm' is turned off"))
+        .stderr(predicate::str::contains(
+            "alc config upsert vllm --enable --model <id>",
+        ));
 }
 
 #[test]
