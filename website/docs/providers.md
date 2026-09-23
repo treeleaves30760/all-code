@@ -2,7 +2,7 @@
 id: providers
 title: Provider compatibility
 sidebar_position: 5
-description: Which LLM providers work with each of the eight coding agents, the fourteen built-in provider-kind presets and their default URLs, key envs and models.
+description: Which LLM providers work with each of the eight coding agents, the fifteen built-in provider-kind presets and their default URLs, key envs and models.
 keywords:
   - anthropic messages api
   - openai responses api
@@ -46,6 +46,7 @@ overrides.
 | `codex` | — (native `codex login`) | — | — |
 | `ollama` | `http://localhost:11434` | — | `qwen3-coder` |
 | `vllm` | `http://localhost:8000/v1` | — | — (ships disabled) |
+| `llamacpp` | `http://localhost:8080/v1` | `LLAMA_API_KEY` | — (the name the server lists) |
 | `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `deepseek-v4-pro` |
 | `moonshot` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | `kimi-k3` |
 | `zai` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | `glm-5.3` |
@@ -71,7 +72,9 @@ runs on them directly:
 | `zai` | `https://api.z.ai/api/anthropic` |
 | `minimax` | `https://api.minimax.io/anthropic` |
 
-## Claude Code on a local Ollama model
+## Claude Code on a local server
 
-Moved to [Local models](./local-models.md), which covers what `alc --ollama
-claude` sets and how to keep the first turn short on a laptop.
+Ollama, llama.cpp and vLLM each answer Anthropic Messages at their root, beside
+the OpenAI routes, so Claude Code runs on all three whichever OpenAI protocol a
+profile names for the other agents. [Local models](./local-models.md) covers
+what alc sets for each and how to keep the first turn short.

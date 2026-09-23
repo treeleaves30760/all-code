@@ -73,7 +73,7 @@ for Anthropic, OpenAI, OpenRouter and Ollama profiles, and `alc-<profile>` for
 every other kind.
 
 A full `provider.<id>` object goes into the same JSON: always for Ollama,
-vLLM, custom and the newer presets; for the first four only when the base URL
+vLLM, llama.cpp, custom and the newer presets; for the first four only when the base URL
 has been pointed away from that kind's default. `options.apiKey` appears only
 when the profile needs a key, so a default Ollama profile gets none.
 

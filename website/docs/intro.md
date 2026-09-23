@@ -67,7 +67,7 @@ one at launch.
 
 [Any provider](./providers.md)
 
-Anthropic, OpenAI, OpenRouter, Ollama, vLLM, DeepSeek, Moonshot, Z.ai,
+Anthropic, OpenAI, OpenRouter, Ollama, llama.cpp, vLLM, DeepSeek, Moonshot, Z.ai,
 MiniMax, Groq, xAI, Google, or your own endpoint. Change it for one run with
 a flag.
 
