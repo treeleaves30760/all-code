@@ -9,6 +9,8 @@ keywords:
   - codex subscription
   - chatgpt plan coding agent
   - gpt-6-astra
+  - gpt-6-sol
+  - gpt-6-luna
   - reasoning effort
   - 中文
 ---
@@ -42,9 +44,11 @@ Claude Code 會把這幾個列進它自己的 `/model` 選單：
 | 模型 | 適合的情境 | Codex 預設強度 |
 | --- | --- | --- |
 | `gpt-6-astra` | GPT-6。能力最強，適合複雜吃重的工作 | `medium` |
-| `gpt-5.6-sol` | 前沿等級的能力，適合最困難的專業工作 | `low` |
-| `gpt-5.6-terra` | 日常寫程式的均衡選擇，建議從這個開始 | `medium` |
-| `gpt-5.6-luna` | 快、便宜，適合大量的例行工作 | `medium` |
+| `gpt-6-sol` | GPT-6。日常寫程式與代理式工作，建議從這個開始 | `medium` |
+| `gpt-6-luna` | GPT-6。快、最便宜，適合快速修正與大量的例行工作 | `medium` |
+| `gpt-5.6-sol` | 上一代，適合複雜的專業工作 | `low` |
+| `gpt-5.6-terra` | 上一代，日常寫程式的均衡選擇 | `medium` |
+| `gpt-5.6-luna` | 上一代，快、便宜 | `medium` |
 
 橋接本身不保留任何允許清單：收到什麼 slug 就往上游送，由 chatgpt.com 決定，
 所以 alc 沒有追蹤的模型，一樣可以用 `--model` 指名使用。這正是為什麼一個新模型
@@ -53,7 +57,7 @@ Claude Code 會把這幾個列進它自己的 `/model` 選單：
 ## 每一個 Claude 模型都變成 Codex 模型
 
 在 `alc --codex claude` 底下，沒有任何一個請求會送到 Claude 模型：`/model`
-選單就列這四個、不會有別的，Claude Code 所有的別名 —— `opus`、`sonnet`、
+選單就列這六個、不會有別的，Claude Code 所有的別名 —— `opus`、`sonnet`、
 `haiku`、`fable`、`best`、`opusplan` —— 都會落在其中一個上，而指名完整名稱的
 Claude 模型，則由同一級的 Codex 模型來回答。Claude Code 自己的背景工作也走同
 一條路，所以一個標題或一份摘要花掉的是 Codex 的額度，而不是一個送去 Anthropic
@@ -67,15 +71,15 @@ session](./background-sessions.md#每一個-claude-模型都變成-codex-模型)
 每個模型都接受 `low`、`medium`、`high`、`xhigh` 或 `max`。強度越高，模型思考的
 空間越大，也越吃你的額度。
 
-`gpt-6-astra` 與 GPT-5.6 系列另外提供 `ultra`：原生的 `alc codex` 用得到，橋接
+除了兩個 Luna 之外，每個模型都另外提供 `ultra`：原生的 `alc codex` 用得到，橋接
 則不行。alc 會在啟動時把它降到 `max` 並明說，而不是讓請求在 session 進行到一半
 才被拒絕。
 
 ## 換一個起點
 
 ```sh
-alc --codex claude --model gpt-5.6-luna --effort low
-alc --codex claude --model gpt-5.6-terra --effort medium --save
+alc --codex claude --model gpt-6-luna --effort low
+alc --codex claude --model gpt-6-sol --effort medium --save
 ```
 
 `--save` 會把兩者一起存進 provider profile。沒有這些參數時，session 的起始值

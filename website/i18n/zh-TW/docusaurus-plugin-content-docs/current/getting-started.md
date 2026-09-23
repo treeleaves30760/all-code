@@ -123,7 +123,7 @@ error: Codex credentials were not found at ~/.codex/auth.json; run `codex login`
 error: 'claude' is not installed or not on PATH; install it first, then retry `alc claude`: cannot find binary path
 ```
 
-Claude Code 會以 `gpt-5.6-terra` 搭配 `medium` 推理強度啟動 —— 或是你自己
+Claude Code 會以 `gpt-6-sol` 搭配 `medium` 推理強度啟動 —— 或是你自己
 `~/.codex/config.toml` 裡指定的那一組 —— 而 `/model` 選單裡會列出每一個 GPT
 模型。模型、推理強度分級，以及另外七個 agent，都在 [Codex
 橋接](./codex-to-claude.md)。

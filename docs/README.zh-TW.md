@@ -38,7 +38,7 @@ error: Codex credentials were not found at ~/.codex/auth.json; run `codex login`
 error: 'claude' is not installed or not on PATH; install it first, then retry `alc claude`: cannot find binary path
 ```
 
-**你會得到什麼。** Claude Code 會以 `gpt-5.6-terra`、`medium` 強度啟動 ——
+**你會得到什麼。** Claude Code 會以 `gpt-6-sol`、`medium` 強度啟動 ——
 如果你以前用過 Codex CLI，就以你自己的 `~/.codex/config.toml` 裡已經寫好的
 模型與強度啟動 —— 帶著 Codex 真正的 272k context window，而不是 Claude Code
 對它不認得的 model ID 假設的 200k，而且 Codex 提供的每個 GPT 模型都會出現在
@@ -47,15 +47,17 @@ error: 'claude' is not installed or not on PATH; install it first, then retry `a
 | 模型 | 適合的情境 | Codex 預設強度 |
 | --- | --- | --- |
 | `gpt-6-astra` | GPT-6，能力最強，適合複雜且吃重的工作 | `medium` |
-| `gpt-5.6-sol` | 前沿能力，適合最困難的專業工作 | `low` |
-| `gpt-5.6-terra` | 日常編碼的均衡選擇，建議從這個開始 | `medium` |
-| `gpt-5.6-luna` | 速度快、費用低，適合大量的例行工作 | `medium` |
+| `gpt-6-sol` | GPT-6，日常編碼與代理式工作，建議從這個開始 | `medium` |
+| `gpt-6-luna` | GPT-6，速度快、費用最低，適合快速修正與大量的例行工作 | `medium` |
+| `gpt-5.6-sol` | 上一代，適合複雜的專業工作 | `low` |
+| `gpt-5.6-terra` | 上一代，日常編碼的均衡選擇 | `medium` |
+| `gpt-5.6-luna` | 上一代，速度快、費用低 | `medium` |
 
 進到 session 後，用 `/model` 換模型，該畫面的左右方向鍵可調整推理強度；
 `/effort` 則直接指定等級。想單次換掉起始值，或用在腳本裡：
 
 ```sh
-alc --codex claude --model gpt-5.6-luna --effort low
+alc --codex claude --model gpt-6-luna --effort low
 ```
 
 **之後你直接跑 `claude`，還是會連到 Anthropic。** 那個選單會把你的選擇寫進
@@ -383,27 +385,27 @@ ID，等上游改名或棄用某個模型時，再用 `alc config upsert` 修改
 
 ## Codex 橋接
 
-alc 追蹤四個 Codex 模型 —— 就是上面表格裡的那四個 —— 並從已安裝的 Codex CLI
+alc 追蹤六個 Codex 模型 —— 就是上面表格裡的那六個 —— 並從你的 ChatGPT 帳號
 同步它們的細節。橋接本身不保留任何允許清單：收到什麼 slug 就往上游送，由
 chatgpt.com 決定，所以一個 alc 沒被教過的模型，仍然可以在 Codex 推出的當天用
 `--model` 指名叫到。1.5.0 的 `gpt-6-astra` 就是這樣能用起來的：當時 alc 所依賴
 的那個橋接裡寫死的清單，落後了一個版本。
 
 **推理強度。** 每個模型都接受 `low`、`medium`、`high`、`xhigh`、`max`。強度越
-高，模型思考的空間越大，但也會花更多時間與額度。`gpt-6-astra` 與較新的 GPT-5.6
-模型另外提供高於 `max` 的 `ultra` 一級。這一級可以用原生的 `alc codex` 使用，但
+高，模型思考的空間越大，但也會花更多時間與額度。除了兩個 Luna 之外，每個模型
+都另外提供高於 `max` 的 `ultra` 一級。這一級可以用原生的 `alc codex` 使用，但
 **無法**透過橋接：內建 helper 自己的強度範圍到 `max` 為止，所以 alc 會在啟動時
 把它降到 `max` 並明說，而不是讓請求在 session 進行到一半被拒絕。
 
 上游的最新細節可參考 OpenAI 的
 [模型選擇指南](https://developers.openai.com/api/docs/guides/latest-model)、
-[Luna 說明](https://developers.openai.com/api/docs/models/gpt-5.6-luna)與
-[Sol 說明](https://developers.openai.com/api/docs/models/gpt-5.6-sol)。
+[Sol 說明](https://developers.openai.com/api/docs/models/gpt-6-sol)與
+[Luna 說明](https://developers.openai.com/api/docs/models/gpt-6-luna)。
 
 **挑選預設值。**
 
 ```sh
-alc --codex claude --model gpt-5.6-terra --effort medium --save
+alc --codex claude --model gpt-6-sol --effort medium --save
 ```
 
 `--save` 會把兩者都存進選定的 alc provider。沒有這些參數時，session 的起始值
@@ -668,7 +670,7 @@ ticket 五分鐘後過期，而 `alc confirm` 在沒有控制終端機的情況�
 alc config init
 alc config show
 alc config path
-alc config upsert codex --kind codex --model gpt-5.6-terra --effort medium
+alc config upsert codex --kind codex --model gpt-6-sol --effort medium
 alc config upsert work --kind openrouter --model anthropic/claude-sonnet-4.6
 printf '%s' "$OPENROUTER_API_KEY" | alc config key work --stdin
 alc config set-default claude work
