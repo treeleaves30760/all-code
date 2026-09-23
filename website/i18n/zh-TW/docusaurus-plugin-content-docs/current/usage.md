@@ -99,7 +99,7 @@ profile 叫這個種類的名字、而又有好幾個是同一種時，捷徑才
 | `minimax` | 每個視窗剩下的請求數 |
 | `zai` | token 視窗與點數餘額 |
 
-其餘的 —— OpenAI、Groq、xAI、Google、Ollama、vLLM、自訂端點 —— 一律回報
+其餘的 —— OpenAI、Groq、xAI、Google、Ollama、vLLM、llama.cpp、自訂端點 —— 一律回報
 `no quota API`，因為沒有一家為 API key 提供這種查詢。這些查詢一定是送到廠商自己的
 端點，所以指向 proxy 的 profile 會被回報成沒有額度 API，而不是把金鑰送去一台並非
 發出這把金鑰的主機。

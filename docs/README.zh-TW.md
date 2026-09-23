@@ -196,7 +196,7 @@ Code，普通的 `claude attach` 也一樣：那個 session 本來就帶著它�
 ## 任何 provider 都行，不只 Codex
 
 `codex login` 是最短的一條路，不是唯一的一條。八個 agent 中的任何一個都可以
-指向 Anthropic、OpenAI API、OpenRouter、本機的 Ollama 或 vLLM 伺服器、
+指向 Anthropic、OpenAI API、OpenRouter、本機的 Ollama、llama.cpp 或 vLLM 伺服器、
 DeepSeek、Moonshot、Z.ai、MiniMax、Groq、xAI、Google，或任何自訂端點 ——
 也可以只替這一次執行換掉，什麼都不用改。
 
@@ -206,17 +206,18 @@ alc claude                 # 每個 agent 各用自己設定好的預設值
 alc --openrouter codex
 alc --deepseek pi
 alc --ollama claude
+alc --llamacpp claude
 alc -p local-vllm opencode
 ```
 
 `--provider`（或 `-p`）接受 profile 名稱；當某個 kind 只有一個 profile 時，
 也可以直接寫 kind。捷徑旗標 `--anthropic`、`--openai`、`--openrouter`、
-`--codex`、`--ollama`、`--vllm`、`--deepseek`、`--moonshot`、`--zai`、
-`--minimax`、`--groq`、`--xai`、`--google` 效果相同。初始設定內含 Anthropic、
+`--codex`、`--ollama`、`--vllm`、`--llamacpp`、`--deepseek`、`--moonshot`、
+`--zai`、`--minimax`、`--groq`、`--xai`、`--google` 效果相同。初始設定內含 Anthropic、
 OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本；key 存在
 本機或從環境變數讀取，而環境變數的優先權比較高。
 
-這八個 agent 講的模型協定並不完全相同，十四種 provider kind 對外提供的協定
+這八個 agent 講的模型協定並不完全相同，十五種 provider kind 對外提供的協定
 也不盡相同，所以 alc 會在啟動前先驗證組合，而不是送出一個注定失敗的請求。
 [Provider 與 agent](#provider-與-agent) 列出每一種 kind 的端點、金鑰環境
 變數與協定。
@@ -285,7 +286,7 @@ alc doctor
 `alc doctor` 會回報環境與憑證路徑、全部八個 agent 的執行檔、每個 provider
 profile 對照全部八個 agent 的結果、解析後的各 agent 預設值、殘留在
 `~/.claude/settings.json` 裡被釘住的 GPT 模型、Codex 橋接的模型、推理強度
-與 `codex login` 狀態、已啟用的 Ollama profile 對照執行中伺服器的檢查，
+與 `codex login` 狀態、已啟用的 Ollama、llama.cpp 或 vLLM profile 對照其執行中伺服器的檢查，
 以及遠端控制的現況 —— 最後是一份問題摘要，每一項都附上修法。只要找到
 其中一個問題，它就會以非零狀態結束。
 
@@ -349,7 +350,8 @@ alc --provider codex-work claude
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | anthropic, responses, chat | 可 |
 | `codex` | —（原生 `codex login`） | — | native | 可（橋接） |
 | `ollama` | `http://localhost:11434` | — | anthropic, responses, chat | 可 |
-| `vllm` | `http://localhost:8000/v1` | — | responses, chat | 否 |
+| `vllm` | `http://localhost:8000/v1` | — | responses, chat (+ anthropic) | 可 |
+| `llamacpp` | `http://localhost:8080/v1` | `LLAMA_API_KEY` | anthropic, responses, chat | 可 |
 | `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | chat (+ anthropic) | 可 |
 | `moonshot` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | chat (+ anthropic) | 可 |
 | `zai` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | chat (+ anthropic) | 可 |
@@ -361,7 +363,10 @@ alc --provider codex-work claude
 
 `deepseek`、`moonshot`、`zai`、`minimax` 都在主要的 OpenAI-chat 端點之外，
 各自另外提供一個 Anthropic 相容的 base URL（見 `alc config show`）——
-這正是這四個 kind 不需要額外設定就「Claude 可用」的原因。預設值只是
+這正是這四個 kind 不需要額外設定就「Claude 可用」的原因。`ollama`、`vllm`、
+`llamacpp` 則是本機伺服器：它們都在根路徑上提供 Anthropic Messages，和 `/v1`
+底下的 OpenAI 路由並列，所以不論 profile 替其他 agent 指定哪一種協定，Claude
+Code 都能跑（見[本機模型](#本機模型)）。預設值只是
 起始值：執行 `alc config show` 可以看到 profile 目前實際使用的 model
 ID，等上游改名或棄用某個模型時，再用 `alc config upsert` 修改。
 
@@ -473,13 +478,14 @@ Claude 的通用預設值。
 
 ## 本機模型
 
-`alc --ollama claude` 會把 Claude Code 指向 Ollama 伺服器的 Anthropic Messages
-端點。本機伺服器只提供已經 pull 下來的模型，而且一次只回答一個請求，所以 alc
-對這種 session 的設定和雲端 provider 不同：每一個模型別名
-（`ANTHROPIC_DEFAULT_MODEL` 以及 sonnet／opus／haiku 三層）都釘在 profile 的
-模型上，這樣 Claude Code 永遠不會向 Ollama 要它沒有的 model ID；關掉非必要的
-附帶流量；從 `/api/ps` 或 `/api/show` 讀出真正的 context window；第一個 token
-的逾時拉長到三十分鐘。
+`alc --ollama claude`、`alc --llamacpp claude` 和 `alc --vllm claude` 會把
+Claude Code 指向本機伺服器的 Anthropic Messages 端點 —— 也就是它的根路徑，和
+`/v1` 底下的 OpenAI 路由並列。本機伺服器只提供它載入的模型，一次只回答一個
+（或少數幾個）請求，所以 alc 對這種 session 的設定和雲端 provider 不同：每一個
+模型別名（`ANTHROPIC_DEFAULT_MODEL` 以及 sonnet／opus／haiku 三層）都釘在
+profile 的模型上，這樣 Claude Code 永遠不會向伺服器要它沒有的 model ID；關掉
+非必要的附帶流量；從伺服器讀出真正的 context window；第一個 token 的逾時拉長到
+三十分鐘。
 
 最後這一項比聽起來重要。Claude Code 每個 session 的第一個請求大約有 25k 到 40k
 tokens —— 系統提示、工具 schema、專案內容 —— 而筆電等級的模型每秒只讀得了幾十
@@ -497,6 +503,35 @@ cache 在每一輪之間撐下來。`alc doctor` 會印出 **Ollama** 區塊：�
 比線性還高 —— 都在
 [provider 指南](https://treeleaves30760.github.io/all-code/local-models)
 裡。
+
+### llama.cpp 與 vLLM
+
+```sh
+llama-server -m Qwen3.8-27B-UD-Q4_K_XL.gguf --alias qwen3.8-27b --jinja -c 131072 --api-key "$LLAMA_API_KEY"
+
+alc config upsert box --kind llamacpp --base-url http://127.0.0.1:8080/v1 --model qwen3.8-27b
+printf '%s' "$LLAMA_API_KEY" | alc config key box --stdin
+alc -p box claude
+```
+
+profile 保留以 `/v1` 結尾的 OpenAI 風格 URL，其他每個 agent 都用它，Claude Code
+拿到的則是根路徑。替 profile 存的 key —— 或是 llama-server 自己讀的
+`LLAMA_API_KEY` —— 會送給每一個 agent，Claude Code 則透過它的 `apiKeyHelper`
+取得，絕不寫進檔案。`vllm` profile 搭配 vLLM 的 `--api-key` 也是一樣；在這個
+kind 出現之前、有人指向 llama-server 的 `vllm` profile 同樣能用。
+
+有兩個設定是這類伺服器專屬的。兩者都用模型自己的 Jinja chat template 來組
+prompt，而其中不少 —— Qwen 的就是 —— 只接受出現在最前面的 system 訊息；
+Claude Code 碰到它不認得的模型時，卻會在對話中段送出一則 system 訊息。alc 會設
+`CLAUDE_CODE_MODEL_CAPABILITIES`，讓那段內容改放在第一則 user 訊息裡。另外，
+llama-server 一收到請求就回 header，接著在讀完整個 prompt 之前什麼都不送 ——
+長的 prompt 要好幾分鐘 —— 而 Claude Code 的串流 watchdog 五分鐘後就會中斷；
+所以每個本機伺服器的 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 都會拉到上限的三十分鐘。
+
+context 來自 llama.cpp 的 `/props` —— 每個 slot 的 `n_ctx`，也就是伺服器同時跑
+好幾個 slot 時單一請求能用的量 —— 或是 vLLM 的 `max_model_len`。`alc doctor`
+會印出 **llama.cpp and vLLM** 區塊：伺服器與它的 build、是否接受 key、有沒有列出
+這個模型、那個 context，以及 `/v1/messages` 是否存在。
 
 ## 遠端控制
 

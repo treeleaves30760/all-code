@@ -136,13 +136,14 @@ alc claude                 # each agent on its configured default
 alc --openrouter codex
 alc --deepseek pi
 alc --ollama claude
+alc --llamacpp claude
 alc -p local-vllm opencode
 ```
 
 `--provider`（`-p`）接受 profile 名稱；當某個 kind 只有一個 profile
 時，也可以直接寫 kind。`--anthropic`、`--openai`、`--openrouter`、`--codex`、
-`--ollama`、`--vllm`、`--deepseek`、`--moonshot`、`--zai`、`--minimax`、
-`--groq`、`--xai`、`--google` 則是捷徑。金鑰可以存在本機，也可以從環境變數
+`--ollama`、`--vllm`、`--llamacpp`、`--deepseek`、`--moonshot`、`--zai`、
+`--minimax`、`--groq`、`--xai`、`--google` 則是捷徑。金鑰可以存在本機，也可以從環境變數
 讀取；環境變數優先。各個 kind 講的是什麼協定見 [Provider
 相容性](./providers.md)，檔案放在哪裡見[設定](./configuration.md)。
 

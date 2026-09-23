@@ -2,7 +2,7 @@
 id: providers
 title: Provider 相容性
 sidebar_position: 5
-description: 八個 coding agent 各自能搭配哪些 LLM provider，以及十四種內建 provider kind 預設值的端點、金鑰環境變數與起始模型。
+description: 八個 coding agent 各自能搭配哪些 LLM provider，以及十五種內建 provider kind 預設值的端點、金鑰環境變數與起始模型。
 keywords:
   - anthropic messages api
   - openai responses api
@@ -46,6 +46,7 @@ keywords:
 | `codex` | —（原生 `codex login`） | — | — |
 | `ollama` | `http://localhost:11434` | — | `qwen3-coder` |
 | `vllm` | `http://localhost:8000/v1` | — | —（預設為停用狀態） |
+| `llamacpp` | `http://localhost:8080/v1` | `LLAMA_API_KEY` | —（填伺服器列出的名稱） |
 | `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `deepseek-v4-pro` |
 | `moonshot` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | `kimi-k3` |
 | `zai` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | `glm-5.3` |
@@ -70,7 +71,9 @@ DeepSeek、Moonshot、Z.ai 與 MiniMax 在 OpenAI 格式的端點之外，各自
 | `zai` | `https://api.z.ai/api/anthropic` |
 | `minimax` | `https://api.minimax.io/anthropic` |
 
-## 在本機 Ollama 模型上跑 Claude Code
+## 在本機伺服器上跑 Claude Code
 
-已移到[本機模型](./local-models.md)：那一頁說明 `alc --ollama claude` 會設定
-什麼，以及在筆電上怎麼讓第一輪不要拖太久。
+Ollama、llama.cpp 與 vLLM 都在根路徑上提供 Anthropic Messages，和 OpenAI 路由
+並列，所以不論 profile 替其他 agent 指定哪一種 OpenAI 協定，Claude Code 在這三者
+上都能跑。[本機模型](./local-models.md)說明 alc 替每一種設定了什麼，以及怎麼讓
+第一輪不要拖太久。
