@@ -335,10 +335,12 @@ fn draw_efforts(frame: &mut ratatui::Frame, app: &PickerApp, area: Rect) {
 
 fn beginner_model_hint(model: &str) -> &'static str {
     match model {
-        "gpt-5.6-luna" => "Best for quick fixes, repetitive work, and keeping usage low.",
-        "gpt-5.6-terra" => "Best starting point for most coding sessions.",
-        "gpt-5.6-sol" => "Best for architecture, hard debugging, and large refactors.",
+        "gpt-6-luna" => "Best for quick fixes, repetitive work, and keeping usage low.",
+        "gpt-6-sol" => "Best starting point for most coding sessions.",
         "gpt-6-astra" => "Best for the most complex work: coding, computer use, and research.",
+        "gpt-5.6-luna" => "Previous generation. Quick, routine work at low usage.",
+        "gpt-5.6-terra" => "Previous generation. A balanced choice for everyday coding.",
+        "gpt-5.6-sol" => "Previous generation. Architecture, hard debugging, and large refactors.",
         _ => "Choose based on the provider documentation.",
     }
 }
@@ -386,8 +388,46 @@ mod tests {
             },
         );
         let screen = rendered(&app);
-        for id in ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] {
-            assert!(screen.contains(id), "{id} is missing from the picker");
+        for model in ModelCatalog::built_in().models {
+            let id = &model.id;
+            assert!(
+                screen.contains(id.as_str()),
+                "{id} is missing from the picker"
+            );
+        }
+    }
+
+    /// The generic line is for a model that shipped after this release, and
+    /// it reads as "alc knows nothing about this one" - which is wrong for a
+    /// model alc ships.
+    #[test]
+    fn every_model_alc_ships_has_a_hint_of_its_own() {
+        let generic = beginner_model_hint("a-model-released-tomorrow");
+        for model in ModelCatalog::built_in().models {
+            let id = &model.id;
+            assert_ne!(beginner_model_hint(id), generic, "{id} has no hint");
+        }
+    }
+
+    /// The picker calls exactly one model the starting point, and it is the
+    /// one a session starts on when nothing names a model. Two places saying
+    /// two different things is how the guide came to recommend a model the
+    /// launch had already moved away from.
+    #[test]
+    fn the_model_called_the_starting_point_is_the_one_sessions_start_on() {
+        let home = tempfile::tempdir().unwrap();
+        let mut provider = crate::config::Provider::for_kind(crate::config::ProviderKind::Codex);
+        provider.codex_home = Some(home.path().display().to_string());
+        let starts_on = crate::launch::resolve_codex_model(&provider).unwrap();
+
+        for model in ModelCatalog::built_in().models {
+            let hint = beginner_model_hint(&model.id);
+            assert_eq!(
+                hint.contains("starting point"),
+                model.id == starts_on,
+                "{}: {hint}",
+                model.id
+            );
         }
     }
 

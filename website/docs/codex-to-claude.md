@@ -9,6 +9,8 @@ keywords:
   - codex subscription
   - chatgpt plan coding agent
   - gpt-6-astra
+  - gpt-6-sol
+  - gpt-6-luna
   - reasoning effort
 ---
 
@@ -42,9 +44,11 @@ Claude Code lists these in its own `/model` picker:
 | Model | Use case | Codex default effort |
 | --- | --- | --- |
 | `gpt-6-astra` | GPT-6. Most capable; complex, demanding work | `medium` |
-| `gpt-5.6-sol` | Frontier capability for the hardest professional work | `low` |
-| `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
-| `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
+| `gpt-6-sol` | GPT-6. Everyday coding and agentic work; recommended starting point | `medium` |
+| `gpt-6-luna` | GPT-6. Fast and the cheapest; quick fixes and high-volume work | `medium` |
+| `gpt-5.6-sol` | Previous generation; complex professional work | `low` |
+| `gpt-5.6-terra` | Previous generation; balanced everyday coding | `medium` |
+| `gpt-5.6-luna` | Previous generation; fast, affordable work | `medium` |
 
 The bridge keeps no allowlist: whatever slug it is handed goes upstream and
 chatgpt.com decides, so a model alc does not track is still reachable with
@@ -54,7 +58,7 @@ on the day alc catches up.
 ## Every Claude model becomes a Codex model
 
 Under `alc --codex claude` no request reaches a Claude model: the `/model`
-picker lists these four and nothing else, every alias Claude Code has — `opus`,
+picker lists these six and nothing else, every alias Claude Code has — `opus`,
 `sonnet`, `haiku`, `fable`, `best`, `opusplan` — lands on one of them, and a
 Claude model named in full is answered by the Codex model of the same tier.
 Claude Code's own background work goes the same way, so a title or a summary is
@@ -68,15 +72,15 @@ the whole table, alias by alias.
 directly. Every model takes `low`, `medium`, `high`, `xhigh` or `max`. Higher
 effort gives the model more room to reason, and uses more of your quota.
 
-`gpt-6-astra` and the GPT-5.6 models also offer `ultra`, which native `alc
-codex` can reach but the bridge cannot. alc clamps it to `max` and says so at
-launch, rather than letting the request be refused mid-session.
+Every model but the two Lunas also offers `ultra`, which native `alc codex` can
+reach but the bridge cannot. alc clamps it to `max` and says so at launch,
+rather than letting the request be refused mid-session.
 
 ## Starting somewhere else
 
 ```sh
-alc --codex claude --model gpt-5.6-luna --effort low
-alc --codex claude --model gpt-5.6-terra --effort medium --save
+alc --codex claude --model gpt-6-luna --effort low
+alc --codex claude --model gpt-6-sol --effort medium --save
 ```
 
 `--save` stores both on the provider profile. Without them a session starts on

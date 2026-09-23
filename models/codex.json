@@ -19,9 +19,24 @@
       ]
     },
     {
+      "id": "gpt-6-sol",
+      "name": "GPT-6 Sol",
+      "description": "Workhorse model for everyday coding and agentic work.",
+      "context_window": 272000,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    },
+    {
       "id": "gpt-5.6-sol",
       "name": "GPT-5.6 Sol",
-      "description": "Frontier model for the most complex professional work.",
+      "description": "Previous-generation model for complex professional work.",
       "context_window": 272000,
       "default_effort": "low",
       "supported_efforts": [
@@ -36,7 +51,7 @@
     {
       "id": "gpt-5.6-terra",
       "name": "GPT-5.6 Terra",
-      "description": "Balanced intelligence, speed, and cost for everyday coding.",
+      "description": "Previous-generation balance of intelligence, speed, and cost.",
       "context_window": 272000,
       "default_effort": "medium",
       "supported_efforts": [
@@ -51,7 +66,21 @@
     {
       "id": "gpt-5.6-luna",
       "name": "GPT-5.6 Luna",
-      "description": "Efficient model for cost-sensitive, high-volume work.",
+      "description": "Previous-generation efficient model for high-volume work.",
+      "context_window": 272000,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "id": "gpt-6-luna",
+      "name": "GPT-6 Luna",
+      "description": "Fast, most affordable model for focused, high-volume work.",
       "context_window": 272000,
       "default_effort": "medium",
       "supported_efforts": [

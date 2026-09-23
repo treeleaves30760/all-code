@@ -125,7 +125,7 @@ error: Codex credentials were not found at ~/.codex/auth.json; run `codex login`
 error: 'claude' is not installed or not on PATH; install it first, then retry `alc claude`: cannot find binary path
 ```
 
-Claude Code starts on `gpt-5.6-terra` at `medium` effort — or on whatever your
+Claude Code starts on `gpt-6-sol` at `medium` effort — or on whatever your
 own `~/.codex/config.toml` names — with every GPT model in its `/model` picker.
 [Codex bridge](./codex-to-claude.md) has the models, the effort tiers, and the
 other seven agents.

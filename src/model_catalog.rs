@@ -45,12 +45,13 @@ const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 ///
 /// chatgpt.com gates each model on a `minimal_client_version` and believes
 /// whatever version the caller declares, so this number decides how much of
-/// the catalog comes back: `gpt-6-astra` carries a minimum of 0.153.0, and a
-/// caller declaring 0.149.1 is simply not shown it. This is the release alc
-/// has seen the whole catalog under. It is a floor rather than a pin, because
-/// a user whose Codex is newer should be asking as that newer client - and on
-/// the day this constant does go stale nothing breaks, the catalog just stops
-/// growing until someone bumps it.
+/// the catalog comes back: `gpt-6-astra` carries a minimum of 0.153.0 and
+/// `gpt-6-sol` and `gpt-6-luna` 0.155.0, and a caller declaring less is
+/// simply not shown them. This is the release alc has seen the whole catalog
+/// under. It is a floor rather than a pin, because a user whose Codex is
+/// newer should be asking as that newer client - and on the day this constant
+/// does go stale nothing breaks, the catalog just stops growing until someone
+/// bumps it.
 ///
 /// Nothing in alc can notice that on its own: a model held back by a
 /// `minimal_client_version` above this number is absent from the answer, and
@@ -60,7 +61,7 @@ const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 /// `codex debug models`. So the weekly job checks this constant directly,
 /// against the version of the Codex it just installed from npm, and says so
 /// when alc has fallen behind it.
-const CODEX_CLIENT_VERSION_FLOOR: &str = "0.154.0";
+const CODEX_CLIENT_VERSION_FLOOR: &str = "0.156.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -224,16 +225,18 @@ impl ModelCatalog {
     ///
     /// Order is alc's for the models alc ships, never the source's:
     /// `agents::claude_settings::codex_document` turns the first entry into
-    /// Claude Code's `opus` alias and the last into `haiku`, and Codex ranks
-    /// `gpt-5.6-sol` and `gpt-6-astra` at the same priority - so taking the
-    /// order from discovery would hand the `opus` alias to whichever of the
-    /// two happened to be listed first that day. Anything discovery added
-    /// that alc does not ship is slotted in by its Codex rank rather than
-    /// appended, because the end of this list is not a neutral place to put
-    /// something: see [`insertion_index`].
+    /// Claude Code's `opus` alias and the last into `haiku`, and Codex's
+    /// ranks answer a different question. Codex once ranked `gpt-5.6-sol`
+    /// level with `gpt-6-astra`, which would have handed the `opus` alias to
+    /// whichever of the two happened to be listed first that day, and it
+    /// ranks `gpt-6-luna` above every GPT-5.6 model although it is the
+    /// cheapest model Codex serves. Anything discovery added that alc does
+    /// not ship is slotted in by its Codex rank rather than appended, because
+    /// the end of this list is not a neutral place to put something: see
+    /// [`insertion_index`].
     ///
     /// Idempotent and free of I/O, so running it on every read costs a walk
-    /// of four entries.
+    /// of a handful of entries.
     fn apply_floor(&mut self) -> Vec<String> {
         let floor = Self::built_in().models;
         let mut restored = Vec::new();
@@ -743,10 +746,27 @@ fn now_unix() -> u64 {
 mod tests {
     use super::*;
 
-    /// Trimmed from a real `codex debug models` answer: the slugs, the
-    /// `visibility` and `priority` values and their order are what a current
-    /// Codex actually returns.
+    /// Trimmed from what chatgpt.com's catalog answered a 0.156.0 client on
+    /// 2026-09-23, the day after GPT-6 Sol and Luna shipped: the slugs, the
+    /// metadata, the `visibility`, `priority` and `minimal_client_version`
+    /// values and their order are the real ones. Only the per-model prompt
+    /// text and the fields alc never reads are gone.
     const CODEX_CURRENT: &str = r#"{"models":[
+      {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","description":"Frontier intelligence for the most demanding work.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1,"minimal_client_version":"0.153.0"},
+      {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","description":"Workhorse model for coding and everyday work.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":2,"minimal_client_version":"0.155.0"},
+      {"slug":"gpt-6-luna","display_name":"GPT-6-Luna","description":"Fast and affordable model for easier tasks.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"list","priority":3,"minimal_client_version":"0.155.0"},
+      {"slug":"gpt-reserve","display_name":"GPT-Reserve","description":"Fast and affordable agentic coding model.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"hide","priority":3,"minimal_client_version":"0.144.0"},
+      {"slug":"gpt-5.6-sol","display_name":"GPT-5.6-Sol","description":"Older coding model for complex work.","context_window":272000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":4,"minimal_client_version":"0.144.0"},
+      {"slug":"gpt-5.6-terra","display_name":"GPT-5.6-Terra","description":"Older balanced model for straightforward work.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":7,"minimal_client_version":"0.144.0"},
+      {"slug":"gpt-5.6-luna","display_name":"GPT-5.6-Luna","description":"Older fast and efficient model.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"list","priority":8,"minimal_client_version":"0.144.0"},
+      {"slug":"gpt-5.5","display_name":"GPT-5.5","description":"Legacy coding model.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"visibility":"list","priority":12,"minimal_client_version":"0.124.0"},
+      {"slug":"codex-auto-review","display_name":"Codex Auto Review","description":"Automatic approval review model for Codex.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"hide","priority":43,"minimal_client_version":"0.98.0"}
+    ]}"#;
+
+    /// What `codex debug models` answered on 0.154.0 before GPT-6 Sol
+    /// shipped, trimmed the same way. Codex ranked GPT-5.6 Sol level with
+    /// Astra then, and listed it first.
+    const CODEX_BEFORE_GPT_6_SOL: &str = r#"{"models":[
       {"slug":"gpt-5.6-sol","display_name":"GPT-5.6-Sol","description":"Latest frontier agentic coding model.","context_window":272000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1},
       {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","description":"Most capable model.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1},
       {"slug":"gpt-reserve","display_name":"GPT-Reserve","description":"Internal.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"medium"}],"visibility":"hide","priority":3},
@@ -791,6 +811,12 @@ mod tests {
         catalog
     }
 
+    /// Most capable first and cheapest last, because that is how
+    /// `agents::claude_settings::codex_document` reads the list: the head
+    /// becomes Claude Code's `opus` alias and the tail its `haiku` and
+    /// small-fast model. GPT-6 Luna is last although Codex ranks it above
+    /// every GPT-5.6 model: it is the cheapest model Codex serves, and the one
+    /// Codex itself offers when a plan runs low.
     #[test]
     fn the_catalog_lists_the_most_capable_model_first() {
         let ids: Vec<_> = ModelCatalog::built_in()
@@ -802,9 +828,11 @@ mod tests {
             ids,
             [
                 "gpt-6-astra",
+                "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
-                "gpt-5.6-luna"
+                "gpt-5.6-luna",
+                "gpt-6-luna"
             ]
         );
     }
@@ -812,12 +840,11 @@ mod tests {
     #[test]
     fn bundled_catalog_has_requested_models_and_efforts() {
         let catalog = ModelCatalog::built_in();
-        assert_eq!(catalog.models.len(), 4);
+        assert_eq!(catalog.models.len(), 6);
         for model in &catalog.models {
             let id = &model.id;
-            // Not every model has every tier - `ultra` arrived with GPT-6
-            // and the newer GPT-5.6 models - so the floor is what all of
-            // them share.
+            // Not every model has every tier - both Lunas stop at `max` -
+            // so the floor is what all of them share.
             for effort in [
                 ReasoningEffort::Low,
                 ReasoningEffort::Medium,
@@ -837,6 +864,47 @@ mod tests {
         }
     }
 
+    /// The catalog alc ships is what every picker shows before the first
+    /// sync, and what a launch takes the context window and effort range
+    /// from when no sync ever succeeds. So each entry has to say what
+    /// chatgpt.com says about its model: an `ultra` a model does not accept
+    /// is refused mid-session, and a wrong context window compacts the
+    /// session at the wrong time.
+    #[test]
+    fn the_bundled_catalog_agrees_with_what_chatgpt_com_serves() {
+        let answer: serde_json::Value = serde_json::from_str(CODEX_CURRENT).unwrap();
+        let rows = answer["models"].as_array().unwrap();
+        for model in ModelCatalog::built_in().models {
+            let id = &model.id;
+            let row = rows
+                .iter()
+                .find(|row| row["slug"] == id.as_str())
+                .unwrap_or_else(|| panic!("{id} is not in chatgpt.com's answer"));
+            let served: Vec<&str> = row["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["effort"].as_str().unwrap())
+                .collect();
+            let offered: Vec<String> = model
+                .supported_efforts
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert_eq!(offered, served, "{id}: efforts");
+            assert_eq!(
+                model.default_effort.to_string(),
+                row["default_reasoning_level"].as_str().unwrap(),
+                "{id}: default effort"
+            );
+            assert_eq!(
+                Some(model.context_window),
+                row["context_window"].as_u64(),
+                "{id}: context window"
+            );
+        }
+    }
+
     /// The reported bug. A Codex one release behind does not fail - it
     /// answers without `gpt-6-astra`, and alc used to write that answer over
     /// its own list.
@@ -850,7 +918,10 @@ mod tests {
             Some(272_000)
         );
         assert_eq!(ids(&catalog)[0], "gpt-6-astra");
-        assert_eq!(catalog.unreported, ["gpt-6-astra"]);
+        assert_eq!(
+            catalog.unreported,
+            ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+        );
     }
 
     #[test]
@@ -886,20 +957,26 @@ mod tests {
             ids(&catalog),
             [
                 "gpt-6-astra",
+                "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
-                "gpt-5.6-luna"
+                "gpt-5.6-luna",
+                "gpt-6-luna"
             ]
         );
+        assert!(catalog.unreported.is_empty());
     }
 
-    /// Codex ranks Sol and Astra identically and lists Sol first, so an order
-    /// taken from the source would settle the `opus` alias by coin toss.
+    /// Codex once ranked GPT-5.6 Sol level with Astra and listed it first,
+    /// so an order taken from the source would settle the `opus` alias by
+    /// coin toss.
     #[test]
     fn the_order_alc_ships_survives_a_source_that_lists_another_model_first() {
-        let catalog = catalog_from(CODEX_CURRENT);
+        let catalog = catalog_from(CODEX_BEFORE_GPT_6_SOL);
         assert_eq!(ids(&catalog)[0], "gpt-6-astra");
-        assert!(catalog.unreported.is_empty());
+        // Astra came from the source, listed after Sol; only the models that
+        // answer predates were put back by alc.
+        assert_eq!(catalog.unreported, ["gpt-6-sol", "gpt-6-luna"]);
     }
 
     /// A model alc does not ship yet, ranked between two that it does, has to
@@ -912,23 +989,25 @@ mod tests {
         let json = CODEX_CURRENT
             .replace("\"gpt-5.5\"", "\"gpt-7-nova\"")
             .replace("\"priority\":12", "\"priority\":5")
-            .replace("\"context_window\":272000,\"default_reasoning_level\":\"medium\",\"supported_reasoning_levels\":[{\"effort\":\"low\"},{\"effort\":\"medium\"},{\"effort\":\"high\"}]", "\"context_window\":400000,\"default_reasoning_level\":\"high\",\"supported_reasoning_levels\":[{\"effort\":\"low\"},{\"effort\":\"medium\"},{\"effort\":\"high\"}]");
+            .replace("\"context_window\":272000,\"default_reasoning_level\":\"medium\",\"supported_reasoning_levels\":[{\"effort\":\"low\"},{\"effort\":\"medium\"},{\"effort\":\"high\"},{\"effort\":\"xhigh\"}]", "\"context_window\":400000,\"default_reasoning_level\":\"high\",\"supported_reasoning_levels\":[{\"effort\":\"low\"},{\"effort\":\"medium\"},{\"effort\":\"high\"}]");
         let catalog = catalog_from(&json);
         let entry = catalog
             .find("gpt-7-nova")
             .expect("a model Codex ranks alongside alc's own");
         assert_eq!(entry.context_window, 400_000);
         assert_eq!(entry.default_effort, ReasoningEffort::High);
-        // Priority 5 sits between Sol (1) and Terra (7), and the cheapest
-        // model alc ships keeps the last slot.
+        // Priority 5 sits between GPT-5.6 Sol (4) and Terra (7), and the
+        // cheapest model alc ships keeps the last slot.
         assert_eq!(
             ids(&catalog),
             [
                 "gpt-6-astra",
+                "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-7-nova",
                 "gpt-5.6-terra",
-                "gpt-5.6-luna"
+                "gpt-5.6-luna",
+                "gpt-6-luna"
             ]
         );
     }
@@ -957,10 +1036,12 @@ mod tests {
             ids(&loaded),
             [
                 "gpt-6-astra",
+                "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
+                "gpt-5.6-luna",
                 "gpt-7-nova",
-                "gpt-5.6-luna"
+                "gpt-6-luna"
             ]
         );
     }
@@ -977,7 +1058,7 @@ mod tests {
             let catalog = catalog_from(&json);
             assert!(catalog.find("gpt-7-nova").is_some());
             assert_eq!(*ids(&catalog).first().unwrap(), "gpt-6-astra");
-            assert_eq!(*ids(&catalog).last().unwrap(), "gpt-5.6-luna");
+            assert_eq!(*ids(&catalog).last().unwrap(), "gpt-6-luna");
         }
     }
 
@@ -999,7 +1080,10 @@ mod tests {
     #[test]
     fn applying_the_floor_twice_changes_nothing() {
         let mut catalog = catalog_from(CODEX_ONE_RELEASE_BEHIND);
-        assert_eq!(catalog.unreported, ["gpt-6-astra"]);
+        assert_eq!(
+            catalog.unreported,
+            ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+        );
         let before = catalog.models.clone();
         let restored = catalog.apply_floor();
         assert_eq!(catalog.models, before);
@@ -1083,6 +1167,36 @@ mod tests {
             bail!("no route, and no Codex home to fall back to")
         });
         assert_eq!(kept.codex_cache_stamp.as_deref(), Some("0.154.0"));
+    }
+
+    /// chatgpt.com leaves a model out of the answer, without a word, for a
+    /// client older than that model's `minimal_client_version`. GPT-6 Sol and
+    /// Luna arrived gated on 0.155.0 while alc still declared 0.154.0, so
+    /// every sync on a machine without a newer Codex came back without them
+    /// and the floor had to supply them. A machine whose Codex is older, or
+    /// absent, must still be asking as a client every model alc ships is
+    /// listed to.
+    #[test]
+    fn alc_asks_as_a_client_new_enough_for_every_model_it_ships() {
+        let answer: serde_json::Value = serde_json::from_str(CODEX_CURRENT).unwrap();
+        let rows = answer["models"].as_array().unwrap();
+        for stamp in [None, Some("0.149.1"), Some("0.154.0")] {
+            let declared = semver::Version::parse(&declared_client_version(stamp)).unwrap();
+            for model in ModelCatalog::built_in().models {
+                let id = &model.id;
+                let minimum = rows
+                    .iter()
+                    .find(|row| row["slug"] == id.as_str())
+                    .and_then(|row| row["minimal_client_version"].as_str())
+                    .unwrap_or_else(|| panic!("{id} has no minimal_client_version"));
+                let minimum = semver::Version::parse(minimum).unwrap();
+                assert!(
+                    declared >= minimum,
+                    "{id} is listed only to client_version {minimum} and up, but a machine \
+                     whose Codex stamp is {stamp:?} declares {declared}"
+                );
+            }
+        }
     }
 
     #[test]

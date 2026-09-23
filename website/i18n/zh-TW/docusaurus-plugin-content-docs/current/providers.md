@@ -41,7 +41,7 @@ keywords:
 | Kind | 預設端點 | 金鑰環境變數 | 起始模型 |
 | --- | --- | --- | --- |
 | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `sonnet` |
-| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-5.6-terra` |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-6-sol` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` |
 | `codex` | —（原生 `codex login`） | — | — |
 | `ollama` | `http://localhost:11434` | — | `qwen3-coder` |
