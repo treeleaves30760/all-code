@@ -26,9 +26,15 @@ binary with the [override variables](./agents.md#binary-overrides).
 ## `provider '…' cannot be used with claude; Claude Code needs Anthropic Messages`
 
 That profile speaks a protocol Claude Code cannot use. Pick an
-Anthropic-compatible endpoint, or use [`alc --codex
-claude`](./codex-to-claude.md). [Provider compatibility](./providers.md) has
-the matrix.
+Anthropic-compatible endpoint or a local server (`--kind ollama`, `llamacpp` or
+`vllm`), or use [`alc --codex claude`](./codex-to-claude.md). [Provider
+compatibility](./providers.md) has the matrix.
+
+## `provider '…' is turned off`
+
+The profile exists but is disabled — the starter `vllm` template ships that
+way. Turn it on with `alc config upsert <profile> --enable`, adding
+`--model <id>` if it has no model yet.
 
 ## `provider '…' has no API key`
 
@@ -43,13 +49,24 @@ current.
 ## `API Error: Request timed out` (or `500`) with an Ollama profile
 
 The model did not get through Claude Code's 25k–40k-token first request before
-it gave up. alc sets `API_FORCE_IDLE_TIMEOUT=0` and `API_TIMEOUT_MS=1800000`
-for Ollama profiles so it waits; retries resume from Ollama's prompt cache, so
+it gave up. alc sets `API_FORCE_IDLE_TIMEOUT=0`, `API_TIMEOUT_MS=1800000` and
+`CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000` for Ollama, llama.cpp and vLLM profiles
+so it waits; retries resume from Ollama's prompt cache, so
 the session usually starts on the second attempt either way.
 
 To make the first turn quick rather than merely survivable, see [Local
 models](./local-models.md). Check the **Ollama** section of `alc doctor` first:
 the model must be pulled, able to call tools, and have at least a 64k context.
+
+## `500 System message must be at the beginning` from llama.cpp or vLLM
+
+The model's chat template refused a system message that was not the first
+one, which Claude Code sends to a model it does not recognise. alc turns that
+off for `llamacpp` and `vllm` profiles; this appears when Claude Code runs on
+such a server some other way, or on a `custom` profile. Use a `llamacpp` or
+`vllm` profile, or set
+`CLAUDE_CODE_MODEL_CAPABILITIES=-mid_conv_system,-mid_conv_tool_change` yourself.
+[Local models](./local-models.md#why-two-more-settings) has the details.
 
 ## `404 model 'claude-…' not found` from Ollama
 
@@ -144,13 +161,14 @@ Those sessions carry the settings file alc wrote, and keep it every time Claude
 Code restarts them. [Background sessions](./background-sessions.md) has the
 rest.
 
-## Two notices on every Codex run
+## Two notices on every Codex or local-server run
 
-Every print-mode run on a Codex profile writes two lines to stderr: one saying
+Every print-mode run on a Codex profile, or on an Ollama, llama.cpp or vLLM
+one, writes two lines to stderr: one saying
 `CLAUDE_CODE_DISABLE_1M_CONTEXT is set, but the 200K limit isn't enforced for <model>`,
 and one reading `[claude-code:unrecognized_model]`. Both are Claude Code telling
 you it does not recognise the model id alc gave it, which is the point: the
-model is a Codex model. They are diagnostics, not errors; the session is
+model is a Codex or local model. They are diagnostics, not errors; the session is
 working.
 
 Two documented cures exist and alc uses neither. A `modelOverrides` entry would

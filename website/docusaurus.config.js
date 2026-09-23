@@ -77,7 +77,7 @@ const config = {
           content:
             'claude code, codex cli, chatgpt subscription, opencode, pi coding agent, ' +
             'copilot cli, goose, qwen code, kimi code cli, llm provider, anthropic, ' +
-            'openai, openrouter, ollama, vllm, usage, quota, remote control, coding agent, cli, rust',
+            'openai, openrouter, ollama, llama.cpp, vllm, usage, quota, remote control, coding agent, cli, rust',
         },
         {property: 'og:type', content: 'website'},
         {name: 'twitter:card', content: 'summary_large_image'},

@@ -8,6 +8,7 @@ mod launch;
 mod model_catalog;
 mod model_picker;
 mod ollama;
+mod openai_server;
 mod remote;
 mod tui;
 mod update;

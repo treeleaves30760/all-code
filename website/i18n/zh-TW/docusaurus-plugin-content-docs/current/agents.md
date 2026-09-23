@@ -72,7 +72,7 @@ alc 會設定一個行內的 `OPENCODE_CONFIG_CONTENT` JSON 變數，不寫任�
 的 profile，provider id 就是那個 kind 的名稱；其餘每一種 kind 則是
 `alc-<profile>`。
 
-同一份 JSON 裡也會放進完整的 `provider.<id>` 物件：Ollama、vLLM、custom 與
+同一份 JSON 裡也會放進完整的 `provider.<id>` 物件：Ollama、vLLM、llama.cpp、custom 與
 比較新的那幾個預設值一律會放；前面那四種則只有在 base URL 被指到該 kind 預設
 值以外的地方時才放。`options.apiKey` 只在 profile 需要金鑰時才出現，所以預設
 的 Ollama profile 不會有。

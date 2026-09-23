@@ -25,8 +25,15 @@ alc 指向某個執行檔。
 
 ## `provider '…' cannot be used with claude; Claude Code needs Anthropic Messages`
 
-那個 profile 講的協定 Claude Code 用不了。請換一個 Anthropic 相容的端點，或改用
+那個 profile 講的協定 Claude Code 用不了。請換一個 Anthropic 相容的端點或本機伺服器
+（`--kind ollama`、`llamacpp` 或 `vllm`），或改用
 [`alc --codex claude`](./codex-to-claude.md)。對照表在 [Provider 相容性](./providers.md)。
+
+## `provider '…' is turned off`
+
+這個 profile 存在，但被停用了 —— 內建的 `vllm` 範本出廠就是這樣。用
+`alc config upsert <profile> --enable` 把它打開；如果它還沒有模型，再加上
+`--model <id>`。
 
 ## `provider '…' has no API key`
 
@@ -40,13 +47,23 @@ alc 指向某個執行檔。
 ## Ollama profile 出現 `API Error: Request timed out`（或 `500`）
 
 模型沒能在 Claude Code 放棄之前，讀完那個 25k 到 40k tokens 的第一個請求。alc 會為
-Ollama profile 設定 `API_FORCE_IDLE_TIMEOUT=0` 與 `API_TIMEOUT_MS=1800000`，讓它
+Ollama、llama.cpp 與 vLLM profile 設定 `API_FORCE_IDLE_TIMEOUT=0`、
+`API_TIMEOUT_MS=1800000` 與 `CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000`，讓它
 願意等下去；而重試本來就會從 Ollama 的 prompt cache 接續，所以不管走哪一條路，
 session 通常在第二次嘗試就會開始。
 
 想讓第一輪不只是撐得過去，而是真的快，請看[本機模型](./local-models.md)。先看
 `alc doctor` 的 **Ollama** 區塊：模型必須已經 pull 下來、能呼叫工具，而且 context
 至少 64k。
+
+## llama.cpp 或 vLLM 回傳 `500 System message must be at the beginning`
+
+模型的 chat template 拒絕了一則不在最前面的 system 訊息，而 Claude Code 碰到它不
+認得的模型就會送出這種訊息。alc 會替 `llamacpp` 與 `vllm` profile 關掉這個行為；
+會看到這個錯誤，表示 Claude Code 是用別的方式跑在這種伺服器上，或是跑在 `custom`
+profile 上。請改用 `llamacpp` 或 `vllm` profile，或自己設定
+`CLAUDE_CODE_MODEL_CAPABILITIES=-mid_conv_system,-mid_conv_tool_change`。
+細節見[本機模型](./local-models.md#為什麼多了兩個設定)。
 
 ## Ollama 回傳 `404 model 'claude-…' not found`
 
@@ -133,12 +150,13 @@ alc --codex claude agents
 那些 session 帶著 alc 寫出來的那份設定檔，而且 Claude Code 每一次重新啟動它們
 時都還帶著。其餘的都在[背景 session](./background-sessions.md)。
 
-## 每一次 Codex 執行都出現的兩則提示
+## 每一次 Codex 或本機伺服器執行都出現的兩則提示
 
-每一次在 Codex profile 上以 print 模式執行，都會往 stderr 寫兩行：一行是
+每一次在 Codex profile，或在 Ollama、llama.cpp、vLLM profile 上以 print 模式執行，
+都會往 stderr 寫兩行：一行是
 `CLAUDE_CODE_DISABLE_1M_CONTEXT is set, but the 200K limit isn't enforced for <model>`，
 另一行是 `[claude-code:unrecognized_model]`。兩行都是 Claude Code 在告訴你，它
-不認得 alc 交給它的那個 model id —— 而這正是重點：那是一個 Codex 模型。它們是
+不認得 alc 交給它的那個 model id —— 而這正是重點：那是一個 Codex 或本機模型。它們是
 診斷訊息，不是錯誤；session 是好的。
 
 有兩種記載過的解法，alc 兩種都不用。一筆 `modelOverrides` 設定會讓 Claude Code

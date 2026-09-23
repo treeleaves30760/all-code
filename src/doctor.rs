@@ -7,7 +7,7 @@ use anyhow::Result;
 
 use crate::config::{Agent, AuthStyle, Provider, ProviderKind, ReasoningEffort, Store};
 use crate::model_catalog::{CodexSource, ModelCatalog};
-use crate::ollama;
+use crate::{ollama, openai_server};
 
 pub(crate) const INDENT: &str = "  ";
 pub(crate) const GUTTER: &str = "  ";
@@ -34,6 +34,7 @@ pub fn run(store: &Store) -> Result<bool> {
     claude_code_default_model(store, &theme, &mut issues);
     background_sessions(store, &theme);
     local_models(store, &theme, &mut issues);
+    openai_servers(store, &theme, &mut issues);
     remote(store, &theme, &mut issues);
     summary(&theme, &issues);
 
@@ -596,6 +597,169 @@ fn local_models(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
                 format!("tools{}", theme.paint(Tone::Dim, &format!("  {context}"))),
             ));
         }
+    }
+    marked(theme, &rows);
+}
+
+/// Every enabled llama.cpp and vLLM profile, checked against its server: is
+/// it up and does it take the key, does it list the model, how much context
+/// does one request get, and is there an Anthropic Messages route for Claude
+/// Code. The route is asked with an empty body, which the server refuses
+/// before any model reads a token, so this costs a shared server nothing.
+fn openai_servers(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
+    let profiles: Vec<_> = store
+        .config
+        .providers
+        .iter()
+        .filter(|(_, provider)| {
+            provider.enabled && matches!(provider.kind, ProviderKind::Llamacpp | ProviderKind::Vllm)
+        })
+        .collect();
+    if profiles.is_empty() {
+        return;
+    }
+
+    heading(theme, "llama.cpp and vLLM");
+    println!(
+        "{INDENT}{}",
+        theme.paint(
+            Tone::Dim,
+            "Claude Code needs the server's /v1/messages; the context shown is what one request gets"
+        )
+    );
+    let mut rows = Vec::new();
+    for (name, provider) in profiles {
+        let Some(root) = openai_server::root(provider) else {
+            continue;
+        };
+        let key = store.credentials.key_for(name, provider);
+        let model = provider.model.as_str();
+        let facts = match openai_server::inspect(provider, key.as_deref(), model) {
+            openai_server::Reach::Answered(facts) => facts,
+            openai_server::Reach::Refused(status @ (401 | 403)) => {
+                let (problem, fix) = if key.is_some() {
+                    (
+                        format!("{root} refused this profile's key ({status})"),
+                        format!("save the key the server was started with: alc config key {name}"),
+                    )
+                } else {
+                    (
+                        format!("{root} wants an API key ({status})"),
+                        format!("alc config key {name}"),
+                    )
+                };
+                rows.push(Row::new(
+                    Status::Bad,
+                    name.clone(),
+                    theme.paint(Tone::Bad, &problem),
+                ));
+                issues.push(Issue::new(name.clone(), problem, Some(fix)));
+                continue;
+            }
+            openai_server::Reach::Refused(status) => {
+                let problem = format!("{root}/v1/models answered {status}");
+                rows.push(Row::new(
+                    Status::Bad,
+                    name.clone(),
+                    theme.paint(Tone::Bad, &problem),
+                ));
+                issues.push(Issue::new(
+                    name.clone(),
+                    problem,
+                    Some("check the profile's base_url; it should end in /v1".to_owned()),
+                ));
+                continue;
+            }
+            openai_server::Reach::Unreachable => {
+                rows.push(Row::new(
+                    Status::Bad,
+                    name.clone(),
+                    theme.paint(Tone::Bad, &format!("no server answering at {root}")),
+                ));
+                issues.push(Issue::new(
+                    name.clone(),
+                    format!("nothing is answering at {root}"),
+                    Some(
+                        "start the server (or its SSH tunnel), or fix the profile's base_url"
+                            .to_owned(),
+                    ),
+                ));
+                continue;
+            }
+        };
+        let engine = facts
+            .engine
+            .as_deref()
+            .map(|engine| theme.paint(Tone::Dim, &format!("  {engine}")))
+            .unwrap_or_default();
+        rows.push(Row::new(
+            Status::Good,
+            name.clone(),
+            format!("{root}{engine}"),
+        ));
+
+        let mut status = Status::Good;
+        let mut notes = Vec::new();
+        if facts.serves(model) {
+            notes.push("served".to_owned());
+        } else {
+            let listed = facts.models.join(", ");
+            // One model loaded in llama-server answers under any name, so the
+            // mismatch costs nothing but a misleading name; anywhere else the
+            // request is a 404.
+            let lenient = provider.kind == ProviderKind::Llamacpp && facts.models.len() == 1;
+            status = if lenient { Status::Warn } else { Status::Bad };
+            notes.push(theme.paint(
+                if lenient { Tone::Warn } else { Tone::Bad },
+                &format!("not listed; the server serves {listed}"),
+            ));
+            issues.push(Issue::new(
+                name.clone(),
+                format!("model '{model}' is not one the server lists ({listed})"),
+                facts
+                    .models
+                    .first()
+                    .map(|first| format!("alc config upsert {name} --model {first}")),
+            ));
+        }
+        match facts.context_length {
+            Some(tokens) if tokens < MIN_LOCAL_CONTEXT_TOKENS => {
+                if status == Status::Good {
+                    status = Status::Warn;
+                }
+                notes.push(theme.paint(
+                    Tone::Warn,
+                    &format!("{tokens} tokens of context, below the {MIN_LOCAL_CONTEXT_TOKENS} Claude Code needs"),
+                ));
+                issues.push(Issue::new(
+                    name.clone(),
+                    format!("one request gets only {tokens} tokens; Claude Code's first request alone can be 40k"),
+                    Some(match provider.kind {
+                        ProviderKind::Vllm => "start vLLM with a larger --max-model-len".to_owned(),
+                        _ => "start llama-server with a larger --ctx-size (it is split across --parallel slots)".to_owned(),
+                    }),
+                ));
+            }
+            Some(tokens) => notes.push(format!("{tokens} tokens of context")),
+            None => notes.push(theme.paint(Tone::Dim, "unknown context length")),
+        }
+        match openai_server::serves_messages(provider, key.as_deref()) {
+            Some(true) => notes.push("Anthropic Messages".to_owned()),
+            Some(false) => {
+                status = Status::Bad;
+                notes.push(theme.paint(Tone::Bad, "no /v1/messages"));
+                issues.push(Issue::new(
+                    name.clone(),
+                    format!("{root} has no Anthropic Messages route, which Claude Code needs; the other agents are unaffected"),
+                    Some(match provider.kind {
+                        ProviderKind::Vllm => "update vLLM".to_owned(),
+                        _ => "update llama.cpp".to_owned(),
+                    }),
+                ));
+            }
+            None => {}
+        }
+        rows.push(Row::new(status, model, notes.join("  ")));
     }
     marked(theme, &rows);
 }

@@ -255,12 +255,15 @@ pub(crate) struct LocalDocument<'a> {
     /// `ollama` for Ollama, `alc` for anything else that wants a non-empty
     /// token and authenticates nothing.
     pub placeholder: &'a str,
-    /// Ollama serves only what it has pulled, so every alias lands on this
-    /// model and the Claude-only features go off. A keyless custom endpoint
-    /// may be a proxy that does serve Claude, so it keeps Claude's aliases.
+    /// A local server serves only the model it loaded, so every alias lands
+    /// on this model and the Claude-only features go off. A keyless custom
+    /// endpoint may be a proxy that does serve Claude, so it keeps Claude's
+    /// aliases.
     pub local_server: bool,
-    /// The timeout variables to include: the ones the user has not set.
-    pub timeouts: &'a [(&'static str, &'static str)],
+    /// What the local server needs beyond the pins - its timeouts, and the
+    /// capabilities its chat template would refuse - minus anything the user
+    /// has set.
+    pub local_env: &'a [(&'static str, &'static str)],
 }
 
 /// A keyless endpoint: a local server, or a custom one with no key.
@@ -289,29 +292,30 @@ pub(crate) fn local_document(inputs: &LocalDocument<'_>) -> Value {
             &mut document,
             inputs.model,
             inputs.small_model,
-            inputs.timeouts,
+            inputs.local_env,
         );
     }
     document
 }
 
-/// Adds what an Ollama server needs on top of any document: every alias on its
-/// one model, non-essential traffic off, the Claude-only features off, and the
-/// timeouts the user has not set. Follows the provider's kind, not its auth
-/// style: an Ollama behind an authenticating proxy still serves only what it
-/// has pulled.
+/// Adds what a local server needs on top of any document: every alias on its
+/// one model, non-essential traffic off, the Claude-only features off, and
+/// `local_env` - the timeouts and capability switches the user has not set.
+/// Follows the provider's kind, not its auth style: a llama.cpp started with
+/// a key, or an Ollama behind an authenticating proxy, still serves only what
+/// it loaded.
 pub(crate) fn pin_local_server(
     document: &mut Value,
     model: &str,
     small_model: Option<&str>,
-    timeouts: &[(&'static str, &'static str)],
+    local_env: &[(&'static str, &'static str)],
 ) {
     let Some(env) = document.get_mut("env").and_then(Value::as_object_mut) else {
         return;
     };
     let small = small_model.unwrap_or(model);
     for (name, value) in [
-        // Ollama serves only the models that were pulled, so every alias
+        // A local server serves only the models it loaded, so every alias
         // Claude Code resolves on its own has to land on this one instead of a
         // Claude model id the server answers with 404.
         ("ANTHROPIC_DEFAULT_MODEL", model),
@@ -320,8 +324,8 @@ pub(crate) fn pin_local_server(
         ("ANTHROPIC_DEFAULT_OPUS_MODEL", model),
         ("ANTHROPIC_DEFAULT_HAIKU_MODEL", small),
         ("ANTHROPIC_SMALL_FAST_MODEL", small),
-        // One request at a time: side requests would queue ahead of the real
-        // one for minutes.
+        // One request at a time, or a few slots shared with a whole lab: side
+        // requests would queue ahead of the real one for minutes.
         ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
     ] {
         put(env, name, value);
@@ -329,7 +333,7 @@ pub(crate) fn pin_local_server(
     for (name, value) in CLAUDE_ONLY_FEATURES_OFF {
         put(env, name, value);
     }
-    for (name, value) in timeouts {
+    for (name, value) in local_env {
         put(env, name, *value);
     }
 }
@@ -734,7 +738,7 @@ mod tests {
             context_window: Some(65_536),
             placeholder: "ollama",
             local_server: true,
-            timeouts: &[("API_FORCE_IDLE_TIMEOUT", "0")],
+            local_env: &[("API_FORCE_IDLE_TIMEOUT", "0")],
         });
         let env = env(&document);
         assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "ollama");
@@ -766,7 +770,7 @@ mod tests {
             context_window: None,
             placeholder: "alc",
             local_server: false,
-            timeouts: &[],
+            local_env: &[],
         });
         assert_eq!(self::env(&custom)["ANTHROPIC_AUTH_TOKEN"], "alc");
         assert!(!self::env(&custom).contains_key("ANTHROPIC_DEFAULT_OPUS_MODEL"));

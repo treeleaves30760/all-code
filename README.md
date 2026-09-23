@@ -211,9 +211,9 @@ settings file. So do the commands that never reach a model - `mcp`, `doctor`,
 ## Any provider, not just Codex
 
 `codex login` is the shortest path, not the only one. Point any of the eight
-agents at Anthropic, the OpenAI API, OpenRouter, a local Ollama or vLLM server,
-DeepSeek, Moonshot, Z.ai, MiniMax, Groq, xAI, Google, or a custom endpoint — and
-change it for a single run without editing anything.
+agents at Anthropic, the OpenAI API, OpenRouter, a local Ollama, llama.cpp or
+vLLM server, DeepSeek, Moonshot, Z.ai, MiniMax, Groq, xAI, Google, or a custom
+endpoint — and change it for a single run without editing anything.
 
 ```sh
 alc config                 # keys and per-agent defaults live here
@@ -221,18 +221,20 @@ alc claude                 # each agent on its configured default
 alc --openrouter codex
 alc --deepseek pi
 alc --ollama claude
+alc --llamacpp claude
 alc -p local-vllm opencode
 ```
 
 `--provider` (or `-p`) takes a profile name, or a provider kind when only one
 profile of that kind exists. The shortcut flags `--anthropic`, `--openai`,
-`--openrouter`, `--codex`, `--ollama`, `--vllm`, `--deepseek`, `--moonshot`,
-`--zai`, `--minimax`, `--groq`, `--xai`, and `--google` are equivalent. The
+`--openrouter`, `--codex`, `--ollama`, `--vllm`, `--llamacpp`, `--deepseek`,
+`--moonshot`, `--zai`, `--minimax`, `--groq`, `--xai`, and `--google` are
+equivalent. The
 starter configuration ships Anthropic, OpenAI, OpenRouter, Codex, Ollama, and a
 disabled vLLM template; keys are saved locally or read from environment
 variables, and environment variables win.
 
-The eight agents do not all speak the same model protocol, and the fourteen
+The eight agents do not all speak the same model protocol, and the fifteen
 provider kinds do not all expose the same one, so alc checks the combination
 before launch instead of sending a request that cannot work.
 [Providers and agents](#providers-and-agents) has the endpoint, key variable,
@@ -303,8 +305,8 @@ alc doctor
 `alc doctor` reports the environment and credential paths, all eight agent
 binaries, every provider profile against all eight agents, the resolved per-agent
 defaults, a leftover GPT model pinned in `~/.claude/settings.json`, the Codex
-bridge's model, effort, and `codex login` state, an enabled Ollama profile
-checked against the running server, and the remote-control posture — then a
+bridge's model, effort, and `codex login` state, an enabled Ollama, llama.cpp or
+vLLM profile checked against its running server, and the remote-control posture — then a
 summary of issues with a fix for each. It exits non-zero when it finds one.
 
 For named errors and their fixes, see the
@@ -371,7 +373,8 @@ The two lookup tables, resolved for your own configuration by `alc doctor`.
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | anthropic, responses, chat | Yes |
 | `codex` | — (native `codex login`) | — | native | Yes (bridge) |
 | `ollama` | `http://localhost:11434` | — | anthropic, responses, chat | Yes |
-| `vllm` | `http://localhost:8000/v1` | — | responses, chat | No |
+| `vllm` | `http://localhost:8000/v1` | — | responses, chat (+ anthropic) | Yes |
+| `llamacpp` | `http://localhost:8080/v1` | `LLAMA_API_KEY` | anthropic, responses, chat | Yes |
 | `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | chat (+ anthropic) | Yes |
 | `moonshot` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | chat (+ anthropic) | Yes |
 | `zai` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | chat (+ anthropic) | Yes |
@@ -384,7 +387,10 @@ The two lookup tables, resolved for your own configuration by `alc doctor`.
 `deepseek`, `moonshot`, `zai`, and `minimax` each also ship a separate
 Anthropic-compatible base URL alongside their primary OpenAI-chat one (see
 `alc config show`) — that is what makes those four "Claude-ready" without any
-extra configuration. Presets are starting values: run `alc config show` to see
+extra configuration. `ollama`, `vllm`, and `llamacpp` are local servers: each
+answers Anthropic Messages at its root, beside the OpenAI routes under `/v1`, so
+Claude Code runs on them whichever protocol a profile names for the other
+agents ([Local models](#local-models)). Presets are starting values: run `alc config show` to see
 the exact model ID a profile currently uses, and edit it with `alc config
 upsert` when upstream renames or retires a model.
 
@@ -509,13 +515,15 @@ credentials are never copied into the `alc` config.
 
 ## Local models
 
-`alc --ollama claude` points Claude Code at the Ollama server's Anthropic Messages
-endpoint. A local server serves only the models it has pulled and answers one
-request at a time, so alc sets the session up differently from a hosted provider:
-every model alias (`ANTHROPIC_DEFAULT_MODEL` and the sonnet/opus/haiku tiers)
-pinned to the profile's model so Claude Code never asks Ollama for a model ID it
-does not have, non-essential traffic off, the real context window read from
-`/api/ps` or `/api/show`, and the first-token timeouts raised to thirty minutes.
+`alc --ollama claude`, `alc --llamacpp claude` and `alc --vllm claude` point
+Claude Code at the local server's Anthropic Messages endpoint — its root,
+beside the OpenAI routes under `/v1`. A local server serves only the models it
+loaded and answers one request at a time, or a few, so alc sets the session up
+differently from a hosted provider: every model alias (`ANTHROPIC_DEFAULT_MODEL`
+and the sonnet/opus/haiku tiers) pinned to the profile's model so Claude Code
+never asks the server for a model ID it does not have, non-essential traffic
+off, the real context window read from the server, and the first-token timeouts
+raised to thirty minutes.
 
 That last one matters more than it sounds. Claude Code opens every session with a
 request of roughly 25k to 40k tokens — system prompt, tool schemas, project
@@ -534,6 +542,39 @@ it can call tools, and the context it actually gets.
 Full tuning notes — KV cache type, keep-alive, why prompt length costs more than
 linearly on Gemma 4 — are in the
 [provider guide](https://treeleaves30760.github.io/all-code/local-models).
+
+### llama.cpp and vLLM
+
+```sh
+llama-server -m Qwen3.8-27B-UD-Q4_K_XL.gguf --alias qwen3.8-27b --jinja -c 131072 --api-key "$LLAMA_API_KEY"
+
+alc config upsert box --kind llamacpp --base-url http://127.0.0.1:8080/v1 --model qwen3.8-27b
+printf '%s' "$LLAMA_API_KEY" | alc config key box --stdin
+alc -p box claude
+```
+
+The profile keeps the OpenAI-style URL ending in `/v1`, which every other agent
+uses, and Claude Code is given the root. A key saved for the profile — or
+`LLAMA_API_KEY`, the variable llama-server itself reads — goes to every agent,
+and to Claude Code through its `apiKeyHelper`, never into a file. A `vllm`
+profile works the same way with vLLM's `--api-key`, and so does a `vllm` profile
+someone pointed at a llama-server before this kind existed.
+
+Two settings are particular to these servers. Both render the model's own Jinja
+chat template, and many of those — Qwen's among them — refuse a system message
+anywhere but first, while Claude Code sends one mid-conversation to a model it
+does not recognise; alc sets `CLAUDE_CODE_MODEL_CAPABILITIES` so that text rides
+in the first user turn instead. And llama-server sends its response headers at
+once, then nothing until the whole prompt is read — minutes, for a long one —
+which Claude Code's stream watchdogs would end after five;
+`CLAUDE_STREAM_IDLE_TIMEOUT_MS` goes to its thirty-minute ceiling on every local
+server.
+
+The context comes from llama.cpp's `/props` — the per-slot `n_ctx`, which is
+what one request gets on a server running several slots — or from vLLM's
+`max_model_len`. `alc doctor` prints a **llama.cpp and vLLM** section:
+the server and its build, whether it takes the key, whether it lists the model,
+that context, and whether `/v1/messages` exists.
 
 ## Remote control
 

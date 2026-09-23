@@ -84,7 +84,7 @@ pub(crate) fn build(
 
     if provider.kind != ProviderKind::Codex && !provider.speaks_anthropic() {
         bail!(
-            "provider '{profile_name}' speaks {}, but Claude Code needs Anthropic Messages; use an Anthropic-compatible endpoint, OpenRouter, Ollama, or `alc --codex claude`",
+            "provider '{profile_name}' speaks {}, but Claude Code needs Anthropic Messages; use an Anthropic-compatible endpoint, OpenRouter, a local Ollama, llama.cpp or vLLM, or `alc --codex claude`",
             provider.protocol
         );
     }
@@ -129,10 +129,10 @@ pub(crate) fn build(
 /// Whether this launch leaves Claude Code on its own login.
 fn on_claudes_own_login(provider: &Provider, key: Option<&str>) -> bool {
     // Never a local server, whatever its profile says its auth style is: it
-    // ignores the Authorization header and serves only what it has pulled, so
-    // Claude Code's own login has nothing to mean there - and alc has no
-    // business sending a claude.ai token to localhost.
-    if provider.kind == ProviderKind::Ollama {
+    // serves only what it loaded, so Claude Code's own login has nothing to
+    // mean there - and alc has no business sending a claude.ai token to a
+    // machine on the desk or in the lab.
+    if provider.kind.is_local_server() {
         return false;
     }
     match provider.auth {
@@ -237,24 +237,28 @@ fn provider_document(
         .as_deref()
         .filter(|value| !value.is_empty());
     let is_set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
-    let local_server = provider.kind == ProviderKind::Ollama;
+    let local_server = provider.kind.is_local_server();
+    let local_env = if local_server {
+        local_server_env(provider.kind, is_set)
+    } else {
+        Vec::new()
+    };
     // Nothing to fetch a credential for: a keyless endpoint has none, and a
     // local server pinned to Claude's own login has nothing to sign with
     // either - it is still the placeholder token and the pins.
     if provider.auth == AuthStyle::None || (local_server && provider.auth == AuthStyle::Native) {
-        let timeouts = if local_server {
-            local_server_timeout_env(is_set)
-        } else {
-            Vec::new()
-        };
         return Ok(claude_settings::local_document(&LocalDocument {
             base_url: &base_url,
             model,
             small_model,
             context_window: overrides.context_window,
-            placeholder: if local_server { "ollama" } else { "alc" },
+            placeholder: if provider.kind == ProviderKind::Ollama {
+                "ollama"
+            } else {
+                "alc"
+            },
             local_server,
-            timeouts: &timeouts,
+            local_env: &local_env,
         }));
     }
     let key = key_or_error(profile_name, provider, key)?;
@@ -269,16 +273,11 @@ fn provider_document(
         key_env: provider.api_key_env.as_deref(),
         helper: helper(store, &format!("profile:{profile_name}"))?,
     });
-    // Ollama's pins follow the kind, not the auth style, as they always have:
-    // an Ollama behind an authenticating proxy still serves only what it
-    // has pulled.
+    // A local server's pins follow the kind, not the auth style, as Ollama's
+    // always have: a llama.cpp started with `--api-key`, or an Ollama behind
+    // an authenticating proxy, still serves only the model it loaded.
     if local_server {
-        claude_settings::pin_local_server(
-            &mut document,
-            model,
-            small_model,
-            &local_server_timeout_env(is_set),
-        );
+        claude_settings::pin_local_server(&mut document, model, small_model, &local_env);
     }
     Ok(document)
 }
@@ -299,10 +298,41 @@ fn helper(store: &Store, route: &str) -> Result<String> {
 /// headers at ten. A laptop model can need longer than either just to read
 /// the ~30k-token prompt Claude Code opens every session with, and Ollama
 /// sends nothing at all until the first generated token.
-pub(crate) const LOCAL_SERVER_TIMEOUT_ENV: [(&str, &str); 2] = [
+///
+/// llama.cpp answers the other way round: the response headers within a
+/// couple of seconds, then silence until the whole prompt is read - half a
+/// minute for 11k tokens on a shared 27B server, a quarter of an hour for
+/// 200k. Claude Code's stream watchdogs time that silence out after five
+/// minutes on any `ANTHROPIC_BASE_URL`, independently of the idle timeout
+/// above, and the retry reads the prompt again. Thirty minutes is the most
+/// the byte-level watchdog accepts.
+pub(crate) const LOCAL_SERVER_TIMEOUT_ENV: [(&str, &str); 3] = [
     ("API_FORCE_IDLE_TIMEOUT", "0"),
     ("API_TIMEOUT_MS", "1800000"),
+    ("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "1800000"),
 ];
+
+/// Claude Code request features a model's own chat template can refuse.
+///
+/// llama.cpp and vLLM render the model's Hugging Face chat template, and many
+/// of those - Qwen's among them - raise on a system message anywhere but
+/// first: llama.cpp answers 500, `System message must be at the beginning`.
+/// Claude Code sends exactly that for a model it does not recognise, its
+/// environment block as a `role: "system"` message after the first user turn.
+/// Its own recovery turns the feature off only on a 400 in wording it knows,
+/// so against a 500 it resends the same request until it gives up.
+///
+/// `CLAUDE_CODE_MODEL_CAPABILITIES` is Claude Code's model capability
+/// override: `-` turns one off, and with no `model=` in front the entry covers
+/// every model, here all the one local model anyway. With both off the block
+/// rides in the first user turn as a `<system-reminder>`, as it does for
+/// models older than the feature. The documented
+/// `ANTHROPIC_DEFAULT_*_MODEL_SUPPORTED_CAPABILITIES` would say the same, but
+/// Claude Code ignores those behind `ANTHROPIC_BASE_URL`.
+pub(crate) const CHAT_TEMPLATE_CAPABILITIES: (&str, &str) = (
+    "CLAUDE_CODE_MODEL_CAPABILITIES",
+    "-mid_conv_system,-mid_conv_tool_change",
+);
 
 /// The timeout variables to inject for a local server, minus any the user
 /// already set (`is_set`), whose own value must win.
@@ -313,6 +343,21 @@ pub(crate) fn local_server_timeout_env(
         .into_iter()
         .filter(|(name, _)| !is_set(name))
         .collect()
+}
+
+/// Everything a `kind` local server needs beyond its pins: the timeouts, and
+/// for a server that renders the model's own chat template the capabilities
+/// it would refuse - each minus a value the user already set.
+pub(crate) fn local_server_env(
+    kind: ProviderKind,
+    is_set: impl Fn(&str) -> bool,
+) -> Vec<(&'static str, &'static str)> {
+    let template = matches!(kind, ProviderKind::Llamacpp | ProviderKind::Vllm);
+    let mut env = local_server_timeout_env(&is_set);
+    if template && !is_set(CHAT_TEMPLATE_CAPABILITIES.0) {
+        env.push(CHAT_TEMPLATE_CAPABILITIES);
+    }
+    env
 }
 
 /// Claude Code's own user-level settings file.
@@ -606,7 +651,8 @@ mod tests {
             local_server_timeout_env(|_| false),
             vec![
                 ("API_FORCE_IDLE_TIMEOUT", "0"),
-                ("API_TIMEOUT_MS", "1800000")
+                ("API_TIMEOUT_MS", "1800000"),
+                ("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "1800000"),
             ]
         );
     }
@@ -702,7 +748,10 @@ mod tests {
     fn a_user_set_timeout_variable_is_left_alone() {
         assert_eq!(
             local_server_timeout_env(|name| name == "API_TIMEOUT_MS"),
-            vec![("API_FORCE_IDLE_TIMEOUT", "0")]
+            vec![
+                ("API_FORCE_IDLE_TIMEOUT", "0"),
+                ("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "1800000"),
+            ]
         );
         assert!(local_server_timeout_env(|_| true).is_empty());
     }

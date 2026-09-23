@@ -104,7 +104,7 @@ no profile carries the kind's own name and several share that kind.
 | `minimax` | Remaining requests per window |
 | `zai` | Token windows and credit balance |
 
-Everything else — OpenAI, Groq, xAI, Google, Ollama, vLLM, custom endpoints —
+Everything else — OpenAI, Groq, xAI, Google, Ollama, vLLM, llama.cpp, custom endpoints —
 reports `no quota API`, because none publishes one for an API key. These
 requests go to the vendor's own endpoint, so a profile pointed at a proxy is
 reported as having no quota API rather than having its key sent to a host that

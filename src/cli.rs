@@ -11,7 +11,7 @@ use crate::config::{
 };
 use crate::model_catalog::{CodexSource, ModelCatalog, ModelInfo};
 use crate::remote::RemoteCommand;
-use crate::{doctor, launch, ollama, remote, tui, update, usage};
+use crate::{doctor, launch, ollama, openai_server, remote, tui, update, usage};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -49,6 +49,10 @@ struct Cli {
     /// Shortcut for --provider vllm.
     #[arg(long, global = true)]
     vllm: bool,
+
+    /// Shortcut for --provider llamacpp.
+    #[arg(long, global = true, visible_alias = "llama-cpp")]
+    llamacpp: bool,
 
     /// Shortcut for --provider deepseek.
     #[arg(long, global = true)]
@@ -697,6 +701,7 @@ fn provider_selector(cli: &Cli) -> Result<Option<String>> {
         (cli.openrouter, "openrouter"),
         (cli.ollama, "ollama"),
         (cli.vllm, "vllm"),
+        (cli.llamacpp, "llamacpp"),
         (cli.deepseek, "deepseek"),
         (cli.moonshot, "moonshot"),
         (cli.zai, "zai"),
@@ -834,14 +839,18 @@ fn run_claude(
                 "--effort and --save are available with a Codex provider; use `alc --codex claude`"
             );
         }
-        // A local Ollama server can say how much context it really gives the
-        // model, which is worth more than Claude Code's 200k guess for an
-        // unknown model id. Skipped silently when the server is not running.
-        let context_window = (provider.kind == ProviderKind::Ollama)
-            .then(|| {
-                ollama::context_window(&provider, args.model.as_deref().unwrap_or(&provider.model))
-            })
-            .flatten();
+        // A local server can say how much context it really gives the model,
+        // which is worth more than Claude Code's 200k guess for an unknown
+        // model id. Skipped silently when the server is not running.
+        let model = args.model.as_deref().unwrap_or(&provider.model);
+        let context_window = match provider.kind {
+            ProviderKind::Ollama => ollama::context_window(&provider, model),
+            ProviderKind::Llamacpp | ProviderKind::Vllm => {
+                let key = store.credentials.key_for(&profile_name, &provider);
+                openai_server::context_window(&provider, key.as_deref(), model)
+            }
+            _ => None,
+        };
         let overrides = launch::LaunchOverrides {
             model: args.model,
             context_window,

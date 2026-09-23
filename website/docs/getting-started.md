@@ -138,13 +138,14 @@ alc claude                 # each agent on its configured default
 alc --openrouter codex
 alc --deepseek pi
 alc --ollama claude
+alc --llamacpp claude
 alc -p local-vllm opencode
 ```
 
 `--provider` (`-p`) takes a profile name, or a kind when only one profile of
 that kind exists; `--anthropic`, `--openai`, `--openrouter`, `--codex`,
-`--ollama`, `--vllm`, `--deepseek`, `--moonshot`, `--zai`, `--minimax`,
-`--groq`, `--xai`, and `--google` are shortcuts. Keys are saved locally or read
+`--ollama`, `--vllm`, `--llamacpp`, `--deepseek`, `--moonshot`, `--zai`,
+`--minimax`, `--groq`, `--xai`, and `--google` are shortcuts. Keys are saved locally or read
 from environment variables; the environment wins. See
 [Providers](./providers.md) for what each kind speaks and
 [Configuration](./configuration.md) for the files.

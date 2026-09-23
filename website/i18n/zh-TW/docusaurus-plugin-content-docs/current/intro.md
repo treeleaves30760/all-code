@@ -67,7 +67,7 @@ alc --codex claude
 
 [任何 provider](./providers.md)
 
-Anthropic、OpenAI、OpenRouter、Ollama、vLLM、DeepSeek、Moonshot、Z.ai、
+Anthropic、OpenAI、OpenRouter、Ollama、llama.cpp、vLLM、DeepSeek、Moonshot、Z.ai、
 MiniMax、Groq、xAI、Google，或你自己的端點。加一個旗標就能只為這次執行換掉。
 
 </div>
