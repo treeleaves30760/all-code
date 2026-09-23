@@ -41,7 +41,7 @@ error: Codex credentials were not found at ~/.codex/auth.json; run `codex login`
 error: 'claude' is not installed or not on PATH; install it first, then retry `alc claude`: cannot find binary path
 ```
 
-**What you get.** Claude Code starts on `gpt-5.6-terra` at `medium` effort — or
+**What you get.** Claude Code starts on `gpt-6-sol` at `medium` effort — or
 on whatever model and effort your own `~/.codex/config.toml` already names, if
 you have used Codex CLI before — with the real 272k Codex context window rather
 than the 200k Claude Code assumes for a model ID it does not recognize, and
@@ -50,16 +50,18 @@ every GPT model Codex serves in its own `/model` picker:
 | Model | Beginner-friendly use case | Codex default effort |
 | --- | --- | --- |
 | `gpt-6-astra` | GPT-6. Most capable; complex, demanding work | `medium` |
-| `gpt-5.6-sol` | Frontier capability for the hardest professional work | `low` |
-| `gpt-5.6-terra` | Balanced everyday coding; recommended starting point | `medium` |
-| `gpt-5.6-luna` | Fast, affordable, high-volume work | `medium` |
+| `gpt-6-sol` | GPT-6. Everyday coding and agentic work; recommended starting point | `medium` |
+| `gpt-6-luna` | GPT-6. Fast and the cheapest; quick fixes and high-volume work | `medium` |
+| `gpt-5.6-sol` | Previous generation; complex professional work | `low` |
+| `gpt-5.6-terra` | Previous generation; balanced everyday coding | `medium` |
+| `gpt-5.6-luna` | Previous generation; fast, affordable work | `medium` |
 
 Inside the session, `/model` switches the model and its left/right arrows move
 the effort slider; `/effort` sets a level directly. To start somewhere else for
 one run, or in scripts:
 
 ```sh
-alc --codex claude --model gpt-5.6-luna --effort low
+alc --codex claude --model gpt-6-luna --effort low
 ```
 
 **Your plain `claude` still reaches Anthropic afterwards.** That picker writes
@@ -406,8 +408,8 @@ natively, and `ALC_CLAUDE_BIN` and its siblings override a binary path.
 
 ## Codex bridge
 
-alc tracks four Codex models — the ones in the table above — and syncs their
-details from the installed Codex CLI. The bridge itself keeps no allowlist:
+alc tracks six Codex models — the ones in the table above — and syncs their
+details from your ChatGPT account. The bridge itself keeps no allowlist:
 whatever slug it is handed goes upstream, and chatgpt.com decides, so a model alc
 has not been taught about is still reachable by naming it with `--model` on the
 day Codex ships it. That is what made `gpt-6-astra` usable in 1.5.0, when the
@@ -415,21 +417,21 @@ hard-coded list in the bridge alc used to depend on was a release behind.
 
 **Effort.** Every model accepts `low`, `medium`, `high`, `xhigh`, or `max`.
 Higher effort gives the model more room to reason, but can take longer and use
-more quota. `gpt-6-astra` and the newer GPT-5.6 models also offer an `ultra` tier
-above `max`. That tier is reachable with native `alc codex`, but **not** through
+more quota. Every model but the two Lunas also offers an `ultra` tier above
+`max`. That tier is reachable with native `alc codex`, but **not** through
 the bridge: the built-in helper's own effort range stops at `max`, so alc clamps
 it there and says so at launch rather than letting the request be refused
 mid-session.
 
 See OpenAI's [model selection guide](https://developers.openai.com/api/docs/guides/latest-model),
-[Luna reference](https://developers.openai.com/api/docs/models/gpt-5.6-luna),
-and [Sol reference](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+[Sol reference](https://developers.openai.com/api/docs/models/gpt-6-sol),
+and [Luna reference](https://developers.openai.com/api/docs/models/gpt-6-luna)
 for current upstream details.
 
 **Choosing the defaults.**
 
 ```sh
-alc --codex claude --model gpt-5.6-terra --effort medium --save
+alc --codex claude --model gpt-6-sol --effort medium --save
 ```
 
 `--save` stores both in the selected alc provider. Without them the session
@@ -729,7 +731,7 @@ Override the directory with `ALC_CONFIG_DIR`. Useful scripting commands:
 alc config init
 alc config show
 alc config path
-alc config upsert codex --kind codex --model gpt-5.6-terra --effort medium
+alc config upsert codex --kind codex --model gpt-6-sol --effort medium
 alc config upsert work --kind openrouter --model anthropic/claude-sonnet-4.6
 printf '%s' "$OPENROUTER_API_KEY" | alc config key work --stdin
 alc config set-default claude work

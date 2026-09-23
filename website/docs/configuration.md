@@ -68,7 +68,7 @@ The keys are shown at the bottom of every screen. The primary controls are:
 alc config init
 alc config show
 alc config path
-alc config upsert codex --kind codex --model gpt-5.6-terra --effort medium
+alc config upsert codex --kind codex --model gpt-6-sol --effort medium
 alc config upsert work --kind openrouter --model anthropic/claude-sonnet-4.6
 printf '%s' "$OPENROUTER_API_KEY" | alc config key work --stdin
 alc config set-default claude work
