@@ -22,7 +22,7 @@ avt = "0.18"
 # src/bridge only. Versions match what the vendored bridge already pulled in,
 # so adding them as direct dependencies costs no new crates.
 axum = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1"
 # The Codex bridge, run in-process rather than shelled out to. alc no longer
 # ships or downloads a second binary, and the two halves can no longer drift
