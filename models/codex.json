@@ -4,6 +4,21 @@
   "source": "built-in fallback",
   "models": [
     {
+      "id": "gpt-6.1-sol",
+      "name": "GPT-6.1 Sol",
+      "description": "Latest workhorse model for coding and everyday work.",
+      "context_window": 272000,
+      "default_effort": "low",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    },
+    {
       "id": "gpt-6-astra",
       "name": "GPT-6 Astra",
       "description": "Most capable model for complex, demanding work.",

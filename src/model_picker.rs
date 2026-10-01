@@ -145,7 +145,11 @@ impl PickerApp {
     }
 
     fn selected_model(&self) -> Option<&ModelInfo> {
-        self.catalog.models.get(self.model_selected)
+        if self.choose_model {
+            self.catalog.models.get(self.model_selected)
+        } else {
+            self.catalog.find(&self.fixed_model)
+        }
     }
 }
 
@@ -282,11 +286,16 @@ fn draw_efforts(frame: &mut ratatui::Frame, app: &PickerApp, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(area);
+    // Keep the generic Medium recommendation for a fixed model the catalog
+    // does not know, rather than borrowing another model's default.
+    let recommended_effort = app
+        .selected_model()
+        .map_or(ReasoningEffort::Medium, |model| model.default_effort);
     let items = ReasoningEffort::ALL
         .iter()
         .enumerate()
         .map(|(index, effort)| {
-            let recommended = (*effort == ReasoningEffort::Medium).then_some("  [recommended]");
+            let recommended = (*effort == recommended_effort).then_some("  [recommended]");
             ListItem::new(format!(
                 "{}. {}{}",
                 index + 1,
@@ -336,7 +345,8 @@ fn draw_efforts(frame: &mut ratatui::Frame, app: &PickerApp, area: Rect) {
 fn beginner_model_hint(model: &str) -> &'static str {
     match model {
         "gpt-6-luna" => "Best for quick fixes, repetitive work, and keeping usage low.",
-        "gpt-6-sol" => "Best starting point for most coding sessions.",
+        "gpt-6.1-sol" => "Best starting point for most coding sessions.",
+        "gpt-6-sol" => "Workhorse for everyday coding and agentic work.",
         "gpt-6-astra" => "Best for the most complex work: coding, computer use, and research.",
         "gpt-5.6-luna" => "Previous generation. Quick, routine work at low usage.",
         "gpt-5.6-terra" => "Previous generation. A balanced choice for everyday coding.",
@@ -388,6 +398,7 @@ mod tests {
             },
         );
         let screen = rendered(&app);
+        assert!(screen.contains("gpt-6.1-sol"), "GPT-6.1 Sol is missing");
         for model in ModelCatalog::built_in().models {
             let id = &model.id;
             assert!(
@@ -429,6 +440,102 @@ mod tests {
                 model.id
             );
         }
+    }
+
+    #[test]
+    fn the_starting_point_hint_moves_to_gpt_6_1_sol() {
+        assert!(beginner_model_hint("gpt-6.1-sol").contains("starting point"));
+        assert!(!beginner_model_hint("gpt-6-sol").contains("starting point"));
+    }
+
+    #[test]
+    fn gpt_6_1_sol_is_the_pickers_starting_point_with_low_effort() {
+        let mut app = PickerApp::new(
+            ModelCatalog::built_in(),
+            PickerRequest {
+                model: "gpt-6-sol".into(),
+                effort: ReasoningEffort::Medium,
+                choose_model: true,
+                choose_effort: true,
+            },
+        );
+        // Sol 6.1 is two rows above the previous default, ahead of Astra.
+        app.move_selected(-2);
+        assert_eq!(app.selected_model().unwrap().id, "gpt-6.1-sol");
+        assert!(rendered(&app).contains("starting point"));
+        assert!(!beginner_model_hint("gpt-6-sol").contains("starting point"));
+        app.advance();
+        assert_eq!(
+            ReasoningEffort::ALL[app.effort_selected],
+            ReasoningEffort::Low
+        );
+        let screen = rendered(&app);
+        assert!(
+            screen.contains("1. low  [recommended]"),
+            "GPT-6.1 Sol must recommend low rather than medium: {screen}"
+        );
+        assert!(!screen.contains("2. medium  [recommended]"));
+    }
+
+    #[test]
+    fn effort_recommendation_uses_the_catalog_default_not_the_saved_effort() {
+        for (model, recommended) in [
+            ("gpt-6.1-sol", "1. low  [recommended]"),
+            ("gpt-6-astra", "2. medium  [recommended]"),
+        ] {
+            for choose_model in [true, false] {
+                let mut app = PickerApp::new(
+                    ModelCatalog::built_in(),
+                    PickerRequest {
+                        model: model.into(),
+                        effort: ReasoningEffort::Max,
+                        choose_model,
+                        choose_effort: true,
+                    },
+                );
+                if choose_model {
+                    app.advance();
+                }
+                let screen = rendered(&app);
+                assert!(
+                    screen.contains(recommended),
+                    "{model}, choose_model={choose_model}: {screen}"
+                );
+                assert_eq!(screen.matches("[recommended]").count(), 1);
+                app.advance();
+                assert_eq!(
+                    app.take_result(),
+                    Some(Some(RuntimeSelection {
+                        model: model.into(),
+                        effort: ReasoningEffort::Max,
+                    }))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_fixed_model_keeps_the_generic_medium_recommendation() {
+        let mut app = PickerApp::new(
+            ModelCatalog::built_in(),
+            PickerRequest {
+                model: "unknown".into(),
+                effort: ReasoningEffort::High,
+                choose_model: false,
+                choose_effort: true,
+            },
+        );
+        let screen = rendered(&app);
+        assert!(screen.contains("2. medium  [recommended]"));
+        assert_eq!(screen.matches("[recommended]").count(), 1);
+        app.advance();
+        assert_eq!(
+            app.take_result(),
+            Some(Some(RuntimeSelection {
+                model: "unknown".into(),
+                effort: ReasoningEffort::High,
+            }))
+        );
     }
 
     #[test]

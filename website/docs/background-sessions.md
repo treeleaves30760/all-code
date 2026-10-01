@@ -82,7 +82,7 @@ Under `alc --codex claude` no request reaches a Claude model:
 | Where Claude Code picks a model | Under alc --codex claude |
 | --- | --- |
 | the model a session starts on, `/model`, the Default row | Codex models only |
-| `opus`, `fable`, `best` | the most capable Codex model |
+| `opus`, `fable`, `best` | the first model in alc's catalog (currently GPT-6.1 Sol, the default workhorse) |
 | `sonnet`, `opusplan` outside plan mode | the model the session started on |
 | `haiku`, and Claude Code's background work (titles, summaries, agent view's rows) | the cheapest Codex model |
 | a Claude model named in full: `/model claude-opus-5`, a subagent's `model:`, a fallback chain | the Codex model of the same tier |

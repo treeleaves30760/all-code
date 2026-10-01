@@ -770,7 +770,7 @@ pub(crate) fn resolve_codex_model(provider: &Provider) -> Result<String> {
             }
         }
     }
-    Ok("gpt-6-sol".to_owned())
+    Ok("gpt-6.1-sol".to_owned())
 }
 
 pub(crate) fn normalize_codex_model(model: &str) -> String {
@@ -1887,6 +1887,7 @@ mod tests {
         assert_eq!(
             ids,
             [
+                "gpt-6.1-sol",
                 "gpt-6-astra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
@@ -2061,8 +2062,22 @@ mod tests {
         assert_eq!(value("ANTHROPIC_DEFAULT_SONNET_MODEL"), "gpt-5.6-terra");
         // `opus` and `fable` follow the catalog's most capable model, so a new
         // generation reaches the alias without another mapping to maintain.
-        assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "gpt-6-astra");
-        assert_eq!(value("ANTHROPIC_DEFAULT_FABLE_MODEL"), "gpt-6-astra");
+        assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "gpt-6.1-sol");
+        assert_eq!(value("ANTHROPIC_DEFAULT_FABLE_MODEL"), "gpt-6.1-sol");
+        let route = spec.codex_route().expect("a Codex route");
+        for (asked, served) in [
+            ("opus", "gpt-6.1-sol"),
+            ("claude-opus-5", "gpt-6.1-sol"),
+            ("fable", "gpt-6.1-sol"),
+            ("sonnet", "gpt-5.6-terra"),
+            ("claude-sonnet-5", "gpt-5.6-terra"),
+            ("haiku", "gpt-6-luna"),
+            ("claude-haiku-4-5", "gpt-6-luna"),
+        ] {
+            assert_eq!(route.tiers.serve_as(asked), Some(served), "{asked}");
+        }
+        assert_eq!(route.tiers.serve_as("gpt-6-sol"), None);
+        assert_eq!(route.tiers.serve_as("gpt-6.1-sol"), None);
         assert!(
             !env.contains_key("CLAUDE_CODE_SUBAGENT_MODEL"),
             "subagents follow the model chosen in the session"
@@ -2584,15 +2599,34 @@ mod tests {
     }
 
     /// Nothing names a model - not the profile, not the Codex config it
-    /// reads - so the session starts on GPT-6 Sol, the model Codex moves
-    /// GPT-5.6 Terra users to.
+    /// reads - so a new session starts on GPT-6.1 Sol.
     #[test]
-    fn a_codex_profile_that_names_no_model_starts_on_gpt_6_sol() {
+    fn a_codex_profile_that_names_no_model_starts_on_gpt_6_1_sol() {
         let home = tempfile::tempdir().unwrap();
         let mut provider = Provider::for_kind(ProviderKind::Codex);
         provider.codex_home = Some(home.path().display().to_string());
 
+        assert_eq!(resolve_codex_model(&provider).unwrap(), "gpt-6.1-sol");
+    }
+
+    #[test]
+    fn a_codex_model_already_chosen_is_not_replaced_by_the_new_default() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.toml"), "model = \"gpt-6-sol\"\n").unwrap();
+        std::fs::write(
+            home.path().join("work.config.toml"),
+            "model = \"gpt-6-astra\"\n",
+        )
+        .unwrap();
+        let mut provider = Provider::for_kind(ProviderKind::Codex);
+        provider.codex_home = Some(home.path().display().to_string());
         assert_eq!(resolve_codex_model(&provider).unwrap(), "gpt-6-sol");
+
+        provider.codex_profile = Some("work".into());
+        assert_eq!(resolve_codex_model(&provider).unwrap(), "gpt-6-astra");
+
+        provider.model = "gpt-5.6-terra".into();
+        assert_eq!(resolve_codex_model(&provider).unwrap(), "gpt-5.6-terra");
     }
 
     #[test]

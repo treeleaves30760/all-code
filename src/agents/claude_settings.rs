@@ -642,8 +642,8 @@ mod tests {
         );
         assert_eq!(value("ANTHROPIC_MODEL"), "gpt-5.6-terra");
         assert_eq!(value("ANTHROPIC_DEFAULT_MODEL"), "gpt-5.6-terra");
-        assert_eq!(value("ANTHROPIC_DEFAULT_FABLE_MODEL"), "gpt-6-astra");
-        assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "gpt-6-astra");
+        assert_eq!(value("ANTHROPIC_DEFAULT_FABLE_MODEL"), "gpt-6.1-sol");
+        assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "gpt-6.1-sol");
         assert_eq!(value("ANTHROPIC_DEFAULT_SONNET_MODEL"), "gpt-5.6-terra");
         assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "gpt-6-luna");
         assert_eq!(value("ANTHROPIC_SMALL_FAST_MODEL"), "gpt-6-luna");
@@ -672,9 +672,10 @@ mod tests {
         let rows = document["modelPicker"]["options"]
             .as_array()
             .expect("the picker's rows");
-        assert_eq!(rows[0]["model"], "gpt-6-astra");
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[0]["model"], "gpt-6.1-sol");
         assert_eq!(
-            rows[0]["label"], "GPT-6 Astra",
+            rows[0]["label"], "GPT-6.1 Sol",
             "the most capable model is listed first"
         );
         assert!(

@@ -45,13 +45,11 @@ const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 ///
 /// chatgpt.com gates each model on a `minimal_client_version` and believes
 /// whatever version the caller declares, so this number decides how much of
-/// the catalog comes back: `gpt-6-astra` carries a minimum of 0.153.0 and
-/// `gpt-6-sol` and `gpt-6-luna` 0.155.0, and a caller declaring less is
-/// simply not shown them. This is the release alc has seen the whole catalog
-/// under. It is a floor rather than a pin, because a user whose Codex is
-/// newer should be asking as that newer client - and on the day this constant
-/// does go stale nothing breaks, the catalog just stops growing until someone
-/// bumps it.
+/// the catalog comes back. GPT-6.1 Sol's upstream row literally carries
+/// 0.153.0, but 0.159.1 is the first stable Codex bundle containing it, so
+/// that is alc's operational floor. The two versions answer different
+/// questions and are kept separate. A user whose Codex is newer still asks
+/// as that newer client; this is a floor, not a pin.
 ///
 /// Nothing in alc can notice that on its own: a model held back by a
 /// `minimal_client_version` above this number is absent from the answer, and
@@ -61,7 +59,7 @@ const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 /// `codex debug models`. So the weekly job checks this constant directly,
 /// against the version of the Codex it just installed from npm, and says so
 /// when alc has fallen behind it.
-const CODEX_CLIENT_VERSION_FLOOR: &str = "0.156.0";
+const CODEX_CLIENT_VERSION_FLOOR: &str = "0.159.1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -746,12 +744,13 @@ fn now_unix() -> u64 {
 mod tests {
     use super::*;
 
-    /// Trimmed from what chatgpt.com's catalog answered a 0.156.0 client on
-    /// 2026-09-23, the day after GPT-6 Sol and Luna shipped: the slugs, the
-    /// metadata, the `visibility`, `priority` and `minimal_client_version`
-    /// values and their order are the real ones. Only the per-model prompt
-    /// text and the fields alc never reads are gone.
+    /// Trimmed real-answer fixture, extended with the upstream GPT-6.1 Sol
+    /// row supplied for this release. The older rows were captured from
+    /// chatgpt.com on 2026-09-23 with client 0.156.0. Only the per-model prompt
+    /// text and fields alc never reads are gone. Sol's literal upstream
+    /// minimum is not alc's operational client-version floor.
     const CODEX_CURRENT: &str = r#"{"models":[
+      {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","description":"Latest workhorse model for coding and everyday work.","context_window":272000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1,"minimal_client_version":"0.153.0"},
       {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","description":"Frontier intelligence for the most demanding work.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1,"minimal_client_version":"0.153.0"},
       {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","description":"Workhorse model for coding and everyday work.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":2,"minimal_client_version":"0.155.0"},
       {"slug":"gpt-6-luna","display_name":"GPT-6-Luna","description":"Fast and affordable model for easier tasks.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"list","priority":3,"minimal_client_version":"0.155.0"},
@@ -827,6 +826,7 @@ mod tests {
         assert_eq!(
             ids,
             [
+                "gpt-6.1-sol",
                 "gpt-6-astra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
@@ -840,7 +840,7 @@ mod tests {
     #[test]
     fn bundled_catalog_has_requested_models_and_efforts() {
         let catalog = ModelCatalog::built_in();
-        assert_eq!(catalog.models.len(), 6);
+        assert_eq!(catalog.models.len(), 7);
         for model in &catalog.models {
             let id = &model.id;
             // Not every model has every tier - both Lunas stop at `max` -
@@ -862,6 +862,43 @@ mod tests {
                 "{id} should include its context window"
             );
         }
+    }
+
+    #[test]
+    fn gpt_6_1_sol_is_offered_offline_with_its_own_metadata() {
+        let catalog = ModelCatalog::built_in();
+        let sol = catalog
+            .find("gpt-6.1-sol")
+            .expect("GPT-6.1 Sol offered offline");
+        assert_eq!(sol.name, "GPT-6.1 Sol");
+        assert_eq!(
+            sol.description,
+            "Latest workhorse model for coding and everyday work."
+        );
+        assert_eq!(sol.context_window, 272_000);
+        assert_eq!(sol.default_effort, ReasoningEffort::Low);
+        assert_eq!(
+            sol.supported_efforts,
+            [
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Xhigh,
+                ReasoningEffort::Max,
+                ReasoningEffort::Ultra,
+            ]
+        );
+    }
+
+    #[test]
+    fn discovery_enriches_gpt_6_1_sol_without_moving_it_out_of_the_first_slot() {
+        let catalog = catalog_from(CODEX_CURRENT);
+        let sol = catalog.find("gpt-6.1-sol").expect("upstream Sol");
+        assert_eq!(ids(&catalog)[0], "gpt-6.1-sol");
+        assert_eq!(sol.name, "GPT-6.1-Sol");
+        assert_eq!(sol.priority, Some(1));
+        assert_eq!(sol.default_effort, ReasoningEffort::Low);
+        assert!(catalog.unreported.is_empty());
     }
 
     /// The catalog alc ships is what every picker shows before the first
@@ -917,10 +954,10 @@ mod tests {
                 .map(|model| model.context_window),
             Some(272_000)
         );
-        assert_eq!(ids(&catalog)[0], "gpt-6-astra");
+        assert_eq!(ids(&catalog)[0], "gpt-6.1-sol");
         assert_eq!(
             catalog.unreported,
-            ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+            ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
         );
     }
 
@@ -928,15 +965,17 @@ mod tests {
     fn a_pruned_cache_on_disk_regains_what_an_older_alc_dropped() {
         let dir = tempfile::tempdir().unwrap();
         let mut pruned = ModelCatalog::built_in();
-        pruned.models.retain(|model| model.id != "gpt-6-astra");
+        pruned
+            .models
+            .retain(|model| !["gpt-6.1-sol", "gpt-6-astra"].contains(&model.id.as_str()));
         pruned.source = "installed Codex CLI (`codex debug models`)".to_owned();
         write_cache(dir.path(), &pruned).unwrap();
 
         // No refresh, no network and no Codex: the plain load path repairs
         // it, which is what fixes the machine the report came from.
         let loaded = ModelCatalog::load(dir.path());
-        assert_eq!(ids(&loaded)[0], "gpt-6-astra");
-        assert_eq!(loaded.unreported, ["gpt-6-astra"]);
+        assert_eq!(ids(&loaded)[0], "gpt-6.1-sol");
+        assert_eq!(loaded.unreported, ["gpt-6.1-sol", "gpt-6-astra"]);
     }
 
     #[test]
@@ -956,6 +995,7 @@ mod tests {
         assert_eq!(
             ids(&catalog),
             [
+                "gpt-6.1-sol",
                 "gpt-6-astra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
@@ -973,10 +1013,13 @@ mod tests {
     #[test]
     fn the_order_alc_ships_survives_a_source_that_lists_another_model_first() {
         let catalog = catalog_from(CODEX_BEFORE_GPT_6_SOL);
-        assert_eq!(ids(&catalog)[0], "gpt-6-astra");
+        assert_eq!(ids(&catalog)[0], "gpt-6.1-sol");
         // Astra came from the source, listed after Sol; only the models that
         // answer predates were put back by alc.
-        assert_eq!(catalog.unreported, ["gpt-6-sol", "gpt-6-luna"]);
+        assert_eq!(
+            catalog.unreported,
+            ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]
+        );
     }
 
     /// A model alc does not ship yet, ranked between two that it does, has to
@@ -1001,6 +1044,7 @@ mod tests {
         assert_eq!(
             ids(&catalog),
             [
+                "gpt-6.1-sol",
                 "gpt-6-astra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
@@ -1035,6 +1079,7 @@ mod tests {
         assert_eq!(
             ids(&loaded),
             [
+                "gpt-6.1-sol",
                 "gpt-6-astra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
@@ -1057,7 +1102,7 @@ mod tests {
                 .replace("\"priority\":12", &format!("\"priority\":{priority}"));
             let catalog = catalog_from(&json);
             assert!(catalog.find("gpt-7-nova").is_some());
-            assert_eq!(*ids(&catalog).first().unwrap(), "gpt-6-astra");
+            assert_eq!(*ids(&catalog).first().unwrap(), "gpt-6.1-sol");
             assert_eq!(*ids(&catalog).last().unwrap(), "gpt-6-luna");
         }
     }
@@ -1082,7 +1127,7 @@ mod tests {
         let mut catalog = catalog_from(CODEX_ONE_RELEASE_BEHIND);
         assert_eq!(
             catalog.unreported,
-            ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+            ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
         );
         let before = catalog.models.clone();
         let restored = catalog.apply_floor();
@@ -1117,6 +1162,7 @@ mod tests {
     fn a_sync_that_fails_is_not_retried_by_every_later_command() {
         let dir = tempfile::tempdir().unwrap();
         let mut stale = ModelCatalog::built_in();
+        stale.models.retain(|model| model.id != "gpt-6.1-sol");
         stale.codex_cache_stamp = Some("0.149.1".to_owned());
         write_cache(dir.path(), &stale).unwrap();
 
@@ -1130,7 +1176,8 @@ mod tests {
         assert_eq!(attempts, 1);
         assert_eq!(kept.codex_cache_stamp.as_deref(), Some("0.154.0"));
         // The floor still holds: a failed sync costs freshness, never a model.
-        assert_eq!(ids(&kept)[0], "gpt-6-astra");
+        assert_eq!(ids(&kept)[0], "gpt-6.1-sol");
+        assert_eq!(kept.unreported, ["gpt-6.1-sol"]);
 
         let again =
             ModelCatalog::refresh_if_due(dir.path(), Some("0.154.0".to_owned()), now + 60, || {
@@ -1199,18 +1246,23 @@ mod tests {
         }
     }
 
+    /// 0.159.1 is the first stable Codex bundle containing GPT-6.1 Sol.
+    /// Its operational floor is deliberately newer than the row's literal
+    /// upstream minimum, so an old or missing Codex cannot under-declare.
     #[test]
     fn alc_never_declares_a_client_version_older_than_the_one_it_knows_works() {
-        assert_eq!(declared_client_version(None), CODEX_CLIENT_VERSION_FLOOR);
-        assert_eq!(
-            declared_client_version(Some("0.149.1")),
-            CODEX_CLIENT_VERSION_FLOOR
-        );
+        for stamp in [
+            None,
+            Some("0.149.1"),
+            Some("0.156.0"),
+            Some("0.159.0"),
+            Some("0.159.1-alpha.1"),
+            Some("0.159.1"),
+            Some("not-a-version"),
+        ] {
+            assert_eq!(declared_client_version(stamp), "0.159.1", "{stamp:?}");
+        }
         assert_eq!(declared_client_version(Some("0.160.2")), "0.160.2");
-        assert_eq!(
-            declared_client_version(Some("not-a-version")),
-            CODEX_CLIENT_VERSION_FLOOR
-        );
     }
 
     #[test]

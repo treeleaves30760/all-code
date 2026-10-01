@@ -82,7 +82,7 @@ alc bridge stop     # the next session that needs it starts it again
 | Claude Code 在哪裡挑模型 | 在 alc --codex claude 底下 |
 | --- | --- |
 | session 啟動時用的模型、`/model`、Default 那一列 | 只有 Codex 模型 |
-| `opus`、`fable`、`best` | 能力最強的那個 Codex 模型 |
+| `opus`、`fable`、`best` | alc catalog 裡排第一的模型（目前是預設主力 GPT-6.1 Sol） |
 | `sonnet`，以及不在 plan 模式下的 `opusplan` | 這次 session 啟動時用的那個模型 |
 | `haiku`，以及 Claude Code 自己的背景工作（標題、摘要、agent view 的那幾列） | 最便宜的那個 Codex 模型 |
 | 指名完整名稱的 Claude 模型：`/model claude-opus-5`、subagent 的 `model:`、fallback 鏈 | 同一級的 Codex 模型 |

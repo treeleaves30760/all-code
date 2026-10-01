@@ -178,7 +178,7 @@ mod tests {
                 OsString::from("--auth-type"),
                 OsString::from("openai"),
                 OsString::from("--model"),
-                OsString::from("gpt-6-sol"),
+                OsString::from("gpt-6.1-sol"),
             ]
         );
         assert_eq!(

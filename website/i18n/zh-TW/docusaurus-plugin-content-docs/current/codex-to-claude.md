@@ -8,6 +8,7 @@ keywords:
   - claude code with gpt
   - codex subscription
   - chatgpt plan coding agent
+  - gpt-6.1-sol
   - gpt-6-astra
   - gpt-6-sol
   - gpt-6-luna
@@ -43,12 +44,17 @@ Claude Code 會把這幾個列進它自己的 `/model` 選單：
 
 | 模型 | 適合的情境 | Codex 預設強度 |
 | --- | --- | --- |
-| `gpt-6-astra` | GPT-6。能力最強，適合複雜吃重的工作 | `medium` |
-| `gpt-6-sol` | GPT-6。日常寫程式與代理式工作，建議從這個開始 | `medium` |
-| `gpt-6-luna` | GPT-6。快、最便宜，適合快速修正與大量的例行工作 | `medium` |
+| `gpt-6.1-sol` | GPT-6.1 Sol。最新的主力模型，適合寫程式與日常工作，建議從這個開始 | `low` |
+| `gpt-6-astra` | GPT-6。適合複雜吃重的工作 | `medium` |
+| `gpt-6-sol` | GPT-6。日常寫程式與代理式工作 | `medium` |
 | `gpt-5.6-sol` | 上一代，適合複雜的專業工作 | `low` |
 | `gpt-5.6-terra` | 上一代，日常寫程式的均衡選擇 | `medium` |
 | `gpt-5.6-luna` | 上一代，快、便宜 | `medium` |
+| `gpt-6-luna` | GPT-6。快、最便宜，適合快速修正與大量的例行工作 | `medium` |
+
+上游的最新細節可參考 OpenAI 的
+[GPT-6.1 Sol 說明](https://developers.openai.com/api/docs/models/gpt-6.1-sol)與
+[GPT-6 Luna 說明](https://developers.openai.com/api/docs/models/gpt-6-luna)。
 
 橋接本身不保留任何允許清單：收到什麼 slug 就往上游送，由 chatgpt.com 決定，
 所以 alc 沒有追蹤的模型，一樣可以用 `--model` 指名使用。這正是為什麼一個新模型
@@ -57,10 +63,12 @@ Claude Code 會把這幾個列進它自己的 `/model` 選單：
 ## 每一個 Claude 模型都變成 Codex 模型
 
 在 `alc --codex claude` 底下，沒有任何一個請求會送到 Claude 模型：`/model`
-選單就列這六個、不會有別的，Claude Code 所有的別名 —— `opus`、`sonnet`、
-`haiku`、`fable`、`best`、`opusplan` —— 都會落在其中一個上，而指名完整名稱的
-Claude 模型，則由同一級的 Codex 模型來回答。Claude Code 自己的背景工作也走同
-一條路，所以一個標題或一份摘要花掉的是 Codex 的額度，而不是一個送去 Anthropic
+選單列出這七個，以及同步時新增的模型。Claude Code 所有的別名 —— `opus`、
+`sonnet`、`haiku`、`fable`、`best`、`opusplan` —— 都會落在 Codex 模型上，而
+指名完整名稱的 Claude 模型，則由同一級的 Codex 模型來回答。`opus` 與 `fable`
+使用 GPT-6.1 Sol；`haiku` 與 small-fast 工作維持 GPT-6 Luna；`sonnet` 跟著
+session 的起始模型。Claude Code 自己的背景工作也走同一條路，所以一個標題或
+一份摘要花掉的是 Codex 的額度，而不是一個送去 Anthropic
 的請求。[背景
 session](./background-sessions.md#每一個-claude-模型都變成-codex-模型)有整張
 表，一個別名一個別名地列出來。
@@ -77,9 +85,12 @@ session](./background-sessions.md#每一個-claude-模型都變成-codex-模型)
 
 ## 換一個起點
 
+沒有設定過的 session 會以 GPT-6.1 Sol、`low` 強度啟動。你已在 alc profile 或
+Codex 設定裡選好的模型與強度仍然優先。
+
 ```sh
 alc --codex claude --model gpt-6-luna --effort low
-alc --codex claude --model gpt-6-sol --effort medium --save
+alc --codex claude --model gpt-6.1-sol --effort low --save
 ```
 
 `--save` 會把兩者一起存進 provider profile。沒有這些參數時，session 的起始值
@@ -111,6 +122,11 @@ alc 會在啟動前把那一個欄位讀下來，並在 session 結束時放回�
 帳號跑得動的模型，即使已安裝的 Codex CLI 沒聽過，也照樣會出現。抓不到時才退回
 `codex debug models`，而執行檔內建的那份清單是兩者都不能低於的底線：同步回來的
 清單只能新增模型，不能拿掉。同步每天一次，Codex 一升級就會立刻再同步一次。
+
+alc 宣告的 Codex client 版本至少是 `0.159.1`，也就是第一個內含 GPT-6.1 Sol 的
+穩定版；已安裝的版本更新時，則使用那個版本。這個運作上的版本底線，與上游模型
+那一列實際填的 `minimal_client_version` 值 `0.153.0` 是兩件事；不必只為了
+看見內建的模型就升級 Codex。
 
 ```sh
 alc models
