@@ -352,7 +352,7 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
             let suggestion = catalog
                 .models
                 .first()
-                .map_or("gpt-6-sol", |entry| entry.id.as_str());
+                .map_or("gpt-6.1-sol", |entry| entry.id.as_str());
             issues.push(Issue::new(
                 name.clone(),
                 format!("the bridge cannot route '{model}'"),

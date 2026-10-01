@@ -1094,11 +1094,11 @@ fn codex_to_claude_accepts_explicit_model_and_effort() {
 }
 
 /// Nothing chosen anywhere - no model on the alc profile, none in the Codex
-/// config - starts Claude Code on GPT-6 Sol at its own default effort. The
+/// config - starts Claude Code on GPT-6.1 Sol at its own default effort. The
 /// Codex home is a fresh directory, so the developer's own
 /// `~/.codex/config.toml` cannot decide the answer.
 #[test]
-fn codex_to_claude_starts_on_gpt_6_sol_when_nothing_names_a_model() {
+fn codex_to_claude_starts_on_gpt_6_1_sol_when_nothing_names_a_model() {
     let temp = tempfile::tempdir().unwrap();
     let codex_home = tempfile::tempdir().unwrap();
     alc(&temp)
@@ -1106,21 +1106,112 @@ fn codex_to_claude_starts_on_gpt_6_sol_when_nothing_names_a_model() {
         .args(["--codex", "--dry-run", "claude"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--model gpt-6-sol"))
-        .stdout(predicate::str::contains("--effort medium"));
+        .stdout(predicate::str::contains("--model gpt-6.1-sol"))
+        .stdout(predicate::str::contains("--effort low"));
 }
 
-/// The `openai` profile a fresh config starts with names GPT-6 Sol, which
-/// replaces GPT-5.6 Terra: ranked above it, and cheaper per output token.
+/// A new `openai` profile starts on GPT-6.1 Sol at low effort; existing
+/// profiles keep the model and effort they already named.
 #[test]
-fn the_openai_profile_starts_on_gpt_6_sol() {
+fn a_new_openai_profile_starts_on_gpt_6_1_sol_at_low_effort() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
         .env("OPENAI_API_KEY", "secret")
         .args(["--openai", "--dry-run", "codex"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("codex --model gpt-6-sol"));
+        .stdout(predicate::str::contains("codex --model gpt-6.1-sol"))
+        .stdout(predicate::str::contains("model_reasoning_effort=\"low\""));
+}
+
+#[test]
+fn codex_to_claude_keeps_a_saved_gpt_6_sol_model_and_effort() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"gpt-6-sol\"\nmodel_reasoning_effort = \"high\"\n",
+    )
+    .unwrap();
+    alc(&temp)
+        .env("CODEX_HOME", codex_home.path())
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model gpt-6-sol"))
+        .stdout(predicate::str::contains("--effort high"));
+}
+
+#[test]
+fn an_existing_openai_profile_keeps_its_saved_model_and_effort() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "openai",
+            "--kind",
+            "openai",
+            "--model",
+            "gpt-6-sol",
+            "--effort",
+            "medium",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .env("OPENAI_API_KEY", "secret")
+        .args(["--openai", "--dry-run", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("codex --model gpt-6-sol"))
+        .stdout(predicate::str::contains(
+            "model_reasoning_effort=\"medium\"",
+        ));
+}
+
+#[test]
+fn gpt_6_1_sol_uses_low_effort_and_clamps_ultra_only_on_the_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("CODEX_HOME", codex_home.path())
+        .args(["--codex", "--dry-run", "claude", "--model", "gpt-6.1-sol"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model gpt-6.1-sol"))
+        .stdout(predicate::str::contains("--effort low"));
+    alc(&temp)
+        .env("CODEX_HOME", codex_home.path())
+        .args([
+            "--codex",
+            "--dry-run",
+            "claude",
+            "--model",
+            "gpt-6.1-sol",
+            "--effort",
+            "ultra",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--effort max"))
+        .stderr(predicate::str::contains("max rather than ultra"));
+    alc(&temp)
+        .env("CODEX_HOME", codex_home.path())
+        .args([
+            "--codex",
+            "--dry-run",
+            "codex",
+            "--model",
+            "gpt-6.1-sol",
+            "-c",
+            "model_reasoning_effort=\"ultra\"",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model gpt-6.1-sol"))
+        .stdout(predicate::str::contains("ultra"))
+        .stderr(predicate::str::contains("max rather than ultra").not());
 }
 
 #[test]
@@ -1148,6 +1239,7 @@ fn codex_to_claude_offers_every_gpt_model_inside_claude_code() {
         .args(["--codex", "--dry-run", "claude"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("\"model\":\"gpt-6.1-sol\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-6-astra\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-6-sol\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-6-luna\""))
@@ -1210,11 +1302,12 @@ fn a_cache_written_by_an_older_alc_cannot_hide_a_model_alc_ships() {
         .args(["--codex", "--dry-run", "claude"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("\"model\":\"gpt-6.1-sol\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-6-astra\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-6-sol\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-6-luna\""))
         .stdout(predicate::str::contains(
-            "catalog: gpt-6-astra, gpt-6-sol, gpt-6-luna restored from the catalog alc ships",
+            "catalog: gpt-6.1-sol, gpt-6-astra, gpt-6-sol, gpt-6-luna restored from the catalog alc ships",
         ));
 }
 
@@ -1244,6 +1337,13 @@ fn codex_to_claude_can_save_defaults_without_picker() {
         .success()
         .stdout(predicate::str::contains("model = \"gpt-5.6-luna\""))
         .stdout(predicate::str::contains("reasoning_effort = \"low\""));
+
+    alc(&temp)
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model gpt-5.6-luna"))
+        .stdout(predicate::str::contains("--effort low"));
 }
 
 #[test]

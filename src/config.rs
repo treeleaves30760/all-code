@@ -17,8 +17,8 @@ pub enum ReasoningEffort {
     High,
     Xhigh,
     Max,
-    /// GPT-6 Astra and Sol, and GPT-5.6 Sol and Terra, add this tier above
-    /// `max`; both Luna models stop at `max`.
+    /// GPT-6.1 Sol, GPT-6 Astra and Sol, and GPT-5.6 Sol and Terra add this
+    /// tier above `max`; both Luna models stop at `max`.
     ///
     /// Reachable natively (`alc codex`), but NOT through the bundled
     /// claude-codex bridge: that helper's own effort enum is
@@ -482,7 +482,7 @@ impl Provider {
     pub fn for_kind(kind: ProviderKind) -> Self {
         let model = match kind {
             ProviderKind::Anthropic => "sonnet",
-            ProviderKind::Openai => "gpt-6-sol",
+            ProviderKind::Openai => "gpt-6.1-sol",
             ProviderKind::Openrouter => "anthropic/claude-sonnet-4.6",
             ProviderKind::Codex => "",
             ProviderKind::Ollama => "qwen3-coder",
@@ -515,7 +515,7 @@ impl Provider {
         Self {
             kind,
             model: model.to_owned(),
-            reasoning_effort: (kind == ProviderKind::Openai).then_some(ReasoningEffort::Medium),
+            reasoning_effort: (kind == ProviderKind::Openai).then_some(ReasoningEffort::Low),
             small_model: (kind == ProviderKind::Deepseek).then(|| "deepseek-v4-flash".to_owned()),
             base_url: kind.default_base_url().map(str::to_owned),
             anthropic_base_url: kind.default_anthropic_base_url().map(str::to_owned),

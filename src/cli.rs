@@ -1516,6 +1516,16 @@ mod tests {
     }
 
     #[test]
+    fn an_unconfigured_codex_session_defaults_to_gpt_6_1_sol_at_low_effort() {
+        let home = tempfile::tempdir().unwrap();
+        let mut provider = codex_provider("", None);
+        provider.codex_home = Some(home.path().display().to_string());
+        let resolved =
+            resolve_codex_defaults(&provider, &ModelCatalog::built_in(), None, None).unwrap();
+        assert_eq!(resolved, ("gpt-6.1-sol".to_owned(), ReasoningEffort::Low));
+    }
+
+    #[test]
     fn saved_provider_values_become_the_session_defaults() {
         let provider = codex_provider("gpt-5.6-luna", Some(ReasoningEffort::Low));
         let resolved =
@@ -1555,14 +1565,14 @@ mod tests {
     }
 
     #[test]
-    fn gpt_6_is_offered_with_its_own_top_tier() {
+    fn gpt_6_1_sol_is_offered_with_its_own_top_tier() {
         let catalog = ModelCatalog::built_in();
-        let astra = catalog
-            .find("gpt-6-astra")
-            .expect("gpt-6-astra in the catalog");
-        assert!(astra.supported_efforts.contains(&ReasoningEffort::Ultra));
+        let sol = catalog
+            .find("gpt-6.1-sol")
+            .expect("gpt-6.1-sol in the catalog");
+        assert!(sol.supported_efforts.contains(&ReasoningEffort::Ultra));
         // Most capable first, so a picker's first row is the best model.
-        assert_eq!(catalog.models[0].id, "gpt-6-astra");
+        assert_eq!(catalog.models[0].id, "gpt-6.1-sol");
     }
 
     #[test]

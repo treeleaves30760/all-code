@@ -352,11 +352,11 @@ mod tests {
         assert_eq!(value["api"], json!("openai-responses"));
         assert_eq!(value["baseUrl"], json!("https://api.openai.com/v1"));
         assert_eq!(value["apiKey"], json!("$ALC_PROVIDER_API_KEY"));
-        // The `openai` preset ships with a default reasoning effort.
+        // The `openai` preset ships with GPT-6.1 Sol's low default effort.
         assert_eq!(value["models"][0]["reasoning"], json!(true));
         assert_eq!(
             option_value(&spec.args, "--thinking").as_deref(),
-            Some("medium")
+            Some("low")
         );
     }
 
@@ -497,7 +497,7 @@ mod tests {
         assert_eq!(value["apiKey"], json!("alc"));
 
         let models = value["models"].as_array().expect("models array");
-        assert_eq!(models.len(), 6);
+        assert_eq!(models.len(), 7);
         for model in models {
             assert_eq!(model["reasoning"], json!(true));
             assert!(model["contextWindow"].is_u64());
@@ -509,6 +509,7 @@ mod tests {
         assert_eq!(
             ids,
             [
+                "gpt-6.1-sol",
                 "gpt-6-astra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
