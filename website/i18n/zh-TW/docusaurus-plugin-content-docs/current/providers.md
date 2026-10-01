@@ -41,7 +41,7 @@ keywords:
 | Kind | 預設端點 | 金鑰環境變數 | 起始模型 |
 | --- | --- | --- | --- |
 | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `sonnet` |
-| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-6-sol` |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-6.1-sol` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` |
 | `codex` | —（原生 `codex login`） | — | — |
 | `ollama` | `http://localhost:11434` | — | `qwen3-coder` |
@@ -55,6 +55,9 @@ keywords:
 | `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` | `grok-build-0.1` |
 | `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` | `gemini-3.7-flash` |
 | `custom` | —（自行提供） | —（用 `--api-key-env` 指定名稱） | — |
+
+新建的 `openai` profile 也會以 `low` 推理強度啟動。既有 profile 已儲存的模型
+與強度維持原樣。
 
 model ID 換得比 alc 發版還快，所以上面每一個起始模型都只是拿來改的值，不是
 provider 今天真的提供什麼的保證。
