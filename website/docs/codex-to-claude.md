@@ -8,6 +8,7 @@ keywords:
   - claude code with gpt
   - codex subscription
   - chatgpt plan coding agent
+  - gpt-6.1-sol
   - gpt-6-astra
   - gpt-6-sol
   - gpt-6-luna
@@ -43,12 +44,17 @@ Claude Code lists these in its own `/model` picker:
 
 | Model | Use case | Codex default effort |
 | --- | --- | --- |
-| `gpt-6-astra` | GPT-6. Most capable; complex, demanding work | `medium` |
-| `gpt-6-sol` | GPT-6. Everyday coding and agentic work; recommended starting point | `medium` |
-| `gpt-6-luna` | GPT-6. Fast and the cheapest; quick fixes and high-volume work | `medium` |
+| `gpt-6.1-sol` | GPT-6.1 Sol. Latest workhorse for coding and everyday work; recommended starting point | `low` |
+| `gpt-6-astra` | GPT-6. Complex, demanding work | `medium` |
+| `gpt-6-sol` | GPT-6. Everyday coding and agentic work | `medium` |
 | `gpt-5.6-sol` | Previous generation; complex professional work | `low` |
 | `gpt-5.6-terra` | Previous generation; balanced everyday coding | `medium` |
 | `gpt-5.6-luna` | Previous generation; fast, affordable work | `medium` |
+| `gpt-6-luna` | GPT-6. Fast and the cheapest; quick fixes and high-volume work | `medium` |
+
+See OpenAI's [GPT-6.1 Sol reference](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
+and [GPT-6 Luna reference](https://developers.openai.com/api/docs/models/gpt-6-luna)
+for current upstream details.
 
 The bridge keeps no allowlist: whatever slug it is handed goes upstream and
 chatgpt.com decides, so a model alc does not track is still reachable with
@@ -58,9 +64,11 @@ on the day alc catches up.
 ## Every Claude model becomes a Codex model
 
 Under `alc --codex claude` no request reaches a Claude model: the `/model`
-picker lists these six and nothing else, every alias Claude Code has — `opus`,
-`sonnet`, `haiku`, `fable`, `best`, `opusplan` — lands on one of them, and a
-Claude model named in full is answered by the Codex model of the same tier.
+picker lists these seven, plus any models discovery adds. Every alias Claude
+Code has — `opus`, `sonnet`, `haiku`, `fable`, `best`, `opusplan` — lands on a
+Codex model, and a Claude model named in full is answered by the same tier.
+`opus` and `fable` use GPT-6.1 Sol; `haiku` and small-fast work stay on GPT-6 Luna;
+`sonnet` follows the session's starting model.
 Claude Code's own background work goes the same way, so a title or a summary is
 Codex quota rather than a request to Anthropic. [Background
 sessions](./background-sessions.md#every-claude-model-becomes-a-codex-model) has
@@ -78,9 +86,12 @@ rather than letting the request be refused mid-session.
 
 ## Starting somewhere else
 
+An unconfigured session starts on GPT-6.1 Sol at `low` effort. A model or effort
+you already selected on the alc profile or in your Codex config still wins.
+
 ```sh
 alc --codex claude --model gpt-6-luna --effort low
-alc --codex claude --model gpt-6-sol --effort medium --save
+alc --codex claude --model gpt-6.1-sol --effort low --save
 ```
 
 `--save` stores both on the provider profile. Without them a session starts on
@@ -117,6 +128,11 @@ CLI has never heard of it. `codex debug models` is the fallback when that fetch
 cannot happen, and the catalog bundled into the binary is a floor neither of
 them can drop below: a synced list may add models, never remove one. The sync
 runs once a day, and again as soon as Codex is upgraded.
+
+alc declares at least Codex client version `0.159.1`, the first stable bundle
+containing GPT-6.1 Sol, or your installed version if newer. This operational
+floor is separate from the upstream model row's literal `minimal_client_version`
+of `0.153.0`; you do not need to upgrade Codex just to see the bundled model.
 
 ```sh
 alc models

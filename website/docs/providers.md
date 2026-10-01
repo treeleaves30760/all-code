@@ -41,7 +41,7 @@ overrides.
 | Kind | Default endpoint | Key env | Starting model |
 | --- | --- | --- | --- |
 | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `sonnet` |
-| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-6-sol` |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-6.1-sol` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` |
 | `codex` | — (native `codex login`) | — | — |
 | `ollama` | `http://localhost:11434` | — | `qwen3-coder` |
@@ -55,6 +55,9 @@ overrides.
 | `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` | `grok-build-0.1` |
 | `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` | `gemini-3.7-flash` |
 | `custom` | — (you provide it) | — (name it with `--api-key-env`) | — |
+
+New `openai` profiles also start with `low` reasoning effort. Existing profiles
+keep their saved model and effort.
 
 Model IDs drift faster than alc releases, so treat every starting model as a
 value to edit rather than a promise about what the provider serves today.
