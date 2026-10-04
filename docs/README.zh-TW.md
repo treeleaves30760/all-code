@@ -309,9 +309,9 @@ Accounts
   ·  openrouter  —                        —     no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  OUTPUT  LAST
-  codex     claude    1         1      20.8K  35      7m ago
-  ollama    opencode  1         —      —      —       12m ago
+  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
+  codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
+  ollama    opencode  1         —      —      —        —       —       12m ago
   source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone
 
 ✓ ready
@@ -333,10 +333,11 @@ alc --provider codex-work claude
 ```
 
 第二張表來自設定目錄裡的 `usage.jsonl`：每次啟動一行，Codex 橋接經手的每個
-回合再一行。alc 沒有經手流量的 provider 顯示 `—` 而不是 0，因為那些 token
-是未知，不是沒有。遠端控制頁面標題列的用量按鈕後面是同樣這兩個區塊。
+回合再一行。`CACHED` 是 `INPUT` 中由 Codex 提示快取提供的部分；`CACHE %` 是
+這部分 token 的整數比例。alc 沒有經手的流量會在 token 欄顯示 `—`，因為數值未知，
+不是零。遠端控制頁面標題列的用量按鈕後面也會顯示這兩個區塊。
 
-完整說明請見 [用量](https://treeleaves30760.github.io/all-code/usage)。
+完整說明請見 [用量](https://treeleaves30760.github.io/all-code/zh-TW/usage)。
 
 ## Provider 與 agent
 
@@ -421,6 +422,12 @@ alc --codex claude --model gpt-6.1-sol --effort low --save
 值；你自己傳的 `--settings` 則會被合併進 alc 那一份，衝突時以你的為準，因為
 Claude Code 只讀一份。用 `/model` 選的模型只影響那一次 session；下次啟動又會從
 alc 的預設值開始，所以 `alc config` 仍然是唯一的真實來源。
+
+**Auto 模式與快取。** 不用額外設定或旗標。Auto 模式仍然可用，但分類器請求會
+使用 Codex 額度。alc 也會自動讓同一個 session 保持穩定的快取路由；`alc usage`
+會顯示 Codex 實際重用了多少輸入。快取重用是盡力而為，不保證節省額度或費用。
+詳情請見 [透過 Claude Code 使用 Codex](https://treeleaves30760.github.io/all-code/zh-TW/codex-to-claude)。
+你自己的 `--settings` 仍會優先於 alc 的 Claude Code 預設值。
 
 **選單。** alc 會透過 Claude Code 的
 [`modelPicker`](https://code.claude.com/docs/en/settings-reference#modelpicker)

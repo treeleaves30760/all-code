@@ -139,6 +139,24 @@ alc models --json
 傳給 Claude Code，讓 GPT 模型依 Codex 的實際上限壓縮對話，而不是照 Claude Code
 對不認得的 ID 假設的 200k。
 
+## Auto 模式與提示快取
+
+不用額外設定或旗標。
+
+**Auto 模式仍然可用。** Codex 無法執行 Claude Code 的伺服器端檢查，因此 Claude Code
+會改用自己的分類器。分類器請求會經過 Codex，也會使用 Codex 額度。
+
+**提示快取路由會自動設定。** alc 會讓同一個 Claude Code session 保持穩定的 Codex
+快取路由。快取重用仍需要相同的提示前綴；切換模型或 effort、修改工具或提示、壓縮
+對話、快取到期，以及 Claude Code 升級都可能造成未命中。
+
+用 [`alc usage`](./usage.md) 查看 Codex 實際重用了多少輸入。`CACHED` 是從快取讀取的
+輸入 token 數，`CACHE %` 是它占總輸入的比例，不是請求命中率。快取重用也不保證
+減少額度消耗或費用。
+
+升級 alc 後請開啟新的 session，才能取得這些預設值；已在執行的背景 session 會保留
+啟動時的設定。你自己的 `--settings` 仍可覆寫 alc 的 Claude Code 預設值。
+
 ## 運作方式
 
 橋接是 alc 自己的程式碼。給 Claude Code 用的時候，它是一個獨立的背景行程，綁在

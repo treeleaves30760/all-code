@@ -56,7 +56,8 @@ provider —— `--settings ~/.config/alc/claude/settings-<hash>.json` —— �
 一個背景 session 會一直用著 alc 在啟動時合併好的那份設定。你自己傳
 `--settings` 時，alc 會把它合併進自己寫出來的那份文件，衝突時以你的為準，因為
 Claude Code 只讀一份 —— 所以你之後對自己那個檔案做的修改，只會傳到之後才啟動
-的 session，不會傳到已經在跑的那些。
+的 session，不會傳到已經在跑的那些。alc 新增的相容性預設值，也只會套用到升級後
+才啟動的 session。
 
 ## 背景橋接
 

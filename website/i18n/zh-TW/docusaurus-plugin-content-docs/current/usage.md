@@ -30,9 +30,9 @@ Accounts
   ·  openrouter  —                        —     no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  OUTPUT  LAST
-  codex     claude    1         1      20.8K  35      7m ago
-  ollama    opencode  1         —      —      —       12m ago
+  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
+  codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
+  ollama    opencode  1         —      —      —        —       —       12m ago
   source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone
 
 ✓ ready
@@ -109,6 +109,14 @@ profile 叫這個種類的名字、而又有好幾個是同一種時，捷徑才
 每一次啟動都會往[設定目錄](./configuration.md)裡的 `usage.jsonl` 追加一行；每一個
 由 [Codex 橋接](./codex-to-claude.md)承載的 turn 也會追加一行，帶著 chatgpt.com
 回報的 token 數。資料來源就只有這個檔案。
+
+`INPUT` 是上游回報的總輸入。`CACHED` 是其中從提示快取讀取的部分。`CACHE %`
+是四捨五入後的 `CACHED / INPUT`；它是 token 比例，不是請求命中率。`0` 代表實際
+測得零；`—` 代表數值未知或無法計算，包含舊版 hub 產生的快取資料。
+
+`alc usage --json` 會提供原始且可為 `null` 的 `cached_tokens` 總數。百分比只用於
+畫面顯示，不是 JSON 欄位。[透過 Claude Code 使用 Codex](./codex-to-claude.md#auto-模式與提示快取)
+說明提示快取可能未命中的情況。
 
 alc 從來沒有承載過流量的那一組 provider 與 agent，token 欄位顯示的是 `—` 而不是
 0：`alc claude` 走 Anthropic 時是直接跟 Anthropic 講話，alc 根本看不到那些 turn。
