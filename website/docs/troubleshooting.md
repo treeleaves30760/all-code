@@ -46,6 +46,21 @@ profile's `api_key_env`.
 Run `codex login`, then retry. [`alc usage`](./usage.md) shows which logins are
 current.
 
+## Auto mode says server-side checks are unavailable
+
+Upgrade alc and start a new session. No extra flag is needed; running background
+sessions keep their launch settings. If the message remains, check whether your
+own `--settings` overrides alc's defaults. [Auto mode and prompt
+caching](./codex-to-claude.md#auto-mode-and-prompt-caching) explains the fallback:
+Auto mode remains available, but its classifier calls use Codex quota.
+
+## `CACHED` is zero or `—`
+
+`0` is a real upstream count; `—` means alc cannot determine the value. Cache
+reuse is automatic but best-effort, so misses are normal when the reusable prompt
+prefix changes or expires. See [Usage](./usage.md#usage-by-provider-and-agent)
+and [Auto mode and prompt caching](./codex-to-claude.md#auto-mode-and-prompt-caching).
+
 ## `API Error: Request timed out` (or `500`) with an Ollama profile
 
 The model did not get through Claude Code's 25k–40k-token first request before

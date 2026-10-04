@@ -328,9 +328,9 @@ Accounts
   ·  openrouter  —                        —     no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  OUTPUT  LAST
-  codex     claude    1         1      20.8K  35      7m ago
-  ollama    opencode  1         —      —      —       12m ago
+  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
+  codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
+  ollama    opencode  1         —      —      —        —       —       12m ago
   source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone
 
 ✓ ready
@@ -354,10 +354,11 @@ alc --provider codex-work claude
 ```
 
 The second table comes from `usage.jsonl` in the config directory: one line per
-launch, and one per turn the Codex bridge carried. A provider alc does not
-carry traffic for shows `—` rather than a zero, because those tokens are
-unknown rather than nil. The remote-control page shows the same two sections
-behind the usage button in its header.
+launch, and one per turn the Codex bridge carried. `CACHED` is the part of
+`INPUT` served from Codex's prompt cache; `CACHE %` is that token share, rounded
+to a whole percent. For traffic alc did not carry, token columns show `—`
+because the values are unknown, not zero. The remote-control page shows the same
+two sections behind the usage button in its header.
 
 [Usage](https://treeleaves30760.github.io/all-code/usage) has the whole thing.
 
@@ -450,6 +451,13 @@ forwarded to Claude Code untouched and wins over what alc would inject; a
 reads only one. A model chosen with `/model` applies to that session only; the
 next launch starts from the alc default again, so `alc config` stays the source
 of truth.
+
+**Auto mode and caching.** No extra setup is needed. Auto mode still works; its
+classifier calls use Codex quota. alc also keeps each session on a stable cache
+route automatically, and `alc usage` shows how much input Codex actually reused.
+Cache reuse is best-effort, not guaranteed quota or billing savings. See
+[Codex through Claude Code](https://treeleaves30760.github.io/all-code/codex-to-claude)
+for details. Your own `--settings` still wins over alc's Claude Code defaults.
 
 **The picker.** alc passes the model list through Claude Code's
 [`modelPicker`](https://code.claude.com/docs/en/settings-reference#modelpicker)
