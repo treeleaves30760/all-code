@@ -1737,6 +1737,7 @@ fn write_usage_rows(temp: &tempfile::TempDir, rows: &[serde_json::Value]) {
 #[test]
 fn usage_reports_cache_reads_and_distinguishes_zero_from_unknown() {
     let temp = tempfile::tempdir().expect("temp dir");
+    ollama_profile(&temp, "http://127.0.0.1:1");
     write_usage_rows(
         &temp,
         &[
@@ -1762,7 +1763,7 @@ fn usage_reports_cache_reads_and_distinguishes_zero_from_unknown() {
 
     let output = alc(&temp)
         .env("ALC_ASCII", "1")
-        .args(["usage"])
+        .args(["usage", "--provider", "ollama"])
         .output()
         .expect("run usage");
     assert!(output.status.success());
@@ -1783,6 +1784,7 @@ fn usage_reports_cache_reads_and_distinguishes_zero_from_unknown() {
 #[test]
 fn usage_json_exposes_raw_nullable_cache_totals_without_a_derived_share() {
     let temp = tempfile::tempdir().expect("temp dir");
+    ollama_profile(&temp, "http://127.0.0.1:1");
     write_usage_rows(
         &temp,
         &[
@@ -1801,7 +1803,7 @@ fn usage_json_exposes_raw_nullable_cache_totals_without_a_derived_share() {
     );
 
     let output = alc(&temp)
-        .args(["usage", "--json"])
+        .args(["usage", "--provider", "ollama", "--json"])
         .output()
         .expect("run usage json");
     assert!(output.status.success());
