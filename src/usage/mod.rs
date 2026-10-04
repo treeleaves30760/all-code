@@ -441,7 +441,8 @@ pub(crate) fn render(report: &UsageReport, theme: &Theme) -> String {
         out.push_str(&format!("{INDENT}{}\n", theme.paint(Tone::Dim, &note)));
     } else {
         let mut table = Table::new(vec![
-            "PROVIDER", "AGENT", "LAUNCHES", "TURNS", "INPUT", "OUTPUT", "LAST",
+            "PROVIDER", "AGENT", "LAUNCHES", "TURNS", "INPUT", "CACHED", "CACHE %", "OUTPUT",
+            "LAST",
         ]);
         for row in &report.ledger.rows {
             let carried = row.turns > 0;
@@ -452,12 +453,24 @@ pub(crate) fn render(report: &UsageReport, theme: &Theme) -> String {
                     theme.dash().to_owned()
                 }
             };
+            let cached = row
+                .cached_tokens
+                .filter(|cached| carried && *cached <= row.input_tokens);
+            let cached_count = cached
+                .map(compact_count)
+                .unwrap_or_else(|| theme.dash().to_owned());
+            let cache_percent = cached
+                .and_then(|cached| cache_read_percent(row.input_tokens, cached))
+                .map(|percent| format!("{percent}%"))
+                .unwrap_or_else(|| theme.dash().to_owned());
             table.push(vec![
                 Cell::left(row.provider.clone(), Tone::Plain),
                 Cell::left(row.agent.to_string(), Tone::Plain),
                 Cell::left(row.launches.to_string(), Tone::Plain),
                 Cell::left(count(row.turns), Tone::Plain),
                 Cell::left(count(row.input_tokens), Tone::Plain),
+                Cell::left(cached_count, Tone::Plain),
+                Cell::left(cache_percent, Tone::Plain),
                 Cell::left(count(row.output_tokens), Tone::Plain),
                 Cell::left(format_age(report.generated_at, row.last_at), Tone::Dim),
             ]);
@@ -620,6 +633,18 @@ fn format_age(now: u64, then: u64) -> String {
     format!("{} ago", format_countdown(now - then))
 }
 
+/// The share of gross input Codex served from its prompt cache.
+///
+/// Integer arithmetic keeps terminal and JSON consumers independent of float
+/// representation; adding half the denominator gives nearest-whole rounding.
+pub(crate) fn cache_read_percent(input_tokens: u64, cached_tokens: u64) -> Option<u64> {
+    if input_tokens == 0 || cached_tokens > input_tokens {
+        return None;
+    }
+    let numerator = u128::from(cached_tokens) * 100 + u128::from(input_tokens) / 2;
+    Some((numerator / u128::from(input_tokens)) as u64)
+}
+
 /// `1.2M` rather than `1238411`: the magnitude is the information.
 pub(crate) fn compact_count(value: u64) -> String {
     let trim = |text: String| text.replace(".0", "");
@@ -746,6 +771,7 @@ mod tests {
                 launches: 14,
                 turns: 231,
                 input_tokens: 1_200_000,
+                cached_tokens: Some(900_000),
                 output_tokens: 88_000,
                 total_tokens: 1_288_000,
                 last_at: 900,
@@ -757,6 +783,7 @@ mod tests {
                 launches: 1,
                 turns: 0,
                 input_tokens: 0,
+                cached_tokens: Some(0),
                 output_tokens: 0,
                 total_tokens: 0,
                 last_at: 400,
@@ -764,6 +791,8 @@ mod tests {
         ];
         let text = render(&report(vec![], rows), &theme());
         assert!(text.contains("1.2M"), "{text}");
+        assert!(text.contains("900K"), "{text}");
+        assert!(text.contains("75%"), "{text}");
         assert!(text.contains("88K"), "{text}");
         assert!(
             text.contains("tokens are counted only where alc carries the traffic"),
@@ -774,6 +803,58 @@ mod tests {
             .find(|line| line.contains("ollama"))
             .unwrap_or_default();
         assert!(ollama.contains('—'), "{ollama}");
+    }
+
+    #[test]
+    fn unknown_cache_totals_render_as_dashes() {
+        let row = LedgerRow {
+            provider: "codex".to_owned(),
+            kind: ProviderKind::Codex,
+            agent: Agent::Claude,
+            launches: 1,
+            turns: 1,
+            input_tokens: 100,
+            cached_tokens: None,
+            output_tokens: 10,
+            total_tokens: 110,
+            last_at: 900,
+        };
+        let text = render(&report(vec![], vec![row]), &theme());
+        let row = text
+            .lines()
+            .find(|line| line.contains("codex"))
+            .unwrap_or_default();
+        assert!(row.contains("100"), "{row}");
+        assert_eq!(row.matches('—').count(), 2, "{row}");
+    }
+
+    #[test]
+    fn json_keeps_schema_one_and_exposes_raw_cache_totals() {
+        let row = LedgerRow {
+            provider: "codex".to_owned(),
+            kind: ProviderKind::Codex,
+            agent: Agent::Claude,
+            launches: 1,
+            turns: 1,
+            input_tokens: 100,
+            cached_tokens: Some(74),
+            output_tokens: 10,
+            total_tokens: 110,
+            last_at: 900,
+        };
+        let value = serde_json::to_value(report(vec![], vec![row])).unwrap();
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["ledger"]["rows"][0]["cached_tokens"], 74);
+        assert!(value["ledger"]["rows"][0].get("cache_percent").is_none());
+    }
+
+    #[test]
+    fn cache_share_uses_gross_input_and_nearest_whole_rounding() {
+        assert_eq!(cache_read_percent(100, 74), Some(74));
+        assert_eq!(cache_read_percent(3, 2), Some(67));
+        assert_eq!(cache_read_percent(200, 1), Some(1));
+        assert_eq!(cache_read_percent(0, 0), None);
+        assert_eq!(cache_read_percent(10, 11), None);
     }
 
     /// A plan with a per-model window for every model it has ever offered

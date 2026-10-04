@@ -1724,6 +1724,100 @@ fn codex_home(root: &std::path::Path, email: &str) -> std::path::PathBuf {
     home
 }
 
+fn write_usage_rows(temp: &tempfile::TempDir, rows: &[serde_json::Value]) {
+    let text = rows
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(temp.path().join("usage.jsonl"), format!("{text}\n"))
+        .expect("write usage ledger");
+}
+
+#[test]
+fn usage_reports_cache_reads_and_distinguishes_zero_from_unknown() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_usage_rows(
+        &temp,
+        &[
+            serde_json::json!({
+                "t": "turn", "v": 1, "ts": 100, "agent": "claude",
+                "provider": "codex-hit", "kind": "codex", "model": "gpt",
+                "input_tokens": 3, "output_tokens": 1, "cached_tokens": 2,
+                "total_tokens": 4
+            }),
+            serde_json::json!({
+                "t": "turn", "v": 1, "ts": 101, "agent": "claude",
+                "provider": "codex-miss", "kind": "codex", "model": "gpt",
+                "input_tokens": 100, "output_tokens": 10, "cached_tokens": 0,
+                "total_tokens": 110
+            }),
+            serde_json::json!({
+                "t": "turn", "v": 1, "ts": 102, "agent": "claude",
+                "provider": "codex-unknown", "kind": "codex", "model": "gpt",
+                "input_tokens": 100, "output_tokens": 10, "total_tokens": 110
+            }),
+        ],
+    );
+
+    let output = alc(&temp)
+        .env("ALC_ASCII", "1")
+        .args(["usage"])
+        .output()
+        .expect("run usage");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("utf-8 output");
+    assert!(stdout.contains("INPUT  CACHED  CACHE %"), "{stdout}");
+    let row = |provider: &str| {
+        stdout
+            .lines()
+            .find(|line| line.contains(provider))
+            .unwrap_or_else(|| panic!("no {provider} row in {stdout}"))
+    };
+    assert!(row("codex-hit").contains("67%"), "{stdout}");
+    assert!(row("codex-miss").contains("  0       0%"), "{stdout}");
+    let unknown = row("codex-unknown");
+    assert!(unknown.contains("100    -       -"), "{unknown}");
+}
+
+#[test]
+fn usage_json_exposes_raw_nullable_cache_totals_without_a_derived_share() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_usage_rows(
+        &temp,
+        &[
+            serde_json::json!({
+                "t": "turn", "v": 1, "ts": 100, "agent": "claude",
+                "provider": "known", "kind": "codex", "model": "gpt",
+                "input_tokens": 100, "output_tokens": 10, "cached_tokens": 74,
+                "total_tokens": 110
+            }),
+            serde_json::json!({
+                "t": "turn", "v": 1, "ts": 101, "agent": "claude",
+                "provider": "unknown", "kind": "codex", "model": "gpt",
+                "input_tokens": 100, "output_tokens": 10, "total_tokens": 110
+            }),
+        ],
+    );
+
+    let output = alc(&temp)
+        .args(["usage", "--json"])
+        .output()
+        .expect("run usage json");
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("usage JSON");
+    assert_eq!(report["schema_version"], 1);
+    let rows = report["ledger"]["rows"].as_array().expect("ledger rows");
+    let row = |provider: &str| {
+        rows.iter()
+            .find(|row| row["provider"] == provider)
+            .unwrap_or_else(|| panic!("no {provider} row"))
+    };
+    assert_eq!(row("known")["cached_tokens"], 74);
+    assert!(row("unknown")["cached_tokens"].is_null());
+    assert!(row("known").get("cache_percent").is_none());
+}
+
 #[test]
 fn usage_reports_what_is_left_on_a_codex_login() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -2297,6 +2391,7 @@ fn a_codex_claude_launch_runs_on_the_background_bridge_and_leaves_it_running() {
         .env("ALC_FAKE_ENV", work.path().join("env.txt"))
         .env("CODEX_HOME", codex.path())
         .env("CLAUDE_CONFIG_DIR", claude.path())
+        .env_remove("ANTHROPIC_BASE_URL")
         .args([
             "--codex",
             "--no-share",
@@ -2345,6 +2440,12 @@ fn a_codex_claude_launch_runs_on_the_background_bridge_and_leaves_it_running() {
         "CLAUDE_CODE_DISABLE_1M_CONTEXT",
     ] {
         assert_eq!(settings["env"][name], "1", "{name}");
+    }
+    for name in [
+        "CLAUDE_CODE_AUTO_MODE_SERVER",
+        "CLAUDE_CODE_ATTRIBUTION_HEADER",
+    ] {
+        assert_eq!(settings["env"][name], "0", "{name}");
     }
     assert!(
         settings["env"]["ANTHROPIC_DEFAULT_FABLE_MODEL"]
@@ -2460,6 +2561,12 @@ fn a_dry_run_of_claude_agents_shows_the_settings_after_the_subcommand() {
             "\"CLAUDE_CODE_API_KEY_HELPER_TTL_MS\":\"60000\"",
         ))
         .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_AUTO_MODE_SERVER\":\"0\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_ATTRIBUTION_HEADER\":\"0\"",
+        ))
+        .stdout(predicate::str::contains(
             "adapter: background bridge (alc native)",
         ));
     assert!(
@@ -2483,7 +2590,7 @@ fn a_dry_run_hides_a_credential_the_user_put_in_their_own_settings() {
             "--dry-run",
             "claude",
             "--settings",
-            r#"{"env": {"MY_GATEWAY_TOKEN": "never-print-this", "ANTHROPIC_MODEL": "gpt-5.6-luna"}}"#,
+            r#"{"env": {"MY_GATEWAY_TOKEN": "never-print-this", "ANTHROPIC_MODEL": "gpt-5.6-luna", "CLAUDE_CODE_AUTO_MODE_SERVER": "1", "CLAUDE_CODE_ATTRIBUTION_HEADER": "1"}}"#,
         ])
         .assert()
         .success()
@@ -2492,6 +2599,12 @@ fn a_dry_run_hides_a_credential_the_user_put_in_their_own_settings() {
         ))
         .stdout(predicate::str::contains(
             "\"ANTHROPIC_MODEL\":\"gpt-5.6-luna\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_AUTO_MODE_SERVER\":\"1\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_ATTRIBUTION_HEADER\":\"1\"",
         ))
         .stdout(predicate::str::contains("never-print-this").not());
 }

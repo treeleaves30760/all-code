@@ -157,6 +157,12 @@ pub(crate) fn codex_document(inputs: &CodexDocument<'_>) -> Value {
     for (name, value) in CLAUDE_ONLY_FEATURES_OFF {
         put(&mut env, name, value);
     }
+    // Codex cannot return Anthropic's server-side auto-mode verdicts, but
+    // Claude Code's own classifier works through this bridge. It also flattens
+    // the system blocks for a non-Anthropic upstream, so ask the client to omit
+    // the attribution block rather than making a conversation-specific prefix.
+    put(&mut env, "CLAUDE_CODE_AUTO_MODE_SERVER", "0");
+    put(&mut env, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0");
     put(&mut env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
 
     let mut document = json!({
@@ -666,6 +672,12 @@ mod tests {
             assert_eq!(value(name), "", "{name} is blanked");
         }
         assert_eq!(value("CLAUDE_CODE_API_KEY_HELPER_TTL_MS"), "60000");
+        assert_eq!(value("CLAUDE_CODE_AUTO_MODE_SERVER"), "0");
+        assert_eq!(value("CLAUDE_CODE_ATTRIBUTION_HEADER"), "0");
+        assert!(
+            !env.contains_key("CLAUDE_CODE_GATEWAY_HINT_HEADERS"),
+            "cache affinity comes from Claude's stable identity headers"
+        );
         assert_eq!(document["model"], "gpt-5.6-terra");
         assert_eq!(document["apiKeyHelper"], "HELPER");
         assert_eq!(document["modelPicker"]["replaceBuiltInOptions"], true);
@@ -958,7 +970,7 @@ mod tests {
         let file = temp.path().join("mine.json");
         std::fs::write(
             &file,
-            r#"{"env": {"ANTHROPIC_MODEL": "mine"}, "theme": "dark"}"#,
+            r#"{"env": {"ANTHROPIC_MODEL": "mine", "CLAUDE_CODE_AUTO_MODE_SERVER": "1", "CLAUDE_CODE_ATTRIBUTION_HEADER": "1"}, "theme": "dark"}"#,
         )
         .unwrap();
         let args = vec![
@@ -981,6 +993,8 @@ mod tests {
             document["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-6-luna",
             "ours stay"
         );
+        assert_eq!(document["env"]["CLAUDE_CODE_AUTO_MODE_SERVER"], "1");
+        assert_eq!(document["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"], "1");
         assert_eq!(document["theme"], "dark");
 
         let (_, inline) =

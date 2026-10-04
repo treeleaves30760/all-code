@@ -31,7 +31,7 @@
     'usage', 'usageToggle', 'accountsTitle', 'accounts', 'usageNote',
     'usageEmpty', 'usageEmptyTitle', 'usageEmptyHow', 'usageEmptyCommand',
     'ledgerTitle', 'ledger', 'ledgerProvider', 'ledgerAgent', 'ledgerLaunches',
-    'ledgerTurns', 'ledgerTokens', 'ledgerNote',
+    'ledgerTurns', 'ledgerInput', 'ledgerCached', 'ledgerCacheShare', 'ledgerOutput', 'ledgerNote',
   ]) {
     el[id] = document.getElementById(id);
   }
@@ -60,7 +60,10 @@
   el.ledgerAgent.textContent = T.agent;
   el.ledgerLaunches.textContent = T.launches;
   el.ledgerTurns.textContent = T.turns;
-  el.ledgerTokens.textContent = T.tokens;
+  el.ledgerInput.textContent = T.input;
+  el.ledgerCached.textContent = T.cached;
+  el.ledgerCacheShare.textContent = T.cacheShare;
+  el.ledgerOutput.textContent = T.output;
 
   let toastTimer = 0;
   function toast(message, level) {
