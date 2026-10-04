@@ -78,7 +78,8 @@ pub(crate) enum Entry {
     },
 }
 
-const ROW_VERSION: u32 = 1;
+const ROW_VERSION: u32 = 2;
+const CACHE_REPORTING_ROW_VERSION: u32 = 2;
 
 /// Everything a bridge needs to attribute the turns it sees.
 ///
@@ -321,12 +322,20 @@ pub(crate) fn summarise(config_dir: &Path) -> LedgerSummary {
         match entry {
             Entry::Launch { .. } => row.launches += 1,
             Entry::Turn {
+                v,
                 input_tokens,
                 cached_tokens,
                 output_tokens,
                 total_tokens,
                 ..
             } => {
+                // Before v2, a missing upstream cache breakdown was serialized as
+                // zero, so no cache value from those rows is trustworthy.
+                let cached_tokens = if v >= CACHE_REPORTING_ROW_VERSION {
+                    cached_tokens
+                } else {
+                    None
+                };
                 row.turns += 1;
                 row.input_tokens += input_tokens;
                 row.cached_tokens = match (row.cached_tokens, cached_tokens) {
@@ -402,6 +411,34 @@ mod tests {
 
         let summary = summarise(dir.path());
         assert_eq!(summary.rows[0].cached_tokens, None);
+    }
+
+    #[test]
+    fn a_v1_turn_with_an_explicit_zero_marks_the_cache_counter_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(LEDGER_FILE),
+            r#"{"t":"turn","v":1,"ts":1,"agent":"claude","provider":"codex","kind":"codex","model":"m","input_tokens":100,"output_tokens":10,"cached_tokens":0,"reasoning_tokens":0,"total_tokens":110}
+"#,
+        )
+        .unwrap();
+
+        let summary = summarise(dir.path());
+        assert_eq!(summary.rows[0].cached_tokens, None);
+    }
+
+    #[test]
+    fn a_v2_turn_with_an_explicit_zero_preserves_the_measured_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(LEDGER_FILE),
+            r#"{"t":"turn","v":2,"ts":1,"agent":"claude","provider":"codex","kind":"codex","model":"m","input_tokens":100,"output_tokens":10,"cached_tokens":0,"reasoning_tokens":0,"total_tokens":110}
+"#,
+        )
+        .unwrap();
+
+        let summary = summarise(dir.path());
+        assert_eq!(summary.rows[0].cached_tokens, Some(0));
     }
 
     #[test]

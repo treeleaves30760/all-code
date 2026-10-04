@@ -1742,19 +1742,19 @@ fn usage_reports_cache_reads_and_distinguishes_zero_from_unknown() {
         &temp,
         &[
             serde_json::json!({
-                "t": "turn", "v": 1, "ts": 100, "agent": "claude",
+                "t": "turn", "v": 2, "ts": 100, "agent": "claude",
                 "provider": "codex-hit", "kind": "codex", "model": "gpt",
                 "input_tokens": 3, "output_tokens": 1, "cached_tokens": 2,
                 "total_tokens": 4
             }),
             serde_json::json!({
-                "t": "turn", "v": 1, "ts": 101, "agent": "claude",
+                "t": "turn", "v": 2, "ts": 101, "agent": "claude",
                 "provider": "codex-miss", "kind": "codex", "model": "gpt",
                 "input_tokens": 100, "output_tokens": 10, "cached_tokens": 0,
                 "total_tokens": 110
             }),
             serde_json::json!({
-                "t": "turn", "v": 1, "ts": 102, "agent": "claude",
+                "t": "turn", "v": 2, "ts": 102, "agent": "claude",
                 "provider": "codex-unknown", "kind": "codex", "model": "gpt",
                 "input_tokens": 100, "output_tokens": 10, "total_tokens": 110
             }),
@@ -1789,13 +1789,13 @@ fn usage_json_exposes_raw_nullable_cache_totals_without_a_derived_share() {
         &temp,
         &[
             serde_json::json!({
-                "t": "turn", "v": 1, "ts": 100, "agent": "claude",
+                "t": "turn", "v": 2, "ts": 100, "agent": "claude",
                 "provider": "known", "kind": "codex", "model": "gpt",
                 "input_tokens": 100, "output_tokens": 10, "cached_tokens": 74,
                 "total_tokens": 110
             }),
             serde_json::json!({
-                "t": "turn", "v": 1, "ts": 101, "agent": "claude",
+                "t": "turn", "v": 2, "ts": 101, "agent": "claude",
                 "provider": "unknown", "kind": "codex", "model": "gpt",
                 "input_tokens": 100, "output_tokens": 10, "total_tokens": 110
             }),
