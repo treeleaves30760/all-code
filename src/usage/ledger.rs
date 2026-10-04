@@ -68,8 +68,10 @@ pub(crate) enum Entry {
         account_id: Option<String>,
         input_tokens: u64,
         output_tokens: u64,
-        #[serde(default)]
-        cached_tokens: u64,
+        /// The current writer always emits this field, including a real zero.
+        /// Missing means the turn predates cache reporting or lacked a breakdown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cached_tokens: Option<u64>,
         #[serde(default)]
         reasoning_tokens: u64,
         total_tokens: u64,
@@ -166,6 +168,15 @@ impl Ledger {
             .get("model")
             .and_then(Value::as_str)
             .unwrap_or(fallback_model);
+        let input_tokens = count(usage, "input_tokens");
+        let reported_cached_tokens = usage
+            .get("input_tokens_details")
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(Value::as_u64);
+        // A missing or broken detail counter must not become a reported zero or
+        // make a derived cache share exceed 100%. Preserve the gross input and
+        // mark cache reads unknown instead.
+        let cached_tokens = reported_cached_tokens.filter(|cached| *cached <= input_tokens);
 
         append(
             &self.path,
@@ -177,9 +188,9 @@ impl Ledger {
                 kind: self.kind,
                 model: model.to_owned(),
                 account_id: self.account_id.clone(),
-                input_tokens: count(usage, "input_tokens"),
+                input_tokens,
                 output_tokens: count(usage, "output_tokens"),
-                cached_tokens: nested("input_tokens_details", "cached_tokens"),
+                cached_tokens,
                 reasoning_tokens: nested("output_tokens_details", "reasoning_tokens"),
                 total_tokens: count(usage, "total_tokens"),
             },
@@ -212,6 +223,10 @@ pub(crate) struct LedgerRow {
     /// are unknown rather than zero. The renderers show a dash for it.
     pub turns: u64,
     pub input_tokens: u64,
+    /// Input tokens served from Codex's prompt cache. `None` means at least one
+    /// recorded turn omitted or did not have a trustworthy cache breakdown.
+    #[serde(default)]
+    pub cached_tokens: Option<u64>,
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub last_at: u64,
@@ -297,6 +312,7 @@ pub(crate) fn summarise(config_dir: &Path) -> LedgerSummary {
                 launches: 0,
                 turns: 0,
                 input_tokens: 0,
+                cached_tokens: Some(0),
                 output_tokens: 0,
                 total_tokens: 0,
                 last_at: ts,
@@ -306,12 +322,17 @@ pub(crate) fn summarise(config_dir: &Path) -> LedgerSummary {
             Entry::Launch { .. } => row.launches += 1,
             Entry::Turn {
                 input_tokens,
+                cached_tokens,
                 output_tokens,
                 total_tokens,
                 ..
             } => {
                 row.turns += 1;
                 row.input_tokens += input_tokens;
+                row.cached_tokens = match (row.cached_tokens, cached_tokens) {
+                    (Some(total), Some(cached)) => Some(total + cached),
+                    _ => None,
+                };
                 row.output_tokens += output_tokens;
                 row.total_tokens += total_tokens;
             }
@@ -364,8 +385,71 @@ mod tests {
         let row = &summary.rows[0];
         assert_eq!(row.turns, 2);
         assert_eq!(row.input_tokens, 150);
+        assert_eq!(row.cached_tokens, Some(6));
         assert_eq!(row.output_tokens, 27);
         assert_eq!(row.total_tokens, 177);
+    }
+
+    #[test]
+    fn a_legacy_turn_without_cache_details_marks_the_counter_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(LEDGER_FILE),
+            r#"{"t":"turn","v":1,"ts":1,"agent":"claude","provider":"codex","kind":"codex","model":"m","input_tokens":100,"output_tokens":10,"reasoning_tokens":0,"total_tokens":110}
+"#,
+        )
+        .unwrap();
+
+        let summary = summarise(dir.path());
+        assert_eq!(summary.rows[0].cached_tokens, None);
+    }
+
+    #[test]
+    fn an_old_aggregate_without_cached_tokens_marks_the_counter_unknown() {
+        let row: LedgerRow = serde_json::from_value(serde_json::json!({
+            "provider": "codex",
+            "kind": "codex",
+            "agent": "claude",
+            "launches": 1,
+            "turns": 1,
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "total_tokens": 110,
+            "last_at": 1
+        }))
+        .unwrap();
+        assert_eq!(row.cached_tokens, None);
+    }
+
+    #[test]
+    fn a_missing_or_invalid_cache_counter_is_recorded_as_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        ledger(dir.path()).observe_frame(
+            r#"{"type":"response.completed","response":{"model":"m","usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11}}}"#,
+            "m",
+        );
+        let summary = summarise(dir.path());
+        assert_eq!(summary.rows[0].cached_tokens, None);
+
+        let dir = tempfile::tempdir().unwrap();
+        ledger(dir.path()).observe_frame(
+            r#"{"type":"response.completed","response":{"model":"m","usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11,"input_tokens_details":{"cached_tokens":null}}}}"#,
+            "m",
+        );
+        let summary = summarise(dir.path());
+        assert_eq!(summary.rows[0].cached_tokens, None);
+    }
+
+    #[test]
+    fn an_impossible_cache_counter_is_recorded_as_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        ledger(dir.path()).observe_frame(
+            r#"{"type":"response.completed","response":{"model":"m","usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11,"input_tokens_details":{"cached_tokens":11}}}}"#,
+            "m",
+        );
+        let summary = summarise(dir.path());
+        assert_eq!(summary.rows[0].input_tokens, 10);
+        assert_eq!(summary.rows[0].cached_tokens, None);
     }
 
     /// The distinction the table is built on: a direct launch is a launch with

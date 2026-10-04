@@ -24,6 +24,7 @@ use serde_json::Value;
 
 use crate::config::ReasoningEffort;
 
+use super::affinity::RequestAffinity;
 use super::auth::Credentials;
 use super::{BridgeError, BridgeState};
 
@@ -867,6 +868,15 @@ pub(crate) fn request_headers(
     streaming: bool,
     lane: Lane,
 ) -> Result<HeaderMap, BridgeError> {
+    request_headers_with_affinity(credentials, streaming, lane, None)
+}
+
+pub(crate) fn request_headers_with_affinity(
+    credentials: &Credentials,
+    streaming: bool,
+    lane: Lane,
+    affinity: Option<&RequestAffinity>,
+) -> Result<HeaderMap, BridgeError> {
     let mut headers = HeaderMap::new();
     headers.insert("content-type", HeaderValue::from_static("application/json"));
     headers.insert(
@@ -909,6 +919,11 @@ pub(crate) fn request_headers(
             BridgeError::auth("the stored ChatGPT account id cannot be sent as a header")
         })?,
     );
+    if let Some(affinity) = affinity {
+        affinity.apply_headers(&mut headers).map_err(|message| {
+            BridgeError::new(StatusCode::INTERNAL_SERVER_ERROR, "api_error", message)
+        })?;
+    }
     Ok(headers)
 }
 
@@ -924,8 +939,18 @@ pub(crate) async fn post(
     streaming: bool,
     lane: Lane,
 ) -> Result<reqwest::Response, BridgeError> {
+    post_with_affinity(state, body, streaming, lane, None).await
+}
+
+async fn post_with_affinity(
+    state: &BridgeState,
+    body: Bytes,
+    streaming: bool,
+    lane: Lane,
+    affinity: Option<&RequestAffinity>,
+) -> Result<reqwest::Response, BridgeError> {
     let credentials = state.auth.credentials(&state.http).await?;
-    let response = post_once(state, &credentials, body.clone(), streaming, lane).await?;
+    let response = post_once(state, &credentials, body.clone(), streaming, lane, affinity).await?;
     if response.status() != StatusCode::UNAUTHORIZED {
         return Ok(response);
     }
@@ -937,7 +962,7 @@ pub(crate) async fn post(
         .auth
         .force_refresh(&state.http, Some(&credentials.access_token))
         .await?;
-    post_once(state, &refreshed, body, streaming, lane).await
+    post_once(state, &refreshed, body, streaming, lane, affinity).await
 }
 
 /// Sends a translated request and hands back the events it produced.
@@ -948,6 +973,14 @@ pub(crate) async fn post(
 pub(crate) async fn send(
     state: &BridgeState,
     request: UpstreamRequest,
+) -> Result<UpstreamStream, BridgeError> {
+    send_with_affinity(state, request, None).await
+}
+
+pub(crate) async fn send_with_affinity(
+    state: &BridgeState,
+    request: UpstreamRequest,
+    affinity: Option<&RequestAffinity>,
 ) -> Result<UpstreamStream, BridgeError> {
     let request = request.over_http();
     let body = serde_json::to_vec(&request).map_err(|error| {
@@ -960,7 +993,7 @@ pub(crate) async fn send(
             ),
         )
     })?;
-    let response = post(state, Bytes::from(body), true, Lane::Lite).await?;
+    let response = post_with_affinity(state, Bytes::from(body), true, Lane::Lite, affinity).await?;
     let status = response.status();
     if !status.is_success() {
         let body = response.bytes().await.unwrap_or_default();
@@ -979,11 +1012,18 @@ async fn post_once(
     body: Bytes,
     streaming: bool,
     lane: Lane,
+    affinity: Option<&RequestAffinity>,
 ) -> Result<reqwest::Response, BridgeError> {
+    let headers = match affinity {
+        Some(affinity) => {
+            request_headers_with_affinity(credentials, streaming, lane, Some(affinity))?
+        }
+        None => request_headers(credentials, streaming, lane)?,
+    };
     let request = state
         .http
         .post(CODEX_RESPONSES_URL)
-        .headers(request_headers(credentials, streaming, lane)?)
+        .headers(headers)
         .body(body);
     match tokio::time::timeout(HEADER_TIMEOUT, request.send()).await {
         Ok(Ok(response)) => Ok(response),
@@ -1257,6 +1297,26 @@ mod tests {
         }
         assert_eq!(header(&headers, "authorization"), "Bearer token");
         assert_eq!(header(&headers, "chatgpt-account-id"), "acct-1");
+    }
+
+    #[test]
+    fn affinity_adds_current_codex_session_and_thread_headers() {
+        let affinity = RequestAffinity {
+            cache_key: "session-a".to_owned(),
+            thread_id: "agent-a".to_owned(),
+        };
+        let headers =
+            request_headers_with_affinity(&credentials(), true, Lane::Lite, Some(&affinity))
+                .unwrap();
+        assert_eq!(header(&headers, "session-id"), "session-a");
+        assert_eq!(header(&headers, "thread-id"), "agent-a");
+        assert_eq!(header(&headers, "x-client-request-id"), "agent-a");
+        assert!(headers.get("session_id").is_none());
+
+        let stateless = request_headers(&credentials(), true, Lane::Lite).unwrap();
+        for name in ["session-id", "thread-id", "x-client-request-id"] {
+            assert!(stateless.get(name).is_none(), "{name}");
+        }
     }
 
     #[test]

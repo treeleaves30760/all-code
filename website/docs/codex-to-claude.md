@@ -145,6 +145,28 @@ The synced context window reaches Claude Code as
 so a GPT model compacts at the real Codex limit rather than the 200k Claude
 Code assumes for an ID it does not know.
 
+## Auto mode and prompt caching
+
+No setup or extra flags are needed.
+
+**Auto mode still works.** Codex cannot perform Claude Code's server-side check,
+so Claude Code uses its own classifier instead. Classifier calls go through
+Codex and consume Codex quota.
+
+**Prompt-cache routing is automatic.** alc keeps a Claude Code session on a
+stable Codex cache route. Reuse still needs the same prompt prefix, so changing
+the model, effort, tools or prompt, compacting the conversation, cache expiry,
+and Claude Code upgrades can cause misses.
+
+Use [`alc usage`](./usage.md) to see what Codex actually reused. `CACHED` is the
+number of input tokens read from cache, and `CACHE %` is their share of total
+input—not a request hit rate. Cache reuse does not guarantee lower quota use or
+billing.
+
+After upgrading alc, start a new session to receive these defaults; running
+background sessions keep their launch settings. Your own `--settings` can still
+override alc's Claude Code defaults.
+
 ## How it works
 
 The bridge is alc's own code. For Claude Code it runs as a background process

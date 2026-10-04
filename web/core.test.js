@@ -439,7 +439,7 @@ test('the environment note appears only for accounts the hub resolved for itself
   assert.equal(core.normalizeUsage(local).hubEnv, false, 'your own shell is not the hub');
 });
 
-test('a pair alc never carried traffic for shows dashes, not zeros', () => {
+test('cache reads use gross input while unknown traffic and old hubs show dashes', () => {
   assert.deepEqual(
     core.ledgerCells({
       provider: 'codex',
@@ -447,14 +447,47 @@ test('a pair alc never carried traffic for shows dashes, not zeros', () => {
       launches: 14,
       turns: 231,
       input_tokens: 1200000,
+      cached_tokens: 900000,
       output_tokens: 88000,
     }),
-    ['codex', 'claude', '14', '231', '1.3M'],
+    ['codex', 'claude', '14', '231', '1.2M', '900K', '75%', '88K'],
   );
   assert.deepEqual(
     core.ledgerCells({ provider: 'ollama', agent: 'claude', launches: 1, turns: 0 }),
-    ['ollama', 'claude', '1', '—', '—'],
+    ['ollama', 'claude', '1', '—', '—', '—', '—', '—'],
   );
+  assert.deepEqual(
+    core.ledgerCells({
+      provider: 'codex', agent: 'claude', launches: 1, turns: 1,
+      input_tokens: 100, output_tokens: 10,
+    }),
+    ['codex', 'claude', '1', '1', '100', '—', '—', '10'],
+    'a report from an older hub must not claim zero cache reads',
+  );
+  assert.deepEqual(
+    core.ledgerCells({
+      provider: 'codex', agent: 'claude', launches: 1, turns: 1,
+      input_tokens: 3, cached_tokens: 2, output_tokens: 1,
+    }),
+    ['codex', 'claude', '1', '1', '3', '2', '67%', '1'],
+  );
+  assert.deepEqual(
+    core.ledgerCells({
+      provider: 'codex', agent: 'claude', launches: 1, turns: 1,
+      input_tokens: 0, cached_tokens: 0, output_tokens: 1,
+    }),
+    ['codex', 'claude', '1', '1', '0', '0', '—', '1'],
+  );
+  for (const cached_tokens of [null, -1, 101, Number.NaN, Number.POSITIVE_INFINITY, '50']) {
+    assert.deepEqual(
+      core.ledgerCells({
+        provider: 'codex', agent: 'claude', launches: 1, turns: 1,
+        input_tokens: 100, cached_tokens, output_tokens: 10,
+      }),
+      ['codex', 'claude', '1', '1', '100', '—', '—', '10'],
+      `invalid cache counter ${String(cached_tokens)} must stay unknown`,
+    );
+  }
 });
 
 /* The caveat under the table exists to explain a dash. A table with no dash
@@ -467,10 +500,14 @@ test('the token caveat is shown only when a row actually holds a dash', () => {
     launches: 3,
     turns: 40,
     input_tokens: 10,
+    cached_tokens: 5,
     output_tokens: 5,
   };
+  const oldHub = { ...carried };
+  delete oldHub.cached_tokens;
   const direct = { provider: 'ollama', agent: 'goose', launches: 1, turns: 0 };
   assert.equal(core.ledgerNeedsCaveat([carried]), false);
+  assert.equal(core.ledgerNeedsCaveat([oldHub]), true, 'an unknown cache value also needs explaining');
   assert.equal(core.ledgerNeedsCaveat([carried, direct]), true);
   assert.equal(core.ledgerNeedsCaveat([]), false, 'an empty table explains nothing either');
   assert.equal(core.ledgerNeedsCaveat(null), false);

@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path as UrlPath, Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -275,10 +275,11 @@ async fn stop(State(host): State<Arc<Host>>) -> StatusCode {
 async fn messages(
     State(host): State<Arc<Host>>,
     UrlPath(route): UrlPath<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     match host.route(&route) {
-        Ok(state) => crate::bridge::messages::handle_messages(State(state), body).await,
+        Ok(state) => crate::bridge::messages::handle_messages(State(state), headers, body).await,
         Err(error) => error.anthropic(),
     }
 }

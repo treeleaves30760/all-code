@@ -34,13 +34,14 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::affinity::RequestAffinity;
 use super::upstream::{
     self, ContentPart, Effort, FunctionCallOutput, InputItem, OutputItem, Reasoning, TextOptions,
     Tool, UpstreamEvent, UpstreamRequest, Usage,
@@ -385,7 +386,10 @@ pub(crate) struct MessageDelta {
 /// makes the golden test worth having. [`UpstreamRequest::over_http`], which
 /// the send path applies, re-frames it for the transport this bridge actually
 /// speaks.
-pub(crate) fn to_upstream(request: &MessagesRequest) -> Result<UpstreamRequest, BridgeError> {
+pub(crate) fn to_upstream(
+    request: &MessagesRequest,
+    affinity: Option<&RequestAffinity>,
+) -> Result<UpstreamRequest, BridgeError> {
     if request.model.trim().is_empty() {
         return Err(BridgeError::invalid(
             "`model` is required: this bridge has no pinned model to fall back to",
@@ -441,7 +445,7 @@ pub(crate) fn to_upstream(request: &MessagesRequest) -> Result<UpstreamRequest, 
         instructions: None,
         include: None,
         tool_choice: request.tool_choice.as_ref().and_then(tool_choice),
-        prompt_cache_key: None,
+        prompt_cache_key: affinity.map(|affinity| affinity.cache_key.clone()),
         input,
     })
 }
@@ -1190,24 +1194,30 @@ fn serve_codex_model(config: &super::BridgeConfig, request: &mut MessagesRequest
 /// instead of in axum's.
 pub(crate) async fn handle_messages(
     State(state): State<Arc<BridgeState>>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    match messages(&state, &body).await {
+    match messages(&state, &headers, &body).await {
         Ok(response) => response,
         Err(error) => error.anthropic(),
     }
 }
 
-async fn messages(state: &BridgeState, body: &Bytes) -> Result<Response, BridgeError> {
+async fn messages(
+    state: &BridgeState,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<Response, BridgeError> {
+    let affinity = RequestAffinity::from_headers(headers);
     let mut request = parse(body)?;
     serve_codex_model(&state.config, &mut request);
-    let upstream_request = to_upstream(&request)?;
+    let upstream_request = to_upstream(&request, affinity.as_ref())?;
     let turn = Turn::new(
         message_id(),
         request.model.clone(),
         estimate_input_tokens(&upstream_request),
     );
-    let response = upstream::send(state, upstream_request).await?;
+    let response = upstream::send_with_affinity(state, upstream_request, affinity.as_ref()).await?;
 
     if request.stream {
         return Ok(stream(response, turn));
@@ -1227,7 +1237,7 @@ pub(crate) async fn handle_count_tokens(
 ) -> Response {
     match parse(&body).and_then(|mut request| {
         serve_codex_model(&state.config, &mut request);
-        to_upstream(&request)
+        to_upstream(&request, None)
     }) {
         Ok(request) => axum::Json(CountTokensResponse {
             input_tokens: estimate_input_tokens(&request),
@@ -1486,7 +1496,7 @@ mod tests {
 
     #[test]
     fn the_captured_request_translates_into_the_captured_upstream_body() {
-        let built = to_upstream(&captured_request("messages-tool-call-streaming")).unwrap();
+        let built = to_upstream(&captured_request("messages-tool-call-streaming"), None).unwrap();
         assert_eq!(
             serde_json::to_value(&built).unwrap(),
             Case::load("messages-tool-call-streaming").upstream_request()
@@ -1735,7 +1745,7 @@ mod tests {
 
     #[test]
     fn the_local_estimate_lands_near_the_figure_the_working_bridge_sent() {
-        let built = to_upstream(&captured_request("messages-tool-call-streaming")).unwrap();
+        let built = to_upstream(&captured_request("messages-tool-call-streaming"), None).unwrap();
         let estimate = estimate_input_tokens(&built);
         // The capture's bridge tokenised with o200k and got 73. This one counts
         // bytes; the test exists to catch an estimator that has drifted into
@@ -1748,7 +1758,7 @@ mod tests {
 
     #[test]
     fn count_tokens_answers_from_the_body_alone() {
-        let built = to_upstream(&captured_request("messages-count-tokens")).unwrap();
+        let built = to_upstream(&captured_request("messages-count-tokens"), None).unwrap();
         let estimate = estimate_input_tokens(&built);
         assert!(estimate >= 1);
         // "hello" plus the model name plus one item's framing: small, but a
@@ -1775,7 +1785,7 @@ mod tests {
         }))
         .unwrap();
 
-        let built = to_upstream(&request).unwrap();
+        let built = to_upstream(&request, None).unwrap();
         let input = serde_json::to_value(&built).unwrap()["input"].clone();
 
         assert_eq!(input[0]["role"], "user");
@@ -1875,11 +1885,91 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}]
         }))
         .unwrap();
-        let input = serde_json::to_value(to_upstream(&request).unwrap()).unwrap()["input"].clone();
+        let input =
+            serde_json::to_value(to_upstream(&request, None).unwrap()).unwrap()["input"].clone();
         assert_eq!(input[0]["role"], "developer");
         assert_eq!(input[0]["type"], "message");
         assert_eq!(input[0]["content"][0]["text"], "one\n\ntwo");
         assert_eq!(input.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn claude_identity_composes_into_one_cache_route_and_distinct_threads() {
+        use crate::bridge::affinity::{CLAUDE_AGENT_HEADER, CLAUDE_SESSION_HEADER};
+
+        let request = captured_request("messages-tool-call-streaming");
+        for (incoming, expected_thread) in [
+            (
+                [(CLAUDE_SESSION_HEADER, "session-a")].as_slice(),
+                "session-a",
+            ),
+            (
+                [
+                    (CLAUDE_SESSION_HEADER, "session-a"),
+                    (CLAUDE_AGENT_HEADER, "agent-a"),
+                ]
+                .as_slice(),
+                "agent-a",
+            ),
+        ] {
+            let mut headers = HeaderMap::new();
+            for (name, value) in incoming {
+                headers.insert(*name, HeaderValue::from_str(value).unwrap());
+            }
+            let affinity = RequestAffinity::from_headers(&headers).unwrap();
+            let built = to_upstream(&request, Some(&affinity)).unwrap();
+            let outgoing = upstream::request_headers_with_affinity(
+                &super::super::auth::Credentials {
+                    access_token: "token".to_owned(),
+                    refresh_token: "refresh".to_owned(),
+                    account_id: Some("acct".to_owned()),
+                    expires_at_ms: u64::MAX,
+                },
+                true,
+                upstream::Lane::Lite,
+                Some(&affinity),
+            )
+            .unwrap();
+
+            assert_eq!(built.prompt_cache_key.as_deref(), Some("session-a"));
+            assert_eq!(outgoing["session-id"], "session-a");
+            assert_eq!(outgoing["thread-id"], expected_thread);
+            assert_eq!(outgoing["x-client-request-id"], expected_thread);
+        }
+    }
+
+    #[test]
+    fn absent_or_invalid_claude_identity_composes_into_a_stateless_request() {
+        use crate::bridge::affinity::{CLAUDE_AGENT_HEADER, CLAUDE_SESSION_HEADER};
+
+        for headers in [HeaderMap::new(), {
+            let mut headers = HeaderMap::new();
+            headers.insert(CLAUDE_SESSION_HEADER, HeaderValue::from_static("session-a"));
+            headers.insert(CLAUDE_AGENT_HEADER, HeaderValue::from_static("bad agent"));
+            headers
+        }] {
+            let affinity = RequestAffinity::from_headers(&headers);
+            let built = to_upstream(
+                &captured_request("messages-tool-call-streaming"),
+                affinity.as_ref(),
+            )
+            .unwrap();
+            assert!(built.prompt_cache_key.is_none());
+        }
+    }
+
+    #[test]
+    fn valid_affinity_sets_only_the_session_cache_key() {
+        let affinity = RequestAffinity {
+            cache_key: "session-a".to_owned(),
+            thread_id: "agent-a".to_owned(),
+        };
+        let built = to_upstream(
+            &captured_request("messages-tool-call-streaming"),
+            Some(&affinity),
+        )
+        .unwrap();
+        assert_eq!(built.prompt_cache_key.as_deref(), Some("session-a"));
     }
 
     #[test]
@@ -1898,6 +1988,7 @@ mod tests {
                 "messages": []
             }))
             .unwrap(),
+            None,
         )
         .unwrap_err();
         assert!(error.message.contains("messages"), "{:?}", error.message);

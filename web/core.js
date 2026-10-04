@@ -108,9 +108,12 @@
       agent: 'Agent',
       launches: 'Launches',
       turns: 'Turns',
-      tokens: 'Tokens',
+      input: 'Input',
+      cached: 'Cached',
+      cacheShare: 'Cache %',
+      output: 'Output',
       ledgerEmpty: 'No launches recorded yet.',
-      directOnly: 'Tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone.',
+      directOnly: 'Tokens are counted only where alc carries the traffic; cache totals may also be unknown when an older hub produced the report.',
     },
     'zh-TW': {
       empty: '目前沒有 session',
@@ -166,9 +169,12 @@
       agent: 'Agent',
       launches: '啟動',
       turns: '回合',
-      tokens: 'Token',
+      input: '輸入',
+      cached: '快取',
+      cacheShare: '快取 %',
+      output: '輸出',
       ledgerEmpty: '尚未記錄任何啟動。',
-      directOnly: '只有經 alc 轉送流量的 session 才會計算 token；直接啟動只計啟動次數。',
+      directOnly: '只有經 alc 轉送流量的 session 才會計算 token；舊版 hub 產生的報告也可能沒有快取總數。',
     },
   };
 
@@ -620,16 +626,29 @@
   }
 
   /* One ledger row's cells. A pair alc never carried traffic for shows a dash
-   * rather than a zero: the tokens are unknown, not nil. */
+   * rather than a zero: the tokens are unknown, not nil. Older hubs did not
+   * report cache totals either, so those rows use the same honest unknown. */
   function ledgerCells(row) {
     const carried = Number(row.turns) > 0;
-    const count = (value) => (carried ? compactCount(value) : '—');
+    const count = (value) => {
+      const numeric = Number(value);
+      return carried && Number.isFinite(numeric) && numeric >= 0 ? compactCount(numeric) : '—';
+    };
+    const input = Number(row.input_tokens);
+    const cacheKnown =
+      carried && typeof row.cached_tokens === 'number' && Number.isFinite(row.cached_tokens) &&
+      Number.isFinite(input) && input >= 0 && row.cached_tokens >= 0 && row.cached_tokens <= input;
+    const cached = Number(row.cached_tokens) || 0;
+    const share = cacheKnown && input > 0 ? `${Math.round((cached * 100) / input)}%` : '—';
     return [
       row.provider,
       row.agent,
       String(row.launches || 0),
       count(row.turns),
-      carried ? compactCount((row.input_tokens || 0) + (row.output_tokens || 0)) : '—',
+      count(row.input_tokens),
+      cacheKnown ? compactCount(cached) : '—',
+      share,
+      count(row.output_tokens),
     ];
   }
 
@@ -641,7 +660,12 @@
    * a dash to explain. Standing under a table whose numbers are all real, it
    * reads as a doubt about them. */
   function ledgerNeedsCaveat(rows) {
-    return (Array.isArray(rows) ? rows : []).some((row) => !(Number(row.turns) > 0));
+    return (Array.isArray(rows) ? rows : []).some((row) => {
+      if (!(Number(row.turns) > 0)) return true;
+      const input = Number(row.input_tokens);
+      return typeof row.cached_tokens !== 'number' || !Number.isFinite(row.cached_tokens) ||
+        !Number.isFinite(input) || input < 0 || row.cached_tokens < 0 || row.cached_tokens > input;
+    });
   }
 
   /* ------------------------------------------------------------ geometry */

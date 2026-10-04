@@ -44,6 +44,20 @@ alc 指向某個執行檔。
 
 執行 `codex login`，然後再試一次。[`alc usage`](./usage.md) 會告訴你哪些登入還有效。
 
+## Auto 模式說伺服器端檢查無法使用
+
+升級 alc 並開啟新的 session。不需要額外旗標；已在執行的背景 session 會保留啟動時
+的設定。如果訊息仍然出現，請檢查你自己的 `--settings` 是否覆寫了 alc 的預設值。
+[Auto 模式與提示快取](./codex-to-claude.md#auto-模式與提示快取)說明這個備援方式：
+Auto 模式仍然可用，但分類器請求會使用 Codex 額度。
+
+## `CACHED` 是零或 `—`
+
+`0` 是上游實際回報的數值；`—` 表示 alc 無法判定。快取重用會自動設定，但仍是盡力
+而為；可重用的提示前綴改變或到期時，未命中是正常的。詳情請見
+[用量](./usage.md#各-provider-與-agent-的用量)與
+[Auto 模式與提示快取](./codex-to-claude.md#auto-模式與提示快取)。
+
 ## Ollama profile 出現 `API Error: Request timed out`（或 `500`）
 
 模型沒能在 Claude Code 放棄之前，讀完那個 25k 到 40k tokens 的第一個請求。alc 會為

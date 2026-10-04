@@ -56,7 +56,8 @@ started later may not see it, and then the helper says to save it with
 A background session keeps the settings alc merged at launch. If you pass your
 own `--settings`, alc merges it into the document it writes, yours winning,
 because Claude Code reads only one - so later edits to your file reach the
-sessions you launch afterwards, not the ones already running.
+sessions you launch afterwards, not the ones already running. New alc
+compatibility defaults apply only to sessions started after the upgrade.
 
 ## The background bridge
 

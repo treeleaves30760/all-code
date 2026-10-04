@@ -30,9 +30,9 @@ Accounts
   ·  openrouter  —                        —     no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  OUTPUT  LAST
-  codex     claude    1         1      20.8K  35      7m ago
-  ollama    opencode  1         —      —      —       12m ago
+  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
+  codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
+  ollama    opencode  1         —      —      —        —       —       12m ago
   source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone
 
 ✓ ready
@@ -116,6 +116,16 @@ Every launch appends a line to `usage.jsonl` in the [config
 directory](./configuration.md), and every turn the [Codex
 bridge](./codex-to-claude.md) carries appends another with the tokens
 chatgpt.com reported. That is the whole source.
+
+`INPUT` is total upstream input. `CACHED` is the part read from the prompt
+cache. `CACHE %` is `CACHED / INPUT`, rounded to the nearest whole percent; it
+is a token share, not a request hit rate. `0` is a measured zero. `—` means the
+value is unknown or cannot be computed, including cache data from an older hub.
+
+`alc usage --json` exposes the raw nullable `cached_tokens` total. The percentage
+is calculated only for display and is not a JSON field. [Codex through Claude
+Code](./codex-to-claude.md#auto-mode-and-prompt-caching) explains when prompt
+reuse can miss.
 
 A pair alc never carried traffic for shows `—` in the token columns rather than
 a zero: `alc claude` on Anthropic talks to Anthropic directly, and alc never
