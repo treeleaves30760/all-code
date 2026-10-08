@@ -25,9 +25,9 @@ Windows PowerShell: `irm https://raw.githubusercontent.com/treeleaves30760/all-c
 
 **There is no configuration step.** No `alc config init`, no file to edit. The
 starter configuration is compiled into the binary and already carries a Codex
-profile; `alc --codex claude` reads it in memory and writes no configuration
-file of its own. The only thing it leaves in `~/.config/alc` is the Codex model
-catalog, re-cached at most once a day.
+profile; `alc --codex claude` reads it in memory and writes no `config.toml`.
+It keeps a model catalog cache, metadata-only usage records, and the runtime
+and settings files that let background sessions survive.
 
 **What it needs** is the `auth.json` that `codex login` writes, and `claude` on
 PATH — alc launches coding agents, it does not bundle them. **What it does not
@@ -151,8 +151,9 @@ alc kill 7QK2
 ```
 
 Ids can be given as any unambiguous prefix, git-short-hash style. `alc sessions`
-leads with the link because the one `--share` printed scrolls away the moment the
-agent draws its own interface.
+lists legacy and retained-generation owners with each owner's page link;
+`attach`, `kill`, and `rename` find the session's actual owner. An ambiguous
+prefix is refused rather than sent to the wrong hub.
 
 **What the link can do.** A shared Claude Code, Codex, or OpenCode session starts
 in **ask** mode — alc passes the flag itself, so the link does not hand anyone an
@@ -186,14 +187,21 @@ from where it always has. On Claude Code's own login the login answers, and the
 file carries the endpoint and the model.
 
 **The Codex bridge runs on its own now.** A background session outlives the
-`alc` that started it, so the adapter has to as well: one small alc process on a
-loopback port it keeps, answering only requests that carry its token. A session
-that needs it starts it, and it stops after an hour with nothing to do.
+`alc` that started it, so the adapter has to as well: a small alc process per
+runtime generation, on a loopback port it keeps, answering only requests that
+carry its token. A session that needs it starts it, and it stops after an hour
+with nothing to do. Old hosts keep serving their existing sessions after an
+update; new launches use the new generation.
 
 ```sh
-alc bridge          # running or not, and where
-alc bridge stop     # stop it now; the next session that needs it starts it
+alc bridge                         # running or not, and where
+alc --runtime legacy bridge stop   # explicitly stop the legacy owner
 ```
+
+New settings pin the helper executable and pass its `--runtime` identity.
+Old, unscoped `claude-credential` calls still use legacy. When several owners
+are running, `bridge stop` requires `--runtime <id|legacy>`; stopping one can
+interrupt its in-flight requests and is not an update prerequisite.
 
 **Every Claude model becomes a Codex model.** Under `alc --codex claude` no
 request reaches a Claude model. The `/model` picker lists Codex models only;
@@ -213,7 +221,7 @@ settings file. So do the commands that never reach a model - `mcp`, `doctor`,
 `alc --openrouter --metrics claude` launch uses a native-protocol forwarding
 route on the same durable host. Its settings contain the loopback endpoint and
 alc's helper, not a key. The helper authenticates the host using the independent
-owner-only `run/bridge.observer-key`, registers only a digest, and returns an
+owner-only runtime `bridge.observer-key`, registers only a digest, and returns an
 AEAD-sealed surrogate bound to the frozen route/current host instance — not the
 vendor key over local HTTP. The host restores upstream authentication only on
 dispatch. Old surrogates get HTTP 401 after a host restart; rerun the helper.
@@ -263,16 +271,16 @@ and protocol for every kind.
 | `alc config` | The configuration TUI; also `init`, `show`, `path`, `upsert`, `key`, `set-default`, `remove` |
 | `alc doctor` | Binaries, credentials, compatibility, defaults, bridge and remote state |
 | `alc models` | The GPT models the Codex bridge offers; `--refresh`, `--json` |
-| `alc usage` | Accounts/quota, the compatibility ledger, and token/cost statistics; `--daily`, `--monthly`, `--offline`, `--pricing-file`, `--json` |
-| `alc tps` | Client-observed TTFT and estimated/E2E tokens per second; latest 20 alc request records by default, `--limit`, `--json` |
-| `alc update` | Update `alc` in place; `--check`, `--force` |
+| `alc usage [weekly\|monthly\|yearly]` | Accounts/quota, the compatibility ledger, and daily token/cost statistics; `--timezone`, `--chart[=PATH]`, `--daily`, `--monthly`, `--offline`, `--pricing-file`, `--json` |
+| `alc tps` | Client-observed TTFT and estimated/E2E tokens per second; latest 20 timed requests by default, `--include-unmeasured`, `--limit`, `--json` |
+| `alc update` | Verify and activate an immutable alc generation; `--check`, `--force`, `--download-only`, `--from ... --offline`, `--rollback` |
 | `alc share <agent>` | Launch with the session mirrored to a browser page |
-| `alc sessions` | The page link, then the shared sessions (tmux ones marked) |
+| `alc sessions` | Shared sessions across generations and legacy, with each owner's page link |
 | `alc attach <id>` | Put this terminal back on a shared session |
 | `alc rename <id> <name>` | Rename a session's card on the page |
 | `alc kill <id>` | Stop a shared session |
-| `alc hub` | `status`, `start`, `stop --drain` for the process that owns sessions |
-| `alc bridge` | The durable background host for Claude's Codex translation and opt-in API-key observation; `status`, `stop` |
+| `alc hub` | `status`, `start`, `stop --drain`; multiple owners require `--runtime <id\|legacy>` to stop |
+| `alc bridge` | Durable Claude Codex/metrics host; `status`, `stop`; multiple owners require `--runtime <id\|legacy>` to stop |
 | `alc remote` | `status`, `url`, `on`/`off`, `auto-share`, `allow-host`, `token --rotate` |
 | `alc confirm <ticket>` | Approve a permission change a shared session asked for |
 
@@ -293,7 +301,7 @@ To pass an option with one of those same names to Claude itself, put it after
 `--`: `alc claude -- --model sonnet`. A `--settings` you pass is merged into
 alc's, yours winning, because Claude Code reads only one.
 
-alc's own flags — `--metrics`, `--share`, `--no-share`, `--bind-lan`, `--name`,
+alc's own flags — `--metrics`, `--runtime`, `--share`, `--no-share`, `--bind-lan`, `--name`,
 `--permission`, `--tmux`, `-t` — have to come *before* the agent name. After it
 they would be handed to the agent as prompt text, so alc stops and says so
 instead — unless you put `--` straight after the agent name, which says you
@@ -344,9 +352,9 @@ Accounts
   ·  openrouter  —                        —     no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
-  codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
-  ollama    opencode  1         —      —      —        —       —       12m ago
+  PROVIDER  AGENT     LAUNCHES  TURNS   INPUT  CACHED  CACHE %  OUTPUT  LAST
+  codex     claude           1      1  20,800  15,400      74%      35  7m ago
+  ollama    opencode         1      —       —       —        —       —  12m ago
   source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
 
 ✓ ready
@@ -387,21 +395,42 @@ fields and adds `statistics`.
 ### TTFT, TPS, and estimated cost
 
 ```sh
-alc tps                         # latest 20 matching alc request records
-alc tps --limit 50 --json
+alc tps                         # latest 20 matching requests with recorded timing
+alc tps --include-unmeasured --limit 50 --json
+alc usage weekly --offline --timezone Asia/Taipei --chart
+alc usage monthly --offline --chart="$HOME/ai-usage-month.png" --json
+alc usage yearly --offline
 alc usage --offline --daily --since 2026-10-01 --until 2026-10-08
 alc usage --offline --monthly --source claude,codex --json
 alc usage --offline --source alc --filter-profile work --filter-agent claude
 ```
 
+**Calendar windows, not rolling periods.** Positional `weekly`, `monthly`, and
+`yearly` select the current calendar week (Monday start), month, or year and
+retain daily details. They conflict with `--since`, `--until`, `--daily`, and
+`--monthly`. No window or date bounds still means all history; the existing
+`--daily` / `--monthly` flags only group that selected history.
+
 Both queries accept `--source all|alc|claude|codex` (comma-separated lists too),
-`--since` inclusive and `--until` exclusive (`YYYY-MM-DD` at UTC midnight or
-RFC3339), and exact `--filter-profile`, `--filter-agent`, and `--filter-model`.
-Usage defaults to all sources; TPS defaults to `alc` and accepts `--limit`
-1–10000. `--daily` / `--monthly` are mutually exclusive UTC buckets.
+`--since` inclusive, `--until` exclusive, and exact `--filter-profile`,
+`--filter-agent`, and `--filter-model`. `--timezone UTC|local|<IANA>` defaults to
+UTC and controls date-only `YYYY-MM-DD` bounds, calendar windows, and buckets;
+RFC3339 bounds remain the exact instant their offset specifies. Usage defaults
+to all sources; TPS defaults to `alc` and accepts `--limit` 1–10000.
 `alc usage --offline` reads only local configuration, histories, and pricing:
 no credentials/Keychain, quota calls, refresh, or network. `alc tps` is also a
-local, credential-free read.
+local, credential-free read and does not probe running daemons.
+
+The main statistics table has daily rollups with full integers, thousands
+separators, and right-aligned numeric columns; model/source details follow.
+`--chart[=PATH]` opts into an offline PNG with three panels: date token bars,
+date USD bars, and an uncached-input/cache/output token pie. Its default path
+is `ai-usage.png` in your home directory. Rendering uses Rust and a bundled font,
+not Python or system fonts. It uses the same selection and timezone as the
+report; longer ranges have labeled coarser chart buckets while CLI details stay
+daily. Unknowns/gaps are not zero, partial costs are known subtotals, and source
+overlap suppresses unsafe pooled totals and the pie. `--json --chart` keeps
+stdout JSON-only and writes the artifact path to stderr.
 
 Repeated `--claude-dir /absolute/config-root` reads `projects/`; repeated
 `--codex-dir /absolute/codex-home` reads `sessions/` and `archived_sessions/`.
@@ -411,8 +440,11 @@ metadata-only JSONL sources, bounded to 4 MiB per line: no prompts, generated
 output, tool content, or keys are copied into alc's ledger or an import cache.
 Past native usage is not assigned today's alc profile. Only exact,
 protocol-qualified IDs prove duplicates; unverified overlaps keep source
-subtotals **without an additive grand total**. Codex cumulative deltas and
-checkpoints are not request counts; checkpoints are not summed as token usage.
+subtotals **without an additive grand total**. Reconciliation runs before date
+filtering; overlap safety is then checked for the selected range and each day.
+Codex cumulative deltas and checkpoints are not request counts; checkpoints are
+not summed as token usage. A delta spanning dates belongs to the later checkpoint
+date, not a reconstruction of each day's actual traffic.
 Coverage diagnostics expose skipped or ambiguous records rather than calling
 them zero. In new statistics, each zero input/output counter in legacy v1/v2
 turns is independently unknown; positive counters and compatibility-ledger totals
@@ -445,8 +477,10 @@ Ordinary no-metrics launches are unchanged. A dry-run starts no listener and
 writes nothing.
 
 The durable Claude handshake/control challenges authenticate the host without
-publishing `bridge.observer-key`; `forward-observer-v2` refuses older daemons
-even with a matching version string (`alc bridge stop`, then relaunch).
+publishing `bridge.observer-key`. New launches require `request-metrics-v3`
+for measured requests and `forward-observer-v2` for durable forwarding, using
+their own generation host rather than stopping an older one. Old hosts continue
+serving old sessions; a matching version string alone is not a capability check.
 Durable Claude observation artifacts never write the plaintext vendor key.
 **The local data plane is still loopback HTTP, not TLS**: trust local processes. The Claude
 surrogate prevents raw vendor-key disclosure, not plaintext request-body
@@ -464,11 +498,24 @@ server decode speed**. Nonstreaming TTFT and old/native-history timing are
 `N/A`. Summaries give valid sample counts and duration-weighted TPS, not sums
 of concurrent speeds.
 
+TPS selects actual `Request` records with a timing object **before sorting and
+applying the limit**. Observed failures, cancellations, and requests without
+usage remain rows; each metric still needs its own valid evidence. Coverage
+counts explain excluded legacy, untimed, and non-request records;
+`--include-unmeasured` restores the historical view with unavailable metrics.
+An all-`N/A` old report can be v1/v2 turns from a reused older bridge, not zero
+performance. alc cannot reconstruct their past TTFT/TPS; start a new session
+on the new generation for future measurements without stopping old sessions.
+
 **What the dollars mean.** USD API-token/API-equivalent snapshot estimates,
 not invoices or subscription bills; tax, discounts, tools, and non-token
 charges are excluded. Missing counters or exact rates stay unknown/partial,
-with reasons and nullable totals. Reasoning is an output subset, not billed
-again; cache reads/writes and TTLs keep their distinct semantics. Pricing is an
+with reasons and nullable totals. Each record is priced with its own tier,
+context, and cache TTL before addition. JSON preserves gross `input_tokens`
+and adds `uncached_input_tokens` and `cost_components` for uncached input,
+cache read, cache write, and output. Money uses exact pico-dollar arithmetic
+and decimal USD strings, not floating-point totals. Reasoning is an output
+subset, not billed again; cache reads/writes and TTLs keep their distinct semantics. Pricing is an
 offline curated LiteLLM subset dated 2026-10-08, pinned to commit
 `33d908e0ae2c0a257eeb5d546df08527d348a670` with SHA-256/MIT provenance, not a live
 price feed. Add exact local/custom rates in the separate config-directory
@@ -639,7 +686,10 @@ The bridge is alc's own code (`src/bridge/`). For Claude Code it runs as a
 background process of its own on a loopback port it keeps (`alc bridge`); for
 every other agent it runs inside the `alc` process on a random port and stops
 when that session ends. It reads and may refresh `~/.codex/auth.json`;
-credentials are never copied into the `alc` config.
+credentials are never copied into the `alc` config. New alc-managed runtimes
+coordinate refreshes with a cross-process lock on the canonical auth path and
+reread after locking. Older hosts and external Codex CLI do not use that lock;
+shared-login rotation can still affect them.
 
 ## Local models
 
@@ -710,23 +760,27 @@ that context, and whether `/v1/messages` exists.
 is the rest.
 
 ```sh
-alc sessions                 # the link, then what is running (tmux sessions marked)
-alc attach 7QK2              # any unambiguous id prefix
+alc sessions                 # sessions across owners, with each owner's page link
+alc attach 7QK2              # any prefix unambiguous across all owners
 alc rename 7QK2 review
 alc kill 7QK2
 alc hub status               # or bare `alc hub`
-alc hub stop --drain
-alc remote url               # the link again, after it scrolled away
+alc --runtime legacy hub stop --drain # explicitly stop that owner and its sessions
+alc remote url               # the selected runtime's link
 alc remote status            # on/off, bind, ceiling, where the files are
 alc remote auto-share on     # share every session without --share
 alc remote off               # refuse to share sessions at all
-alc remote token --rotate    # invalidate every link handed out so far
+alc remote token --rotate    # invalidate links for the selected runtime
 ```
 
-Sessions are owned by a background hub, which is why they survive the terminal
-that started them and why they all appear on one page; `ctrl-\` then `d`
-detaches. Sharing by default also lives in `alc config`, on the **Sharing &
-remote** screen.
+Sessions are owned by a background hub per runtime generation, which is why they
+survive the terminal that started them; `ctrl-\` then `d` detaches. Each owner's
+browser page shows its own sessions, while `alc sessions` aggregates owners,
+including legacy. Multiple running owners require an explicit global
+`--runtime <id|legacy>` for `hub stop` or `bridge stop`. `hub stop --drain`
+ends that owner's sessions; neither stop is zero-downtime or part of updating.
+Sharing policy in `remote.toml` is still shared across generations, and lives
+in `alc config` on the **Sharing & remote** screen.
 
 ### Who owns the size
 
@@ -795,7 +849,7 @@ Three ways, all supported:
 
 ```sh
 # Your own Wi-Fi — nothing to install
-alc claude --share --bind-lan          # prints http://192.168.1.42:8787/#k=…
+alc --share --bind-lan claude          # prints the owner's LAN page link
 
 # Tailscale — alc stays on loopback, HTTPS, no third party
 alc remote allow-host box.tail1a2b.ts.net
@@ -809,9 +863,12 @@ cloudflared tunnel --url http://127.0.0.1:8787
 alc answers only to names you allowed. Loopback is always allowed, and
 `--bind-lan` adds this machine's own addresses; `alc remote allow-host` adds a
 tunnel's hostname, exactly or as `*.example.com` for a tunnel that renames itself
-every run. Restart a running hub (`alc hub stop --drain`) for a new allowed host
-to take effect. A LAN link is plain HTTP, so the token crosses your local network
-in clear — fine at home, use a tunnel on café Wi-Fi.
+every run. Existing hubs keep their launch-time allowlist; let their sessions
+finish before an explicit owner stop/restart to pick up a new name. A drain ends
+those sessions and is not an update step. With multiple owners, tunnel the port
+from the intended owner's link, not necessarily 8787. A LAN link is plain HTTP,
+so the token crosses your local network in clear — fine at home, use a tunnel
+on café Wi-Fi.
 
 ### Permissions
 
@@ -870,7 +927,7 @@ so it is worth being plain about the model:
   creation.
 - A shared session is screen sharing. alc masks the API keys **it** put into the
   environment, but anything else the agent prints, a viewer sees.
-- `alc remote token --rotate` invalidates every link handed out so far.
+- `alc remote token --rotate` invalidates links for the selected runtime.
 - alc reads no configuration from the working repository, so a checked-in file
   can never turn sharing on.
 
@@ -894,7 +951,11 @@ does today.
 - `usage.jsonl`: launches and metadata-only requests from the Codex translation
   bridge and opt-in `--metrics` observation. `alc usage` / `alc tps` read it;
   deleting it resets alc records, not native Claude/Codex histories.
-- `run/bridge.observer-key`: independent owner-only local observer secret
+- `run/` for legacy, `run/g/<shortid>/` for new generations: host sockets,
+  ports, tokens, and frozen routes. Provider configuration, credentials, and
+  `usage.jsonl` stay shared in the real config directory; `remote.toml` remains
+  shared policy, not a generation-specific copy.
+- Runtime `bridge.observer-key`: independent owner-only local observer secret
   (`0600` on Unix), not an API key. Authenticates host/control challenges and
   AEAD-seals durable Claude metrics credentials to a frozen route/current host
   instance; never published by the handshake or sent upstream. It does not
@@ -962,6 +1023,12 @@ custom directory is never added to PATH for you, while on Windows it is added to
 your User PATH like the default one. The Windows installer supports Windows
 PowerShell 5.1 and PowerShell 7, including 32-bit PowerShell on 64-bit Windows.
 
+The verified payload is published through alc's internal install transaction.
+`alc` remains a full-binary stable entry point, not a second launcher executable;
+its adjacent `.alc/active.json` selects `.alc/generations/<digest>/alc` (Windows:
+`alc.exe`). After the initial migration, activation changes the manifest rather
+than replacing a locked Windows entry point. Keep the adjacent `.alc` directory.
+
 ### Optional tmux setup
 
 After downloading, verifying SHA-256, and installing alc, the installer checks
@@ -1028,18 +1095,51 @@ Remove-Item Env:ALC_NO_TMUX_INSTALL, Env:ALC_NO_PATH_UPDATE
 ```sh
 alc update --check
 alc update
+alc update --download-only "$HOME/alc-bundle"
+alc update --from "$HOME/alc-bundle" --offline
+alc update --rollback previous --offline
 ```
 
-`alc update` selects the correct release for the current OS and CPU, verifies the
-archive against the release's published SHA-256 checksum, checks the packaged
-version, and then replaces `alc`. Linux and macOS update immediately. Windows
-stages the verified files and finishes replacement just after the running
-`alc.exe` exits; wait a moment before checking `alc --version`. Use
-`alc update --force` to reinstall the current latest release.
+`alc update` selects the release for the current OS and CPU, verifies its
+published SHA-256 and packaged binary version, publishes an immutable generation,
+and atomically activates it. The stable front reads adjacent `.alc/active.json`;
+new invocations enter `.alc/generations/<digest>/alc[.exe]`. A process already
+in a generation stays there, and helper/daemon executables are hash-pinned.
+Existing agents, hosts, routes, and sessions are not restarted or drained.
+New sessions use their own generation's hub/bridge; no blanket stop/relaunch
+is needed. Old generations are retained without automatic garbage collection.
 
-Running sessions keep the binary they started with, so restart any open
-`alc`-launched agent after updating, and `alc hub stop` once its sessions are
-done.
+- `--check` checks online without applying. `--force` reinstalls the selected
+  release even when its version is current.
+- `--download-only BUNDLE_DIR` saves a verified release bundle without applying
+  it, including when the latest version is already installed. The destination
+  must be new or empty; keep each bundle separate.
+- `--from BUNDLE_DIR --offline` applies locally with **no GitHub/network lookup**.
+  Bounded validation checks bundle metadata, archive checksum, platform, and
+  packaged binary version before activation. Keep the complete bundle together.
+- `--rollback previous` or `--rollback <digest>` activates a retained generation;
+  it does not revert configuration, credentials, or the shared usage ledger.
+
+Runtime state is separate from those real shared files: new hosts use
+`<config>/run/g/<shortid>`, legacy hosts keep `<config>/run`. `alc sessions`
+finds both, with a page link per owner. Use global `--runtime <id|legacy>` to
+explicitly stop an owner; a stop can interrupt long requests, and a hub drain
+ends its sessions.
+
+**Scope and migration limits.** `alc --codex update` still updates **alc**, not
+Codex CLI. Self-update does not update Claude Code, any other agent, tmux, or
+PATH. Shared credentials still rotate; older hosts and external Codex do not
+cooperate with the new refresh lock. Updating external packages or rotating
+auth is not guaranteed to leave running work unaffected.
+
+An old 2.0.0 updater cannot be fixed retroactively by the payload it downloads,
+especially its Windows exit-time finalizer. Use a 2.0.1-or-newer installer for the
+one-time stable-front migration. Unix can atomically replace the old front once;
+if Windows has it locked, migration fails explicitly, retains the verified
+payload for retry, and does not activate it, kill processes, or schedule a new
+finalizer. Wait until old processes exit naturally and retry, or install
+side-by-side in a different `ALC_INSTALL_DIR` and invoke that path explicitly.
+A pending migration is not a completed update.
 
 ## Build from source
 
@@ -1064,7 +1164,8 @@ cargo test --all-targets
 
 ## Uninstall
 
-Remove `alc` from the install directory, then optionally remove the config
+Remove `alc` and its adjacent `.alc` install directory only after sessions and
+helpers using retained generations are done. Then optionally remove the config
 directory listed by `alc config path`. Removing the config also deletes locally
 saved API keys and cannot be undone.
 

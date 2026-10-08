@@ -3,7 +3,7 @@ id: remote-control
 title: Remote control
 sidebar_label: Remote control
 sidebar_position: 5
-description: Mirror any coding-agent session to a web page and drive it from a phone — the same page for every agent, with permission modes, tmux sizing and a security model that assumes the link is the credential.
+description: Mirror any coding-agent session to its owner's web page and drive it from a phone, with permission modes, tmux sizing, cross-generation session discovery, and a link-as-credential security model.
 keywords:
   - claude code on phone
   - remote coding agent
@@ -14,9 +14,10 @@ keywords:
 
 # Remote control
 
-Mirror a running session to a web page and drive it from another device — the
-same page for every agent and every provider. Your terminal keeps working;
-sharing mirrors the session rather than taking it away.
+Mirror a running session to its owner's web page and drive it from another
+device — the same interface for every agent and provider, with a separate page
+per runtime owner. Your terminal keeps working; sharing mirrors the session
+rather than taking it away.
 
 ```sh
 alc --share claude
@@ -36,7 +37,12 @@ Remote control works on Windows 10 and 11 as it does on macOS and Linux;
 
 ## Reaching it from a phone
 
-The default binds to loopback. Nothing is exposed until you say so.
+The default binds to loopback. Nothing is exposed until you say so. With
+multiple runtime owners, use the port from the intended owner's page URL for
+Tailscale/Cloudflare rather than assuming it is always 8787. The commands below
+use the default-port example. Existing hubs keep their launch-time allowlist;
+let sessions finish before explicitly stopping/restarting that owner to pick
+up new allowed names. A drain ends sessions and is not an update step.
 
 **Tailscale** — alc stays on loopback and Tailscale does the exposing. HTTPS,
 no third party in the middle.
@@ -44,14 +50,14 @@ no third party in the middle.
 ```sh
 alc remote allow-host box.tail1a2b.ts.net
 tailscale serve 8787
-alc claude --share
+alc --share claude
 ```
 
 **Your own Wi-Fi** — nothing to install, but plain HTTP, so the token crosses
 the network in clear. Fine at home; use a tunnel on café Wi-Fi.
 
 ```sh
-alc claude --share --bind-lan
+alc --share --bind-lan claude
 ```
 
 **Cloudflare Tunnel** — works from anywhere, including cellular. Cloudflare
@@ -61,7 +67,7 @@ tunnel mints a new hostname every run, hence the wildcard.
 ```sh
 alc remote allow-host '*.trycloudflare.com'
 cloudflared tunnel --url http://127.0.0.1:8787
-alc claude --share
+alc --share claude
 ```
 
 alc answers only to names you allowed: it checks the `Host` header against a
@@ -80,8 +86,8 @@ alc remote status                           # what it answers to now
 The link scrolls away as soon as the agent draws its interface.
 
 ```sh
-alc remote url        # just the link
-alc sessions          # the link, then what is running
+alc remote url        # the selected runtime's link
+alc sessions          # all owners, their links, then their sessions
 ```
 
 ```text
@@ -92,13 +98,13 @@ claude-7QK2M9XB4T      claude   running   ask        ~/src/all-code
 codex-68B8XMJ6F5       codex    running   plan       ~/src/api
 ```
 
-Every allowed name gets a line. `alc remote token --rotate` invalidates every
-link handed out so far.
+Every allowed name gets a line. `alc remote token --rotate` invalidates links
+for the selected runtime, not every other owner's links.
 
 ## Sharing by default
 
 ```sh
-alc remote auto-share on     # `alc claude` now behaves like `alc claude --share`
+alc remote auto-share on     # `alc claude` now behaves like `alc --share claude`
 alc --no-share claude        # opt one launch out
 ```
 
@@ -167,29 +173,42 @@ a belief rather than a fact.
 
 ## Sessions and the hub
 
-Shared sessions belong to a **hub**, a background process alc starts the first
-time you share. That is what makes one page show every session and lets a
-session outlive the terminal it started in.
+Shared sessions belong to a **hub** in their runtime generation. A hub starts
+when that generation first shares a session, which lets the session outlive the
+terminal it started in. Each owner serves its own page; `alc sessions` aggregates
+legacy and generation owners and prints each page URL.
 
 ```sh
-alc claude --share           # starts a hub if one is not running
+alc --share claude            # starts this generation's hub if needed
 # ctrl-\ then d              # detach; the session keeps running
-alc sessions                 # what is running
+alc sessions                 # all owners and their sessions
 alc attach 7QK2              # back on it, from any terminal
-alc kill 7QK2                # stop one
-alc rename 7QK2 review       # rename its card
+alc kill 7QK2                # stop one at its actual owner
+alc rename 7QK2 review       # rename its card at its owner
 alc hub status
-alc hub stop [--drain]       # refuses while sessions run unless --drain
+alc --runtime legacy hub stop --drain # explicitly end that owner's sessions
 ```
 
 Ids look like `claude-7QK2M9XB4T`; any unambiguous prefix or the tail alone
-works, case-insensitively.
+works, case-insensitively. `attach`, `kill`, and `rename` locate the actual owner
+across namespaces. A prefix matching several owners is refused; use a full ID
+or global `--runtime <id|legacy>` to target an owner.
+
+New runtime files live under `<config>/run/g/<shortid>`; legacy keeps
+`<config>/run`. Configuration, credentials, usage records, and `remote.toml`
+sharing policy remain shared. Existing listeners keep their bound address/port;
+new generations can choose an available port, so use the link for the intended
+owner rather than assuming every page uses 8787. Updates do not restart or drain
+old hubs. With several owners running, `hub stop` and `bridge stop` require an
+explicit runtime target. `hub stop` refuses live sessions unless `--drain`;
+a drain ends those sessions, and a bridge stop can interrupt in-flight requests.
+Neither stop is a zero-downtime operation or an update prerequisite.
 
 Each launch carries the working directory and environment of the shell that
-asked for it, so a session started in one repository never edits another. If
-the hub is killed outright the agents keep running detached, and the next hub
-cleans up what the last one could not. It keeps no log file; when one will not
-start, run `alc hub start --foreground` and watch.
+asked for it. If a hub is killed outright, agents can remain detached;
+replacement-host cleanup is confined to its own namespace after acquiring the
+owner lock, not another generation's sessions. It keeps no log file; when one
+will not start, run `alc hub start --foreground` and watch.
 
 ## Who owns the size
 

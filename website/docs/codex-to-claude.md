@@ -176,7 +176,11 @@ sessions](./background-sessions.md#the-background-bridge). For every other
 agent it runs inside the `alc` process on a random port, serving only the agent
 it launched and stopping when that session ends. It reads and may refresh
 `~/.codex/auth.json`; no credential is ever copied into alc's own
-configuration.
+configuration. New helpers and hosts are pinned to their runtime generation;
+updates leave existing hosts/session routes in place and new launches use the
+new generation. New alc-managed refreshes lock the canonical auth path across
+processes and reread after locking. Older hosts and external Codex CLI do not
+cooperate with that lock, so shared-login rotation can still affect them.
 
 :::caution[Third-party compatibility layer]
 
