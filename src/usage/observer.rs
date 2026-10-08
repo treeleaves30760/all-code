@@ -125,7 +125,7 @@ impl RequestObservation {
                 timing.elapsed_us = elapsed_us;
                 timing.terminal_us = outcome.has_terminal().then_some(elapsed_us);
             }
-            state.record.tokens.validate();
+            validate_observed_tokens(&mut state.record);
             state.record.clone()
         };
         self.0.ledger.record_request(record);
@@ -288,6 +288,7 @@ impl RequestObservation {
                 }
             }
         }
+        validate_observed_tokens(&mut state.record);
         let qualifies = generated || (reasoning && state.output_basis != OutputBasis::NonReasoning);
         if generated {
             state.saw_visible = true;
@@ -395,6 +396,21 @@ fn response_outcome(response: &Value) -> Outcome {
     }
 }
 
+fn validate_observed_tokens(record: &mut UsageRecord) {
+    let before = record.tokens.clone();
+    record.tokens.validate();
+    if before != record.tokens
+        && !record
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("invalid observed token subsets"))
+    {
+        record
+            .warnings
+            .push("invalid observed token subsets were left unknown".to_owned());
+    }
+}
+
 pub(crate) fn openai_tokens(usage: &Value) -> TokenCounts {
     let read = |key: &str| usage.get(key).and_then(Value::as_u64);
     let input_details = usage
@@ -403,7 +419,7 @@ pub(crate) fn openai_tokens(usage: &Value) -> TokenCounts {
     let output_details = usage
         .get("output_tokens_details")
         .or_else(|| usage.get("completion_tokens_details"));
-    let mut tokens = TokenCounts {
+    TokenCounts {
         input_tokens: read("input_tokens").or_else(|| read("prompt_tokens")),
         output_tokens: read("output_tokens").or_else(|| read("completion_tokens")),
         cache_read_tokens: input_details
@@ -417,13 +433,11 @@ pub(crate) fn openai_tokens(usage: &Value) -> TokenCounts {
             .and_then(Value::as_u64),
         total_tokens: read("total_tokens"),
         ..TokenCounts::default()
-    };
-    tokens.validate();
-    tokens
+    }
 }
 
 pub(crate) fn anthropic_tokens(usage: &Value) -> TokenCounts {
-    let mut tokens = TokenCounts {
+    TokenCounts {
         input_basis: InputBasis::Separate,
         input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
         output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
@@ -438,9 +452,7 @@ pub(crate) fn anthropic_tokens(usage: &Value) -> TokenCounts {
             .pointer("/cache_creation/ephemeral_1h_input_tokens")
             .and_then(Value::as_u64),
         ..TokenCounts::default()
-    };
-    tokens.validate();
-    tokens
+    }
 }
 
 fn merge_tokens(existing: &mut TokenCounts, update: TokenCounts) {
@@ -458,7 +470,6 @@ fn merge_tokens(existing: &mut TokenCounts, update: TokenCounts) {
         reasoning_tokens,
         total_tokens
     );
-    existing.validate();
 }
 
 pub(crate) struct StreamObservation {
@@ -539,6 +550,26 @@ mod tests {
             protocol,
             OutputBasis::NonReasoning,
         )
+    }
+
+    #[test]
+    fn invalid_observed_cache_is_not_reinterpreted_as_an_absent_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let request = observation(dir.path(), WireProtocol::Responses);
+        request.frame_at(r#"{"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":4,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":110},"output_tokens_details":{"reasoning_tokens":0}}}}"#, 3000);
+        let records = read_records(dir.path()).records;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tokens.cache_write_tokens, None);
+        assert!(
+            records[0]
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("invalid observed token subsets"))
+        );
+        let view = records[0].effective_tokens();
+        assert!(view.invalid_cache);
+        assert_eq!(view.counts.cache_write_tokens, None);
+        assert_eq!(view.counts.uncached_input(), None);
     }
 
     #[test]

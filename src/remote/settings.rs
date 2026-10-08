@@ -20,8 +20,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::config::atomic_write;
+use crate::runtime::{self, RuntimeScope};
 
 /// 32 bytes is the width every token in this feature is minted at: below a
 /// browser-reachable secret's useful floor there is no point, and above it the
@@ -247,11 +249,17 @@ impl Secrets {
     /// the user's config dir. An overridden role's file is left alone — not
     /// created, not read — so an override never mints a spare secret on disk.
     pub(crate) fn load_or_create(config_dir: &Path) -> Result<Self> {
-        let dir = ensure_run_dir(config_dir)?;
+        runtime::claim_namespace(config_dir)?;
+        Self::load_or_create_for(config_dir, runtime::scope())
+    }
+
+    pub(crate) fn load_or_create_for(config_dir: &Path, scope: &RuntimeScope) -> Result<Self> {
+        let dir = runtime::run_dir_for(config_dir, scope);
+        restricted_dir(&dir)?;
         let secrets = Self {
-            ctl: role_token(&dir, ROLES[0])?,
-            operator: role_token(&dir, ROLES[1])?,
-            viewer: role_token(&dir, ROLES[2])?,
+            ctl: role_token(&dir, ROLES[0], scope)?,
+            operator: role_token(&dir, ROLES[1], scope)?,
+            viewer: role_token(&dir, ROLES[2], scope)?,
         };
         // Two roles sharing a value is not a harmless coincidence: the guard
         // resolves a tie in favour of the more powerful role, so a viewer
@@ -292,9 +300,66 @@ impl Secrets {
         Self::load_or_create(config_dir)
     }
 
-    pub(crate) fn run_dir(config_dir: &Path) -> PathBuf {
-        config_dir.join("run")
+    /// Reads an existing owner's credentials without creating or rotating them.
+    /// Management commands carry this run directory into their worker threads.
+    pub(crate) fn read_at(run_dir: &Path, scope: &RuntimeScope) -> Result<Self> {
+        let read = |role: (&str, &str)| -> Result<String> {
+            if let Some(value) = token_override(role.0, scope)? {
+                return Ok(value);
+            }
+            let path = run_dir.join(role.1);
+            let value = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?
+                .trim()
+                .to_owned();
+            if value.is_empty() {
+                bail!("{} is empty", path.display());
+            }
+            Ok(value)
+        };
+        Ok(Self {
+            ctl: read(ROLES[0])?,
+            operator: read(ROLES[1])?,
+            viewer: read(ROLES[2])?,
+        })
     }
+
+    pub(crate) fn run_dir(config_dir: &Path) -> PathBuf {
+        runtime::run_dir(config_dir)
+    }
+}
+
+/// An override keeps its historical value in Legacy. A generation derives a
+/// different secret from the same override, so one owner's bearer never grants
+/// control of another owner's sessions. Equal overrides remain equal, letting
+/// the role-separation check still catch that mistake.
+fn token_override(env_name: &str, scope: &RuntimeScope) -> Result<Option<String>> {
+    let Some(value) = env::var(env_name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.len() < MIN_TOKEN_CHARS {
+        bail!(
+            "{env_name} is only {} characters; a token that can type into a session \
+             needs at least {MIN_TOKEN_CHARS}",
+            value.len()
+        );
+    }
+    let value = match scope {
+        RuntimeScope::Legacy => value.to_owned(),
+        RuntimeScope::Generation(_) => {
+            let mut hash = Sha256::new();
+            hash.update(b"alc-remote-token-v1\0");
+            hash.update(scope.identity().as_bytes());
+            hash.update([0]);
+            hash.update(value.as_bytes());
+            base64url(&hash.finalize())
+        }
+    };
+    Ok(Some(value))
 }
 
 /// One credential: the environment wins, then the file, and only then is a
@@ -305,22 +370,12 @@ impl Secrets {
 /// file would otherwise become a credential that authorises everyone. Reads
 /// are trimmed because a hand-made token file (`echo … > ctl.token`) ends in a
 /// newline that is not part of the secret.
-fn role_token(run_dir: &Path, (env_name, file_name): (&str, &str)) -> Result<String> {
-    if let Some(value) = env::var(env_name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        let value = value.trim().to_owned();
-        // The generated path mints 256 bits deliberately; an override has to
-        // clear a floor too, or `ALC_REMOTE_OPERATOR=x` quietly becomes a
-        // one-character credential for typing into a shell.
-        if value.len() < MIN_TOKEN_CHARS {
-            bail!(
-                "{env_name} is only {} characters; a token that can type into a session \
-                 needs at least {MIN_TOKEN_CHARS}",
-                value.len()
-            );
-        }
+fn role_token(
+    run_dir: &Path,
+    (env_name, file_name): (&str, &str),
+    scope: &RuntimeScope,
+) -> Result<String> {
+    if let Some(value) = token_override(env_name, scope)? {
         return Ok(value);
     }
 
@@ -405,6 +460,7 @@ pub(crate) fn create_token(path: &Path) -> Result<String> {
 
 /// Creates `<config_dir>/run`, owner-only.
 fn ensure_run_dir(config_dir: &Path) -> Result<PathBuf> {
+    runtime::claim_namespace(config_dir)?;
     let dir = Secrets::run_dir(config_dir);
     restricted_dir(&dir)?;
     Ok(dir)
@@ -630,6 +686,25 @@ mod tests {
             let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "{} should be owner-only", path.display());
         }
+    }
+
+    #[test]
+    fn generation_tokens_never_read_or_rewrite_legacy_credentials() {
+        let _guard = lock();
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = Secrets::load_or_create_for(temp.path(), &RuntimeScope::Legacy).unwrap();
+        let old = fs::read(temp.path().join("run/ctl.token")).unwrap();
+        let scope = RuntimeScope::parse("0123456789ab").unwrap();
+        let current = Secrets::load_or_create_for(temp.path(), &scope).unwrap();
+        assert_ne!(legacy.ctl, current.ctl);
+        assert_eq!(fs::read(temp.path().join("run/ctl.token")).unwrap(), old);
+        assert_eq!(
+            Secrets::read_at(&runtime::run_dir_for(temp.path(), &scope), &scope)
+                .unwrap()
+                .ctl,
+            current.ctl
+        );
+        assert!(!temp.path().join("credentials.toml").exists());
     }
 
     #[test]

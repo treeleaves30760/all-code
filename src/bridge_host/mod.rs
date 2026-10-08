@@ -30,17 +30,28 @@ pub(crate) use serve::run as serve;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(2);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STALE_LOCK: Duration = Duration::from_secs(30);
+pub(crate) const PROTOCOL: u32 = 1;
+pub(crate) const REQUEST_METRICS_CAPABILITY: &str = "request-metrics-v3";
 
 /// What a running bridge says about itself.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Hello {
-    /// Distinguishes sealed observer credentials across host restarts.
+    /// Legacy bridges predating authenticated observers do not report one.
+    #[serde(default)]
     pub instance: String,
     pub alc: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
+    #[serde(default, skip_serializing_if = "is_legacy_protocol")]
+    pub protocol: u32,
     pub pid: u32,
     pub port: u16,
     #[serde(default)]
     pub capabilities: Vec<String>,
+}
+
+fn is_legacy_protocol(protocol: &u32) -> bool {
+    *protocol == 0
 }
 
 fn agent() -> ureq::Agent {
@@ -71,7 +82,15 @@ pub(crate) fn hello(port: u16, token: &str) -> Result<Hello> {
 /// A fresh challenge authenticates this listener before a helper seals a
 /// native key. No control bearer or vendor key is sent to the probed port.
 fn authenticated_hello(config_dir: &Path, port: u16) -> Result<Hello> {
-    let key = observer_auth::ObserverKey::load(config_dir)?;
+    authenticated_hello_at(&files::run_dir(config_dir), port, crate::runtime::scope())
+}
+
+fn authenticated_hello_at(
+    run_dir: &Path,
+    port: u16,
+    scope: &crate::runtime::RuntimeScope,
+) -> Result<Hello> {
+    let key = observer_auth::ObserverKey::load_at(run_dir)?;
     let nonce = crate::remote::generate_token()?;
     let mut response = agent()
         .get(&format!("http://127.0.0.1:{port}/alc/observer-hello"))
@@ -86,10 +105,28 @@ fn authenticated_hello(config_dir: &Path, port: u16) -> Result<Hello> {
     let reply: observer_auth::AuthenticatedHello = serde_json::from_str(&text)
         .context("the background bridge has no authenticated observer; stop it and relaunch")?;
     key.verify(&nonce, &reply)?;
-    if reply.hello.port != port {
-        bail!("the authenticated observer answered from a different port");
+    if reply.hello.port != port || !hello_matches_scope(scope, &reply.hello) {
+        bail!("the authenticated observer answered for a different runtime or protocol");
     }
     Ok(reply.hello)
+}
+
+fn hello_matches_scope(scope: &crate::runtime::RuntimeScope, hello: &Hello) -> bool {
+    match scope {
+        crate::runtime::RuntimeScope::Legacy => hello.generation.is_none(),
+        scope => {
+            hello.generation.as_deref() == Some(scope.identity())
+                && hello.protocol == PROTOCOL
+                && [REQUEST_METRICS_CAPABILITY, FORWARD_CAPABILITY]
+                    .iter()
+                    .all(|required| {
+                        hello
+                            .capabilities
+                            .iter()
+                            .any(|capability| capability == required)
+                    })
+        }
+    }
 }
 
 fn observer_running(config_dir: &Path, hello: Hello) -> Result<(Running, Hello)> {
@@ -115,6 +152,7 @@ fn refuses_secret_free_legacy_hello(port: u16) -> bool {
 }
 
 fn ensure_observer(config_dir: &Path) -> Result<(Running, Hello)> {
+    crate::runtime::require_own_generation()?;
     observer_auth::ObserverKey::load(config_dir)?;
     if let Some(port) = files::remembered_port(config_dir) {
         if let Ok(hello) = authenticated_hello(config_dir, port) {
@@ -170,10 +208,19 @@ impl Running {
 
 /// The bridge for `config_dir`, if one is up and answering to its token.
 pub(crate) fn probe(config_dir: &Path) -> Option<Running> {
-    let token = files::read_token(config_dir)?;
-    let port = files::remembered_port(config_dir)?;
-    let hello = hello(port, &token).ok()?;
-    (hello.port == port).then_some(Running {
+    probe_at(&files::run_dir(config_dir), crate::runtime::scope())
+}
+
+/// Generation management authenticates the response before sending a stop
+/// bearer. The token-protected old greeting remains valid only in Legacy.
+fn probe_at(run_dir: &Path, scope: &crate::runtime::RuntimeScope) -> Option<Running> {
+    let token = files::read_token_at(run_dir)?;
+    let port = files::remembered_port_at(run_dir)?;
+    let hello = match scope {
+        crate::runtime::RuntimeScope::Legacy => hello(port, &token).ok()?,
+        scope => authenticated_hello_at(run_dir, port, scope).ok()?,
+    };
+    (hello.port == port && hello_matches_scope(scope, &hello)).then_some(Running {
         port,
         token,
         pid: hello.pid,
@@ -201,6 +248,8 @@ pub(crate) fn ensure(config_dir: &Path) -> Result<Running> {
 /// the deadline is the case the lock has to survive, and driving it through
 /// ten real seconds would cost the suite ten seconds on every run.
 fn ensure_within(config_dir: &Path, start_timeout: Duration) -> Result<Running> {
+    crate::runtime::require_own_generation()?;
+    crate::runtime::claim_namespace(config_dir)?;
     if let Some(running) = probe(config_dir) {
         return Ok(running);
     }
@@ -390,11 +439,12 @@ fn lock_is_stale(lock: &Path) -> bool {
 /// are closed and nothing is inherited: Claude Code reads the helper's output
 /// until it ends, and a bridge still holding it would hang every session.
 fn start_detached(config_dir: &Path) -> Result<()> {
-    let alc = std::env::current_exe().context("failed to find alc's own path")?;
+    let alc = crate::runtime::materialize_exe(config_dir)?;
     let mut command = Command::new(alc);
     command
         .arg("--config-dir")
         .arg(config_dir)
+        .args(["--runtime", crate::runtime::scope().identity()])
         .args(["bridge", "serve"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -418,8 +468,31 @@ fn start_detached(config_dir: &Path) -> Result<()> {
 
 /// Stops the bridge, answering the pid of the one it stopped.
 pub(crate) fn stop(config_dir: &Path) -> Result<Option<u32>> {
-    let Some(running) = probe(config_dir) else {
-        return Ok(None);
+    let scopes = if crate::runtime::scope_is_explicit() {
+        vec![crate::runtime::scope().clone()]
+    } else {
+        crate::runtime::discover_scopes(config_dir)?
+    };
+    let mut owners = Vec::new();
+    for scope in scopes {
+        let run_dir = files::run_dir_for(config_dir, &scope);
+        if let Some(running) = probe_at(&run_dir, &scope) {
+            owners.push((scope, run_dir, running));
+        }
+    }
+    let (scope, run_dir, running) = match owners.as_slice() {
+        [] => return Ok(None),
+        [owner] => owner,
+        many => {
+            let names = many
+                .iter()
+                .map(|(scope, _, _)| scope.identity())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "more than one bridge is running ({names}); choose one with --runtime <id|legacy>; none were stopped"
+            )
+        }
     };
     agent()
         .post(&format!("{}/alc/stop", running.origin()))
@@ -428,7 +501,7 @@ pub(crate) fn stop(config_dir: &Path) -> Result<Option<u32>> {
         .context("the bridge did not take the stop request")?;
     let deadline = Instant::now() + START_TIMEOUT;
     while Instant::now() < deadline {
-        if probe(config_dir).is_none() {
+        if probe_at(run_dir, scope).is_none() {
             return Ok(Some(running.pid));
         }
         thread::sleep(Duration::from_millis(100));
@@ -658,7 +731,8 @@ pub(crate) fn prepare_forward(
         plan.key_digests.clone(),
     )?;
     crate::agents::metrics::apply(spec, &format!("{}/f/{}", running.origin(), route.id), plan)?;
-    let alc = std::env::current_exe().context("could not resolve alc helper path")?;
+    let alc = crate::runtime::materialize_exe(config_dir)
+        .context("could not materialize alc's pinned helper")?;
     let dir = std::path::absolute(config_dir)?;
     let helper = crate::agents::claude_settings::helper_command(
         crate::agents::claude_settings::Shell::HOST,
@@ -721,6 +795,7 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
         let token = files::load_or_create_token(dir.path()).unwrap();
+        observer_auth::ObserverKey::load(dir.path()).unwrap();
         files::remember_port(dir.path(), port).unwrap();
         let server = std::thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(5);

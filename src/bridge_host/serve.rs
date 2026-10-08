@@ -45,9 +45,17 @@ pub(crate) struct Host {
     observer_key: super::observer_auth::ObserverKey,
     routes: Mutex<HashMap<String, Arc<BridgeState>>>,
     logins: Mutex<HashMap<PathBuf, Arc<AuthManager>>>,
-    forward: Mutex<HashMap<String, Arc<crate::usage::forward::ForwardTarget>>>,
+    forward: Mutex<HashMap<String, ForwardEntry>>,
     activity: Activity,
     stop: Arc<tokio::sync::Notify>,
+}
+
+/// The target is replaced only with a superset of this frozen route's accepted
+/// credential digests. Other sessions still holding the previous key continue
+/// working; no secret is stored here and keys never cross route identities.
+struct ForwardEntry {
+    key_digests: Vec<String>,
+    target: Arc<crate::usage::forward::ForwardTarget>,
 }
 
 /// Whether anything is using the bridge: requests still in flight, and when
@@ -273,7 +281,18 @@ fn greeting(host: &Host) -> super::Hello {
         alc: env!("CARGO_PKG_VERSION").to_owned(),
         pid: std::process::id(),
         port: host.port,
-        capabilities: vec![super::FORWARD_CAPABILITY.to_owned()],
+        generation: match crate::runtime::scope() {
+            crate::runtime::RuntimeScope::Legacy => None,
+            scope => Some(scope.identity().to_owned()),
+        },
+        protocol: match crate::runtime::scope() {
+            crate::runtime::RuntimeScope::Legacy => 0,
+            crate::runtime::RuntimeScope::Generation(_) => super::PROTOCOL,
+        },
+        capabilities: vec![
+            super::FORWARD_CAPABILITY.to_owned(),
+            super::REQUEST_METRICS_CAPABILITY.to_owned(),
+        ],
     }
 }
 
@@ -371,16 +390,29 @@ fn register_forward_inner(host: &Host, registration: super::ForwardRegistration)
         route.kind,
         None,
     ));
-    match crate::usage::forward::ForwardTarget::new(
-        &route.upstream,
-        ledger,
-        registration.key_digests,
-    ) {
+    let mut entries = host.forward.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut key_digests = entries
+        .get(&route.id)
+        .map_or_else(Vec::new, |entry| entry.key_digests.clone());
+    for digest in registration.key_digests {
+        if !key_digests.contains(&digest) {
+            key_digests.push(digest);
+        }
+    }
+    // A bounded set prevents repeated local registrations from growing the
+    // host without limit. Refusal leaves the previous live target intact.
+    if key_digests.len() > 256 {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match crate::usage::forward::ForwardTarget::new(&route.upstream, ledger, key_digests.clone()) {
         Ok(target) => {
-            host.forward
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(route.id, Arc::new(target));
+            entries.insert(
+                route.id,
+                ForwardEntry {
+                    key_digests,
+                    target: Arc::new(target),
+                },
+            );
             StatusCode::NO_CONTENT.into_response()
         }
         Err(_) => StatusCode::BAD_REQUEST.into_response(),
@@ -457,7 +489,7 @@ async fn forward(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(&route)
-        .cloned();
+        .map(|entry| Arc::clone(&entry.target));
     let Some(target) = target else {
         return BridgeError::auth("forwarding route has not registered a credential; rerun its apiKeyHelper or relaunch with --metrics").anthropic();
     };
@@ -515,7 +547,13 @@ async fn watch_idle(host: Arc<Host>) {
 
 /// Runs the bridge until it is stopped or has been idle for [`IDLE_LIMIT`].
 pub(crate) fn run(config_dir: &Path) -> Result<u8> {
+    crate::runtime::require_own_generation()?;
     let token = files::load_or_create_token(config_dir)?;
+    let _owner = crate::file_lock::FileLock::acquire_timeout(
+        &files::run_dir(config_dir).join("bridge.owner.lock"),
+        Duration::ZERO,
+    )
+    .context("a bridge already owns this runtime; its token and settings were left untouched")?;
     let (listener, port, token) = bind(config_dir, token)?;
     listener
         .set_nonblocking(true)
@@ -563,10 +601,28 @@ fn bind(config_dir: &Path, token: String) -> Result<(TcpListener, u16, String)> 
                 if serving_there(config_dir, port) {
                     bail!("an alc bridge is already serving on 127.0.0.1:{port}")
                 }
+                if matches!(
+                    crate::runtime::scope(),
+                    crate::runtime::RuntimeScope::Generation(_)
+                ) {
+                    bail!(
+                        "another listener occupies runtime {}'s remembered bridge port 127.0.0.1:{port}; resolve the conflict before restarting this runtime; its token and settings were left unchanged",
+                        crate::runtime::scope()
+                    );
+                }
             }
-            // `PermissionDenied` is the answer a range Windows reserves for
-            // Hyper-V or WinNAT gives, and nothing is listening on one of
-            // those; no other failure means a bridge is there either. Move.
+            Err(error)
+                if matches!(
+                    crate::runtime::scope(),
+                    crate::runtime::RuntimeScope::Generation(_)
+                ) =>
+            {
+                return Err(error).with_context(|| format!(
+                    "could not bind runtime {}'s remembered bridge port 127.0.0.1:{port}; its token and settings were left unchanged",
+                    crate::runtime::scope()
+                ));
+            }
+            // Legacy alone retains its historical port migration contract.
             Err(_) => {}
         }
     }
@@ -621,8 +677,24 @@ fn bind(config_dir: &Path, token: String) -> Result<(TcpListener, u16, String)> 
 /// and that fails too, and the port stays held by a bridge nothing can use
 /// until it idles out an hour later.
 fn serving_there(config_dir: &Path, port: u16) -> bool {
+    serving_there_at(&files::run_dir(config_dir), port, crate::runtime::scope())
+}
+
+fn serving_there_at(run_dir: &Path, port: u16, scope: &crate::runtime::RuntimeScope) -> bool {
     says_yes(PROBE_TRIES, PROBE_PAUSE, || {
-        super::authenticated_hello(config_dir, port).is_ok()
+        if super::authenticated_hello_at(run_dir, port, scope).is_ok() {
+            return true;
+        }
+        // An old bridge has no observer challenge endpoint. In Legacy only,
+        // its genuine token-protected greeting is still its identity: never
+        // rotate its token or rewrite its live settings for that absence.
+        matches!(scope, crate::runtime::RuntimeScope::Legacy)
+            && super::refuses_secret_free_legacy_hello(port)
+            && files::read_token_at(run_dir).is_some_and(|token| {
+                super::hello(port, &token).is_ok_and(|hello| {
+                    hello.port == port && super::hello_matches_scope(scope, &hello)
+                })
+            })
     })
 }
 
@@ -653,6 +725,48 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn forwarding_registration_merges_keys_only_inside_one_frozen_route() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = host(temp.path());
+        let route = files::ForwardRoute::new(
+            "work",
+            crate::config::ProviderKind::Anthropic,
+            "https://example.test",
+        )
+        .unwrap();
+        let other = files::ForwardRoute::new(
+            "other",
+            crate::config::ProviderKind::Anthropic,
+            "https://other.test",
+        )
+        .unwrap();
+        files::write_forward(temp.path(), &route).unwrap();
+        files::write_forward(temp.path(), &other).unwrap();
+        let first = crate::usage::forward::key_digest("first-key");
+        let second = crate::usage::forward::key_digest("second-key");
+        for (id, digest) in [
+            (&route.id, &first),
+            (&route.id, &second),
+            (&other.id, &second),
+        ] {
+            assert_eq!(
+                register_forward_inner(
+                    &host,
+                    super::super::ForwardRegistration {
+                        route: id.clone(),
+                        key_digests: vec![digest.clone()],
+                    }
+                )
+                .status(),
+                StatusCode::NO_CONTENT
+            );
+        }
+        let entries = host.forward.lock().unwrap();
+        assert_eq!(entries[&route.id].key_digests, vec![first, second.clone()]);
+        assert_eq!(entries[&other.id].key_digests, vec![second]);
     }
 
     async fn status(

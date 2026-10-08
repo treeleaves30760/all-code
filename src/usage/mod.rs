@@ -16,6 +16,7 @@
 //! that would read as "nothing spent".
 
 pub(crate) mod accounts;
+mod chart;
 pub(crate) mod forward;
 pub(crate) mod ledger;
 pub(crate) mod native;
@@ -388,6 +389,11 @@ pub(crate) fn run_statistics(
     options: &query::UsageOptions,
 ) -> Result<u8> {
     let statistics = query::statistics(&store.dir, &store.config, options)?;
+    if let Some(path) = options.chart.as_deref() {
+        let path = chart::destination(path)?;
+        chart::export(&statistics, &path)?;
+        eprintln!("Usage chart: {}", path.display());
+    }
     let report = if options.offline {
         UsageReport {
             schema_version: REPORT_SCHEMA_VERSION,
@@ -487,7 +493,7 @@ pub(crate) fn render(report: &UsageReport, theme: &Theme) -> String {
             let carried = row.turns > 0;
             let count = |value: u64| {
                 if carried {
-                    compact_count(value)
+                    query::format_count(value)
                 } else {
                     theme.dash().to_owned()
                 }
@@ -496,7 +502,7 @@ pub(crate) fn render(report: &UsageReport, theme: &Theme) -> String {
                 .cached_tokens
                 .filter(|cached| carried && *cached <= row.input_tokens);
             let cached_count = cached
-                .map(compact_count)
+                .map(query::format_count)
                 .unwrap_or_else(|| theme.dash().to_owned());
             let cache_percent = cached
                 .and_then(|cached| cache_read_percent(row.input_tokens, cached))
@@ -505,12 +511,12 @@ pub(crate) fn render(report: &UsageReport, theme: &Theme) -> String {
             table.push(vec![
                 Cell::left(row.provider.clone(), Tone::Plain),
                 Cell::left(row.agent.to_string(), Tone::Plain),
-                Cell::left(row.launches.to_string(), Tone::Plain),
-                Cell::left(count(row.turns), Tone::Plain),
-                Cell::left(count(row.input_tokens), Tone::Plain),
-                Cell::left(cached_count, Tone::Plain),
-                Cell::left(cache_percent, Tone::Plain),
-                Cell::left(count(row.output_tokens), Tone::Plain),
+                Cell::right(query::format_count(row.launches), Tone::Plain),
+                Cell::right(count(row.turns), Tone::Plain),
+                Cell::right(count(row.input_tokens), Tone::Plain),
+                Cell::right(cached_count, Tone::Plain),
+                Cell::right(cache_percent, Tone::Plain),
+                Cell::right(count(row.output_tokens), Tone::Plain),
                 Cell::left(format_age(report.generated_at, row.last_at), Tone::Dim),
             ]);
         }
@@ -684,16 +690,6 @@ pub(crate) fn cache_read_percent(input_tokens: u64, cached_tokens: u64) -> Optio
     Some((numerator / u128::from(input_tokens)) as u64)
 }
 
-/// `1.2M` rather than `1238411`: the magnitude is the information.
-pub(crate) fn compact_count(value: u64) -> String {
-    let trim = |text: String| text.replace(".0", "");
-    match value {
-        0..1_000 => value.to_string(),
-        1_000..1_000_000 => trim(format!("{:.1}K", value as f64 / 1_000.0)),
-        _ => trim(format!("{:.1}M", value as f64 / 1_000_000.0)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -829,10 +825,10 @@ mod tests {
             },
         ];
         let text = render(&report(vec![], rows), &theme());
-        assert!(text.contains("1.2M"), "{text}");
-        assert!(text.contains("900K"), "{text}");
+        assert!(text.contains("1,200,000"), "{text}");
+        assert!(text.contains("900,000"), "{text}");
         assert!(text.contains("75%"), "{text}");
-        assert!(text.contains("88K"), "{text}");
+        assert!(text.contains("88,000"), "{text}");
         assert!(
             text.contains("tokens are counted only where alc carries the traffic"),
             "{text}"
@@ -931,15 +927,15 @@ mod tests {
     }
 
     #[test]
-    fn a_countdown_is_coarse_and_a_count_is_compact() {
+    fn a_countdown_is_coarse_and_a_count_is_exact() {
         assert_eq!(format_countdown(45), "45s");
         assert_eq!(format_countdown(130), "2m");
         assert_eq!(format_countdown(7_800), "2h 10m");
         assert_eq!(format_countdown(3 * 86_400 + 3_600), "3d 1h");
-        assert_eq!(compact_count(999), "999");
-        assert_eq!(compact_count(1_500), "1.5K");
-        assert_eq!(compact_count(88_000), "88K");
-        assert_eq!(compact_count(1_200_000), "1.2M");
+        assert_eq!(query::format_count(999), "999");
+        assert_eq!(query::format_count(1_500), "1,500");
+        assert_eq!(query::format_count(88_000), "88,000");
+        assert_eq!(query::format_count(1_200_000), "1,200,000");
     }
 
     #[test]

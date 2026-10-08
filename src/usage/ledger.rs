@@ -448,7 +448,13 @@ pub(crate) fn read_records(config_dir: &Path) -> ReadResult {
                     diagnostics.unsupported_records += 1;
                     return;
                 }
+                let original = record.tokens.clone();
                 record.tokens.validate();
+                if record.tokens != original {
+                    record
+                        .warnings
+                        .push("invalid observed token subsets were left unknown".to_owned());
+                }
                 result.records.push(*record);
             }
             Entry::Turn {
@@ -766,6 +772,40 @@ mod tests {
             assert_eq!(summary.rows[0].output_tokens, output);
             assert_eq!(summary.rows[0].total_tokens, total);
         }
+    }
+
+    #[test]
+    fn invalid_observed_writes_do_not_become_verified_absent_zeroes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = UsageRecord::new(Source::Alc, Agent::Codex, 1);
+        record.provider = Some("openai".to_owned());
+        record.model = Some("gpt-4.1".to_owned());
+        record.billing = Billing::Api;
+        record.tokens = TokenCounts {
+            input_tokens: Some(100),
+            output_tokens: Some(10),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(110),
+            ..TokenCounts::default()
+        };
+        let entry = serde_json::json!({ "t": "request", "v": 3, "record": record });
+        fs::write(dir.path().join(LEDGER_FILE), format!("{entry}\n")).unwrap();
+        let record = read_records(dir.path()).records.remove(0);
+        assert_eq!(record.tokens.cache_write_tokens, None);
+        assert!(
+            record
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("invalid observed token subsets"))
+        );
+        let effective = record.effective_tokens();
+        assert!(effective.invalid_cache);
+        assert_eq!(effective.counts.cache_write_tokens, None);
+        assert_eq!(effective.counts.uncached_input(), None);
+        let cost = crate::usage::pricing::PriceBook::load(dir.path(), None)
+            .unwrap()
+            .estimate(&record);
+        assert_eq!(cost.total, None);
     }
 
     #[test]

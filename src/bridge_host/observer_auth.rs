@@ -32,7 +32,16 @@ pub(super) struct ForwardControl {
 
 impl ObserverKey {
     pub fn load(config_dir: &Path) -> Result<Self> {
-        let encoded = super::files::load_or_create_observer_key(config_dir)?;
+        Self::from_encoded(&super::files::load_or_create_observer_key(config_dir)?)
+    }
+
+    /// Management reads an explicit owner's key; probing a namespace must
+    /// never create a key or change the managing process's fixed scope.
+    pub fn load_at(run_dir: &Path) -> Result<Self> {
+        Self::from_encoded(&super::files::read_observer_key_at(run_dir)?)
+    }
+
+    fn from_encoded(encoded: &str) -> Result<Self> {
         let bytes = URL_SAFE_NO_PAD.decode(encoded).context(
             "invalid local observer secret; stop the bridge and recreate its observer secret",
         )?;
@@ -158,6 +167,8 @@ mod tests {
         Hello {
             instance: "instance-one".to_owned(),
             alc: env!("CARGO_PKG_VERSION").to_owned(),
+            generation: None,
+            protocol: 0,
             pid: 1,
             port: 24817,
             capabilities: vec![super::super::FORWARD_CAPABILITY.to_owned()],

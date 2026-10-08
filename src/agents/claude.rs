@@ -103,7 +103,7 @@ pub(crate) fn build(
     spec.args.extend_from_slice(&passthrough[..lead]);
     let rest = &passthrough[lead..];
 
-    let (mut document, route, offered) = if provider.kind == ProviderKind::Codex {
+    let (mut document, mut route, offered) = if provider.kind == ProviderKind::Codex {
         codex_plan(spec, store, profile_name, provider, rest, overrides)?
     } else {
         spec.args.extend_from_slice(rest);
@@ -116,6 +116,40 @@ pub(crate) fn build(
     };
     if let Some(user) = &user_settings {
         claude_settings::merge_user_settings(&mut document, user);
+    }
+    if let Some(original) = &route
+        && matches!(
+            crate::runtime::scope(),
+            crate::runtime::RuntimeScope::Generation(_)
+        )
+    {
+        let frozen = RouteRecord::new(
+            &original.profile,
+            original.auth_file.clone(),
+            claude_settings::effective_tiers(&document, &original.tiers),
+        );
+        if frozen.id != original.id {
+            // Rewrite only alc's own references. An explicitly overridden
+            // apiKeyHelper or endpoint remains the user's override.
+            if document.get("apiKeyHelper").and_then(Value::as_str)
+                == Some(helper(store, &original.id)?.as_str())
+            {
+                document["apiKeyHelper"] = Value::String(helper(store, &frozen.id)?);
+            }
+            let before = format!("{}/r/{}", claude_settings::BRIDGE_ORIGIN, original.id);
+            if document
+                .pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str)
+                == Some(&before)
+            {
+                document["env"]["ANTHROPIC_BASE_URL"] = Value::String(format!(
+                    "{}/r/{}",
+                    claude_settings::BRIDGE_ORIGIN,
+                    frozen.id
+                ));
+            }
+        }
+        route = Some(frozen);
     }
     spec.settings_plan = Some(SettingsPlan {
         document,
@@ -285,8 +319,8 @@ fn provider_document(
 /// The helper line for `route`, naming this very alc and its configuration
 /// directory by absolute path.
 fn helper(store: &Store, route: &str) -> Result<String> {
-    let alc = env::current_exe()
-        .context("failed to find alc's own path for Claude Code's apiKeyHelper")?;
+    let alc = crate::runtime::planned_exe(&store.dir)
+        .context("failed to plan alc's pinned apiKeyHelper")?;
     let dir = std::path::absolute(&store.dir)
         .with_context(|| format!("failed to resolve {}", store.dir.display()))?;
     claude_settings::helper_command(claude_settings::Shell::HOST, &alc, &dir, route)

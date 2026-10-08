@@ -34,7 +34,14 @@ pub(crate) const BRIDGE_ORIGIN: &str = "{alc-bridge-origin}";
 
 /// Where alc keeps the settings documents it hands Claude Code.
 pub(crate) fn settings_dir(config_dir: &Path) -> PathBuf {
-    config_dir.join("claude")
+    settings_dir_for(config_dir, crate::runtime::scope())
+}
+
+pub(crate) fn settings_dir_for(config_dir: &Path, scope: &crate::runtime::RuntimeScope) -> PathBuf {
+    match scope {
+        crate::runtime::RuntimeScope::Legacy => config_dir.join("claude"),
+        scope => crate::runtime::run_dir_for(config_dir, scope).join("claude"),
+    }
 }
 
 /// The variables that select a cloud provider ahead of every credential Claude
@@ -366,6 +373,16 @@ pub(crate) fn helper_command(
     config_dir: &Path,
     route: &str,
 ) -> Result<String> {
+    helper_command_for(shell, alc, config_dir, route, crate::runtime::scope())
+}
+
+fn helper_command_for(
+    shell: Shell,
+    alc: &Path,
+    config_dir: &Path,
+    route: &str,
+    scope: &crate::runtime::RuntimeScope,
+) -> Result<String> {
     let alc = alc
         .to_str()
         .context("alc's own path is not valid UTF-8, which Claude Code's settings cannot carry")?;
@@ -373,6 +390,10 @@ pub(crate) fn helper_command(
         "alc's configuration directory is not valid UTF-8, which Claude Code's settings cannot carry",
     )?;
     check_route(route)?;
+    let runtime = match scope {
+        crate::runtime::RuntimeScope::Legacy => String::new(),
+        scope => format!(" --runtime {}", scope.identity()),
+    };
     match shell {
         Shell::Cmd => {
             for (what, value) in [
@@ -387,13 +408,13 @@ pub(crate) fn helper_command(
                 }
             }
             Ok(format!(
-                "{} --config-dir {} claude-credential {route}",
+                "{} --config-dir {}{runtime} claude-credential {route}",
                 cmd_quote(alc),
                 cmd_quote(dir)
             ))
         }
         Shell::Sh => Ok(format!(
-            "{} --config-dir {} claude-credential {}",
+            "{} --config-dir {}{runtime} claude-credential {}",
             sh_quote(alc),
             sh_quote(dir),
             sh_quote(route)
@@ -511,13 +532,21 @@ pub(crate) fn finish(plan: &SettingsPlan, origin: Option<&str>) -> Result<Vec<u8
 /// Writes a finished document unless an identical one is already there, and
 /// answers its path. Owner-only: it names the user's endpoints and paths.
 pub(crate) fn write_settings(config_dir: &Path, bytes: &[u8]) -> Result<PathBuf> {
+    crate::runtime::claim_namespace(config_dir)?;
     let path = settings_path(config_dir, bytes);
     if fs::read(&path).is_ok_and(|existing| existing == bytes) {
         return Ok(path);
     }
     let dir = settings_dir(config_dir);
-    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    crate::config::atomic_write(&path, bytes, true)?;
+    crate::remote::restricted_dir(&dir)?;
+    if matches!(
+        crate::runtime::scope(),
+        crate::runtime::RuntimeScope::Legacy
+    ) {
+        crate::config::atomic_write(&path, bytes, true)?;
+    } else {
+        crate::bridge_host::files::publish_immutable(&path, bytes)?;
+    }
     Ok(path)
 }
 
@@ -591,6 +620,42 @@ fn without_byte_order_mark(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
+/// Codex aliases the document actually hands Claude Code after user settings
+/// have been merged. Freeze them in the route rather than using launch defaults
+/// as a shared cache key when a later session changes its default tier.
+pub(crate) fn effective_tiers(document: &Value, defaults: &ModelTiers) -> ModelTiers {
+    let value = |names: &[&str], fallback: &str| {
+        names
+            .iter()
+            .find_map(|name| {
+                document
+                    .get("env")?
+                    .get(*name)?
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+            })
+            .unwrap_or(fallback)
+            .to_owned()
+    };
+    ModelTiers {
+        strongest: value(
+            &[
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            ],
+            &defaults.strongest,
+        ),
+        default: value(&["ANTHROPIC_DEFAULT_SONNET_MODEL"], &defaults.default),
+        cheapest: value(
+            &[
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "ANTHROPIC_SMALL_FAST_MODEL",
+            ],
+            &defaults.cheapest,
+        ),
+    }
+}
+
 /// Folds the user's settings over alc's: their keys win, and inside `env`
 /// each variable they set wins over alc's.
 pub(crate) fn merge_user_settings(document: &mut Value, user: &Value) {
@@ -616,6 +681,61 @@ mod tests {
     use super::*;
     use crate::model_catalog::ModelCatalog;
     use std::ffi::OsString;
+
+    #[test]
+    fn generation_helper_names_pinned_path_and_explicit_runtime() {
+        let scope = crate::runtime::RuntimeScope::parse("0123456789ab").unwrap();
+        let line = helper_command_for(
+            Shell::Sh,
+            Path::new("/test-only/generation/alc"),
+            Path::new("/test-only/config"),
+            "codex-0123456789abcdef01234567",
+            &scope,
+        )
+        .unwrap();
+        assert_eq!(
+            line,
+            "'/test-only/generation/alc' --config-dir '/test-only/config' --runtime 0123456789ab claude-credential 'codex-0123456789abcdef01234567'"
+        );
+        let legacy = helper_command_for(
+            Shell::Sh,
+            Path::new("/test-only/alc"),
+            Path::new("/test-only/config"),
+            "codex-0123456789ab",
+            &crate::runtime::RuntimeScope::Legacy,
+        )
+        .unwrap();
+        assert!(!legacy.contains("--runtime"));
+        assert_eq!(
+            settings_dir_for(Path::new("/test-only/config"), &scope),
+            PathBuf::from("/test-only/config/run/g/0123456789ab/claude")
+        );
+        assert_eq!(
+            settings_dir_for(
+                Path::new("/test-only/config"),
+                &crate::runtime::RuntimeScope::Legacy
+            ),
+            PathBuf::from("/test-only/config/claude")
+        );
+    }
+
+    #[test]
+    fn merged_document_tiers_not_defaults_are_frozen() {
+        let defaults = ModelTiers {
+            strongest: "strongest".to_owned(),
+            default: "default".to_owned(),
+            cheapest: "cheap".to_owned(),
+        };
+        let document = json!({ "env": {
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "user-strongest",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "user-default",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "user-cheap",
+        }});
+        let effective = effective_tiers(&document, &defaults);
+        assert_eq!(effective.strongest, "user-strongest");
+        assert_eq!(effective.default, "user-default");
+        assert_eq!(effective.cheapest, "user-cheap");
+    }
 
     fn env(document: &Value) -> &Map<String, Value> {
         document["env"].as_object().expect("an env block")

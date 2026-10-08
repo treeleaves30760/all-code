@@ -185,8 +185,12 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-archive="$tmp_dir/$asset"
-checksums="$tmp_dir/checksums.txt"
+# Downloads and extracted payloads each live in their own fresh directory.
+archive_dir="$tmp_dir/archive"
+checksum_dir="$tmp_dir/checksums"
+mkdir "$archive_dir" "$checksum_dir"
+archive="$archive_dir/$asset"
+checksums="$checksum_dir/checksums.txt"
 printf 'Downloading %s...\n' "$asset"
 download "$release_url/$asset" "$archive"
 download "$release_url/checksums.txt" "$checksums"
@@ -204,18 +208,35 @@ fi
 [ "$actual" = "$expected" ] || die "checksum mismatch for $asset"
 
 extract_dir="$tmp_dir/extract"
-mkdir -p "$extract_dir"
-tar -xzf "$archive" -C "$extract_dir"
-[ -f "$extract_dir/alc" ] || die "release archive does not contain alc"
+mkdir "$extract_dir"
+# Never unpack archive-supplied paths or scripts. Release tarballs contain either
+# alc or ./alc at their root; stream only that regular-file payload to our name.
+payload_name="$(tar -tzf "$archive" | awk '$0 == "alc" || $0 == "./alc" { print; count++ } END { if (count != 1) exit 1 }')" || die "release archive must contain exactly one root alc payload"
+payload_type="$(tar -tvzf "$archive" "$payload_name" | awk 'NR == 1 { print substr($0, 1, 1) }')"
+[ "$payload_type" = '-' ] || die "release alc payload is not a regular file"
+tar -xOzf "$archive" "$payload_name" > "$extract_dir/alc" || die "could not extract alc payload"
+[ -s "$extract_dir/alc" ] || die "release archive does not contain alc"
+chmod 0755 "$extract_dir/alc"
 
+# Remove inherited selectors during the probe/install: the freshly verified
+# payload must not be redirected to a caller's runtime. All destination changes
+# belong to Rust's locked immutable-generation publication transaction.
+unset ALC_RUNTIME_ORIGIN ALC_RUNTIME_SELECTOR ALC_RUNTIME_SCOPE ALC_RUNTIME_GENERATION ALC_RUNTIME_ID ALC_RUNTIME_INSTALL
+payload_version="$("$extract_dir/alc" --version </dev/null)" || die "downloaded alc failed its version check"
+case "$payload_version" in
+  'alc '*) payload_version=${payload_version#alc } ;;
+  *) die "downloaded alc returned invalid version output" ;;
+esac
+case "$payload_version" in
+  '' | *[!0-9A-Za-z.+-]*) die "downloaded alc returned invalid version output" ;;
+esac
+if [ "$version" != latest ]; then
+  expected_version=${version#v}
+  [ "$payload_version" = "$expected_version" ] || die "release version $expected_version does not match payload $payload_version"
+fi
 mkdir -p "$install_dir"
 install_dir="$(cd "$install_dir" && pwd -P)"
-if command_exists install; then
-  install -m 0755 "$extract_dir/alc" "$install_dir/alc"
-else
-  cp "$extract_dir/alc" "$install_dir/alc"
-  chmod 0755 "$install_dir/alc"
-fi
+"$extract_dir/alc" __install --install-to "$install_dir/alc" --version "$payload_version" </dev/null || die "immutable installation did not complete; any pending payload and retry instructions were preserved"
 
 # The Codex bridge is built into alc from 1.4.0 on. An older install left a
 # separate claude-codex here; removing it keeps a stale copy from answering

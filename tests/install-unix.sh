@@ -68,7 +68,21 @@ fi
 hash_path=$(command -v "$hash_command")
 printf '#!%s\nexec "%s" "$@"\n' "$shell" "$hash_path" > "$test_dir/utilities/$hash_command"
 chmod +x "$test_dir/utilities/$hash_command"
-printf '#!%s\nprintf "alc fixture\\n"\n' "$shell" > "$test_dir/archive/alc"
+printf '#!%s\n' "$shell" > "$test_dir/archive/alc"
+cat >> "$test_dir/archive/alc" <<'STUB'
+case "$1" in
+  --version) printf 'alc 2.0.1\n' ;;
+  __install)
+    [ "$2" = '--install-to' ] && [ "$4" = '--version' ] && [ "$5" = '2.0.1' ] || exit 90
+    if IFS= read -r line; then printf 'payload consumed installer stdin\n' >&2; exit 91; fi
+    printf '%s\n' "$*" > "$TEST_FIXTURE/publication"
+    [ "${TEST_INSTALL_EXIT:-0}" = 0 ] || exit "$TEST_INSTALL_EXIT"
+    cp "$0" "$3"
+    chmod 0755 "$3"
+    ;;
+  *) exit 90 ;;
+esac
+STUB
 chmod +x "$test_dir/archive/alc"
 tar -czf "$test_dir/release.tar.gz" -C "$test_dir/archive" alc
 if [ "$hash_command" = sha256sum ]; then
@@ -95,6 +109,7 @@ new_case() {
   : > "$fixture/calls"
   os=Linux uid=0 manager_exit=0 after_version='tmux 3.6a'
   no_tmux=0 no_path=1 cached_sudo=1 bad_checksum=0 brew_installed=0
+  install_exit=0
   terminal=none sudo_auth=1
   printf '#!%s\n' "$shell" > "$fixture/bin/uname"
   cat >> "$fixture/bin/uname" <<'STUB'
@@ -184,16 +199,19 @@ run_installer() {
   set -- "$shell"
   if [ "$terminal" != none ]; then
     [ -n "$python" ] || fail 'python3 is required for controlling-terminal tests'
-    set -- "$python" "$test_dir/terminal.py" "$shell" "$terminal"
+    set -- "$python" -I "$test_dir/terminal.py" "$shell" "$terminal"
   fi
   env -i PATH="$fixture/bin" HOME="$fixture/home" TMPDIR="$fixture/tmp" SHELL="$shell" \
     ALC_INSTALL_DIR="$fixture/home/bin" ALC_NO_PATH_UPDATE="$no_path" ALC_NO_TMUX_INSTALL="$no_tmux" \
     TEST_FIXTURE="$fixture" TEST_OS="$os" TEST_UID="$uid" TEST_AFTER_VERSION="$after_version" \
-    TEST_MANAGER_EXIT="$manager_exit" TEST_CACHED_SUDO="$cached_sudo" TEST_SUDO_AUTH="$sudo_auth" TEST_BAD_CHECKSUM="$bad_checksum" \
+    TEST_MANAGER_EXIT="$manager_exit" TEST_INSTALL_EXIT="$install_exit" TEST_CACHED_SUDO="$cached_sudo" TEST_SUDO_AUTH="$sudo_auth" TEST_BAD_CHECKSUM="$bad_checksum" \
     TEST_BREW_INSTALLED="$brew_installed" TEST_ARCHIVE="$test_dir/release.tar.gz" TEST_DIGEST="$digest" \
     "$@" < "$test_dir/install.sh" > "$fixture/output" 2>&1 || result=$?
   [ "$result" = 0 ] || fail "installer exited $result"
   [ -x "$fixture/home/bin/alc" ] || fail 'alc was not installed'
+  [ -f "$fixture/publication" ] || fail 'installer did not invoke the hidden Rust publication command'
+  canonical_bin=$(CDPATH= cd -- "$fixture/home/bin" && pwd -P)
+  [ "$(cat "$fixture/publication")" = "__install --install-to $canonical_bin/alc --version 2.0.1" ] || fail 'installer sent incorrect publication arguments'
   [ ! -f "$fixture/home/.profile" ] || fail 'opted-out PATH changed'
   assert_output '^script completed$'
   assert_no_output 'consumed stdin'
@@ -456,6 +474,19 @@ fi
 [ ! -e "$fixture/home/bin/alc" ] || fail 'alc was installed despite checksum mismatch'
 assert_calls ''
 assert_output 'checksum mismatch'
+pass
+
+new_case failed-publication-before-dependencies
+with_manager apt-get
+install_exit=42
+if (run_installer) > "$fixture/failure" 2>&1; then
+  fail 'failed hidden install transaction was reported as successful'
+fi
+[ -f "$fixture/publication" ] || fail 'publication command was not invoked'
+[ ! -e "$fixture/home/bin/alc" ] || fail 'installer copied alc despite publication failure'
+assert_calls ''
+assert_output 'immutable installation did not complete'
+assert_no_output 'Installed alc'
 pass
 
 printf 'Unix installer offline tests passed: %s\n' "$passed"

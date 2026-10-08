@@ -59,7 +59,25 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Link a distinct same-version host generation
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          fixture_dir="$(mktemp -d "${RUNNER_TEMP}/alc-host-generation.XXXXXX")"
+          cargo rustc --locked --bin alc -- -C metadata=alc-host-generation-fixture
+          cp target/debug/alc "$fixture_dir/alc"
+          cargo build --locked
+          printf 'ALC_TEST_OTHER_BINARY=%s\n' "$fixture_dir/alc" >> "$GITHUB_ENV"
       - run: cargo test --all-targets --all-features
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: '1.88'
+      - run: cargo check --locked --all-targets --all-features
 
   unix-installer:
     strategy:
@@ -78,6 +96,32 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      # Test this PR's verified payload, not an older latest release whose
+      # executable does not implement the immutable installation transaction.
+      - name: Build the local Windows installer payload
+        run: cargo build --locked
+      - name: Package a local installer fixture
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP ('alc-release-test-' + [guid]::NewGuid().ToString('N'))
+          $stage = Join-Path $fixture 'stage'
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item -LiteralPath 'target/debug/alc.exe' -Destination $stage
+          Copy-Item -LiteralPath 'LICENSE', 'THIRD_PARTY.md' -Destination $stage
+          Copy-Item -LiteralPath 'THIRD_PARTY_LICENSES' -Destination $stage -Recurse
+          $asset = 'alc-windows-x86_64.zip'
+          $archive = Join-Path $fixture $asset
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $fixture 'checksums.txt'), "$digest  $asset`n", [Text.UTF8Encoding]::new($false))
+          "ALC_TEST_RELEASE_DIR=$fixture" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Test tmux setup offline with Windows PowerShell 5.1
         shell: powershell
         run: ./tests/install-tmux-windows.ps1

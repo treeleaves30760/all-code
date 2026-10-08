@@ -24,7 +24,8 @@ avt = "0.18"
 axum = "0.8"
 base64 = "0.22"
 bytes = "1"
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+chrono-tz = "0.10"
 # The Codex bridge, run in-process rather than shelled out to. alc no longer
 # ships or downloads a second binary, and the two halves can no longer drift
 # out of step.
@@ -35,6 +36,8 @@ flate2 = "1.1"
 futures-util = "0.3"
 getrandom = "0.4"
 portable-pty = "0.9"
+# PNG reports render offline, including fonts, without platform font libraries.
+plotters = { version = "0.3.7", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "ab_glyph"] }
 ratatui = "0.30"
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
@@ -58,6 +61,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"] }
 toml = "1.1"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 ureq = "3.4"
+unicode-width = "0.2"
 which = "8.0"
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
 

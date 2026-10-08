@@ -199,7 +199,11 @@ fn assert_close(value: &Value, expected: f64) {
 fn tps_defaults_to_alc_latest_twenty_and_honors_limit() {
     let fixture = Fixture::new();
     let rows: Vec<_> = (0..25)
-        .map(|second| request(&format!("2026-01-02T00:00:{second:02}Z")))
+        .map(|second| {
+            let mut row = request(&format!("2026-01-02T00:00:{second:02}Z"));
+            row["record"]["timing"] = timing(true, 100_000, 1_000_000);
+            row
+        })
         .collect();
     fixture.ledger(&rows);
     fixture.native_claude(&[claude("2026-01-03T00:00:00Z", Some("native"), 10, true)]);
@@ -223,7 +227,17 @@ fn tps_defaults_to_alc_latest_twenty_and_honors_limit() {
     assert_eq!(report["sources"][0]["source"], "alc");
     let limited = fixture.json(&["tps", "--limit", "3"]);
     assert_eq!(limited["rows"], json!(shown[..3]));
-    let native = fixture.json(&["tps", "--source", "claude", "--limit", "1"]);
+    let excluded = fixture.json(&["tps", "--source", "claude", "--limit", "1"]);
+    assert_eq!(excluded["rows"], json!([]));
+    assert_eq!(excluded["coverage"]["excluded_unmeasured_records"], 1);
+    let native = fixture.json(&[
+        "tps",
+        "--source",
+        "claude",
+        "--limit",
+        "1",
+        "--include-unmeasured",
+    ]);
     assert_eq!(native["rows"][0]["source"], "claude");
 }
 
@@ -234,7 +248,10 @@ fn historical_timing_is_null_in_json_and_na_in_text() {
         "agent": "claude", "provider": "fixture", "kind": "codex",
         "model": "fixture-model", "input_tokens": 100, "cached_tokens": 20,
         "output_tokens": 10, "reasoning_tokens": 2, "total_tokens": 110 })]);
-    let report = fixture.json(&["tps"]);
+    let excluded = fixture.json(&["tps"]);
+    assert_eq!(excluded["rows"], json!([]));
+    assert_eq!(excluded["coverage"]["excluded_legacy_records"], 1);
+    let report = fixture.json(&["tps", "--include-unmeasured"]);
     assert_eq!(report["summary"]["requests"], 1);
     assert_null(&report["rows"][0], "timing");
     for metric in ["ttft_ms", "stream_tps", "e2e_tps"] {
@@ -254,7 +271,7 @@ fn historical_timing_is_null_in_json_and_na_in_text() {
     }
     let text = fixture
         .command()
-        .arg("tps")
+        .args(["tps", "--include-unmeasured"])
         .assert()
         .success()
         .get_output()
@@ -436,6 +453,7 @@ fn source_dates_offsets_filters_and_utc_periods_select_exact_boundaries() {
     );
     let tps = fixture.json(&[
         "tps",
+        "--include-unmeasured",
         "--source",
         "alc",
         "--since",
@@ -506,6 +524,26 @@ fn invalid_sources_dates_limits_and_conflicting_periods_are_errors() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("cannot be used with"));
+    fixture
+        .command()
+        .args(["usage", "--offline", "--timezone", "Not/A_Zone"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("unknown timezone"));
+    for args in [
+        vec!["weekly", "--since", "2026-01-01"],
+        vec!["monthly", "--until", "2026-02-01"],
+        vec!["yearly", "--daily"],
+        vec!["weekly", "--monthly"],
+    ] {
+        fixture
+            .command()
+            .args(["usage", "--offline"])
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("cannot be used with"));
+    }
 }
 
 #[test]
@@ -644,6 +682,7 @@ fn claude_blocks_and_copies_use_one_snapshot_and_exact_ids_join_alc() {
     assert_eq!(only_row(&native)["output_tokens"], 10);
     let mut observed = request("2026-01-02T00:00:01Z");
     observed["record"]["ids"] = json!([{ "protocol": "messages", "id": "msg-fixture" }]);
+    observed["record"]["timing"] = timing(true, 100_000, 1_000_000);
     fixture.ledger(&[observed]);
     let joined = fixture.usage(&["--source", "alc,claude"]);
     assert_eq!(joined["statistics"]["records"], 1);
@@ -735,6 +774,292 @@ fn codex_cumulative_deltas_fold_baselines_before_date_filter_and_are_not_request
     assert_eq!(only_row(&all)["records"], 2);
     assert_eq!(only_row(&all)["input_tokens"], 200);
     assert_eq!(all["statistics"]["total_usd"], "0.00061");
+}
+
+#[test]
+fn tps_filters_before_limit_and_preserves_failed_cancelled_and_no_usage_requests() {
+    let fixture = Fixture::new();
+    let mut observed = Vec::new();
+    for (index, outcome) in ["failed", "cancelled", "completed"].into_iter().enumerate() {
+        let mut row = request(&format!("2026-01-01T00:00:0{index}Z"));
+        row["record"]["outcome"] = json!(outcome);
+        row["record"]["timing"] = timing(true, 100_000, 1_000_000);
+        if outcome == "completed" {
+            row["record"]["tokens"] = json!({});
+        }
+        observed.push(row);
+    }
+    for second in 0..25 {
+        observed.push(json!({ "t": "turn", "v": 2, "ts": 1767312000 + second,
+            "agent": "claude", "provider": "fixture", "kind": "codex",
+            "model": "fixture-model", "input_tokens": 100, "cached_tokens": 20,
+            "output_tokens": 10, "reasoning_tokens": 2, "total_tokens": 110 }));
+    }
+    observed.push(request("2026-01-03T00:00:00Z"));
+    let mut checkpoint = request("2026-01-04T00:00:00Z");
+    checkpoint["record"]["granularity"] = json!("checkpoint");
+    observed.push(checkpoint);
+    fixture.ledger(&observed);
+    let report = fixture.json(&["tps", "--limit", "3"]);
+    assert_eq!(report["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(report["rows"][0]["outcome"], "completed");
+    assert_eq!(report["rows"][1]["outcome"], "cancelled");
+    assert_eq!(report["rows"][2]["outcome"], "failed");
+    assert_eq!(report["coverage"]["matching_records"], 30);
+    assert_eq!(report["coverage"]["measured_requests"], 3);
+    assert_eq!(report["coverage"]["excluded_legacy_records"], 25);
+    assert_eq!(report["coverage"]["excluded_unmeasured_records"], 1);
+    assert_eq!(report["coverage"]["excluded_nonrequest_records"], 1);
+    assert_eq!(report["summary"]["ttft_samples"], 3);
+    assert_eq!(report["summary"]["e2e_tps_samples"], 2);
+    assert_null(&report["rows"][0]["metrics"], "e2e_tps");
+    let inclusive = fixture.json(&["tps", "--limit", "2", "--include-unmeasured"]);
+    assert_eq!(inclusive["rows"][0]["granularity"], "checkpoint");
+    assert_eq!(inclusive["coverage"]["excluded_legacy_records"], 0);
+    assert_eq!(inclusive["coverage"]["limited_records"], 28);
+    assert_eq!(
+        fs::read_to_string(fixture.alc.join("credentials.toml")).unwrap(),
+        "not valid TOML ["
+    );
+}
+
+#[test]
+fn daily_rollups_preserve_gross_input_and_expose_exact_disjoint_tokens_and_fees() {
+    let fixture = Fixture::new();
+    fixture.prices(CUSTOM_PRICES);
+    fixture.ledger(&[
+        request("2026-01-02T00:00:00Z"),
+        request("2026-01-02T12:00:00Z"),
+        request("2026-01-03T00:00:00Z"),
+    ]);
+    let report = fixture.usage(&["--source", "alc"]);
+    let row = only_row(&report);
+    assert_eq!(row["period"], "all-time");
+    assert_eq!(row["input_tokens"], 300);
+    assert_eq!(row["uncached_input_tokens"], 210);
+    let daily = report["statistics"]["daily_rollups"].as_array().unwrap();
+    assert_eq!(daily.len(), 2);
+    assert_eq!(daily[0]["period"], "2026-01-02");
+    assert_eq!(daily[0]["records"], 2);
+    assert_eq!(daily[0]["input_tokens"], 200);
+    assert_eq!(daily[0]["uncached_input_tokens"], 140);
+    assert_eq!(daily[0]["cache_read_tokens"], 40);
+    assert_eq!(daily[0]["cache_write_tokens"], 20);
+    assert_eq!(daily[0]["output_tokens"], 20);
+    let fees = &daily[0]["cost_components"];
+    assert_eq!(fees["uncached_input"]["total_usd"], "0.00035");
+    assert_eq!(fees["cache_read"]["total_usd"], "0.000005");
+    assert_eq!(fees["cache_write"]["total_usd"], "0.00007");
+    assert_eq!(fees["output"]["total_usd"], "0.000205");
+    assert_eq!(daily[0]["total_usd"], "0.00063");
+    assert_eq!(report["statistics"]["total_usd"], "0.000945");
+    assert_null(&report["statistics"]["range"], "start");
+    assert_null(&report["statistics"]["range"], "end");
+    assert_null(&report["statistics"], "window");
+    assert_eq!(report["statistics"]["uncached_input_tokens"], 210);
+    fixture.prices("[[models]]\nprovider=\"custom\"\nmodel=\"fixture-model\"\ninput=\"2.5\"\n");
+    let partial = fixture.usage(&["--source", "alc"]);
+    let first_day = &partial["statistics"]["daily_rollups"][0];
+    assert_eq!(first_day["known_subtotal_usd"], "0.00035");
+    assert_null(first_day, "total_usd");
+    assert_eq!(
+        first_day["cost_components"]["cache_read"]["known_subtotal_usd"],
+        "0"
+    );
+    assert_null(&first_day["cost_components"]["cache_read"], "total_usd");
+    for preset in ["weekly", "monthly", "yearly"] {
+        let current = fixture.usage(&[preset, "--source", "alc"]);
+        assert_eq!(current["statistics"]["window"], preset);
+        assert!(current["statistics"]["range"]["start"].as_str().is_some());
+        assert!(current["statistics"]["range"]["end"].as_str().is_some());
+    }
+}
+
+#[test]
+fn per_record_tier_and_ttl_fees_are_summed_before_daily_formatting() {
+    let fixture = Fixture::new();
+    fixture.prices(
+        r#"
+[[models]]
+provider="custom"
+model="fixture-model"
+input="1"
+output="2"
+cache_read="0.1"
+cache_write_5m="3"
+cache_write_1h="6"
+[[models]]
+provider="custom"
+model="fixture-model"
+tier="priority"
+input="4"
+output="5"
+cache_read="0.2"
+cache_write_5m="7"
+cache_write_1h="9"
+"#,
+    );
+    let mut standard = request("2026-01-02T00:00:00Z");
+    standard["record"]["tokens"] = json!({ "input_basis": "separate", "input_tokens": 1,
+        "cache_read_tokens": 1, "cache_write_5m_tokens": 1, "cache_write_1h_tokens": 1,
+        "output_tokens": 1 });
+    let mut priority = standard.clone();
+    priority["record"]["timestamp_ms"] = json!(timestamp("2026-01-02T12:00:00Z"));
+    priority["record"]["service_tier"] = json!("priority");
+    fixture.ledger(&[standard, priority]);
+    let report = fixture.usage(&["--source", "alc"]);
+    assert_eq!(report["statistics"]["total_usd"], "0.0000373");
+    let day = &report["statistics"]["daily_rollups"][0];
+    assert_eq!(day["input_tokens"], 8);
+    assert_eq!(day["uncached_input_tokens"], 2);
+    assert_eq!(day["cache_write_tokens"], 4);
+    assert_eq!(
+        day["cost_components"]["uncached_input"]["total_usd"],
+        "0.000005"
+    );
+    assert_eq!(
+        day["cost_components"]["cache_read"]["total_usd"],
+        "0.0000003"
+    );
+    assert_eq!(
+        day["cost_components"]["cache_write"]["total_usd"],
+        "0.000025"
+    );
+    assert_eq!(day["cost_components"]["output"]["total_usd"], "0.000007");
+}
+
+#[test]
+fn timezone_controls_date_bounds_daily_buckets_and_legacy_monthly_grouping() {
+    let fixture = Fixture::new();
+    fixture.prices(CUSTOM_PRICES);
+    fixture.ledger(&[
+        request("2024-03-10T04:59:59.999Z"),
+        request("2024-03-10T05:00:00Z"),
+        request("2024-03-11T03:59:59.999Z"),
+        request("2024-03-11T04:00:00Z"),
+    ]);
+    let report = fixture.usage(&[
+        "--source",
+        "alc",
+        "--timezone",
+        "America/New_York",
+        "--since",
+        "2024-03-10",
+        "--until",
+        "2024-03-11",
+        "--daily",
+    ]);
+    assert_eq!(report["statistics"]["records"], 2);
+    assert_eq!(report["statistics"]["timezone"], "America/New_York");
+    assert_eq!(
+        report["statistics"]["range"]["start"],
+        "2024-03-10T00:00:00-05:00"
+    );
+    assert_eq!(
+        report["statistics"]["range"]["end"],
+        "2024-03-11T00:00:00-04:00"
+    );
+    assert_eq!(only_row(&report)["period"], "2024-03-10");
+    assert_eq!(
+        report["statistics"]["daily_rollups"][0]["period"],
+        "2024-03-10"
+    );
+    fixture.ledger(&[request("2024-01-31T16:00:00Z")]);
+    let monthly = fixture.usage(&["--source", "alc", "--timezone", "Asia/Taipei", "--monthly"]);
+    assert_eq!(only_row(&monthly)["period"], "2024-02");
+    assert_eq!(
+        monthly["statistics"]["daily_rollups"][0]["period"],
+        "2024-02-01"
+    );
+}
+
+#[test]
+fn overlap_scope_is_filtered_then_recomputed_per_day_without_fake_pooled_sums() {
+    let fixture = Fixture::new();
+    fixture.prices(CUSTOM_PRICES);
+    fixture.ledger(&[request("2026-01-02T00:00:00Z")]);
+    fixture.native_claude(&[claude("2026-01-03T00:00:00Z", Some("different"), 10, true)]);
+    let all = fixture.usage(&["--source", "alc,claude"]);
+    assert_eq!(all["statistics"]["possible_overlap"], true);
+    assert_null(&all["statistics"], "uncached_input_tokens");
+    assert_null(&all["statistics"], "known_subtotal_usd");
+    let daily = all["statistics"]["daily_rollups"].as_array().unwrap();
+    assert_eq!(daily.len(), 2);
+    assert!(daily.iter().all(|day| day["possible_overlap"] == false));
+    assert!(daily.iter().all(|day| day["uncached_input_tokens"] == 70));
+    let filtered = fixture.usage(&[
+        "--source",
+        "alc,claude",
+        "--since",
+        "2026-01-02",
+        "--until",
+        "2026-01-03",
+    ]);
+    assert_eq!(filtered["statistics"]["possible_overlap"], false);
+    assert_eq!(filtered["statistics"]["total_usd"], "0.000315");
+    fixture.native_claude(&[claude("2026-01-02T01:00:00Z", Some("different"), 10, true)]);
+    let same_day = fixture.usage(&["--source", "alc,claude"]);
+    let day = &same_day["statistics"]["daily_rollups"][0];
+    assert_eq!(day["possible_overlap"], true);
+    for field in [
+        "input_tokens",
+        "uncached_input_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "output_tokens",
+        "known_subtotal_usd",
+        "total_usd",
+    ] {
+        assert_null(day, field);
+    }
+    assert_null(
+        &day["cost_components"]["uncached_input"],
+        "known_subtotal_usd",
+    );
+    assert_null(&day["cost_components"]["output"], "total_usd");
+    let profile = fixture.usage(&["--source", "alc,claude", "--filter-profile", "fixture"]);
+    assert_eq!(profile["statistics"]["possible_overlap"], false);
+    assert_eq!(profile["statistics"]["total_usd"], "0.000315");
+}
+
+#[test]
+fn exact_full_integer_text_and_daily_fee_headers_do_not_round_large_values() {
+    let fixture = Fixture::new();
+    fixture.prices(CUSTOM_PRICES);
+    let mut row = request("2026-01-02T00:00:00Z");
+    row["record"]["profile"] = json!("模型");
+    row["record"]["tokens"] = json!({ "input_tokens": 9007199254740993_u64,
+        "cache_read_tokens": 0, "cache_write_tokens": 0, "output_tokens": 1234567 });
+    fixture.ledger(&[row]);
+    let output = fixture
+        .command()
+        .args(["usage", "--offline", "--source", "alc"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    for expected in [
+        "9,007,199,254,740,993",
+        "1,234,567",
+        "Daily totals",
+        "PROVIDER",
+        "GRANULARITY",
+        "CACHE WRITE USD",
+        "OUTPUT USD",
+        "TOTAL",
+        "模型",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    assert!(!text.contains("1.2M"));
+    let report = fixture.usage(&["--source", "alc"]);
+    assert_eq!(
+        report["statistics"]["daily_rollups"][0]["uncached_input_tokens"],
+        9007199254740993_u64
+    );
+    assert_eq!(report["statistics"]["total_usd"], "22517998149.50679425");
 }
 
 #[test]

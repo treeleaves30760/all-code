@@ -233,6 +233,69 @@ impl UsageRecord {
         }
     }
 
+    /// One provenance-aware view for token summaries and token-rate pricing.
+    /// The raw record remains unchanged, including every absent counter.
+    pub(crate) fn effective_tokens(&self) -> EffectiveTokens {
+        let mut view = EffectiveTokens {
+            counts: self.tokens.clone(),
+            invalid_cache: false,
+            assumptions: Vec::new(),
+        };
+        if self.granularity == Granularity::Checkpoint {
+            view.counts = TokenCounts::default();
+            return view;
+        }
+        view.invalid_cache = normalize_cache_write(&mut view.counts, &mut view.assumptions)
+            || self.warnings.iter().any(|warning| {
+                warning.contains("invalid")
+                    && (warning.contains("token subsets") || warning.contains("cache counters"))
+            });
+        let normalized = view.counts.clone();
+        view.counts.validate();
+        view.invalid_cache |= view.counts.cache_read_tokens != normalized.cache_read_tokens
+            || view.counts.cache_write_tokens != normalized.cache_write_tokens
+            || view.counts.cache_write_5m_tokens != normalized.cache_write_5m_tokens
+            || view.counts.cache_write_1h_tokens != normalized.cache_write_1h_tokens;
+        if normalized.cache_write_tokens.is_some() && view.counts.cache_write_tokens.is_none() {
+            // An invalid aggregate cannot be resurrected by its TTL buckets.
+            view.counts.cache_write_5m_tokens = None;
+            view.counts.cache_write_1h_tokens = None;
+        }
+        let official = self
+            .endpoint
+            .as_deref()
+            .and_then(official_endpoint_provider);
+        let codex_endpoint = self
+            .endpoint
+            .as_deref()
+            .is_none_or(|endpoint| official == Some("openai") || is_codex_endpoint(endpoint));
+        let native_codex = self.source == Source::Codex
+            && matches!(self.provider.as_deref(), None | Some("openai" | "codex"))
+            && codex_endpoint;
+        let codex_reference = self.provider.as_deref() == Some("codex")
+            && self.billing == Billing::ApiEquivalent
+            && codex_endpoint;
+        let openai_api = self.provider.as_deref() == Some("openai")
+            && self.billing == Billing::Api
+            && self
+                .endpoint
+                .as_deref()
+                .is_none_or(|_| official == Some("openai"));
+        // Only a verified schema has no separately billed write category.
+        // A model alias, price override or generic inclusive basis is not proof.
+        if !view.invalid_cache
+            && view.counts.input_basis == InputBasis::Inclusive
+            && view.counts.cache_write_tokens.is_none()
+            && view.counts.cache_write_5m_tokens.is_none()
+            && view.counts.cache_write_1h_tokens.is_none()
+            && (native_codex || codex_reference || openai_api || official == Some("openai"))
+        {
+            view.counts.cache_write_tokens = Some(0);
+            view.assumptions.push("Verified OpenAI usage schema has no separately billed cache-write category; absent write counter treated as zero.".to_owned());
+        }
+        view
+    }
+
     pub(crate) fn metrics(&self) -> Metrics {
         let Some(timing) = &self.timing else {
             return Metrics::default();
@@ -277,6 +340,83 @@ impl UsageRecord {
             stream_output_basis: timing.output_basis,
         }
     }
+}
+
+/// Effective counts are a view, not a mutation of imported or observed history.
+#[derive(Debug, Clone)]
+pub(crate) struct EffectiveTokens {
+    pub counts: TokenCounts,
+    pub invalid_cache: bool,
+    pub assumptions: Vec<String>,
+}
+
+/// Exact HTTPS origins and known API paths; lookalike hosts and arbitrary
+/// reverse-proxy paths are not proof of a first-party usage schema.
+pub(crate) fn official_endpoint_provider(endpoint: &str) -> Option<&'static str> {
+    let url = reqwest::Url::parse(endpoint).ok()?;
+    if url.scheme() != "https"
+        || url.port().is_some_and(|port| port != 443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    match (url.host_str()?, url.path().trim_end_matches('/')) {
+        ("api.openai.com", "" | "/v1" | "/v1/responses" | "/v1/chat/completions") => Some("openai"),
+        ("api.anthropic.com", "" | "/v1" | "/v1/messages") => Some("anthropic"),
+        _ => None,
+    }
+}
+
+pub(crate) fn is_codex_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.host_str() == Some("chatgpt.com")
+        && url.port().is_none_or(|port| port == 443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && matches!(
+            url.path().trim_end_matches('/'),
+            "/backend-api/codex" | "/backend-api/codex/responses"
+        )
+}
+
+fn normalize_cache_write(tokens: &mut TokenCounts, assumptions: &mut Vec<String>) -> bool {
+    if let Some(total) = tokens.cache_write_tokens {
+        if tokens
+            .cache_write_5m_tokens
+            .is_some_and(|short| short > total)
+            || tokens
+                .cache_write_1h_tokens
+                .is_some_and(|long| long > total)
+            || matches!((tokens.cache_write_5m_tokens, tokens.cache_write_1h_tokens), (Some(short), Some(long)) if short.checked_add(long) != Some(total))
+        {
+            tokens.cache_write_tokens = None;
+            tokens.cache_write_5m_tokens = None;
+            tokens.cache_write_1h_tokens = None;
+            return true;
+        }
+    } else if let (Some(short), Some(long)) =
+        (tokens.cache_write_5m_tokens, tokens.cache_write_1h_tokens)
+    {
+        if let Some(total) = short.checked_add(long) {
+            tokens.cache_write_tokens = Some(total);
+            assumptions.push(
+                "Aggregate cache-write count derived from the exact 5m + 1h bucket sum.".to_owned(),
+            );
+        } else {
+            tokens.cache_write_5m_tokens = None;
+            tokens.cache_write_1h_tokens = None;
+            return true;
+        }
+    }
+    false
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -386,6 +526,57 @@ mod tests {
         tokens.cache_read_tokens = Some(110);
         tokens.validate();
         assert_eq!(tokens.cache_read_tokens, None);
+    }
+
+    #[test]
+    fn effective_view_normalizes_exact_buckets_without_guessing_unknown_cache() {
+        let mut record = UsageRecord::new(Source::Alc, Agent::Claude, 0);
+        record.tokens = TokenCounts {
+            input_basis: InputBasis::Separate,
+            input_tokens: Some(100),
+            cache_read_tokens: Some(20),
+            cache_write_5m_tokens: Some(3),
+            cache_write_1h_tokens: Some(7),
+            output_tokens: Some(10),
+            ..TokenCounts::default()
+        };
+        let effective = record.effective_tokens();
+        assert_eq!(effective.counts.cache_write_tokens, Some(10));
+        assert_eq!(effective.counts.gross_input(), Some(130));
+        assert_eq!(effective.counts.uncached_input(), Some(100));
+        assert_eq!(record.tokens.cache_write_tokens, None);
+        record.tokens.input_basis = InputBasis::Inclusive;
+        assert_eq!(record.effective_tokens().counts.uncached_input(), Some(70));
+        record.tokens.cache_read_tokens = None;
+        assert_eq!(record.effective_tokens().counts.uncached_input(), None);
+        record.granularity = Granularity::Checkpoint;
+        assert_eq!(record.effective_tokens().counts, TokenCounts::default());
+    }
+
+    #[test]
+    fn verified_write_absence_is_provenance_aware_and_never_zeroes_reads() {
+        let mut record = UsageRecord::new(Source::Codex, Agent::Codex, 0);
+        record.billing = Billing::ApiEquivalent;
+        record.tokens.input_tokens = Some(100);
+        record.tokens.cache_read_tokens = Some(20);
+        assert_eq!(record.effective_tokens().counts.cache_write_tokens, Some(0));
+        assert_eq!(record.effective_tokens().counts.uncached_input(), Some(80));
+        record.tokens.cache_read_tokens = None;
+        assert_eq!(record.effective_tokens().counts.uncached_input(), None);
+        record.endpoint = Some("https://api.openai.com.evil.invalid/v1".to_owned());
+        assert_eq!(record.effective_tokens().counts.cache_write_tokens, None);
+        record.endpoint = None;
+        record.provider = Some("custom".to_owned());
+        assert_eq!(record.effective_tokens().counts.cache_write_tokens, None);
+        record.source = Source::Alc;
+        record.provider = Some("openai".to_owned());
+        record.billing = Billing::Unknown;
+        assert_eq!(record.effective_tokens().counts.cache_write_tokens, None);
+        record.billing = Billing::Api;
+        assert_eq!(record.effective_tokens().counts.cache_write_tokens, Some(0));
+        record.tokens.cache_write_tokens = Some(110);
+        assert!(record.effective_tokens().invalid_cache);
+        assert_eq!(record.effective_tokens().counts.cache_write_tokens, None);
     }
 
     #[test]

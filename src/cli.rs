@@ -141,6 +141,10 @@ struct Cli {
     #[arg(long, global = true, env = "ALC_CONFIG_DIR", hide = true)]
     config_dir: Option<PathBuf>,
 
+    /// Select a retained runtime generation, or legacy, for host management.
+    #[arg(long, global = true, value_name = "GENERATION")]
+    runtime: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -164,6 +168,9 @@ enum Command {
     Models(ModelsArgs),
     /// Check for and install the latest alc release.
     Update(UpdateArgs),
+    /// Install a verified release payload without loading provider configuration.
+    #[command(name = "__install", hide = true)]
+    Install(InstallArgs),
     /// Launch a coding agent with its session mirrored to a browser.
     Share(ShareArgs),
     /// Inspect or change the remote-control settings and credentials.
@@ -412,12 +419,36 @@ struct ModelsArgs {
 #[derive(Debug, Args)]
 struct UpdateArgs {
     /// Check whether an update is available without installing it.
-    #[arg(long, conflicts_with = "force")]
+    #[arg(long, conflicts_with_all = ["force", "from", "download_only", "offline", "rollback"])]
     check: bool,
 
-    /// Reinstall the latest release even when this version is current.
-    #[arg(long)]
+    /// Reinstall the selected release even when its version is current.
+    #[arg(long, conflicts_with = "rollback")]
     force: bool,
+
+    /// Apply a previously downloaded local release bundle.
+    #[arg(long, value_name = "BUNDLE_DIR", conflicts_with_all = ["download_only", "rollback"])]
+    from: Option<PathBuf>,
+
+    /// Download a verified release bundle without activating it.
+    #[arg(long, value_name = "BUNDLE_DIR", conflicts_with_all = ["offline", "rollback"])]
+    download_only: Option<PathBuf>,
+
+    /// Do not query GitHub; requires --from or --rollback.
+    #[arg(long)]
+    offline: bool,
+
+    /// Activate a retained generation (previous, a full digest, or its short ID).
+    #[arg(long, value_name = "GENERATION")]
+    rollback: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct InstallArgs {
+    #[arg(long, value_name = "EXECUTABLE")]
+    install_to: PathBuf,
+    #[arg(long, value_name = "VERSION")]
+    version: String,
 }
 
 #[derive(Debug, Args)]
@@ -535,9 +566,40 @@ struct KeyArgs {
 
 pub fn run() -> Result<u8> {
     let cli = Cli::parse();
+    let scope = match cli.runtime.as_deref() {
+        Some(scope) => crate::runtime::RuntimeScope::parse(scope)?,
+        None if matches!(cli.command, Command::ClaudeCredential(_))
+            || matches!(
+                cli.command,
+                Command::Bridge(BridgeArgs {
+                    command: Some(BridgeCommand::Serve)
+                })
+            )
+            || matches!(
+                cli.command,
+                Command::Hub(HubArgs {
+                    command: Some(HubCommand::Start(HubStartArgs { foreground: true }))
+                })
+            ) =>
+        {
+            crate::runtime::RuntimeScope::Legacy
+        }
+        None => crate::runtime::generation_scope()?,
+    };
+    crate::runtime::initialize(scope, cli.runtime.is_some())?;
+    if let Command::Install(args) = &cli.command {
+        return update::install_payload(&args.install_to, &args.version);
+    }
     let requested_provider = provider_selector(&cli)?;
     if let Command::Update(args) = &cli.command {
-        return update::run(args.check, args.force);
+        return update::run(
+            args.check,
+            args.force,
+            args.from.as_deref(),
+            args.download_only.as_deref(),
+            args.offline,
+            args.rollback.as_deref(),
+        );
     }
     // Before the configuration is loaded, because the launcher needs none of
     // it: everything it runs arrives from the hub, already resolved.
@@ -573,6 +635,7 @@ pub fn run() -> Result<u8> {
         Command::Tps(_) => unreachable!("tps is handled without credentials"),
         Command::Models(args) => run_models(&store, args),
         Command::Update(_) => unreachable!("update is handled before config loading"),
+        Command::Install(_) => unreachable!("installation is handled before config loading"),
         Command::TmuxPane(_) => unreachable!("the pane launcher is handled before config loading"),
         Command::Remote(args) => run_remote(&store, args),
         Command::Confirm(args) => remote::confirm(&store, &args.ticket),
@@ -1176,7 +1239,7 @@ fn run_spec(
         // A dry run exists to report what a real run would do, which
         // includes admitting the launch it is describing would be refused.
         if sharing.tmux {
-            match remote::tmux_status() {
+            match remote::tmux_status(&store.dir) {
                 Ok(found) => println!(
                     "tmux: would run the agent under {found}, so this terminal and the page \
                      hold their own sizes"
@@ -1666,6 +1729,60 @@ mod tests {
             message.contains("alc claude -- <args>"),
             "the way out has to be one that works: {message}"
         );
+    }
+
+    #[test]
+    fn update_modes_parse_without_loading_provider_configuration() {
+        let cli = Cli::try_parse_from([
+            "alc",
+            "--codex",
+            "update",
+            "--from",
+            "release-bundle",
+            "--offline",
+        ])
+        .unwrap();
+        let Command::Update(options) = cli.command else {
+            panic!("provider selection must not redirect the self-updater")
+        };
+        assert_eq!(options.from, Some(PathBuf::from("release-bundle")));
+        assert!(options.offline);
+        for args in [
+            vec!["alc", "update", "--download-only", "bundle"],
+            vec!["alc", "update", "--rollback", "previous", "--offline"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+        let cli = Cli::try_parse_from(["alc", "--runtime", "legacy", "sessions"]).unwrap();
+        assert_eq!(cli.runtime.as_deref(), Some("legacy"));
+    }
+
+    #[test]
+    fn incompatible_update_modes_are_refused_during_parsing() {
+        for args in [
+            vec!["alc", "update", "--check", "--offline"],
+            vec!["alc", "update", "--check", "--force"],
+            vec![
+                "alc",
+                "update",
+                "--from",
+                "bundle",
+                "--download-only",
+                "bundle",
+            ],
+            vec!["alc", "update", "--download-only", "bundle", "--offline"],
+            vec![
+                "alc",
+                "update",
+                "--from",
+                "bundle",
+                "--rollback",
+                "previous",
+            ],
+            vec!["alc", "update", "--rollback", "previous", "--force"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "accepted {args:?}");
+        }
     }
 
     #[test]

@@ -46,12 +46,17 @@ try {
     if ($ArchiveName.EndsWith('.zip')) {
         Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archivePath
     } else {
+        # The updater accepts bounded traditional headers, not PAX/GNU
+        # extension records. Avoid macOS resource forks and metadata too.
+        $copyfileDisable = [Environment]::GetEnvironmentVariable('COPYFILE_DISABLE', 'Process')
+        [Environment]::SetEnvironmentVariable('COPYFILE_DISABLE', '1', 'Process')
         Push-Location $stage
         try {
-            & tar -czf $archivePath .
+            & tar --format=ustar -czf $archivePath .
             if ($LASTEXITCODE -ne 0) { throw "Failed to create $ArchiveName" }
         } finally {
             Pop-Location
+            [Environment]::SetEnvironmentVariable('COPYFILE_DISABLE', $copyfileDisable, 'Process')
         }
     }
     Write-Host "Created $archivePath"

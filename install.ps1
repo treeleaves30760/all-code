@@ -260,8 +260,11 @@ $tempDir = Join-Path $tempRoot ("alc-install-" + [guid]::NewGuid().ToString('N')
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 
 try {
-    $archive = Join-Path $tempDir $asset
-    $checksums = Join-Path $tempDir 'checksums.txt'
+    $archiveDir = Join-Path $tempDir 'archive'
+    $checksumDir = Join-Path $tempDir 'checksums'
+    New-Item -ItemType Directory -Path $archiveDir, $checksumDir | Out-Null
+    $archive = Join-Path $archiveDir $asset
+    $checksums = Join-Path $checksumDir 'checksums.txt'
     Write-Host "Downloading $asset..."
     Invoke-Download -Uri "$releaseUrl/$asset" -OutFile $archive
     Invoke-Download -Uri "$releaseUrl/checksums.txt" -OutFile $checksums
@@ -280,14 +283,50 @@ try {
     }
 
     $extractDir = Join-Path $tempDir 'extract'
-    Expand-Archive -LiteralPath $archive -DestinationPath $extractDir
+    New-Item -ItemType Directory -Path $extractDir | Out-Null
     $alcSource = Join-Path $extractDir 'alc.exe'
-    if (-not (Test-Path -LiteralPath $alcSource -PathType Leaf)) {
-        throw 'Release archive does not contain alc.exe'
-    }
+    # Read only the root payload; never expand archive-supplied scripts/paths.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+    try {
+        $payloads = @($zip.Entries | Where-Object { $_.FullName -ceq 'alc.exe' })
+        if ($payloads.Count -ne 1) { throw 'Release archive must contain exactly one root alc.exe payload' }
+        $payload = $payloads[0]
+        $unixType = ($payload.ExternalAttributes -shr 16) -band 0xF000
+        if ($unixType -eq 0xA000 -or $payload.Length -gt 536870912) {
+            throw 'Release alc.exe payload is not a regular bounded file'
+        }
+        $input = $payload.Open()
+        $output = [IO.File]::Open($alcSource, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+        try { $input.CopyTo($output); $output.Flush($true) } finally { $output.Dispose(); $input.Dispose() }
+    } finally { $zip.Dispose() }
+    if (-not (Test-Path -LiteralPath $alcSource -PathType Leaf)) { throw 'Release archive does not contain alc.exe' }
 
-    New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-    Copy-Item -Force -LiteralPath $alcSource -Destination (Join-Path $installDir 'alc.exe')
+    $runtimeEnvironmentNames = @('ALC_RUNTIME_ORIGIN', 'ALC_RUNTIME_SELECTOR', 'ALC_RUNTIME_SCOPE', 'ALC_RUNTIME_GENERATION', 'ALC_RUNTIME_ID', 'ALC_RUNTIME_INSTALL')
+    $runtimeEnvironment = @{}
+    foreach ($name in $runtimeEnvironmentNames) {
+        $runtimeEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
+    try {
+        $payloadVersionOutput = (& $alcSource --version 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $payloadVersionOutput -notmatch '^alc ([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?)$') {
+            throw "Downloaded alc failed its version check: $payloadVersionOutput"
+        }
+        $payloadVersion = $Matches[1]
+        if ($version -ne 'latest' -and $payloadVersion -cne $version.TrimStart('v')) {
+            throw "Release version $version does not match payload $payloadVersion"
+        }
+        $installDir = [IO.Path]::GetFullPath($installDir)
+        & $alcSource __install --install-to (Join-Path $installDir 'alc.exe') --version $payloadVersion
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Immutable installation did not complete. Any pending payload and retry instructions were preserved; no process was stopped.'
+        }
+    } finally {
+        foreach ($name in $runtimeEnvironmentNames) {
+            [Environment]::SetEnvironmentVariable($name, $runtimeEnvironment[$name], 'Process')
+        }
+    }
 
     # The Codex bridge is built into alc from 1.4.0 on. An older install left
     # a separate claude-codex.exe here; removing it keeps a stale copy from
