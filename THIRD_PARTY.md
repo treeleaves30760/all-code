@@ -13,10 +13,12 @@ which alc depended on through 1.4.1. That license is kept in
 `THIRD_PARTY_LICENSES/claude-codex-LICENSE` in acknowledgement of the work it
 made possible.
 
-The bridge reads and may refresh the Codex CLI's own `~/.codex/auth.json`. It
-runs inside the `alc` process on a loopback port, serves only the agent that
-launch started, and stops when that session ends. Credentials are never copied
-into the alc configuration.
+The bridge reads and may refresh the Codex CLI's own `~/.codex/auth.json`.
+Session-owned adapters run inside `alc` and stop with the session. Claude Code
+instead uses a loopback-only background host that survives launcher exit,
+restarts through its credential helper, and stops after an hour idle or with
+`alc bridge stop`. Model requests require local authentication; native Codex
+credentials are never copied into the alc configuration.
 
 # Bundled pricing data
 
