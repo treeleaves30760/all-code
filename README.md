@@ -429,8 +429,9 @@ is `ai-usage.png` in your home directory. Rendering uses Rust and a bundled font
 not Python or system fonts. It uses the same selection and timezone as the
 report; longer ranges have labeled coarser chart buckets while CLI details stay
 daily. Unknowns/gaps are not zero, partial costs are known subtotals, and source
-overlap suppresses unsafe pooled totals and the pie. `--json --chart` keeps
-stdout JSON-only and writes the artifact path to stderr.
+overlap suppresses unsafe pooled totals and the pie. If any selected sources may
+overlap, coarser chart bars are conservatively unavailable; safe daily detail stays.
+`--json --chart` keeps stdout JSON-only and writes the artifact path to stderr.
 
 Repeated `--claude-dir /absolute/config-root` reads `projects/`; repeated
 `--codex-dir /absolute/codex-home` reads `sessions/` and `archived_sessions/`.

@@ -394,6 +394,7 @@ alc usage --offline --source alc --filter-profile work --filter-agent claude
 `ai-usage.png`。繪圖用 Rust 與內嵌字型，不依賴 Python 或系統字型。圖與報告
 使用相同的選取範圍與時區；較長期間的圖會標示較粗的分桶，CLI 仍保留每日明細。
 未知或缺日不是零，部分費用是已知小計；來源重疊會停用不安全的合併總計與圓餅。
+只要選取來源可能重疊，較粗的圖表長條就保守停用，安全的每日明細仍保留。
 `--json --chart` 的 stdout 只放 JSON，產物路徑寫到 stderr。
 
 可重複指定的 `--claude-dir /absolute/config-root` 讀底下的 `projects/`；

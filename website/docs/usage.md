@@ -328,7 +328,9 @@ Unsafe pooled buckets/totals and the pie remain unavailable when sources overlap
 safe daily/source detail is retained. Missing dates/counters remain gaps, not zero.
 Empty, all-zero, or unmeasurable composition uses a no-data message rather than
 meaningless slices. Longer spans use labeled weekly, monthly, or yearly chart
-buckets to stay legible; the CLI/JSON daily detail remains exact.
+buckets to stay legible; the CLI/JSON daily detail remains exact. If any selected
+sources may overlap, those coarser pooled bars are conservatively unavailable;
+individually safe daily values do not prove cross-date sources are disjoint.
 
 ### Shared query options
 
