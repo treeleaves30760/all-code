@@ -167,7 +167,32 @@ fn assert_generation_helper(config: &Path, line: &str) {
     #[cfg(unix)]
     let prefix = format!("'{}' --config-dir ", pinned.display());
     #[cfg(windows)]
-    let prefix = format!("\"{}\" --config-dir ", pinned.display());
+    let prefix = {
+        use std::path::Component;
+
+        let pinned = if let Some(Component::Prefix(prefix)) = pinned.components().next() {
+            match prefix.kind() {
+                std::path::Prefix::VerbatimDisk(_) => {
+                    PathBuf::from(pinned.to_str().unwrap().strip_prefix(r"\\?\").unwrap())
+                }
+                std::path::Prefix::VerbatimUNC(server, share) => {
+                    let mut path = PathBuf::from(format!(
+                        r"\\{}\{}",
+                        server.to_str().unwrap(),
+                        share.to_str().unwrap()
+                    ));
+                    for component in pinned.components().skip(2) {
+                        path.push(component);
+                    }
+                    path
+                }
+                _ => pinned,
+            }
+        } else {
+            pinned
+        };
+        format!("\"{}\" --config-dir ", pinned.display())
+    };
     assert!(line.starts_with(&prefix), "{line}; expected {prefix}");
     assert!(
         line.contains(&format!(" --runtime {} claude-credential ", &digest[..12])),
@@ -210,6 +235,9 @@ fn helper(config: &Path, work: &Path, line: &str) -> String {
 }
 
 fn read_http(stream: &mut TcpStream) -> String {
+    // macOS accepts inherit the listener's nonblocking mode; timeouts alone
+    // would otherwise mistake a delayed HTTP upload for an idle probe.
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
@@ -266,6 +294,39 @@ fn read_http(stream: &mut TcpStream) -> String {
 fn respond(stream: &mut TcpStream, status: &str, body: &str) {
     write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     stream.flush().unwrap();
+}
+
+#[test]
+fn fixture_http_reader_waits_for_a_delayed_upload_on_nonblocking_accepts() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (accepted, ready) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        // Reproduce the macOS inherited mode on every platform.
+        stream.set_nonblocking(true).unwrap();
+        accepted.send(()).unwrap();
+        let request = read_http(&mut stream);
+        respond(&mut stream, "200 OK", "{}");
+        request
+    });
+    let mut client = TcpStream::connect(address).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    client
+        .set_write_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    ready.recv_timeout(Duration::from_secs(3)).unwrap();
+    thread::sleep(Duration::from_millis(40));
+    let header = "POST /prefix/v1/messages HTTP/1.1\r\nHost: fixture\r\nContent-Length: 5\r\n\r\n";
+    client.write_all(header.as_bytes()).unwrap();
+    thread::sleep(Duration::from_millis(20));
+    client.write_all(b"hello").unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert_eq!(server.join().unwrap(), format!("{header}hello"));
 }
 
 struct Upstream {
@@ -538,8 +599,16 @@ fn coexisting_forward_credentials_remain_accepted_for_the_same_frozen_route() {
         .success();
     let second = helper(config.path(), work.path(), line);
     let base = settings["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap();
-    assert!(model_request(base, &first).starts_with("HTTP/1.1 200"));
-    assert!(model_request(base, &second).starts_with("HTTP/1.1 200"));
+    let first_response = model_request(base, &first);
+    assert!(
+        first_response.starts_with("HTTP/1.1 200"),
+        "first registered credential response: {first_response}"
+    );
+    let second_response = model_request(base, &second);
+    assert!(
+        second_response.starts_with("HTTP/1.1 200"),
+        "second registered credential response: {second_response}"
+    );
     let requests = upstream.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[0].contains("runtime-first-key"));

@@ -396,9 +396,13 @@ fn helper_command_for(
     };
     match shell {
         Shell::Cmd => {
+            // Windows canonicalization produces verbatim paths that cmd cannot
+            // execute. Change only their shell spelling, not the runtime pin.
+            let alc = cmd_path_spelling(alc)?;
+            let dir = cmd_path_spelling(dir)?;
             for (what, value) in [
-                ("alc's own path", alc),
-                ("alc's configuration directory", dir),
+                ("alc's own path", alc.as_str()),
+                ("alc's configuration directory", dir.as_str()),
             ] {
                 if value.contains(['%', '"']) {
                     bail!(
@@ -409,8 +413,8 @@ fn helper_command_for(
             }
             Ok(format!(
                 "{} --config-dir {}{runtime} claude-credential {route}",
-                cmd_quote(alc),
-                cmd_quote(dir)
+                cmd_quote(&alc),
+                cmd_quote(&dir)
             ))
         }
         Shell::Sh => Ok(format!(
@@ -446,6 +450,65 @@ fn check_route(route: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// cmd cannot launch Windows' canonical `\\\\?\\` executable spelling. Only
+/// ordinary drive and UNC paths have an equivalent non-verbatim spelling; do
+/// not strip arbitrary device namespaces or components Win32 would reinterpret.
+fn cmd_path_spelling(value: &str) -> Result<String> {
+    let Some(verbatim) = value.strip_prefix(r"\\?\") else {
+        return Ok(value.to_owned());
+    };
+    let (ordinary, components) = if let Some(unc) = verbatim.strip_prefix(r"UNC\") {
+        let (server, rest) = unc
+            .split_once('\\')
+            .context("a verbatim UNC helper path needs a server and share")?;
+        if server.is_empty() || rest.split('\\').next().is_none_or(str::is_empty) {
+            bail!("a verbatim UNC helper path needs a server and share");
+        }
+        (format!(r"\\{unc}"), unc)
+    } else {
+        let bytes = verbatim.as_bytes();
+        if bytes.len() < 3
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || bytes[2] != b'\\'
+        {
+            bail!("cmd cannot safely spell this verbatim helper path: {value}");
+        }
+        (verbatim.to_owned(), &verbatim[3..])
+    };
+    for component in components.trim_end_matches('\\').split('\\') {
+        if component.is_empty() && components.is_empty() {
+            continue; // A drive root, not a missing component.
+        }
+        let stem = component
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(' ')
+            .to_ascii_uppercase();
+        let device = matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        ) || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix).is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        });
+        if component.is_empty()
+            || component.ends_with(['.', ' '])
+            || component.contains(['/', ':', '*', '?', '<', '>', '|'])
+            || component.chars().any(char::is_control)
+            || device
+        {
+            bail!("cmd would reinterpret a component of this verbatim helper path: {value}");
+        }
+    }
+    Ok(ordinary)
 }
 
 /// `value` in double quotes for a line cmd runs. cmd hands the quotes on as
@@ -948,6 +1011,91 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains('%'), "{error}");
+    }
+
+    #[test]
+    fn cmd_helpers_spell_verbatim_drive_and_unc_pins_without_changing_identity() {
+        let scope = crate::runtime::RuntimeScope::parse("0123456789ab").unwrap();
+        for (alc, dir, expected) in [
+            (
+                r"\\?\C:\Program Files\alc\.alc\generations\digest\alc.exe",
+                r"\\?\C:\Users\Ada Lovelace\.config\alc",
+                r#""C:\Program Files\alc\.alc\generations\digest\alc.exe" --config-dir "C:\Users\Ada Lovelace\.config\alc" --runtime 0123456789ab claude-credential codex-0123456789abcdef01234567"#,
+            ),
+            (
+                r"\\?\UNC\server\share\alc\.alc\generations\digest\alc.exe",
+                r"\\?\UNC\server\share\config\",
+                r#""\\server\share\alc\.alc\generations\digest\alc.exe" --config-dir "\\server\share\config\\" --runtime 0123456789ab claude-credential codex-0123456789abcdef01234567"#,
+            ),
+        ] {
+            assert_eq!(
+                helper_command_for(
+                    Shell::Cmd,
+                    Path::new(alc),
+                    Path::new(dir),
+                    "codex-0123456789abcdef01234567",
+                    &scope,
+                )
+                .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(cmd_path_spelling(r"\\?\C:\").unwrap(), r"C:\");
+        assert_eq!(
+            cmd_path_spelling(r"C:\unchanged\alc.exe").unwrap(),
+            r"C:\unchanged\alc.exe"
+        );
+        let sh = helper_command_for(
+            Shell::Sh,
+            Path::new(r"\\?\C:\alc.exe"),
+            Path::new("/test-only/config"),
+            "profile:work",
+            &crate::runtime::RuntimeScope::Legacy,
+        )
+        .unwrap();
+        assert!(sh.starts_with(r"'\\?\C:\alc.exe' "));
+    }
+
+    #[test]
+    fn cmd_helpers_refuse_verbatim_paths_without_an_equivalent_win32_spelling() {
+        for path in [
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\alc.exe",
+            r"\\?\Volume{test}\alc.exe",
+            r"\\?\UNC\server",
+            r"\\?\UNC\server\\alc.exe",
+            r"\\?\C:alc.exe",
+            r"\\?\C:\trailing.\alc.exe",
+            r"\\?\C:\trailing \alc.exe",
+            r"\\?\C:\..\alc.exe",
+            r"\\?\C:\NUL\alc.exe",
+            r"\\?\C:\COM1.txt\alc.exe",
+            r"\\?\C:\LPT¹\alc.exe",
+            r"\\?\C:\config/other\alc.exe",
+            r"\\?\C:\config:stream\alc.exe",
+        ] {
+            assert!(
+                helper_command(
+                    Shell::Cmd,
+                    Path::new(path),
+                    Path::new(r"C:\config"),
+                    "profile:work",
+                )
+                .is_err(),
+                "{path} must not silently change meaning"
+            );
+        }
+        for path in [r"\\?\C:\100%\alc.exe", r#"\\?\C:\quoted"\alc.exe"#] {
+            assert!(
+                helper_command(
+                    Shell::Cmd,
+                    Path::new(path),
+                    Path::new(r"C:\config"),
+                    "profile:work",
+                )
+                .is_err(),
+                "{path} must still fail cmd metacharacter validation"
+            );
+        }
     }
 
     /// The route is the one argument alc builds rather than reads from the
