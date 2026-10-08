@@ -1239,7 +1239,15 @@ async fn respond(state: &BridgeState, body: Bytes) -> Result<Response, BridgeErr
     // a client that pinned a slug should see that slug come back even on the
     // paths where the response object never arrives.
     let model = upstream_request.model.clone();
-    let turn = Turn::Live(upstream::send(state, upstream_request).await?);
+    let observed = upstream::observation(
+        state,
+        &model,
+        request.stream,
+        None,
+        crate::usage::records::OutputBasis::NonReasoning,
+    );
+    let turn =
+        Turn::Live(upstream::send_with_affinity(state, upstream_request, None, observed).await?);
 
     if request.stream {
         let include_usage = request

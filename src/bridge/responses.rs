@@ -48,7 +48,8 @@ use serde_json::{Value, json};
 
 use super::upstream::{self, Lane};
 use super::{BridgeError, BridgeState};
-use crate::usage::ledger::Ledger;
+use crate::usage::observer::{RequestObservation, StreamObservation};
+use crate::usage::records::Outcome;
 
 /// Responses parameters chatgpt.com's Codex endpoint refuses outright.
 ///
@@ -116,16 +117,39 @@ async fn relay(state: &BridgeState, body: Bytes) -> Result<Response, BridgeError
         .and_then(Value::as_bool)
         .unwrap_or(false);
     normalise(&mut request);
+    let observed = upstream::observation(
+        state,
+        &model,
+        streaming,
+        None,
+        crate::usage::records::OutputBasis::Unknown,
+    );
 
     for attempt in 0..=REFUSAL_RETRIES {
         let payload = serialise(&request, &model)?;
-        let response = upstream::post(state, payload, true, Lane::Plain).await?;
+        let response = match upstream::post(state, payload, true, Lane::Plain).await {
+            Ok(response) => response,
+            Err(error) => {
+                if let Some(observation) = &observed {
+                    observation.finish(if error.status == StatusCode::GATEWAY_TIMEOUT {
+                        Outcome::TimedOut
+                    } else {
+                        Outcome::Failed
+                    });
+                }
+                return Err(error);
+            }
+        };
         if response.status() != StatusCode::BAD_REQUEST {
-            let ledger = state.ledger.clone();
+            if !response.status().is_success()
+                && let Some(observation) = &observed
+            {
+                observation.finish(Outcome::Failed);
+            }
             return Ok(if streaming {
-                relay_response(response, ledger, model.clone())
+                relay_response(response, observed)
             } else {
-                fold_response(response, ledger, &model).await?
+                fold_response(response, observed).await?
             });
         }
         // A 400 is short and already complete, so reading it costs nothing and
@@ -138,6 +162,9 @@ async fn relay(state: &BridgeState, body: Bytes) -> Result<Response, BridgeError
             .filter(|_| attempt < REFUSAL_RETRIES)
             .filter(|name| drop_parameter(&mut request, name));
         if named.is_none() {
+            if let Some(observation) = &observed {
+                observation.finish(Outcome::Failed);
+            }
             return Ok(buffered_response(status, headers, refusal));
         }
     }
@@ -256,17 +283,12 @@ fn drop_parameter(request: &mut Value, name: &str) -> bool {
 
 /// Hands the upstream answer to the client with its status, its content type
 /// and its bytes intact.
-fn relay_response(
-    upstream: reqwest::Response,
-    ledger: Option<Arc<Ledger>>,
-    model: String,
-) -> Response {
+fn relay_response(upstream: reqwest::Response, observed: Option<RequestObservation>) -> Response {
     let status = upstream.status();
     let headers = passthrough_headers(upstream.headers());
     let mut response = Response::new(Body::from_stream(observe(
         guard_idle(upstream.bytes_stream()),
-        ledger,
-        model,
+        observed,
     )));
     *response.status_mut() = status;
     *response.headers_mut() = headers;
@@ -288,19 +310,22 @@ fn relay_response(
 /// this function invents anything.
 async fn fold_response(
     upstream: reqwest::Response,
-    ledger: Option<Arc<Ledger>>,
-    model: &str,
+    observed: Option<RequestObservation>,
 ) -> Result<Response, BridgeError> {
     let headers = passthrough_headers(upstream.headers());
     let mut body = Box::pin(upstream.bytes_stream());
     let mut decoder = upstream::SseDecoder::default();
     let mut output = Vec::new();
     let mut completed = None;
+    let mut observation = observed.map(StreamObservation::new);
 
     loop {
         let chunk = match tokio::time::timeout(upstream::BODY_IDLE_TIMEOUT, body.next()).await {
             Ok(Some(Ok(chunk))) => Some(chunk),
             Ok(Some(Err(error))) => {
+                if let Some(observation) = &observation {
+                    observation.request.finish(Outcome::Truncated);
+                }
                 return Err(BridgeError::upstream(
                     StatusCode::BAD_GATEWAY,
                     format!("the Codex response body failed mid-stream: {error}"),
@@ -308,6 +333,9 @@ async fn fold_response(
             }
             Ok(None) => None,
             Err(_) => {
+                if let Some(observation) = &observation {
+                    observation.request.finish(Outcome::TimedOut);
+                }
                 return Err(BridgeError::new(
                     StatusCode::GATEWAY_TIMEOUT,
                     "api_error",
@@ -318,14 +346,17 @@ async fn fold_response(
                 ));
             }
         };
+        if let Some(observation) = &mut observation {
+            match &chunk {
+                Some(chunk) => observation.push(chunk),
+                None => observation.eof(),
+            }
+        }
         let frames = match &chunk {
             Some(chunk) => decoder.push(chunk),
             None => decoder.finish(),
         };
         for frame in frames {
-            if let Some(ledger) = &ledger {
-                ledger.observe_frame(&frame.data, model);
-            }
             collect_frame(&frame.data, &mut output, &mut completed);
         }
         if chunk.is_none() || completed.is_some() {
@@ -438,18 +469,36 @@ fn relayable(name: &HeaderName) -> bool {
 /// partial frame is in flight.
 fn observe(
     body: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
-    ledger: Option<Arc<Ledger>>,
-    model: String,
+    observed: Option<RequestObservation>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
-    let mut decoder = upstream::SseDecoder::default();
-    body.map(move |item| {
-        if let (Ok(chunk), Some(ledger)) = (&item, &ledger) {
-            for frame in decoder.push(chunk) {
-                ledger.observe_frame(&frame.data, &model);
+    futures_util::stream::unfold(
+        (Box::pin(body), observed.map(StreamObservation::new)),
+        |(mut body, mut observation)| async move {
+            match body.next().await {
+                Some(item) => {
+                    if let Some(observation) = &mut observation {
+                        match &item {
+                            Ok(chunk) => observation.push(chunk),
+                            Err(error) => observation.request.finish(
+                                if error.kind() == std::io::ErrorKind::TimedOut {
+                                    Outcome::TimedOut
+                                } else {
+                                    Outcome::Truncated
+                                },
+                            ),
+                        }
+                    }
+                    Some((item, (body, observation)))
+                }
+                None => {
+                    if let Some(observation) = &mut observation {
+                        observation.eof();
+                    }
+                    None
+                }
             }
-        }
-        item
-    })
+        },
+    )
 }
 
 fn guard_idle(

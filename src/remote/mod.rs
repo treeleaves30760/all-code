@@ -158,6 +158,15 @@ pub fn share(
     if let Some(refusal) = hub::hub_cannot_carry(&hub.alc, hub.pid, &spec) {
         bail!("{refusal}");
     }
+    if spec.forward.is_some() {
+        let hello = ctl::request(&store.dir, &secrets.ctl, &ctl::CtlRequest::Hello)?;
+        if !matches!(hello, ctl::CtlReply::Hello { capabilities, .. } if capabilities.iter().any(|capability| capability == crate::bridge_host::FORWARD_CAPABILITY))
+        {
+            bail!(
+                "the running hub cannot carry API observation; run `alc hub stop` and retry, or omit --metrics"
+            );
+        }
+    }
     let create = ctl::CreateRequest {
         alc: env!("CARGO_PKG_VERSION").to_owned(),
         spec: hub::to_wire(&spec)?,

@@ -107,6 +107,8 @@ pub struct LaunchSpec {
     pub provider_kind: ProviderKind,
     pub agent: Agent,
     pub bridge: Option<BridgePlan>,
+    /// Explicitly requested endpoint-only observation; never a Codex adapter.
+    pub(crate) forward: Option<crate::agents::metrics::ForwardPlan>,
     /// Claude Code's `--settings` document, when alc points Claude Code away
     /// from its own login. Built in the user's shell; finished, written and
     /// put in the arguments by `prepare`, because a Codex route needs the
@@ -217,6 +219,16 @@ impl LaunchSpec {
                 options: crate::model_catalog::ModelCatalog::built_in().models,
                 api: BridgeApi::Messages,
             }),
+            forward: Some(crate::agents::metrics::ForwardPlan {
+                upstream: "https://example.test/v1".to_owned(),
+                key_digests: vec![crate::usage::forward::key_digest("never-print-this-value")],
+                patch: crate::agents::metrics::EndpointPatch::ClaudeSettings {
+                    pointer: "/env/ANTHROPIC_BASE_URL".to_owned(),
+                    original: "https://example.test/v1".to_owned(),
+                },
+                durable: true,
+                coverage_reason: Some("HTTP only".to_owned()),
+            }),
             settings_plan: Some(crate::agents::claude_settings::SettingsPlan {
                 document: serde_json::json!({ "env": { "ANTHROPIC_MODEL": "gpt-6-astra" } }),
                 subcommand: Some("agents".to_owned()),
@@ -269,6 +281,7 @@ impl LaunchSpec {
             provider_kind: ProviderKind::Codex,
             agent: Agent::Codex,
             bridge: None,
+            forward: None,
             settings_plan: None,
             codex_auth_file: None,
             claude_settings_file: None,
@@ -345,6 +358,7 @@ pub fn build(
         provider_kind: provider.kind,
         agent,
         bridge: None,
+        forward: None,
         settings_plan: None,
         codex_auth_file: None,
         claude_settings_file: None,
@@ -430,6 +444,8 @@ pub(crate) struct SessionGuards {
         reason = "held for its Drop; the bridge dies with the session"
     )]
     bridge: Option<Bridge>,
+    #[allow(dead_code, reason = "held while the child uses its loopback endpoint")]
+    forward: Option<crate::usage::forward::ForwardServer>,
     cleanup: CleanupFiles,
 }
 
@@ -445,6 +461,7 @@ impl SessionGuards {
         Self {
             claude_default: None,
             bridge: None,
+            forward: None,
             cleanup: CleanupFiles(Vec::new()),
         }
     }
@@ -536,6 +553,27 @@ pub(crate) fn prepare(mut spec: LaunchSpec, config_dir: &Path) -> Result<Prepare
         None
     };
 
+    let forward = if let Some(plan) = spec.forward.clone() {
+        if plan.durable {
+            crate::bridge_host::prepare_forward(&mut spec, &plan, config_dir)?;
+            None
+        } else {
+            let ledger = std::sync::Arc::new(crate::usage::ledger::Ledger::new(
+                config_dir.join(crate::usage::ledger::LEDGER_FILE),
+                spec.agent,
+                spec.provider_name.clone(),
+                spec.provider_kind,
+                None,
+            ));
+            let server = crate::usage::forward::ForwardServer::start(&plan.upstream, ledger, plan.key_digests.clone())
+                .context("could not start API observation; retry without --metrics to keep a direct connection")?;
+            crate::agents::metrics::apply(&mut spec, &server.base_url(), &plan)?;
+            Some(server)
+        }
+    } else {
+        None
+    };
+
     // Claude Code's settings: finished once the bridge's port is known, then
     // written by content and put in the arguments - after the subcommand when
     // there is one, first otherwise.
@@ -570,6 +608,7 @@ pub(crate) fn prepare(mut spec: LaunchSpec, config_dir: &Path) -> Result<Prepare
         guards: SessionGuards {
             claude_default,
             bridge,
+            forward,
             cleanup,
         },
     })

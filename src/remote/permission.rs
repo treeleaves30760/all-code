@@ -588,6 +588,30 @@ mod launch_tests {
     }
 
     #[test]
+    fn shared_codex_permission_flags_preserve_a_planned_metrics_endpoint() {
+        let mut spec = launch_spec(Agent::Codex);
+        spec.provider_name = "fixture".to_owned();
+        let original = "model_providers.alc_fixture.base_url=\"https://example.test/v1\"";
+        spec.args = ["--config", original].map(OsString::from).to_vec();
+        let plan = crate::agents::metrics::ForwardPlan {
+            upstream: "https://example.test/v1".to_owned(),
+            key_digests: Vec::new(),
+            patch: crate::agents::metrics::EndpointPatch::CodexConfig {
+                argument: 1,
+                original: original.to_owned(),
+            },
+            durable: false,
+            coverage_reason: None,
+        };
+        arm_at_launch(&mut spec, Some(SafetyRung::Ask));
+        crate::agents::metrics::apply(&mut spec, "http://127.0.0.1:24817/capability", &plan)
+            .unwrap();
+        assert!(spec.args.iter().any(|argument| argument
+            == "model_providers.alc_fixture.base_url=\"http://127.0.0.1:24817/capability\""));
+        assert!(!spec.args.iter().any(|argument| argument == original));
+    }
+
+    #[test]
     fn an_unverified_agent_is_left_alone_unless_the_user_asked() {
         // Guessing `--approval-mode` into argv would break the launch
         // outright if the installed qwen spells it differently.

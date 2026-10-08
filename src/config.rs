@@ -840,6 +840,28 @@ pub struct Store {
 }
 
 impl Store {
+    /// Statistics do not need keys. In offline mode even an unreadable
+    /// credential store must not stop a report or prompt a Keychain read.
+    pub(crate) fn load_without_credentials(override_dir: Option<PathBuf>) -> Result<Self> {
+        let dir = match override_dir {
+            Some(dir) => dir,
+            None => config_dir()?,
+        };
+        let path = dir.join("config.toml");
+        let config = if path.exists() {
+            let text = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))?
+        } else {
+            Config::default()
+        };
+        Ok(Self {
+            dir,
+            config,
+            credentials: Credentials::default(),
+        })
+    }
+
     pub fn load(override_dir: Option<PathBuf>) -> Result<Self> {
         let dir = override_dir.unwrap_or(config_dir()?);
         let config_path = dir.join("config.toml");

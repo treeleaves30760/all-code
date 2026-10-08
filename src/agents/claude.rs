@@ -630,7 +630,7 @@ fn clear_cloud_provider_env(spec: &mut LaunchSpec) {
     }
 }
 
-fn claude_base_url(provider: &Provider) -> Option<String> {
+pub(crate) fn claude_base_url(provider: &Provider) -> Option<String> {
     let base = provider
         .effective_anthropic_base_url()?
         .trim_end_matches('/');

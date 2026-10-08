@@ -31,6 +31,16 @@ pub(crate) fn token_path(config_dir: &Path) -> PathBuf {
     run_dir(config_dir).join("bridge.token")
 }
 
+pub(super) fn load_or_create_observer_key(config_dir: &Path) -> Result<String> {
+    restricted_dir(&run_dir(config_dir))?;
+    let path = run_dir(config_dir).join("bridge.observer-key");
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(text.trim().to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => create_token(&path),
+        Err(error) => Err(error).context("could not read the local observer secret"),
+    }
+}
+
 pub(crate) fn lock_path(config_dir: &Path) -> PathBuf {
     run_dir(config_dir).join("bridge.lock")
 }
@@ -213,6 +223,100 @@ pub(crate) fn route_count(config_dir: &Path) -> usize {
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
             .count()
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ForwardRoute {
+    pub id: String,
+    pub profile: String,
+    pub kind: crate::config::ProviderKind,
+    pub upstream: String,
+}
+
+impl ForwardRoute {
+    pub(crate) fn new(
+        profile: &str,
+        kind: crate::config::ProviderKind,
+        upstream: &str,
+    ) -> Result<Self> {
+        let url = reqwest::Url::parse(upstream).context("invalid observation endpoint")?;
+        if !url.username().is_empty() || url.password().is_some() {
+            bail!("durable observation does not accept URL credentials");
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            bail!(
+                "durable Claude observation needs an endpoint without a query or fragment; retry without --metrics"
+            );
+        }
+        let upstream = crate::usage::forward::sanitized_endpoint(upstream)?;
+        let mut hasher = Sha256::new();
+        hasher.update(profile.as_bytes());
+        hasher.update([0]);
+        hasher.update(kind.as_str().as_bytes());
+        hasher.update([0]);
+        hasher.update(upstream.as_bytes());
+        let hex: String = hasher
+            .finalize()
+            .iter()
+            .take(12)
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Ok(Self {
+            id: format!("forward-{hex}"),
+            profile: profile.to_owned(),
+            kind,
+            upstream,
+        })
+    }
+}
+
+pub(crate) fn valid_forward_id(id: &str) -> bool {
+    id.strip_prefix("forward-").is_some_and(|hex| {
+        hex.len() == 24
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+fn forward_dir(config_dir: &Path) -> PathBuf {
+    run_dir(config_dir).join("bridge/forward")
+}
+
+pub(crate) fn write_forward(config_dir: &Path, route: &ForwardRoute) -> Result<()> {
+    let own = ForwardRoute::new(&route.profile, route.kind, &route.upstream)?;
+    if own != *route {
+        bail!("invalid frozen forwarding route");
+    }
+    restricted_dir(&run_dir(config_dir))?;
+    let dir = forward_dir(config_dir);
+    fs::create_dir_all(&dir).context("could not create forwarding route directory")?;
+    crate::config::atomic_write(
+        &dir.join(format!("{}.json", route.id)),
+        &serde_json::to_vec(route)?,
+        true,
+    )
+}
+
+pub(crate) fn read_forward(config_dir: &Path, id: &str) -> Result<Option<ForwardRoute>> {
+    if !valid_forward_id(id) {
+        return Ok(None);
+    }
+    let path = forward_dir(config_dir).join(format!("{id}.json"));
+    match fs::read(path) {
+        Ok(bytes) => {
+            let route: ForwardRoute =
+                serde_json::from_slice(&bytes).context("could not read frozen forwarding route")?;
+            if route.id != id
+                || ForwardRoute::new(&route.profile, route.kind, &route.upstream)? != route
+            {
+                bail!("invalid frozen forwarding route");
+            }
+            Ok(Some(route))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).context("could not read frozen forwarding route"),
+    }
 }
 
 /// What a move managed.
@@ -524,12 +628,57 @@ mod tests {
     }
 
     #[test]
+    fn forwarding_routes_freeze_only_nonsecret_target_identity() {
+        use crate::config::ProviderKind;
+        let temp = tempfile::tempdir().unwrap();
+        let route = ForwardRoute::new(
+            "work",
+            ProviderKind::Openai,
+            "https://example.test/prefix/v1",
+        )
+        .unwrap();
+        assert!(valid_forward_id(&route.id));
+        write_forward(temp.path(), &route).unwrap();
+        assert_eq!(
+            read_forward(temp.path(), &route.id).unwrap(),
+            Some(route.clone())
+        );
+        assert_ne!(
+            route.id,
+            ForwardRoute::new("work", ProviderKind::Openai, "https://other.test/prefix/v1")
+                .unwrap()
+                .id
+        );
+        let text = fs::read_to_string(forward_dir(temp.path()).join(format!("{}.json", route.id)))
+            .unwrap();
+        assert!(!text.contains("key_digests") && !text.contains("api_key"));
+        let mut forged = route.clone();
+        forged.upstream = "https://other.test/prefix/v1".to_owned();
+        assert!(write_forward(temp.path(), &forged).is_err());
+        for upstream in [
+            "https://user:secret@example.test",
+            "https://example.test?key=secret",
+            "https://example.test#secret",
+        ] {
+            assert!(ForwardRoute::new("work", ProviderKind::Openai, upstream).is_err());
+        }
+        for id in [
+            "../../secret",
+            "forward-00",
+            "forward-0123456789abcdefABCDEF00",
+        ] {
+            assert_eq!(read_forward(temp.path(), id).unwrap(), None);
+        }
+    }
+
+    #[test]
     fn a_move_rewrites_only_alcs_settings_files_that_name_the_old_port() {
         let temp = tempfile::tempdir().unwrap();
         let dir = crate::agents::claude_settings::settings_dir(temp.path());
         fs::create_dir_all(&dir).unwrap();
         let named = dir.join("settings-00000000000000aa.json");
         let other = dir.join("settings-00000000000000bb.json");
+        let forwarding = dir.join("settings-00000000000000cc.json");
         let foreign = dir.join("notes.json");
         fs::write(
             &named,
@@ -541,10 +690,11 @@ mod tests {
             r#"{"env":{"ANTHROPIC_BASE_URL":"https://openrouter.ai/api"}}"#,
         )
         .unwrap();
+        fs::write(&forwarding, r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:24817/f/forward-0123456789abcdef01234567"}}"#).unwrap();
         fs::write(&foreign, "http://127.0.0.1:24817/").unwrap();
 
         let report = move_settings_origin(temp.path(), 24_817, 25_001);
-        assert_eq!(report.moved, 1);
+        assert_eq!(report.moved, 2);
         assert!(report.failed.is_empty(), "{:?}", report.failed);
         assert!(
             fs::read_to_string(&named)
@@ -552,6 +702,11 @@ mod tests {
                 .contains("http://127.0.0.1:25001/r/codex-0123456789ab")
         );
         assert!(fs::read_to_string(&other).unwrap().contains("openrouter"));
+        assert!(
+            fs::read_to_string(&forwarding)
+                .unwrap()
+                .contains("http://127.0.0.1:25001/f/forward-0123456789abcdef01234567")
+        );
         assert_eq!(
             fs::read_to_string(&foreign).unwrap(),
             "http://127.0.0.1:24817/"

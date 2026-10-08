@@ -16,8 +16,14 @@
 //! that would read as "nothing spent".
 
 pub(crate) mod accounts;
+pub(crate) mod forward;
 pub(crate) mod ledger;
+pub(crate) mod native;
+pub(crate) mod observer;
+pub(crate) mod pricing;
+pub(crate) mod query;
 pub(crate) mod quota;
+pub(crate) mod records;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -367,21 +373,54 @@ pub(crate) fn elide_home(path: &Path, home: Option<&Path>) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// `alc usage`.
-pub(crate) fn run(store: &Store, requested: Option<&str>, json: bool) -> Result<u8> {
-    let report = build_report(
-        store,
-        requested,
-        ResolvedBy::Cli,
-        &Env::from_process(),
-        ClaudeStores::All,
-    );
-    if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+#[derive(Serialize)]
+struct CliUsageReport {
+    #[serde(flatten)]
+    report: UsageReport,
+    statistics: query::Statistics,
+}
+
+/// CLI statistics extend the report without teaching the shared browser about
+/// native histories, filesystem paths, or per-request account metadata.
+pub(crate) fn run_statistics(
+    store: &Store,
+    requested: Option<&str>,
+    options: &query::UsageOptions,
+) -> Result<u8> {
+    let statistics = query::statistics(&store.dir, &store.config, options)?;
+    let report = if options.offline {
+        UsageReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            generated_at: now_unix(),
+            resolved_by: ResolvedBy::Cli,
+            accounts: Vec::new(),
+            ledger: ledger::summarise(&store.dir),
+        }
     } else {
-        print!("{}", render(&report, &Theme::detect()));
+        build_report(
+            store,
+            requested,
+            ResolvedBy::Cli,
+            &Env::from_process(),
+            ClaudeStores::All,
+        )
+    };
+    let code = u8::from(report.needs_attention());
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&CliUsageReport { report, statistics })?
+        );
+    } else {
+        let theme = Theme::detect();
+        if options.offline {
+            println!("Accounts: not fetched (--offline)");
+        } else {
+            print!("{}", render(&report, &theme));
+        }
+        print!("{}", query::render_statistics(&statistics, &theme));
     }
-    Ok(u8::from(report.needs_attention()))
+    Ok(code)
 }
 
 /// The whole rendered report as one string, so a test can assert on it
@@ -483,7 +522,7 @@ pub(crate) fn render(report: &UsageReport, theme: &Theme) -> String {
             theme.paint(
                 Tone::Dim,
                 &format!(
-                    "source: {} {} tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone",
+                    "source: {} {} tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)",
                     report.ledger.path,
                     theme.dash()
                 )

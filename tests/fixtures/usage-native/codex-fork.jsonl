@@ -1,0 +1,4 @@
+{"timestamp":"2026-01-02T00:00:00Z","type":"session_meta","payload":{"id":"codex-fork","forked_from_id":"codex-parent","model_provider":"fixture-provider"}}
+{"timestamp":"2026-01-02T00:00:01Z","type":"turn_context","payload":{"model":"gpt-fixture"}}
+{"timestamp":"2026-01-02T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}
+{"timestamp":"2026-01-02T00:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":60,"output_tokens":20,"reasoning_output_tokens":8,"total_tokens":220}}}}
