@@ -662,6 +662,74 @@ fn create_session(run_dir: &Path, work: &Path, fake: &Path, runtime: Option<&str
 
 #[cfg(unix)]
 #[test]
+fn control_management_does_not_require_overridden_browser_role_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for role in ["ALC_REMOTE_OPERATOR", "ALC_REMOTE_VIEWER"] {
+        let config = root();
+        let work = root();
+        initialize(config.path());
+        let fake = work.path().join("claude");
+        fs::write(&fake, "#!/bin/sh\nexec cat\n").unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let _host = StopHosts::new(config.path(), "legacy");
+        command(config.path(), Some("legacy"))
+            .env(role, "synthetic-browser-role-override")
+            .args(["hub", "start"])
+            .assert()
+            .success();
+        let run_dir = config.path().join("run");
+        let absent_role = if role == "ALC_REMOTE_OPERATOR" {
+            "operator.token"
+        } else {
+            "viewer.token"
+        };
+        assert!(!run_dir.join(absent_role).exists());
+        let session = create_session(&run_dir, work.path(), &fake, None);
+        let before = tree(&run_dir);
+        let output = command(config.path(), None)
+            .args(["sessions", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report: Value = serde_json::from_slice(&output).unwrap();
+        assert!(
+            report
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["id"] == session && row["runtime"] == "legacy"),
+            "a browser-only override must not hide a ctl-authenticated owner"
+        );
+        assert_eq!(
+            tree(&run_dir),
+            before,
+            "discovery must not mint credentials"
+        );
+        command(config.path(), None)
+            .args(["hub", "status"])
+            .assert()
+            .success();
+        command(config.path(), None)
+            .args(["rename", &session, "renamed-with-ctl-only"])
+            .assert()
+            .success();
+        command(config.path(), None)
+            .args(["kill", &session])
+            .assert()
+            .success();
+        command(config.path(), Some("legacy"))
+            .args(["hub", "stop", "--drain"])
+            .assert()
+            .success();
+        assert!(!run_dir.join(absent_role).exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn session_management_routes_to_the_real_owner_and_cleanup_stays_in_scope() {
     use std::os::unix::fs::PermissionsExt;
     let config = root();

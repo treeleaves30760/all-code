@@ -300,28 +300,29 @@ impl Secrets {
         Self::load_or_create(config_dir)
     }
 
-    /// Reads an existing owner's credentials without creating or rotating them.
-    /// Management commands carry this run directory into their worker threads.
-    pub(crate) fn read_at(run_dir: &Path, scope: &RuntimeScope) -> Result<Self> {
-        let read = |role: (&str, &str)| -> Result<String> {
-            if let Some(value) = token_override(role.0, scope)? {
-                return Ok(value);
-            }
-            let path = run_dir.join(role.1);
-            let value = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?
-                .trim()
-                .to_owned();
-            if value.is_empty() {
-                bail!("{} is empty", path.display());
-            }
-            Ok(value)
-        };
-        Ok(Self {
-            ctl: read(ROLES[0])?,
-            operator: read(ROLES[1])?,
-            viewer: read(ROLES[2])?,
-        })
+    /// Management authenticates only the local control channel. Browser role
+    /// overrides may intentionally leave no token file in the owner's directory.
+    pub(crate) fn read_ctl_at(run_dir: &Path, scope: &RuntimeScope) -> Result<String> {
+        Self::read_role_at(run_dir, scope, ROLES[0])
+    }
+
+    pub(crate) fn read_operator_at(run_dir: &Path, scope: &RuntimeScope) -> Result<String> {
+        Self::read_role_at(run_dir, scope, ROLES[1])
+    }
+
+    fn read_role_at(run_dir: &Path, scope: &RuntimeScope, role: (&str, &str)) -> Result<String> {
+        if let Some(value) = token_override(role.0, scope)? {
+            return Ok(value);
+        }
+        let path = run_dir.join(role.1);
+        let value = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?
+            .trim()
+            .to_owned();
+        if value.is_empty() {
+            bail!("{} is empty", path.display());
+        }
+        Ok(value)
     }
 
     pub(crate) fn run_dir(config_dir: &Path) -> PathBuf {
@@ -699,9 +700,7 @@ mod tests {
         assert_ne!(legacy.ctl, current.ctl);
         assert_eq!(fs::read(temp.path().join("run/ctl.token")).unwrap(), old);
         assert_eq!(
-            Secrets::read_at(&runtime::run_dir_for(temp.path(), &scope), &scope)
-                .unwrap()
-                .ctl,
+            Secrets::read_ctl_at(&runtime::run_dir_for(temp.path(), &scope), &scope).unwrap(),
             current.ctl
         );
         assert!(!temp.path().join("credentials.toml").exists());

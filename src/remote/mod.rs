@@ -220,7 +220,7 @@ pub fn share(
 
     attach(
         &Secrets::run_dir(&store.dir),
-        &secrets,
+        &secrets.ctl,
         &session_id,
         cols,
         rows,
@@ -239,7 +239,7 @@ pub fn share(
 /// resizing it, so the two no longer take turns.
 pub(crate) fn attach(
     run_dir: &Path,
-    secrets: &Secrets,
+    ctl_secret: &str,
     session_id: &str,
     cols: u16,
     rows: u16,
@@ -255,13 +255,13 @@ pub(crate) fn attach(
     // terminal in charge of the page's window - but it would put this
     // terminal on the mirror's byte stream, which is not what `--tmux`
     // promised either.
-    if let Some(card) = card_for(run_dir, secrets, session_id)
+    if let Some(card) = card_for(run_dir, ctl_secret, session_id)
         && let Some(host) = card.tmux
     {
-        return attach_tmux(run_dir, secrets, session_id, &host);
+        return attach_tmux(run_dir, ctl_secret, session_id, &host);
     }
 
-    let stream = hub::attach_stream_at(run_dir, &secrets.ctl, session_id, cols, rows)?;
+    let stream = hub::attach_stream_at(run_dir, ctl_secret, session_id, cols, rows)?;
     let terminal = local::TerminalGuard::acquire()?;
 
     let detached = Arc::new(AtomicBool::new(false));
@@ -287,14 +287,14 @@ pub(crate) fn attach(
     );
 
     let owner_run_dir = run_dir.to_owned();
-    let ctl_secret = secrets.ctl.clone();
+    let resize_secret = ctl_secret.to_owned();
     let id = session_id.to_owned();
     local::watch_resize(Arc::clone(&finished), move |cols, rows| {
         // The relay's owner is captured explicitly; this thread must not look
         // up whichever runtime the managing executable happens to belong to.
         let _ = ctl::request_at(
             &owner_run_dir,
-            &ctl_secret,
+            &resize_secret,
             &ctl::CtlRequest::Resize {
                 id: id.clone(),
                 cols,
@@ -319,7 +319,7 @@ pub(crate) fn attach(
     }
 
     // The relay ended because the agent did. Ask what it exited with.
-    let code = match ctl::request_at(run_dir, &secrets.ctl, &ctl::CtlRequest::List) {
+    let code = match ctl::request_at(run_dir, ctl_secret, &ctl::CtlRequest::List) {
         Ok(ctl::CtlReply::Sessions { sessions }) => sessions
             .iter()
             .find(|card| card.id == session_id)
@@ -347,7 +347,7 @@ pub(crate) fn attach(
 /// agent finished or failed, so asking the hub is the only honest answer.
 fn attach_tmux(
     run_dir: &Path,
-    secrets: &Secrets,
+    ctl_secret: &str,
     session_id: &str,
     host: &tmux::Tmux,
 ) -> Result<u8> {
@@ -391,7 +391,7 @@ fn attach_tmux(
     // the client's status is only consulted for the case the hub cannot
     // describe: the session is still there and this terminal never got on
     // it.
-    match card_for(run_dir, secrets, session_id) {
+    match card_for(run_dir, ctl_secret, session_id) {
         Some(card) => match card.exit.as_ref() {
             Some(exit) => Ok(exit_code(exit)),
             None if status.success() => {
@@ -414,8 +414,8 @@ fn attach_tmux(
 /// question they have a sensible answer for either way - "is this a tmux
 /// session" and "did the agent exit" - and a hub that has gone away between
 /// the attach and this call should not turn a clean detach into a failure.
-fn card_for(run_dir: &Path, secrets: &Secrets, session_id: &str) -> Option<wire::SessionCard> {
-    list_at(run_dir, secrets)
+fn card_for(run_dir: &Path, ctl_secret: &str, session_id: &str) -> Option<wire::SessionCard> {
+    list_at(run_dir, ctl_secret)
         .ok()?
         .into_iter()
         .find(|card| card.id == session_id)
@@ -636,7 +636,7 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
             let owner = stop_owner(&owners)?;
             ctl::request_at(
                 &owner.run_dir,
-                &owner.secrets.ctl,
+                &owner.ctl,
                 &ctl::CtlRequest::Shutdown { drain },
             )?;
             println!("hub stopped (runtime {})", owner.scope);
@@ -664,10 +664,7 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
                 for url in owner.page_urls(&RemoteSettings::load(&store.dir)?) {
                     println!("page:     {url}");
                 }
-                println!(
-                    "sessions: {}",
-                    list_at(&owner.run_dir, &owner.secrets)?.len()
-                );
+                println!("sessions: {}", list_at(&owner.run_dir, &owner.ctl)?.len());
             }
             Ok(0)
         }
@@ -722,14 +719,14 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
             let owners = owners(store)?;
             let (owner, id) = resolve_owned(&owners, &id)?;
             let (cols, rows) = local::size();
-            attach(&owner.run_dir, &owner.secrets, &id, cols, rows)
+            attach(&owner.run_dir, &owner.ctl, &id, cols, rows)
         }
         HubCommand::Kill { id } => {
             let owners = owners(store)?;
             let (owner, id) = resolve_owned(&owners, &id)?;
             ctl::request_at(
                 &owner.run_dir,
-                &owner.secrets.ctl,
+                &owner.ctl,
                 &ctl::CtlRequest::Kill { id: id.clone() },
             )?;
             println!("stopped {id}");
@@ -740,7 +737,7 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
             let (owner, id) = resolve_owned(&owners, &id)?;
             ctl::request_at(
                 &owner.run_dir,
-                &owner.secrets.ctl,
+                &owner.ctl,
                 &ctl::CtlRequest::Rename {
                     id: id.clone(),
                     name: name.clone(),
@@ -756,14 +753,18 @@ struct Owner {
     scope: crate::runtime::RuntimeScope,
     run_dir: PathBuf,
     record: ctl::HubRecord,
-    secrets: Secrets,
+    ctl: String,
+    operator: Option<String>,
 }
 
 impl Owner {
     fn page_urls(&self, settings: &RemoteSettings) -> Vec<String> {
+        let Some(operator) = &self.operator else {
+            return Vec::new();
+        };
         let mut urls = vec![server::page_url(
             self.record.port,
-            &self.secrets.operator,
+            operator,
             self.record.lan,
         )];
         // Legacy keeps the tunnel links it has always advertised. A tunnel
@@ -774,7 +775,7 @@ impl Owner {
         {
             for host in &settings.allowed_hosts {
                 if !host.starts_with("*.") {
-                    urls.push(format!("https://{host}/#k={}", self.secrets.operator));
+                    urls.push(format!("https://{host}/#k={operator}"));
                 }
             }
         }
@@ -797,7 +798,7 @@ fn owners(store: &Store) -> Result<Vec<Owner>> {
         let Some(record) = ctl::read_hub_record_at(&run_dir)? else {
             continue;
         };
-        let Ok(secrets) = Secrets::read_at(&run_dir, &scope) else {
+        let Ok(ctl_secret) = Secrets::read_ctl_at(&run_dir, &scope) else {
             continue;
         };
         let Ok(ctl::CtlReply::Hello {
@@ -808,7 +809,7 @@ fn owners(store: &Store) -> Result<Vec<Owner>> {
             generation,
             protocol,
             capabilities,
-        }) = ctl::request_at(&run_dir, &secrets.ctl, &ctl::CtlRequest::Hello)
+        }) = ctl::request_at(&run_dir, &ctl_secret, &ctl::CtlRequest::Hello)
         else {
             continue;
         };
@@ -817,10 +818,12 @@ fn owners(store: &Store) -> Result<Vec<Owner>> {
         {
             continue;
         }
+        let operator = Secrets::read_operator_at(&run_dir, &scope).ok();
         owners.push(Owner {
             scope,
             run_dir,
-            secrets,
+            ctl: ctl_secret,
+            operator,
             record: ctl::HubRecord {
                 alc,
                 port,
@@ -861,7 +864,7 @@ struct OwnedSession {
 fn owned_sessions(owners: &[Owner]) -> Result<Vec<OwnedSession>> {
     let mut sessions = Vec::new();
     for owner in owners {
-        for card in list_at(&owner.run_dir, &owner.secrets)? {
+        for card in list_at(&owner.run_dir, &owner.ctl)? {
             sessions.push(OwnedSession {
                 card,
                 runtime: owner.scope.identity().to_owned(),
@@ -871,8 +874,8 @@ fn owned_sessions(owners: &[Owner]) -> Result<Vec<OwnedSession>> {
     Ok(sessions)
 }
 
-fn list_at(run_dir: &Path, secrets: &Secrets) -> Result<Vec<wire::SessionCard>> {
-    match ctl::request_at(run_dir, &secrets.ctl, &ctl::CtlRequest::List)? {
+fn list_at(run_dir: &Path, ctl_secret: &str) -> Result<Vec<wire::SessionCard>> {
+    match ctl::request_at(run_dir, ctl_secret, &ctl::CtlRequest::List)? {
         ctl::CtlReply::Sessions { sessions } => Ok(sessions),
         other => bail!("the hub answered a list with {other:?}"),
     }
