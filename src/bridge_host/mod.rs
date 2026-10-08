@@ -22,6 +22,7 @@ use anyhow::{Context, Result, bail};
 use crate::config::{Provider, Store};
 
 pub(crate) mod files;
+mod observer_auth;
 mod serve;
 
 pub(crate) use serve::run as serve;
@@ -31,30 +32,29 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STALE_LOCK: Duration = Duration::from_secs(30);
 
 /// What a running bridge says about itself.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Hello {
-    /// Tells one bridge process from another on a port that was reused.
-    /// Nothing in alc compares two hellos yet, so it is carried, not read.
-    #[allow(
-        dead_code,
-        reason = "part of the hello a bridge publishes; no caller compares instances yet"
-    )]
+    /// Distinguishes sealed observer credentials across host restarts.
     pub instance: String,
     pub alc: String,
     pub pid: u32,
     pub port: u16,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 fn agent() -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(HELLO_TIMEOUT))
+        .max_redirects(0)
+        .proxy(None)
         .build();
     ureq::Agent::new_with_config(config)
 }
 
-/// Asks whatever listens on `port` whether it is this configuration's bridge.
-/// Only a listener that knows the token can answer, so some other program on
-/// the port is never mistaken for it.
+/// The legacy token-protected greeting, retained for existing bridge callers.
+/// Native-key observation uses the separate authenticated challenge instead:
+/// a bearer in an HTTP request does not prove the listener's identity.
 pub(crate) fn hello(port: u16, token: &str) -> Result<Hello> {
     let mut response = agent()
         .get(&format!("http://127.0.0.1:{port}/alc/hello"))
@@ -68,6 +68,89 @@ pub(crate) fn hello(port: u16, token: &str) -> Result<Hello> {
     serde_json::from_str(&text).context("the bridge's answer did not parse")
 }
 
+/// A fresh challenge authenticates this listener before a helper seals a
+/// native key. No control bearer or vendor key is sent to the probed port.
+fn authenticated_hello(config_dir: &Path, port: u16) -> Result<Hello> {
+    let key = observer_auth::ObserverKey::load(config_dir)?;
+    let nonce = crate::remote::generate_token()?;
+    let mut response = agent()
+        .get(&format!("http://127.0.0.1:{port}/alc/observer-hello"))
+        .header("x-alc-observer-challenge", &nonce)
+        .call()
+        .context("the background bridge has no authenticated observer; stop it and relaunch")?;
+    let text = response
+        .body_mut()
+        .with_config()
+        .limit(8192)
+        .read_to_string()?;
+    let reply: observer_auth::AuthenticatedHello = serde_json::from_str(&text)
+        .context("the background bridge has no authenticated observer; stop it and relaunch")?;
+    key.verify(&nonce, &reply)?;
+    if reply.hello.port != port {
+        bail!("the authenticated observer answered from a different port");
+    }
+    Ok(reply.hello)
+}
+
+fn observer_running(config_dir: &Path, hello: Hello) -> Result<(Running, Hello)> {
+    let running = Running {
+        port: hello.port,
+        token: files::read_token(config_dir)
+            .context("the background bridge has no control token")?,
+        pid: hello.pid,
+        alc: hello.alc.clone(),
+        capabilities: hello.capabilities.clone(),
+    };
+    register_capability(&running)?;
+    Ok((running, hello))
+}
+
+fn refuses_secret_free_legacy_hello(port: u16) -> bool {
+    matches!(
+        agent()
+            .get(&format!("http://127.0.0.1:{port}/alc/hello"))
+            .call(),
+        Err(ureq::Error::StatusCode(401))
+    )
+}
+
+fn ensure_observer(config_dir: &Path) -> Result<(Running, Hello)> {
+    observer_auth::ObserverKey::load(config_dir)?;
+    if let Some(port) = files::remembered_port(config_dir) {
+        if let Ok(hello) = authenticated_hello(config_dir, port) {
+            return observer_running(config_dir, hello);
+        }
+        if refuses_secret_free_legacy_hello(port) {
+            bail!(
+                "the existing background bridge has no authenticated observer; run `alc bridge stop` then relaunch, or omit --metrics"
+            );
+        }
+    }
+    files::load_or_create_token(config_dir)?;
+    let lock = take_lock(&files::lock_path(config_dir))?;
+    if lock.is_some()
+        && let Err(error) = start_detached(config_dir)
+    {
+        if let Some(lock) = lock {
+            lock.release();
+        }
+        return Err(error);
+    }
+    let deadline = Instant::now() + START_TIMEOUT;
+    while Instant::now() < deadline {
+        if let Some(port) = files::remembered_port(config_dir)
+            && let Ok(hello) = authenticated_hello(config_dir, port)
+        {
+            if let Some(lock) = lock {
+                lock.release();
+            }
+            return observer_running(config_dir, hello);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    bail!("alc's authenticated observer did not start; run `alc bridge stop` and relaunch")
+}
+
 /// A bridge that answered.
 #[derive(Debug, Clone)]
 pub(crate) struct Running {
@@ -75,6 +158,7 @@ pub(crate) struct Running {
     pub token: String,
     pub pid: u32,
     pub alc: String,
+    pub capabilities: Vec<String>,
 }
 
 impl Running {
@@ -94,6 +178,7 @@ pub(crate) fn probe(config_dir: &Path) -> Option<Running> {
         token,
         pid: hello.pid,
         alc: hello.alc,
+        capabilities: hello.capabilities,
     })
 }
 
@@ -401,8 +486,9 @@ pub(crate) fn status_rows(config_dir: &Path) -> Vec<(&'static str, String)> {
     rows
 }
 
-/// What `alc claude-credential <route>` prints: the bridge's token for a Codex
-/// route, after making sure a bridge is up, or a profile's API key.
+/// What `alc claude-credential <route>` prints: a bridge token for a Codex
+/// route, a sealed route/instance credential for an observer, or a direct
+/// profile's API key.
 ///
 /// One line, however it was resolved. Claude Code reads the helper's whole
 /// stdout as the credential, and `Credentials::key_for` hands back an
@@ -455,6 +541,45 @@ fn resolve_credential(store: &Store, route: &str) -> Result<Resolved> {
             value,
         });
     }
+    if files::valid_forward_id(route) {
+        let record = files::read_forward(&store.dir, route)?
+            .context("forwarding route is gone; relaunch the session with --metrics")?;
+        let provider = store
+            .config
+            .providers
+            .get(&record.profile)
+            .context("forwarding profile is gone; relaunch the session")?;
+        let upstream = crate::agents::claude::claude_base_url(provider)
+            .context("profile no longer has a Messages endpoint")?;
+        let current = files::ForwardRoute::new(&record.profile, provider.kind, &upstream)?;
+        if !provider.enabled || current != record {
+            bail!(
+                "forwarding profile changed its endpoint; relaunch rather than send a new key to the previous host"
+            );
+        }
+        let value = store
+            .credentials
+            .key_for(&record.profile, provider)
+            .context("forwarding profile has no key available; relaunch or save its key")?;
+        let value = value.trim().to_owned();
+        if value.contains(['\n', '\r']) {
+            bail!("forwarding credential contains a line break; save it again");
+        }
+        let (running, hello) = ensure_observer(&store.dir)?;
+        register_forward(
+            &store.dir,
+            &running,
+            &hello,
+            route,
+            vec![crate::usage::forward::key_digest(&value)],
+        )?;
+        let value =
+            observer_auth::ObserverKey::load(&store.dir)?.seal(route, &hello.instance, &value)?;
+        return Ok(Resolved {
+            from: "the authenticated local observer".to_owned(),
+            value,
+        });
+    }
     let record = files::read_route(&store.dir, route)?.with_context(|| {
         format!(
             "alc's bridge has no route '{route}'; start `alc claude` once with that Codex profile \
@@ -476,6 +601,94 @@ fn resolve_credential(store: &Store, route: &str) -> Result<Resolved> {
     })
 }
 
+pub(crate) const FORWARD_CAPABILITY: &str = "forward-observer-v2";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct ForwardRegistration {
+    pub route: String,
+    pub key_digests: Vec<String>,
+}
+
+fn register_forward(
+    config_dir: &Path,
+    running: &Running,
+    hello: &Hello,
+    route: &str,
+    key_digests: Vec<String>,
+) -> Result<()> {
+    if !running
+        .capabilities
+        .iter()
+        .any(|capability| capability == FORWARD_CAPABILITY)
+    {
+        bail!(
+            "the running background bridge cannot observe API traffic; stop it with `alc bridge stop` and relaunch, or omit --metrics"
+        );
+    }
+    let registration = ForwardRegistration {
+        route: route.to_owned(),
+        key_digests,
+    };
+    let body = observer_auth::ObserverKey::load(config_dir)?.seal_forward_control(
+        hello,
+        &running.token,
+        registration,
+    )?;
+    agent()
+        .post(&format!("{}/alc/observer-forward", running.origin()))
+        .header("content-type", "text/plain")
+        .send(body.as_bytes())
+        .context("could not register the forwarding credential; relaunch with --metrics")?;
+    Ok(())
+}
+
+pub(crate) fn prepare_forward(
+    spec: &mut crate::launch::LaunchSpec,
+    plan: &crate::agents::metrics::ForwardPlan,
+    config_dir: &Path,
+) -> Result<()> {
+    let route = files::ForwardRoute::new(&spec.provider_name, spec.provider_kind, &plan.upstream)?;
+    let (running, hello) = ensure_observer(config_dir)?;
+    files::write_forward(config_dir, &route)?;
+    register_forward(
+        config_dir,
+        &running,
+        &hello,
+        &route.id,
+        plan.key_digests.clone(),
+    )?;
+    crate::agents::metrics::apply(spec, &format!("{}/f/{}", running.origin(), route.id), plan)?;
+    let alc = std::env::current_exe().context("could not resolve alc helper path")?;
+    let dir = std::path::absolute(config_dir)?;
+    let helper = crate::agents::claude_settings::helper_command(
+        crate::agents::claude_settings::Shell::HOST,
+        &alc,
+        &dir,
+        &route.id,
+    )?;
+    let settings = spec
+        .settings_plan
+        .as_mut()
+        .context("Claude observation needs an alc settings document")?;
+    settings.document["apiKeyHelper"] = serde_json::Value::String(helper);
+    settings.document["env"]["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"] =
+        serde_json::Value::String("60000".to_owned());
+    Ok(())
+}
+
+fn register_capability(running: &Running) -> Result<()> {
+    if !running
+        .capabilities
+        .iter()
+        .any(|capability| capability == FORWARD_CAPABILITY)
+    {
+        bail!(
+            "the running background bridge cannot observe API traffic; run `alc bridge stop` then relaunch, or omit --metrics"
+        );
+    }
+    Ok(())
+}
+
 /// Which of the two places `Credentials::key_for` reads a profile's key from
 /// it came from, in the words of a message that has to send the user to the
 /// right one. Asked in the same order `key_for` looks.
@@ -494,6 +707,151 @@ fn key_source(store: &Store, profile: &str, provider: &Provider) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_impostor_on_the_remembered_port_receives_no_control_or_vendor_key() {
+        use std::io::{Read as _, Write as _};
+        let dir = tempfile::tempdir().unwrap();
+        let listener = (0..50)
+            .find_map(|_| {
+                let port = files::choose_port().unwrap();
+                std::net::TcpListener::bind(("127.0.0.1", port)).ok()
+            })
+            .unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = files::load_or_create_token(dir.path()).unwrap();
+        files::remember_port(dir.path(), port).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut requests = Vec::new();
+            while Instant::now() < deadline {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(500)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while request.len() < 8192 && !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&buffer[..read]),
+                    }
+                }
+                if request.is_empty() {
+                    continue;
+                }
+                let body = serde_json::json!({
+                    "instance":"impostor", "alc":env!("CARGO_PKG_VERSION"),
+                    "pid":1, "port":port, "capabilities":[FORWARD_CAPABILITY],
+                    "proof":"invalid-proof"
+                })
+                .to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                requests.push(String::from_utf8(request).unwrap());
+                break;
+            }
+            requests
+        });
+        assert!(authenticated_hello(dir.path(), port).is_err());
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /alc/observer-hello "));
+        assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
+        assert!(!requests[0].contains(&token));
+    }
+
+    #[test]
+    fn legacy_same_version_listener_is_refused_without_exposing_a_bearer() {
+        use std::io::{Read as _, Write as _};
+        let dir = tempfile::tempdir().unwrap();
+        let listener = (0..50)
+            .find_map(|_| {
+                let port = files::choose_port().unwrap();
+                std::net::TcpListener::bind(("127.0.0.1", port)).ok()
+            })
+            .unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = files::load_or_create_token(dir.path()).unwrap();
+        files::remember_port(dir.path(), port).unwrap();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut requests = Vec::new();
+            while requests.len() < 2 && Instant::now() < deadline {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while bytes.len() < 8192 && !bytes.windows(4).any(|part| part == b"\r\n\r\n") {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => bytes.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                let status = if request.starts_with("GET /alc/observer-hello ") {
+                    "404 Not Found"
+                } else {
+                    "401 Unauthorized"
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+        let error = ensure_observer(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("bridge stop"), "{error}");
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(!requests.iter().any(|request| request.contains(&token)
+            || request.to_ascii_lowercase().contains("authorization:")));
+        assert_eq!(files::remembered_port(dir.path()), Some(port));
+        assert!(!files::lock_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn same_version_bridge_without_observer_capability_is_refused() {
+        let running = Running {
+            port: 24_817,
+            token: "test".to_owned(),
+            pid: 1,
+            alc: env!("CARGO_PKG_VERSION").to_owned(),
+            capabilities: Vec::new(),
+        };
+        assert!(
+            register_capability(&running)
+                .unwrap_err()
+                .to_string()
+                .contains("bridge stop")
+        );
+        let capable = Running {
+            capabilities: vec![FORWARD_CAPABILITY.to_owned()],
+            ..running
+        };
+        register_capability(&capable).unwrap();
+        let old: Hello = serde_json::from_value(serde_json::json!({ "instance":"test", "alc":env!("CARGO_PKG_VERSION"), "pid":1, "port":24817 })).unwrap();
+        assert!(old.capabilities.is_empty());
+    }
 
     /// A lock left behind by a starter that died: old enough that every
     /// starter looking at it judges it stale at the same moment, which is the

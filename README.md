@@ -209,6 +209,20 @@ Code, and so does plain `claude attach`: the session already carries its
 settings file. So do the commands that never reach a model - `mcp`, `doctor`,
 `plugin`, `update` and the like - which start no bridge and count no session.
 
+**API-key metrics can survive background restarts too.** A supported
+`alc --openrouter --metrics claude` launch uses a native-protocol forwarding
+route on the same durable host. Its settings contain the loopback endpoint and
+alc's helper, not a key. The helper authenticates the host using the independent
+owner-only `run/bridge.observer-key`, registers only a digest, and returns an
+AEAD-sealed surrogate bound to the frozen route/current host instance — not the
+vendor key over local HTTP. The host restores upstream authentication only on
+dispatch. Old surrogates get HTTP 401 after a host restart; rerun the helper.
+Save shell-only keys with `alc config key <profile>` for later restarts. Ordinary
+direct launches stay direct, native Claude login is not observed, and changing
+or disabling the route's provider endpoint requires a fresh launch. Codex
+translation requests are observed automatically. [Usage and
+performance](#ttft-tps-and-estimated-cost) explains what is measured.
+
 ## Any provider, not just Codex
 
 `codex login` is the shortest path, not the only one. Point any of the eight
@@ -249,7 +263,8 @@ and protocol for every kind.
 | `alc config` | The configuration TUI; also `init`, `show`, `path`, `upsert`, `key`, `set-default`, `remove` |
 | `alc doctor` | Binaries, credentials, compatibility, defaults, bridge and remote state |
 | `alc models` | The GPT models the Codex bridge offers; `--refresh`, `--json` |
-| `alc usage` | What is left on each Claude/Codex login and API-key balance, and usage per provider and agent; `--json` |
+| `alc usage` | Accounts/quota, the compatibility ledger, and token/cost statistics; `--daily`, `--monthly`, `--offline`, `--pricing-file`, `--json` |
+| `alc tps` | Client-observed TTFT and estimated/E2E tokens per second; latest 20 alc request records by default, `--limit`, `--json` |
 | `alc update` | Update `alc` in place; `--check`, `--force` |
 | `alc share <agent>` | Launch with the session mirrored to a browser page |
 | `alc sessions` | The page link, then the shared sessions (tmux ones marked) |
@@ -257,7 +272,7 @@ and protocol for every kind.
 | `alc rename <id> <name>` | Rename a session's card on the page |
 | `alc kill <id>` | Stop a shared session |
 | `alc hub` | `status`, `start`, `stop --drain` for the process that owns sessions |
-| `alc bridge` | The background bridge Claude Code sessions reach the Codex login through; `status`, `stop` |
+| `alc bridge` | The durable background host for Claude's Codex translation and opt-in API-key observation; `status`, `stop` |
 | `alc remote` | `status`, `url`, `on`/`off`, `auto-share`, `allow-host`, `token --rotate` |
 | `alc confirm <ticket>` | Approve a permission change a shared session asked for |
 
@@ -278,7 +293,7 @@ To pass an option with one of those same names to Claude itself, put it after
 `--`: `alc claude -- --model sonnet`. A `--settings` you pass is merged into
 alc's, yours winning, because Claude Code reads only one.
 
-alc's own flags — `--share`, `--no-share`, `--bind-lan`, `--name`,
+alc's own flags — `--metrics`, `--share`, `--no-share`, `--bind-lan`, `--name`,
 `--permission`, `--tmux`, `-t` — have to come *before* the agent name. After it
 they would be handed to the agent as prompt text, so alc stops and says so
 instead — unless you put `--` straight after the agent name, which says you
@@ -295,7 +310,8 @@ in the line it reaches the agent as an argument of its own.
 **Previewing.** `alc --codex --dry-run claude` prints the resolved agent and
 provider, the command with secrets redacted, a line for the built-in adapter when
 the launch uses one, and every file it would write — and says when a launch would
-be refused rather than only what would succeed.
+be refused rather than only what would succeed. A dry-run starts no listener and
+writes nothing, including with `--metrics`.
 
 ## Diagnostics
 
@@ -331,10 +347,13 @@ Usage by provider and agent
   PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
   codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
   ollama    opencode  1         —      —      —        —       —       12m ago
-  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone
+  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
 
 ✓ ready
 ```
+
+This excerpt is the retained Accounts and compatibility-ledger view; the normal
+CLI report now adds token/cost statistics after it.
 
 alc asks each login's own vendor what is left: chatgpt.com for a Codex login,
 api.anthropic.com for Claude Code's, and the published balance endpoint for an
@@ -353,14 +372,113 @@ alc config upsert codex-work --kind codex --codex-home ~/.codex-work
 alc --provider codex-work claude
 ```
 
-The second table comes from `usage.jsonl` in the config directory: one line per
-launch, and one per turn the Codex bridge carried. `CACHED` is the part of
-`INPUT` served from Codex's prompt cache; `CACHE %` is that token share, rounded
-to a whole percent. For traffic alc did not carry, token columns show `—`
-because the values are unknown, not zero. The remote-control page shows the same
-two sections behind the usage button in its header.
+The compatibility table reads `usage.jsonl`: launch entries plus metadata-only
+request records from the Codex translation bridge and opt-in direct API
+observation. `CACHED` is the part of `INPUT` read from the prompt cache;
+`CACHE %` is that token share, rounded to a whole percent. Unobserved traffic
+shows `—`, not zero. The remote-control page keeps Accounts and this ledger;
+the new native-history/cost and TPS reports are CLI-only.
 
-[Usage](https://treeleaves30760.github.io/all-code/usage) has the whole thing.
+Global `--provider` / provider shortcuts filter **Accounts only**. The ledger
+remains unfiltered; use `--filter-profile` to filter recorded statistics.
+`alc usage --json` keeps the legacy `schema_version: 1`, `accounts`, and `ledger`
+fields and adds `statistics`.
+
+### TTFT, TPS, and estimated cost
+
+```sh
+alc tps                         # latest 20 matching alc request records
+alc tps --limit 50 --json
+alc usage --offline --daily --since 2026-10-01 --until 2026-10-08
+alc usage --offline --monthly --source claude,codex --json
+alc usage --offline --source alc --filter-profile work --filter-agent claude
+```
+
+Both queries accept `--source all|alc|claude|codex` (comma-separated lists too),
+`--since` inclusive and `--until` exclusive (`YYYY-MM-DD` at UTC midnight or
+RFC3339), and exact `--filter-profile`, `--filter-agent`, and `--filter-model`.
+Usage defaults to all sources; TPS defaults to `alc` and accepts `--limit`
+1–10000. `--daily` / `--monthly` are mutually exclusive UTC buckets.
+`alc usage --offline` reads only local configuration, histories, and pricing:
+no credentials/Keychain, quota calls, refresh, or network. `alc tps` is also a
+local, credential-free read.
+
+Repeated `--claude-dir /absolute/config-root` reads `projects/`; repeated
+`--codex-dir /absolute/codex-home` reads `sessions/` and `archived_sessions/`.
+Without explicit roots, alc includes profile-pinned directories plus the
+matching shell directory or `~/.claude` / `~/.codex`. These are read-only,
+metadata-only JSONL sources, bounded to 4 MiB per line: no prompts, generated
+output, tool content, or keys are copied into alc's ledger or an import cache.
+Past native usage is not assigned today's alc profile. Only exact,
+protocol-qualified IDs prove duplicates; unverified overlaps keep source
+subtotals **without an additive grand total**. Codex cumulative deltas and
+checkpoints are not request counts; checkpoints are not summed as token usage.
+Coverage diagnostics expose skipped or ambiguous records rather than calling
+them zero. In new statistics, each zero input/output counter in legacy v1/v2
+turns is independently unknown; positive counters and compatibility-ledger totals
+remain intact.
+
+**New direct requests need opt-in.** The Codex translation bridge is observed
+automatically. Supported direct API launches use `alc --metrics <agent>`;
+without it, their behavior stays unchanged:
+
+```sh
+alc --openrouter --metrics claude
+alc --metrics --provider openai codex --config model_providers.alc_openai.supports_websockets=false
+alc --openrouter --metrics --dry-run claude
+```
+
+Observation uses a supported alc-managed endpoint seam, preserving the SDK,
+protocol, model, and **upstream authentication**; durable Claude metrics uses
+the sealed-helper local credential described above. Codex CLI observation is
+HTTP-only and requires you to **explicitly** pass
+`--config model_providers.alc_<profile-normalized>.supports_websockets=false`
+(profile hyphens become underscores); missing/true is refused. alc neither
+forces WebSockets off nor claims to observe them, and ordinary no-metrics
+WebSocket behavior stays untouched. OpenCode/Copilot, Qwen/Goose's supported
+Anthropic/OpenAI branches, and Kimi's generated temporary config have supported
+seams. Direct Pi, native OAuth/login, Qwen Google/Gemini, Goose native
+OpenRouter/Ollama or OpenAI split endpoints with query/fragment, and explicit
+endpoint/helper/config/provider overrides outside those seams are not observed;
+unsafe/unsupported explicit `--metrics` is refused, not silently rerouted.
+Ordinary no-metrics launches are unchanged. A dry-run starts no listener and
+writes nothing.
+
+The durable Claude handshake/control challenges authenticate the host without
+publishing `bridge.observer-key`; `forward-observer-v2` refuses older daemons
+even with a matching version string (`alc bridge stop`, then relaunch).
+Durable Claude observation artifacts never write the plaintext vendor key.
+**The local data plane is still loopback HTTP, not TLS**: trust local processes. The Claude
+surrogate prevents raw vendor-key disclosure, not plaintext request-body
+interception by a hijacked local port; other agents' ephemeral routes do not
+promise sealed credentials.
+
+**What the timing means.** TTFT measures request start to the first nonempty
+generated text/thinking/tool arguments, not headers, roles, usage, or pings; a bridge
+that suppresses reasoning waits for visible content. Streaming TPS estimates
+`(N - 1) / (terminal - first matching content)` only with a known
+output/reasoning basis. `BASIS` shows `gross`, `non-reasoning`, or `unknown`.
+E2E TPS is gross reported output over
+request-start-to-terminal time, including queueing/network/reasoning — **not
+server decode speed**. Nonstreaming TTFT and old/native-history timing are
+`N/A`. Summaries give valid sample counts and duration-weighted TPS, not sums
+of concurrent speeds.
+
+**What the dollars mean.** USD API-token/API-equivalent snapshot estimates,
+not invoices or subscription bills; tax, discounts, tools, and non-token
+charges are excluded. Missing counters or exact rates stay unknown/partial,
+with reasons and nullable totals. Reasoning is an output subset, not billed
+again; cache reads/writes and TTLs keep their distinct semantics. Pricing is an
+offline curated LiteLLM subset dated 2026-10-08, pinned to commit
+`33d908e0ae2c0a257eeb5d546df08527d348a670` with SHA-256/MIT provenance, not a live
+price feed. Add exact local/custom rates in the separate config-directory
+`pricing.toml`, or use `alc usage --pricing-file PATH`; missing prices are not
+free, and free rates must be explicit `"0"` strings. Historical usage is
+repriced with the named snapshot. See the [pricing sidecar
+schema](https://treeleaves30760.github.io/all-code/configuration#pricing-sidecar).
+
+[Usage](https://treeleaves30760.github.io/all-code/usage) has the full measurement,
+coverage, cost, and JSON reference.
 
 ## Providers and agents
 
@@ -773,8 +891,23 @@ does today.
 - `remote.toml`: sharing — on/off, share-by-default, bind address, port, and the
   permission ceiling. `alc config show` prints the sharing and share-by-default
   values as comments at the end.
-- `usage.jsonl`: one line per launch, and one per turn the Codex bridge carried.
-  `alc usage` aggregates it; delete it to start counting again.
+- `usage.jsonl`: launches and metadata-only requests from the Codex translation
+  bridge and opt-in `--metrics` observation. `alc usage` / `alc tps` read it;
+  deleting it resets alc records, not native Claude/Codex histories.
+- `run/bridge.observer-key`: independent owner-only local observer secret
+  (`0600` on Unix), not an API key. Authenticates host/control challenges and
+  AEAD-seals durable Claude metrics credentials to a frozen route/current host
+  instance; never published by the handshake or sent upstream. It does not
+  provide TLS or local request-body confidentiality.
+- `pricing.toml`: optional exact token-rate overrides, separate from
+  `config.toml`: `version = 1`, `currency = "USD"`,
+  `units = "USD-per-million-tokens"`, and `[[models]]` entries requiring
+  `provider`/`model`. Optional selectors are `profile`, `endpoint`, `tier`,
+  `context_min_tokens`, `context_max_tokens`, and exact `aliases`. Rates are
+  decimal strings `input`, `output`, `cache_read`, and either `cache_write` or
+  `cache_write_5m`/`cache_write_1h`, in USD per million tokens. Selected overrides
+  replace bundled scopes; omitted rates stay unknown. See the [full
+  schema](https://treeleaves30760.github.io/all-code/configuration#pricing-sidecar).
 
 Override the directory with `ALC_CONFIG_DIR`. Useful scripting commands:
 

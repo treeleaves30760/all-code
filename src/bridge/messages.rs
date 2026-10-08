@@ -1212,12 +1212,21 @@ async fn messages(
     let mut request = parse(body)?;
     serve_codex_model(&state.config, &mut request);
     let upstream_request = to_upstream(&request, affinity.as_ref())?;
+    let downstream_id = message_id();
+    let observed = upstream::observation(
+        state,
+        &request.model,
+        request.stream,
+        Some(&downstream_id),
+        crate::usage::records::OutputBasis::NonReasoning,
+    );
     let turn = Turn::new(
-        message_id(),
+        downstream_id,
         request.model.clone(),
         estimate_input_tokens(&upstream_request),
     );
-    let response = upstream::send_with_affinity(state, upstream_request, affinity.as_ref()).await?;
+    let response =
+        upstream::send_with_affinity(state, upstream_request, affinity.as_ref(), observed).await?;
 
     if request.stream {
         return Ok(stream(response, turn));

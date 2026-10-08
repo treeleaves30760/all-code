@@ -24,13 +24,18 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::Value;
 
+use super::records::{
+    Billing, Granularity, InputBasis, Outcome, ReadResult, Source, SourceDiagnostics, TokenCounts,
+    UsageRecord, read_lines,
+};
 use crate::config::{Agent, ProviderKind};
 use crate::launch::LaunchSpec;
 
@@ -76,6 +81,9 @@ pub(crate) enum Entry {
         reasoning_tokens: u64,
         total_tokens: u64,
     },
+    /// A measured request. Nullable counters preserve missing usage; IDs let a
+    /// native history be reconciled without matching prompts or timestamps.
+    Request { v: u32, record: Box<UsageRecord> },
 }
 
 const ROW_VERSION: u32 = 2;
@@ -112,6 +120,30 @@ impl Ledger {
         }
     }
 
+    pub(crate) fn request_record(&self, model: &str) -> UsageRecord {
+        let mut record = UsageRecord::new(Source::Alc, self.agent, now_unix().saturating_mul(1000));
+        record.profile = Some(self.provider.clone());
+        record.provider = Some(self.kind.as_str().to_owned());
+        record.model = (!model.is_empty()).then(|| model.to_owned());
+        record.account_id = self.account_id.clone();
+        record.billing = if self.kind == ProviderKind::Codex {
+            Billing::ApiEquivalent
+        } else {
+            Billing::Api
+        };
+        record
+    }
+
+    pub(crate) fn record_request(&self, record: UsageRecord) {
+        append(
+            &self.path,
+            &Entry::Request {
+                v: 3,
+                record: Box::new(record),
+            },
+        );
+    }
+
     /// Records that a session started.
     ///
     /// Called from `launch::prepare`, which both spawn paths go through and
@@ -137,6 +169,7 @@ impl Ledger {
     /// that is not a terminal frame carrying a `usage` object is ignored, and
     /// the cheap `contains` check in front keeps the hundreds of delta frames
     /// in a turn from being parsed as JSON twice.
+    #[cfg(test)]
     pub(crate) fn observe_frame(&self, data: &str, fallback_model: &str) {
         if !data.contains("response.completed") && !data.contains("response.incomplete") {
             return;
@@ -157,6 +190,12 @@ impl Ledger {
         let Some(usage) = response.get("usage") else {
             return;
         };
+        if !usage.is_object()
+            || usage.get("input_tokens").and_then(Value::as_u64).is_none()
+            || usage.get("output_tokens").and_then(Value::as_u64).is_none()
+        {
+            return;
+        }
         let count =
             |parent: &Value, key: &str| parent.get(key).and_then(Value::as_u64).unwrap_or(0);
         let nested = |key: &str, inner: &str| {
@@ -266,27 +305,19 @@ pub(crate) fn summarise(config_dir: &Path) -> LedgerSummary {
     if !path.exists() {
         return summary;
     }
-    let file = match fs::File::open(&path) {
-        Ok(file) => file,
-        Err(error) => {
-            summary.error = Some(error.to_string());
-            return summary;
-        }
-    };
-
     let mut rows: BTreeMap<(String, Agent), LedgerRow> = BTreeMap::new();
-    for line in BufReader::new(file).lines() {
-        let Ok(line) = line else {
+    let read = read_lines(&path, |line| {
+        let Ok(mut entry) = serde_json::from_slice::<Entry>(line) else {
             summary.skipped_lines += 1;
-            continue;
+            return;
         };
-        if line.trim().is_empty() {
-            continue;
+        if let Entry::Request { v, record } = &mut entry {
+            if *v != 3 || record.source != Source::Alc {
+                summary.skipped_lines += 1;
+                return;
+            }
+            record.tokens.validate();
         }
-        let Ok(entry) = serde_json::from_str::<Entry>(&line) else {
-            summary.skipped_lines += 1;
-            continue;
-        };
         let (ts, provider, kind, agent) = match &entry {
             Entry::Launch {
                 ts,
@@ -302,6 +333,23 @@ pub(crate) fn summarise(config_dir: &Path) -> LedgerSummary {
                 agent,
                 ..
             } => (*ts, provider.clone(), *kind, *agent),
+            Entry::Request { record, .. } => {
+                let (Some(provider), Some(kind)) = (
+                    record.profile.as_ref(),
+                    record
+                        .provider
+                        .as_deref()
+                        .and_then(|kind| kind.parse().ok()),
+                ) else {
+                    return;
+                };
+                (
+                    record.timestamp_ms / 1000,
+                    provider.clone(),
+                    kind,
+                    record.agent,
+                )
+            }
         };
         summary.first_at = Some(summary.first_at.map_or(ts, |first| first.min(ts)));
         let row = rows
@@ -345,10 +393,128 @@ pub(crate) fn summarise(config_dir: &Path) -> LedgerSummary {
                 row.output_tokens += output_tokens;
                 row.total_tokens += total_tokens;
             }
+            Entry::Request { record, .. } => {
+                if !matches!(record.outcome, Outcome::Completed | Outcome::Incomplete) {
+                    return;
+                }
+                let (Some(input), Some(output)) =
+                    (record.tokens.gross_input(), record.tokens.output_tokens)
+                else {
+                    return;
+                };
+                row.turns = row.turns.saturating_add(1);
+                row.input_tokens = row.input_tokens.saturating_add(input);
+                row.output_tokens = row.output_tokens.saturating_add(output);
+                row.total_tokens = row.total_tokens.saturating_add(
+                    record
+                        .tokens
+                        .total_tokens
+                        .unwrap_or_else(|| input.saturating_add(output)),
+                );
+                row.cached_tokens = match (row.cached_tokens, record.tokens.cache_read_tokens) {
+                    (Some(total), Some(cached)) => total.checked_add(cached),
+                    _ => None,
+                };
+            }
         }
+    });
+    match read {
+        Ok(counts) => summary.skipped_lines += counts.oversized,
+        Err(error) => summary.error = Some(error.to_string()),
     }
     summary.rows = rows.into_values().collect();
     summary
+}
+
+/// Metadata-only historical records, separate from the compatibility projection.
+pub(crate) fn read_records(config_dir: &Path) -> ReadResult {
+    let mut result = ReadResult::default();
+    let mut diagnostics = SourceDiagnostics::new(Source::Alc);
+    let path = config_dir.join(LEDGER_FILE);
+    if !path.exists() {
+        result.diagnostics.push(diagnostics);
+        return result;
+    }
+    diagnostics.files = 1;
+    let read = read_lines(&path, |line| {
+        let Ok(entry) = serde_json::from_slice::<Entry>(line) else {
+            diagnostics.skipped_lines += 1;
+            return;
+        };
+        match entry {
+            Entry::Launch { .. } => {}
+            Entry::Request { v, mut record } => {
+                if v != 3 || record.source != Source::Alc {
+                    diagnostics.unsupported_records += 1;
+                    return;
+                }
+                record.tokens.validate();
+                result.records.push(*record);
+            }
+            Entry::Turn {
+                v,
+                ts,
+                agent,
+                provider,
+                kind,
+                model,
+                account_id,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                total_tokens,
+            } => {
+                if v > 2 {
+                    diagnostics.unsupported_records += 1;
+                    return;
+                }
+                let mut record = UsageRecord::new(Source::Alc, agent, ts.saturating_mul(1000));
+                record.profile = Some(provider);
+                record.provider = Some(kind.as_str().to_owned());
+                record.model = Some(model);
+                record.account_id = account_id;
+                record.outcome = Outcome::Unknown;
+                record.granularity = Granularity::Request;
+                record.billing = if kind == ProviderKind::Codex {
+                    Billing::ApiEquivalent
+                } else {
+                    Billing::Unknown
+                };
+                record.tokens = TokenCounts {
+                    input_tokens: (input_tokens > 0).then_some(input_tokens),
+                    input_basis: InputBasis::Inclusive,
+                    output_tokens: (output_tokens > 0).then_some(output_tokens),
+                    cache_read_tokens: (v >= CACHE_REPORTING_ROW_VERSION)
+                        .then_some(cached_tokens)
+                        .flatten(),
+                    cache_write_tokens: None,
+                    reasoning_tokens: (reasoning_tokens > 0).then_some(reasoning_tokens),
+                    total_tokens: (total_tokens > 0).then_some(total_tokens),
+                    ..TokenCounts::default()
+                };
+                if input_tokens == 0 || output_tokens == 0 || total_tokens == 0 {
+                    record
+                        .warnings
+                        .push("legacy zero usage has no field-presence evidence".to_owned());
+                }
+                record
+                    .warnings
+                    .push("legacy request has no timing or correlation IDs".to_owned());
+                record.tokens.validate();
+                result.records.push(record);
+            }
+        }
+    });
+    match read {
+        Ok(counts) => diagnostics.skipped_lines += counts.oversized,
+        Err(_) => diagnostics
+            .warnings
+            .push("could not read alc usage ledger".to_owned()),
+    }
+    diagnostics.records = result.records.len() as u64;
+    result.diagnostics.push(diagnostics);
+    result
 }
 
 pub(crate) fn now_unix() -> u64 {
@@ -571,6 +737,35 @@ mod tests {
         let summary = summarise(dir.path());
         assert_eq!(summary.skipped_lines, 0);
         assert_eq!(summary.rows[0].turns, 800);
+    }
+
+    #[test]
+    fn each_legacy_zero_counter_is_unknown_without_changing_compatibility_totals() {
+        for (input, output, total) in [(100, 0, 100), (0, 10, 10), (100, 10, 0)] {
+            let dir = tempfile::tempdir().unwrap();
+            let row = serde_json::json!({
+                "t":"turn", "v":2, "ts":1, "agent":"claude",
+                "provider":"codex", "kind":"codex", "model":"gpt-4.1",
+                "input_tokens":input, "cached_tokens":0, "output_tokens":output,
+                "reasoning_tokens":0, "total_tokens":total
+            });
+            fs::write(dir.path().join(LEDGER_FILE), format!("{row}\n")).unwrap();
+            let record = read_records(dir.path()).records.remove(0);
+            assert_eq!(record.tokens.input_tokens, (input > 0).then_some(input));
+            assert_eq!(record.tokens.output_tokens, (output > 0).then_some(output));
+            assert_eq!(record.tokens.total_tokens, (total > 0).then_some(total));
+            assert_eq!(record.tokens.cache_read_tokens, Some(0));
+            if input == 0 || output == 0 {
+                let cost = crate::usage::pricing::PriceBook::load(dir.path(), None)
+                    .unwrap()
+                    .estimate(&record);
+                assert_eq!(cost.total_usd, None);
+            }
+            let summary = summarise(dir.path());
+            assert_eq!(summary.rows[0].input_tokens, input);
+            assert_eq!(summary.rows[0].output_tokens, output);
+            assert_eq!(summary.rows[0].total_tokens, total);
+        }
     }
 
     #[test]

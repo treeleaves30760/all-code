@@ -1,6 +1,6 @@
 [package]
 name = "all-code"
-version = "1.13.0"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.88"
 description = "One CLI to configure and launch Claude Code, Codex, OpenCode, Pi, Copilot CLI, Goose, Qwen Code, and Kimi Code CLI with multiple LLM providers"
@@ -24,6 +24,7 @@ avt = "0.18"
 axum = "0.8"
 base64 = "0.22"
 bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 # The Codex bridge, run in-process rather than shelled out to. alc no longer
 # ships or downloads a second binary, and the two halves can no longer drift
 # out of step.
@@ -41,6 +42,9 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 rpassword = "7.4"
+# Authenticate the durable observer locally and seal its route credentials;
+# already present through reqwest's rustls dependency.
+ring = "0.17"
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

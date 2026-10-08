@@ -223,6 +223,7 @@ impl Hub {
                         instance: self.instance.clone(),
                         port: self.port,
                         pid: std::process::id(),
+                        capabilities: vec![crate::bridge_host::FORWARD_CAPABILITY.to_owned()],
                     },
                 );
             }
@@ -764,6 +765,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         provider_kind,
         agent,
         bridge,
+        forward,
         settings_plan,
         codex_auth_file,
         claude_settings_file,
@@ -803,6 +805,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         // so a shared Codex session gets the same adapter an unshared one
         // does instead of talking straight to the model vendor.
         bridge,
+        forward,
         // Carried for the same reason, and a costlier one to get wrong: a
         // Claude Code launch whose settings document never arrived is a
         // session pointed straight back at Anthropic.
@@ -843,6 +846,7 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         provider_kind,
         agent,
         bridge,
+        forward,
         settings_plan,
         codex_auth_file,
         claude_settings_file,
@@ -871,6 +875,7 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         provider_kind: provider_kind.to_string(),
         agent: agent.as_str().to_owned(),
         bridge: bridge.clone(),
+        forward: forward.clone(),
         settings_plan: settings_plan.clone(),
         codex_auth_file: codex_auth_file
             .as_ref()
@@ -986,7 +991,11 @@ pub(crate) fn hub_cannot_carry(hub_alc: &str, hub_pid: u32, spec: &LaunchSpec) -
     if hub_alc == ours {
         return None;
     }
-    if spec.bridge.is_none() && spec.settings_plan.is_none() && spec.file_setup.is_empty() {
+    if spec.bridge.is_none()
+        && spec.forward.is_none()
+        && spec.settings_plan.is_none()
+        && spec.file_setup.is_empty()
+    {
         return None;
     }
     Some(format!(

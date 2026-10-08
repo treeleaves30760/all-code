@@ -4,6 +4,7 @@ pub mod codex;
 pub mod copilot;
 pub mod goose;
 pub mod kimi;
+pub(crate) mod metrics;
 pub mod opencode;
 pub mod pi;
 pub mod qwen;

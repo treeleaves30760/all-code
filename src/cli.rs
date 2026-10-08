@@ -86,6 +86,11 @@ struct Cli {
     #[arg(long, global = true)]
     dry_run: bool,
 
+    /// Observe supported direct API requests through a local forwarding route.
+    /// Existing Codex bridge requests are measured without this flag.
+    #[arg(long, global = true)]
+    metrics: bool,
+
     /// Mirror this session to a browser page (see `alc remote`).
     ///
     /// Must appear before the agent's own arguments; `alc share <agent> --
@@ -151,8 +156,10 @@ enum Command {
     Config(ConfigArgs),
     /// Check agent binaries, credentials, defaults, and compatibility.
     Doctor,
-    /// Show what is left on every provider login, and usage per provider and agent.
-    Usage(UsageArgs),
+    /// Check login quota, token usage, and estimated API cost.
+    Usage(usage::query::UsageOptions),
+    /// Show client-observed TTFT and tokens per second for recent requests.
+    Tps(usage::query::TpsOptions),
     /// Show or refresh the GPT models available through the Codex bridge.
     Models(ModelsArgs),
     /// Check for and install the latest alc release.
@@ -403,13 +410,6 @@ struct ModelsArgs {
 }
 
 #[derive(Debug, Args)]
-struct UsageArgs {
-    /// Print the report as JSON.
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Debug, Args)]
 struct UpdateArgs {
     /// Check whether an update is available without installing it.
     #[arg(long, conflicts_with = "force")]
@@ -544,8 +544,20 @@ pub fn run() -> Result<u8> {
     if let Command::TmuxPane(args) = &cli.command {
         remote::run_pane(args.port, &args.token);
     }
+    match &cli.command {
+        Command::Tps(args) => {
+            let store = Store::load_without_credentials(cli.config_dir.clone())?;
+            return usage::query::run_tps(&store.dir, &store.config, args);
+        }
+        Command::Usage(args) if args.offline => {
+            let store = Store::load_without_credentials(cli.config_dir.clone())?;
+            return usage::run_statistics(&store, requested_provider.as_deref(), args);
+        }
+        _ => {}
+    }
     let mut store = Store::load(cli.config_dir.clone())?;
     let sharing = Sharing {
+        metrics: cli.metrics,
         enabled: cli.share && !cli.no_share,
         forced_off: cli.no_share,
         lan: cli.bind_lan,
@@ -557,7 +569,8 @@ pub fn run() -> Result<u8> {
     match cli.command {
         Command::Config(args) => run_config(&mut store, args),
         Command::Doctor => Ok(if doctor::run(&store)? { 0 } else { 1 }),
-        Command::Usage(args) => usage::run(&store, requested_provider.as_deref(), args.json),
+        Command::Usage(args) => usage::run_statistics(&store, requested_provider.as_deref(), &args),
+        Command::Tps(_) => unreachable!("tps is handled without credentials"),
         Command::Models(args) => run_models(&store, args),
         Command::Update(_) => unreachable!("update is handled before config loading"),
         Command::TmuxPane(_) => unreachable!("the pane launcher is handled before config loading"),
@@ -596,6 +609,7 @@ pub fn run() -> Result<u8> {
         }
         Command::Share(args) => {
             let sharing = Sharing {
+                metrics: cli.metrics,
                 enabled: !cli.no_share,
                 forced_off: cli.no_share,
                 lan: cli.bind_lan,
@@ -733,6 +747,7 @@ meant for the agent, put the agent's own flags after `--`, as in \
 /// Whether this launch is mirrored to a browser, and how it binds.
 #[derive(Debug, Clone)]
 struct Sharing {
+    metrics: bool,
     enabled: bool,
     /// `--no-share` was passed, so the standing preference is overridden
     /// for this one launch.
@@ -754,7 +769,8 @@ struct Sharing {
 /// gesture there is, and without this it silently sends `--share` to the
 /// model as prompt text, or exits with the agent's own unknown-flag error
 /// naming a flag the agent has never heard of.
-const ALC_OWNED_FLAGS: [&str; 7] = [
+const ALC_OWNED_FLAGS: [&str; 8] = [
+    "--metrics",
     "--share",
     "--no-share",
     "--bind-lan",
@@ -875,7 +891,7 @@ fn run_claude(
         let (model, effort) =
             resolve_codex_defaults(&provider, &catalog, args.model.as_deref(), args.effort)?;
 
-        if args.save {
+        if args.save && !dry_run {
             let entry = store
                 .config
                 .providers
@@ -1042,10 +1058,20 @@ fn routable_model_options(catalog: &ModelCatalog) -> Vec<ModelInfo> {
 
 fn run_spec(
     store: &Store,
-    spec: launch::LaunchSpec,
+    mut spec: launch::LaunchSpec,
     dry_run: bool,
     sharing: Sharing,
 ) -> Result<u8> {
+    if sharing.metrics && !spec.is_bridged() {
+        spec.forward = Some(crate::agents::metrics::plan(&spec, store)?);
+    }
+    if let Some(reason) = spec
+        .forward
+        .as_ref()
+        .and_then(|plan| plan.coverage_reason.as_ref())
+    {
+        eprintln!("metrics: {reason}");
+    }
     // Decided once, so `--dry-run` reports what a real run would actually
     // do. An explicit `--share` wins, then the standing preference - and
     // the preference is skipped silently for a scripted run, because it
@@ -1115,6 +1141,11 @@ fn run_spec(
                     plan.model
                 );
             }
+        }
+        if spec.forward.is_some() {
+            println!(
+                "metrics: would observe native API requests through an authenticated loopback forwarding route; TTFT/TPS start with new requests"
+            );
         }
         if spec.is_bridged() {
             // A dry run used to be the one path that said nothing at all

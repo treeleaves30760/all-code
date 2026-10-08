@@ -145,6 +145,8 @@ pub(crate) struct WireSpec {
     /// on the old build. `hub::spawn_or_join` refuses such a hub instead.
     #[serde(default)]
     pub bridge: Option<crate::launch::BridgePlan>,
+    #[serde(default)]
+    pub forward: Option<crate::agents::metrics::ForwardPlan>,
     /// Claude Code's settings document and the Codex route behind it. The hub
     /// finishes and writes it, and starts the bridge the route needs, so it
     /// has to arrive whole - `hub::spawn_or_join` refuses a hub too old to
@@ -188,6 +190,8 @@ pub(crate) enum CtlReply {
         instance: String,
         port: u16,
         pid: u32,
+        #[serde(default)]
+        capabilities: Vec<String>,
     },
     Created {
         id: String,

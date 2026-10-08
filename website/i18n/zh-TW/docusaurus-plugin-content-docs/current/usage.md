@@ -3,23 +3,33 @@ id: usage
 title: 用量
 sidebar_label: 用量
 sidebar_position: 6
-description: 看每個 Claude 與 Codex 登入還剩多少額度、每個 API key provider 還剩多少，以及是哪個 agent 用掉的 —— 在終端機裡、在遠端控制頁面上，或輸出成 JSON。
+description: 查詢 Claude 與 Codex 額度、查看用戶端觀測的 TTFT 與每秒 token 數，並用離線價格表估算本機歷史紀錄的 token 成本。
 keywords:
   - alc usage
+  - alc tps
+  - TTFT
+  - tokens per second
+  - estimated token cost
   - claude code usage
   - codex quota
   - chatgpt plan limit
   - openrouter credits
   - multiple accounts
+  - 中文
 ---
 
 # 用量
 
-每個登入還剩多少，以及是哪個 agent 用掉的。
+每個登入還剩多少、哪個 agent 用掉了 token，以及新請求的效能如何。
 
 ```sh
-alc usage
+alc usage                   # 帳號額度、相容帳本、token／成本統計
+alc usage --offline         # 只讀本機統計；不讀憑證、不連網
+alc tps                     # 最新 20 筆符合條件的 alc 請求紀錄
 ```
+
+一般用量報告保留 **Accounts** 與 **Usage by provider and agent**，接著新增
+**Token usage and estimated cost (USD)**。以下節錄帳號與相容帳本區塊：
 
 ```text
 Accounts
@@ -33,17 +43,21 @@ Usage by provider and agent
   PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
   codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
   ollama    opencode  1         —      —      —        —       —       12m ago
-  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone
+  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
 
 ✓ ready
 ```
 
-每個啟用的 provider profile 一列。`REMAINING` 是倒數的：`63% left` 指的是你還剩
-多少，不是你花掉了多少。當登入過期或被拒絕，或是連不上服務商、服務商回了錯誤時，
-結束碼是 1；其餘情況都是 0，所以單純把方案用完並不會讓腳本失敗。
+每個啟用的 provider profile 在 Accounts 裡各有一列。`REMAINING` 是倒數的：
+`63% left` 指的是你還剩多少，不是你花掉了多少。當登入過期或被拒絕，或是連不上
+服務商、服務商回了錯誤時，結束碼是 1；其餘情況都是 0，所以單純把方案用完並不會
+讓腳本失敗。查詢參數無效、價格檔無法讀取等指令錯誤仍會失敗；成本未知不等於
+額度查詢失敗。
 
-`alc usage --json` 會把同一份報告印成 JSON。`alc --provider codex-work usage` 或
-`alc --codex usage` 則把範圍縮到單一 profile 或單一種類。
+`alc --provider codex-work usage` 或 `alc --codex usage` **只篩選 Accounts**，
+不篩選相容帳本或統計。要篩選有紀錄的統計，請用 `--filter-profile codex-work`。
+`alc usage --json` 保留既有的 `schema_version: 1`、`accounts` 與 `ledger` 欄位，
+另加一個 `statistics` 物件；見 [JSON 報告](#json-報告)。
 
 ## Codex 登入
 
@@ -76,7 +90,7 @@ alc --provider codex-work claude
 Claude Code 也一樣，用它存放登入的那個目錄：
 
 ```sh
-CLAUDE_CONFIG_DIR=~/.claude-work claude          # sign in once
+CLAUDE_CONFIG_DIR=~/.claude-work claude          # 登入一次
 alc config upsert anthropic-work --kind anthropic --claude-config-dir ~/.claude-work
 ```
 
@@ -106,26 +120,212 @@ profile 叫這個種類的名字、而又有好幾個是同一種時，捷徑才
 
 ## 各 provider 與 agent 的用量
 
-每一次啟動都會往[設定目錄](./configuration.md)裡的 `usage.jsonl` 追加一行；每一個
-由 [Codex 橋接](./codex-to-claude.md)承載的 turn 也會追加一行，帶著 chatgpt.com
-回報的 token 數。資料來源就只有這個檔案。
+這張相容用的表只讀[設定目錄](./configuration.md)裡的 `usage.jsonl`。啟動時追加
+啟動紀錄；[Codex 協定轉譯橋接](./codex-to-claude.md)或選擇啟用的直接 API 觀測器
+承載請求時，追加中繼資料紀錄。一般直接啟動仍只計為一次啟動。原生歷史是獨立的
+統計來源，不會匯入這份帳本。
 
 `INPUT` 是上游回報的總輸入。`CACHED` 是其中從提示快取讀取的部分。`CACHE %`
 是四捨五入後的 `CACHED / INPUT`；它是 token 比例，不是請求命中率。`0` 代表實際
 測得零；`—` 代表數值未知或無法計算，包含舊版 hub 產生的快取資料。
 
-`alc usage --json` 會提供原始且可為 `null` 的 `cached_tokens` 總數。百分比只用於
+JSON 的 `ledger` 各列保留原始且可為 `null` 的 `cached_tokens` 總數。百分比只用於
 畫面顯示，不是 JSON 欄位。[透過 Claude Code 使用 Codex](./codex-to-claude.md#auto-模式與提示快取)
 說明提示快取可能未命中的情況。
 
-alc 從來沒有承載過流量的那一組 provider 與 agent，token 欄位顯示的是 `—` 而不是
-0：`alc claude` 走 Anthropic 時是直接跟 Anthropic 講話，alc 根本看不到那些 turn。
-想重新開始計算，把這個檔案刪掉就好。
+alc 沒有承載的流量，token 欄位顯示 `—`，不是零。例如一般 `alc claude` 走
+Anthropic 時是直接連線；加上 `--metrics` 才會在支援的情況下啟用觀測。
+刪掉 `usage.jsonl` 只會重設 alc 的紀錄，不會重設獨立的 Claude 或 Codex 歷史。
+
+## TTFT 與每秒 token 數
+
+```sh
+alc tps
+alc tps --limit 50 --filter-profile work --filter-agent claude
+alc tps --since 2026-10-01 --until 2026-10-08 --json
+```
+
+`alc tps` 只讀本機紀錄，不讀憑證、不查額度、不連網。預設為
+`--source alc --limit 20`，符合條件的最新紀錄在前；`--limit` 接受 1–10000。
+一次啟動不是效能樣本：只有轉譯橋接或支援的 `alc --metrics <agent>` 啟動承載的
+新請求才開始量測。舊帳本與原生歷史沒有實際觀測的請求時間，顯示 `N/A`。
+
+這些是**用戶端觀測值**，不是模型伺服器的效能基準：
+
+| 欄位 | 意義 |
+| --- | --- |
+| `TTFT ms` | 串流請求從開始，到 alc 看見第一份非空的生成文字、公開的 thinking，或工具參數內容。headers、只有 role 或空的 delta、usage、ping、推理摘要與簽章都不會啟動首內容時計。隱藏推理的橋接會等可見內容。 |
+| `TPS est.` | 串流估算：`(N - 1) / (terminal - first matching content)`，時間以秒計。`N` 是已知量測 token 範圍內的輸出；若只呈現非推理輸出，就扣除有回報的推理 token。輸出／推理基準未知、沒有終止時間、`N <= 1` 或區間不為正時，顯示 `N/A`。不會把 SSE chunk 當 token 計數。 |
+| `BASIS` | 串流分子的範圍：`gross`（回報的輸出）、`non-reasoning`（輸出扣除明確回報的推理），或 `unknown`（無法計算串流 TPS）。不改變使用總輸出的 E2E TPS。 |
+| `TPS E2E` | 上游回報的總輸出 token，除以請求開始到終止的秒數。包含排隊、網路、提示處理與推理時間；**不是伺服器解碼速度**。 |
+
+非串流請求在輸出與終止時間已知時可以有 E2E TPS，但 TTFT 與串流 TPS 為 `N/A`。
+失敗、取消、逾時與截斷串流會保留各自結果；缺少計數或終止時間，不會被編造成
+零或成功的量測。
+
+摘要分別列出 TTFT、串流 TPS 與 E2E TPS 的有效樣本數。TTFT 有平均值、p50 與 p95。
+加權 TPS 是有效樣本 token 分子的總和，除以對應時間的總和；不是各請求速度的
+算術平均，也不是同時執行的請求速度相加。
+
+### 選擇啟用直接 API 觀測
+
+```sh
+alc --metrics --provider openai codex --config model_providers.alc_openai.supports_websockets=false
+alc --openrouter --metrics claude
+alc --openrouter --metrics --dry-run claude
+```
+
+`--metrics` 要放在 **agent 名稱之前**。它在 alc 管理的端點設定位置加入受保護的
+loopback HTTP 轉送 route，保留 agent 的 SDK、協定、模型、參數與**上游驗證**。
+持續 Claude 觀測會把本機 helper 憑證替換為下文說明的密封替代憑證。這不是協定
+轉譯。不加時，一般直接啟動的行為不變；Codex 協定轉譯橋接本來就會觀測，不必
+另外啟用。
+
+| 直接啟動 | 觀測邊界 |
+| --- | --- |
+| 使用 alc 管理的 API-key helper 的 Claude Code | Anthropic 相容 HTTP 端點。持續 host／helper 使用綁定 route／instance 的密封本機憑證，保留上游 API-key 驗證；[背景 session](./background-sessions.md#背景-session-的-api-key-量測)可以重新啟動它。 |
+| 使用 alc 產生的 API 端點的 Codex CLI | 只觀測 HTTP Responses，且必須明確用 `--config model_providers.alc_<profile-normalized>.supports_websockets=false` 選 HTTP-only。沒帶或為 true 就拒絕。WebSocket 流量不被觀測；alc 不會強制停用它。原生 Codex 登入與原生 Ollama 整合不在觀測範圍內。 |
+| OpenCode / Copilot CLI | 支援的、由 alc 管理的 Anthropic 或 OpenAI 相容端點設定。 |
+| Qwen Code / Goose | 支援的、由 alc 管理的 Anthropic 或 OpenAI 分支。Qwen 的 Google/Gemini 分支與 Goose 的原生 OpenRouter/Ollama 整合不在觀測範圍內。Goose 的 OpenAI 分拆端點若含 query 或 fragment，量測會被拒絕；一般啟動維持不變。 |
+| Kimi Code CLI | alc 產生的暫存設定裡的 provider 端點，不是使用者自帶的設定。 |
+| Pi | 不支援直接觀測：alc 不會把短命的 listener 寫進持續共用的 `models.json`。 |
+
+Codex 產生的 provider ID 是 `alc_` 加上 alc profile 名稱，連字號改成底線：
+`openai-work` profile 要用 `model_providers.alc_openai_work.supports_websockets=false`。
+這必須是此次量測啟動明確傳入的 agent 參數；alc 不會讀 Codex 設定檔來推論。
+一般沒加 metrics 的 WebSocket 行為不受影響。
+
+原生 OAuth／登入驗證，以及超出支援設定位置的明確端點、helper、config 或
+provider 覆寫，都保持原樣。明確要求 `--metrics` 卻無法安全觀測時，alc 會說明
+原因並拒絕，不會偷偷切換 provider、驗證或傳輸方式。`--dry-run` 只檢查並描述
+計畫，不啟動 listener，也不寫入任何東西。這張表描述的是支援的設定位置，不代表
+涵蓋所有 SDK、傳輸方式或服務商自訂的回應擴充。持續 Claude 量測也會拒絕所選
+`api_key_env` 為 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_AUTH_TOKEN`、且已匯出非空值的
+profile，因為用戶端會繞過密封 helper：請用 `alc config key <profile>` 存金鑰、
+取消匯出該變數，再重新啟動；一般沒加 metrics 的驗證行為不變。
+
+**持續 Claude API-key 觀測**的 helper 先用獨立、只有擁有者可讀的
+`run/bridge.observer-key` 與新的 challenge 驗證 host，再回傳 AEAD 密封替代憑證，
+不是服務商金鑰。它綁定固定 route 與本次 host instance；host 只有在派送到固定
+上游端點時才還原原始金鑰／header。註冊只保留金鑰摘要，觀測檔案不寫入明文
+服務商金鑰。host 重啟後，舊替代憑證收到 HTTP 401；重新執行 helper 即可產生新
+憑證。握手／控制 challenge 不會公開 secret；`forward-observer-v2` 能力檢查會
+拒絕舊 daemon，即使版本字串相同。先用 `alc bridge stop` 停舊 host，再重新啟動。
+
+這不是 TLS，也不保證完整的本機資料平面機密性。請求仍透過 loopback HTTP，仍需
+信任本機行程：Claude 替代憑證避免原始服務商金鑰外洩，但遭劫持的本機 port 可以
+攔截明文請求內容。不要假設其他 agent 的短命 route 也會密封憑證。
+
+## 本機歷史與 token／成本統計
+
+```sh
+alc usage --offline --daily --since 2026-10-01 --until 2026-10-08
+alc usage --offline --monthly --source claude,codex --json
+alc usage --offline --source alc --filter-profile work --filter-model example-model
+alc usage --offline --claude-dir "$HOME/.claude-work" --codex-dir "$HOME/.codex-work"
+```
+
+`--offline` 只讀本機設定、歷史與價格資料。不讀 API key、登入檔或鑰匙圈，不更新
+憑證、不查額度、不下載價格，也不做任何其他網路存取。文字輸出顯示
+`Accounts: not fetched (--offline)`；JSON 的 `accounts` 是空陣列，仍保留相容的
+`ledger`。`--daily` 與 `--monthly` 互斥，統計依 **UTC** 分桶；兩者都不加時，
+period 為 `all-time`。
+
+### 共用查詢選項
+
+這些選項用於 `alc usage` 的統計與 `alc tps`，不影響 Accounts 或相容帳本：
+
+| 選項 | 意義 |
+| --- | --- |
+| `--source all\|alc\|claude\|codex` | 接受逗號分隔的來源，例如 `--source alc,claude`。Usage 預設 `all`；TPS 預設 `alc`。 |
+| `--since DATE` | 含起點。`YYYY-MM-DD` 表示 UTC 午夜；也接受 RFC3339 時區偏移。 |
+| `--until DATE` | 不含終點，格式相同。要包含 UTC 10 月 7 日整天，用 `--until 2026-10-08`。 |
+| `--filter-profile PROFILE` | 精確比對有紀錄的 alc profile。沒有 profile 的原生紀錄不會符合。 |
+| `--filter-agent AGENT` | 有紀錄的 coding agent：`claude`、`codex`、`opencode`、`pi`、`copilot`、`goose`、`qwen` 或 `kimi`。 |
+| `--filter-model MODEL` | 精確比對回報的 model ID，不模糊搜尋別名。 |
+| `--claude-dir PATH` | 可重複指定的絕對 Claude **設定根目錄**；讀取底下的 `projects/`。 |
+| `--codex-dir PATH` | 可重複指定的絕對 Codex **home**；讀取底下的 `sessions/` 與 `archived_sessions/`。 |
+
+明確指定根目錄清單，就會取代該原生來源的自動根目錄。否則 alc 會包含 provider
+profile 釘住的目錄，再加上已設定的 `CLAUDE_CONFIG_DIR` 或 `CODEX_HOME`，沒有時
+用對應的 `~/.claude` / `~/.codex`。根目錄會去重。它們只決定去哪裡讀，不會把
+過去的原生用量歸到現在的 profile 或帳號。
+
+### 涵蓋範圍與去重
+
+原生讀取器是唯讀的，只保留用量與識別中繼資料。不會把 prompt、生成輸出、工具
+內容或金鑰複製進 alc 帳本或匯入快取。JSONL 檢查每行最多 4 MiB；過大、格式錯誤、
+不支援或有歧義的紀錄，會透過來源涵蓋診斷回報，不會被當成零用量。
+
+Claude assistant 快照依穩定的 message／request 識別整併，不用逐區塊的 transcript
+UUID。有穩定 response ID 的 Codex 紀錄可以識別請求。較舊的累計 token 計數只轉成
+有根據的差值；第一個非零基準、計數重設、人為的 context-window checkpoint，
+或無法分配的模型變更，仍保留為 checkpoint。**累計差值與 checkpoint 不等於
+請求次數**；checkpoint 不會累加為 token 用量，兩者也不會編造 TTFT/TPS。
+用 `alc tps --source codex` 選到時，這些用量紀錄可能列成時間為 `N/A` 的資料列。
+
+跨來源只在同一個 agent 的 request／message／response ID 完全相同、且協定命名
+空間相符時，才認定重複；證實相符後優先採 alc 紀錄。相近的時間、token 總數或
+session 名稱不算證據。無法驗證的重疊會保留、標記 `possible_overlap`，並顯示
+各來源小計，**不提供可相加的總計**。來源警告或跳過紀錄，也表示整體涵蓋不完整。
+對舊 v1/v2 alc turn 紀錄，新統計會把
+每個為零的輸入／輸出計數分別保留為未知，因為原格式沒有欄位是否存在的證據；
+正值仍會保留。相容帳本原有的總數不變。
+
+### 一個估算美元代表什麼
+
+成本是依具名價格快照計算的 **USD token 費率估算**，不是發票、訂閱帳單、額度扣款，
+也不能證明實際花費。原生與訂閱流量有精確參考價格時，使用 API-equivalent
+參考估算。原生中繼資料不會被重新標成今天的 alc profile；參考價格也不會改掉
+仍然未知的 provider 歸屬。
+
+輸入、快取讀取、快取寫入與輸出是分開的成本項目。OpenAI 格式的 input 已包含
+快取子集；Anthropic 格式的 input 是未快取的剩餘輸入，因此總輸入要加上讀取與
+寫入。推理是輸出的子集，不是額外計費的 token。快取寫入的 TTL 分桶取代總寫入
+計數，不再加一次。5 分鐘與 1 小時費率不同時，不會猜未知的 TTL 分配。
+
+缺少計數或適用的精確費率、有紀錄的服務層級沒有費率，或分級費率缺少逐請求
+context 資料時，會產生未知／部分成本並列出原因。未記錄服務層級時假設 standard；
+OpenAI 的 `default` 對應 standard。文字顯示 `N/A` 或已知小計加 `?`；
+JSON 的 `total_usd` 保留 `null`。
+已知的零計數不等於缺少計數，找不到模型價格**不代表免費**。本機／自訂端點需要
+精確覆寫，除非精確的官方端點能提供支援的參考；免費參考費率必須明寫 `"0"` 字串。
+
+價格是離線、精選的 LiteLLM 子集，不是完整上游目錄或即時價格來源。內建快照日期為
+**2026-10-08**，固定在 LiteLLM commit
+`33d908e0ae2c0a257eeb5d546df08527d348a670`，附上游 SHA-256 與 MIT 授權來源。
+歷史用量依這份快照重新定價；不含稅、折扣、訂閱、未記錄的工具或非 token 費用。
+精確費率加在設定目錄的 **`pricing.toml`**，或用
+**`alc usage --pricing-file PATH`** 指定檔案。[價格 sidecar 參考](./configuration.md#價格-sidecar)
+列出格式；它不是主要 `config.toml` 裡的一張 table。
+
+## JSON 報告
+
+- `alc usage --json`：既有頂層的 `schema_version: 1`、`generated_at`、
+  `resolved_by`、`accounts` 與 `ledger`，另加 `statistics`（schema version
+  也是 1）。統計包含 UTC period、source/profile/provider/agent/model 資料列、
+  `granularity`、可為 `null` 的 token 總數、`records`、可為 `null` 的
+  `requests`、`known_requests`、`priced_records`、`unpriced_records`、
+  `deduplicated_records`、`known_subtotal_usd`、可為 `null` 的 `total_usd`、
+  `possible_overlap`、`pricing_snapshot` 與來源診斷。各列包含 `cost_status`
+  （`complete`、`partial` 或 `unknown`）、`partial_records`、
+  `reference_providers`、`reference_models`、`price_sources`、`provenance`、
+  假設與原因。USD 金額是十進位**字串**，不是浮點 JSON 數值。來源可能重疊時，
+  整體 `known_subtotal_usd` 也是 `null`。
+- `alc tps --json`：`schema_version: 1`、`measurement`、`rows`、`summary` 與
+  `sources`。各列包含中繼資料紀錄、`provenance`、以微秒為單位的原始 `timing`
+  偏移、token 計數、結果，以及 `metrics`（`ttft_ms`、`stream_tps`、`e2e_tps`、
+  `stream_output_basis`）。摘要包含 `records`、`known_requests`、可為 `null` 的
+  `requests`、有效樣本數、`ttft_mean_ms`、`ttft_p50_ms`、`ttft_p95_ms`、
+  `weighted_stream_tps` 與 `weighted_e2e_tps`；不可用的量測是 `null`。只要選取的
+  任何一列是累計差值或 checkpoint，而非可驗證的 API 請求，`requests` 就是 `null`。
 
 ## 在遠端控制頁面上
 
-[遠端控制頁面](./remote-control.md)標題列的用量按鈕後面是同樣的兩個區塊：每個額度
-視窗一條量表，接著是那份帳本。那個面板開著的時候，它每分鐘更新一次。
+[遠端控制頁面](./remote-control.md)標題列的用量按鈕後面，仍是 Accounts 與相容
+帳本：每個額度視窗一條量表，接著是那份帳本。面板開著的時候，每分鐘更新一次。
+原生歷史統計、成本估算與逐請求 TPS 報告只在 CLI 提供；hub 不會為這個頁面掃描
+原生歷史。
 
 只能看、不能輸入的連結看得到數字，但看不到 email、帳號 id 與憑證路徑。頁面是由 hub
 提供的，而 hub 不讀任何 shell 變數，也永遠不會去開鑰匙圈 —— 所以在 macOS 上，那裡的

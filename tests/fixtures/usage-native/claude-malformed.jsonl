@@ -1,0 +1,9 @@
+not json; SYNTHETIC_MALFORMED_NEVER_EXPORTED
+{"type":"assistant","timestamp":"not-a-date","message":{"id":"msg-invalid-date","usage":{"input_tokens":1}}}
+{"type":"assistant","timestamp":"2026-01-02T01:00:00Z","message":{"id":"msg-negative","usage":{"input_tokens":-1,"output_tokens":2}}}
+{"type":"assistant","timestamp":"2026-01-02T01:00:00Z","message":{"id":"msg-string-counter","usage":{"input_tokens":"secret-token-counter"}}}
+{"type":"assistant","timestamp":"2026-01-02T01:00:00Z","message":{"id":"msg-overflow","usage":{"input_tokens":18446744073709551616}}}
+{"type":"assistant","timestamp":"2026-01-02T01:00:00Z","message":{"id":"msg-invalid-ttl","usage":{"input_tokens":10,"output_tokens":2,"cache_creation_input_tokens":9,"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":7}}}}
+{"type":"assistant","timestamp":"2026-01-02T01:00:00Z","message":{"usage":{"output_tokens":6},"content":"SYNTHETIC_NO_ID_NEVER_EXPORTED"}}
+{"type":"assistant","timestamp":"2026-01-02T01:00:00Z","message":{"id":"msg-no-usage","content":"fixture"}}
+{"type":"assistant","timestamp":"2026-01-02T01:00:00Z","message":

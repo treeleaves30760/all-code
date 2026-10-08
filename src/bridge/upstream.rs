@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::ReasoningEffort;
+use crate::usage::observer::{RequestObservation, StreamObservation, WireProtocol};
+use crate::usage::records::{Outcome, OutputBasis};
 
 use super::affinity::RequestAffinity;
 use super::auth::Credentials;
@@ -658,6 +660,10 @@ pub(crate) struct SseDecoder {
 }
 
 impl SseDecoder {
+    pub(crate) fn pending_bytes(&self) -> usize {
+        self.buffer.len()
+    }
+
     /// Feeds one chunk and returns whatever frames it completed.
     pub(crate) fn push(&mut self, chunk: &[u8]) -> Vec<SseFrame> {
         self.buffer.extend_from_slice(chunk);
@@ -762,31 +768,17 @@ pub(crate) struct UpstreamStream {
     decoder: SseDecoder,
     ready: VecDeque<SseFrame>,
     finished: bool,
-    /// Who to credit this turn to, when anybody is keeping count. Behind one
-    /// pointer because `UpstreamStream` is carried inline by an enum whose
-    /// size is linted.
-    ledger: Option<Box<TurnLedger>>,
-}
-
-/// The ledger a turn is recorded in, and the model to credit a frame that does
-/// not name one itself.
-struct TurnLedger {
-    ledger: std::sync::Arc<crate::usage::ledger::Ledger>,
-    model: String,
+    observation: Option<Box<StreamObservation>>,
 }
 
 impl UpstreamStream {
-    fn new(
-        response: reqwest::Response,
-        model: String,
-        ledger: Option<std::sync::Arc<crate::usage::ledger::Ledger>>,
-    ) -> Self {
+    fn new(response: reqwest::Response, observation: Option<RequestObservation>) -> Self {
         Self {
             response,
             decoder: SseDecoder::default(),
             ready: VecDeque::new(),
             finished: false,
-            ledger: ledger.map(|ledger| Box::new(TurnLedger { ledger, model })),
+            observation: observation.map(|request| Box::new(StreamObservation::new(request))),
         }
     }
 
@@ -800,11 +792,6 @@ impl UpstreamStream {
     pub(crate) async fn next(&mut self) -> Option<Result<UpstreamFrame, BridgeError>> {
         loop {
             while let Some(frame) = self.ready.pop_front() {
-                // The one place both translating surfaces meet, so the ledger
-                // needs exactly one hook rather than one per surface.
-                if let Some(credit) = &self.ledger {
-                    credit.ledger.observe_frame(&frame.data, &credit.model);
-                }
                 match decode_frame(&frame) {
                     Ok(Decoded::Event(frame)) => return Some(Ok(*frame)),
                     Ok(Decoded::End) => self.finished = true,
@@ -820,16 +807,25 @@ impl UpstreamStream {
             }
             match tokio::time::timeout(BODY_IDLE_TIMEOUT, self.response.chunk()).await {
                 Ok(Ok(Some(chunk))) => {
+                    if let Some(observation) = &mut self.observation {
+                        observation.push(&chunk);
+                    }
                     let frames = self.decoder.push(&chunk);
                     self.ready.extend(frames);
                 }
                 Ok(Ok(None)) => {
                     self.finished = true;
+                    if let Some(observation) = &mut self.observation {
+                        observation.eof();
+                    }
                     let frames = self.decoder.finish();
                     self.ready.extend(frames);
                 }
                 Ok(Err(error)) => {
                     self.finished = true;
+                    if let Some(observation) = &self.observation {
+                        observation.request.finish(Outcome::Truncated);
+                    }
                     return Some(Err(BridgeError::upstream(
                         StatusCode::BAD_GATEWAY,
                         format!("the Codex stream broke: {}", describe(&error)),
@@ -837,6 +833,9 @@ impl UpstreamStream {
                 }
                 Err(_) => {
                     self.finished = true;
+                    if let Some(observation) = &self.observation {
+                        observation.request.finish(Outcome::TimedOut);
+                    }
                     return Some(Err(BridgeError::new(
                         StatusCode::GATEWAY_TIMEOUT,
                         "api_error",
@@ -970,17 +969,33 @@ async fn post_with_affinity(
 /// Always streams, whatever the client asked for: the surfaces aggregate a
 /// non-streaming answer themselves, because upstream's non-streaming mode
 /// returns the same content later with nothing to show in the meantime.
-pub(crate) async fn send(
+pub(crate) fn observation(
     state: &BridgeState,
-    request: UpstreamRequest,
-) -> Result<UpstreamStream, BridgeError> {
-    send_with_affinity(state, request, None).await
+    model: &str,
+    client_streaming: bool,
+    downstream_message: Option<&str>,
+    output_basis: OutputBasis,
+) -> Option<RequestObservation> {
+    state.ledger.as_ref().map(|ledger| {
+        let request = RequestObservation::new(
+            std::sync::Arc::clone(ledger),
+            model,
+            client_streaming,
+            WireProtocol::Responses,
+            output_basis,
+        );
+        if let Some(id) = downstream_message {
+            request.add_id("messages", id);
+        }
+        request
+    })
 }
 
 pub(crate) async fn send_with_affinity(
     state: &BridgeState,
     request: UpstreamRequest,
     affinity: Option<&RequestAffinity>,
+    observed: Option<RequestObservation>,
 ) -> Result<UpstreamStream, BridgeError> {
     let request = request.over_http();
     let body = serde_json::to_vec(&request).map_err(|error| {
@@ -993,17 +1008,29 @@ pub(crate) async fn send_with_affinity(
             ),
         )
     })?;
-    let response = post_with_affinity(state, Bytes::from(body), true, Lane::Lite, affinity).await?;
+    let response =
+        match post_with_affinity(state, Bytes::from(body), true, Lane::Lite, affinity).await {
+            Ok(response) => response,
+            Err(error) => {
+                if let Some(observation) = &observed {
+                    observation.finish(if error.status == StatusCode::GATEWAY_TIMEOUT {
+                        Outcome::TimedOut
+                    } else {
+                        Outcome::Failed
+                    });
+                }
+                return Err(error);
+            }
+        };
     let status = response.status();
     if !status.is_success() {
+        if let Some(observation) = &observed {
+            observation.finish(Outcome::Failed);
+        }
         let body = response.bytes().await.unwrap_or_default();
         return Err(status_error(status, &body));
     }
-    Ok(UpstreamStream::new(
-        response,
-        request.model.clone(),
-        state.ledger.clone(),
-    ))
+    Ok(UpstreamStream::new(response, observed))
 }
 
 async fn post_once(
@@ -1232,10 +1259,25 @@ mod tests {
                 crate::config::ProviderKind::Codex,
                 None,
             );
-            for frame in parse_sse(&Case::load(name).upstream_sse()) {
-                ledger.observe_frame(&frame.data, "fallback-model");
-            }
+            let observed = RequestObservation::new(
+                std::sync::Arc::new(ledger),
+                "fallback-model",
+                name != "chat-completions-nonstreaming",
+                WireProtocol::Responses,
+                OutputBasis::NonReasoning,
+            );
+            let mut stream = StreamObservation::new(observed);
+            stream.push_at(Case::load(name).upstream_sse().as_bytes(), 1000);
+            stream.eof();
 
+            let records = crate::usage::ledger::read_records(dir.path()).records;
+            assert_eq!(records.len(), 1, "{name}");
+            assert_eq!(records[0].outcome, Outcome::Completed, "{name}");
+            assert_eq!(
+                records[0].metrics().ttft_ms.is_some(),
+                name != "chat-completions-nonstreaming"
+            );
+            assert!(records[0].ids.iter().any(|id| id.protocol == "responses"));
             let summary = crate::usage::ledger::summarise(dir.path());
             assert_eq!(summary.rows.len(), 1, "{name}");
             assert_eq!(summary.rows[0].turns, 1, "{name}");

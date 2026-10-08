@@ -1,0 +1,28 @@
+version = 1
+id = "alc-curated-2026-10-08-litellm-33d908e0"
+date = "2026-10-08"
+upstream_commit = "33d908e0ae2c0a257eeb5d546df08527d348a670"
+upstream_date = "2026-10-08T04:57:41Z"
+upstream_raw_url = "https://raw.githubusercontent.com/BerriAI/litellm/33d908e0ae2c0a257eeb5d546df08527d348a670/model_prices_and_context_window.json"
+upstream_sha256 = "4bda1a19da601af95df65ba20c40bcb1e914ee00b890ea95f8d14de9886fac46"
+license = "MIT"
+license_url = "https://raw.githubusercontent.com/BerriAI/litellm/33d908e0ae2c0a257eeb5d546df08527d348a670/LICENSE"
+provider_urls = [
+    "https://platform.claude.com/docs/en/about-claude/pricing",
+    "https://platform.claude.com/docs/en/build-with-claude/context-windows",
+    "https://developers.openai.com/api/docs/pricing",
+    "https://developers.openai.com/api/docs/models/gpt-5-codex",
+    "https://developers.openai.com/api/docs/models/gpt-5.1-codex",
+    "https://developers.openai.com/api/docs/models/gpt-5.2-codex",
+    "https://developers.openai.com/api/docs/models/gpt-5.3-codex",
+]
+notes = [
+    "Curated decimal USD-per-million-token transcription of matching LiteLLM rows; provider documentation checked on the source date. The full upstream map is not shipped or fetched at runtime.",
+    "Exact official snapshot aliases only; no fuzzy matching, provider-prefix stripping, or invented newer-model rates.",
+    "OpenAI priority/flex rates included only for GPT-5, GPT-5.1 and GPT-5.2; other actual service tiers remain unpriced.",
+    "Anthropic TTL write buckets replace, rather than add to, aggregate creation tokens. Unknown TTL remains partial when rates differ.",
+    "Sonnet 4.5 is verified only through 200000 gross request-input tokens. Current provider context documentation no longer verifies the old >200k surcharge rows in LiteLLM, so those rows are not copied.",
+    "Claude 4.6 rates are flat across the 1M context window according to the first-party pricing page.",
+    "Legacy DeepSeek chat/reasoner rows are intentionally omitted: the current provider page lists different models and time-of-day prices, not authoritative current rates for those legacy names.",
+    "Text-token estimates exclude tax, tool/search/image/audio/container charges, data residency premiums, subscription fees and negotiated discounts. They are reference estimates, not invoices or balance deductions.",
+]

@@ -14,6 +14,9 @@ const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 fn alc(temp: &tempfile::TempDir) -> Command {
     let mut command = Command::cargo_bin("alc").expect("alc binary");
     command.env("ALC_CONFIG_DIR", temp.path());
+    // Reports can read native histories. Never discover a developer's sessions.
+    command.env("CLAUDE_CONFIG_DIR", temp.path().join("claude-history"));
+    command.env("CODEX_HOME", temp.path().join("codex-history"));
     // Which bridge a run uses changes the models it offers and what it calls
     // its adapter, so a developer who has been exercising the native one must
     // not see different results from CI.
@@ -1314,10 +1317,20 @@ fn a_cache_written_by_an_older_alc_cannot_hide_a_model_alc_ships() {
 #[test]
 fn codex_to_claude_can_save_defaults_without_picker() {
     let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    let codex = temp.path().join("codex-history");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(codex.join("auth.json"), "{}").unwrap();
+    std::fs::write(temp.path().join("codex-models.json"), r#"{"schema_version":1,"refreshed_at":4102444800,"source":"test","models":[{"id":"gpt-5.6-luna","name":"GPT-5.6-Luna","description":"test","context_window":272000,"default_effort":"low","supported_efforts":["low","medium","high","xhigh","max"]}]}"#).unwrap();
+    let _stop = StopTheBridge(&temp);
     alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
         .args([
             "--codex",
-            "--dry-run",
+            "--no-share",
             "claude",
             "--model",
             "gpt-5.6-luna",
@@ -2305,6 +2318,546 @@ fn fake_claude(dir: &std::path::Path) -> std::path::PathBuf {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
+}
+
+/// Reads exactly the model calls the test expects and exits. Accept and body
+/// deadlines make a missing/duplicated dispatched request a failure, not a hang.
+fn serve_metrics_messages(calls: usize) -> (String, thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        let mut requests = Vec::new();
+        for index in 0..calls {
+            let deadline = std::time::Instant::now() + COMMAND_TIMEOUT;
+            let (mut stream, request) = loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                            .unwrap();
+                        let request = read_request(&mut stream);
+                        if !request.is_empty() {
+                            break (stream, request);
+                        }
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "metrics request {index} did not arrive"
+                        );
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("metrics request {index} did not arrive: {error}"),
+                }
+            };
+            requests.push(request);
+            let start = format!(
+                "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_metrics_{index}\",\"model\":\"test-model\",\"usage\":{{\"input_tokens\":10,\"cache_read_input_tokens\":2,\"cache_creation_input_tokens\":0,\"output_tokens\":0}}}}}}\n\n"
+            );
+            let content = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n";
+            let terminal = "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+            let length = start.len() + content.len() + terminal.len();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {length}\r\nX-Test-Metrics: kept\r\nConnection: close\r\n\r\n{start}").unwrap();
+            stream.flush().unwrap();
+            thread::sleep(std::time::Duration::from_millis(20));
+            stream.write_all(content.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            thread::sleep(std::time::Duration::from_millis(20));
+            stream.write_all(terminal.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+        }
+        requests
+    });
+    (format!("http://{address}/prefix"), handle)
+}
+
+fn metrics_profile(temp: &tempfile::TempDir, base: &str) {
+    alc(temp)
+        .args([
+            "config",
+            "upsert",
+            "metrics-test",
+            "--kind",
+            "custom",
+            "--model",
+            "test-model",
+            "--auth",
+            "bearer",
+            "--protocol",
+            "anthropic-messages",
+            "--base-url",
+            base,
+            "--anthropic-base-url",
+            base,
+        ])
+        .assert()
+        .success();
+    alc(temp)
+        .args(["config", "key", "metrics-test", "--stdin"])
+        .write_stdin("metrics-fake-key")
+        .assert()
+        .success();
+    std::fs::write(
+        temp.path().join("pricing.toml"),
+        r#"version = 1
+currency = "USD"
+units = "USD-per-million-tokens"
+[[models]]
+provider = "custom"
+model = "test-model"
+input = "1"
+output = "2"
+cache_read = "0.5"
+cache_write = "1.25"
+"#,
+    )
+    .unwrap();
+}
+
+fn native_metrics_request(base: &str) -> String {
+    native_metrics_request_with_key(base, "metrics-fake-key")
+}
+
+fn native_metrics_request_with_key(base: &str, key: &str) -> String {
+    native_metrics_request_with_auth(base, &format!("Authorization: Bearer {key}"))
+}
+
+fn native_metrics_request_with_auth(base: &str, auth: &str) -> String {
+    let url = reqwest::Url::parse(base).unwrap();
+    let body = r#"{"model":"test-model","stream":true,"messages":[{"role":"user","content":"private-test-prompt"}]}"#;
+    http(
+        &url.port().unwrap().to_string(),
+        &format!(
+            "POST {}/v1/messages?beta=test HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{auth}\r\nAnthropic-Version: 2023-06-01\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            url.path().trim_end_matches('/'),
+            url.port().unwrap(),
+            body.len()
+        ),
+    )
+}
+
+#[test]
+fn metrics_claude_survives_launcher_exit_and_helper_restarts_without_persisting_keys() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let (upstream, server) = serve_metrics_messages(2);
+    metrics_profile(&temp, &upstream);
+    let fake = fake_claude(work.path());
+    let _stop = StopTheBridge(&temp);
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args([
+            "--metrics",
+            "--provider",
+            "metrics-test",
+            "--no-share",
+            "claude",
+        ])
+        .assert()
+        .success();
+    let (_, env, settings) = what_claude_got(work.path());
+    let base = settings["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap();
+    assert!(base.contains("/f/forward-"), "{base}");
+    assert!(!env.contains("metrics-fake-key"));
+    let route = base.rsplit('/').next().unwrap();
+    let route_text = std::fs::read_to_string(
+        temp.path()
+            .join("run/bridge/forward")
+            .join(format!("{route}.json")),
+    )
+    .unwrap();
+    assert!(!route_text.contains("metrics-fake-key") && !route_text.contains("key_digests"));
+    assert!(!settings.to_string().contains("metrics-fake-key"));
+    let output = alc(&temp)
+        .args(["claude-credential", route])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let sealed = String::from_utf8(output).unwrap();
+    let sealed = sealed.trim().to_owned();
+    assert!(sealed.starts_with("alc-observer-v1.") && !sealed.contains("metrics-fake-key"));
+    assert!(native_metrics_request(base).starts_with("HTTP/1.1 401"));
+    let response = native_metrics_request_with_key(base, &sealed);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(
+        response
+            .to_ascii_lowercase()
+            .contains("x-test-metrics: kept")
+    );
+    alc(&temp).args(["bridge", "stop"]).assert().success();
+    let output = alc(&temp)
+        .args(["claude-credential", route])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let fresh = String::from_utf8(output).unwrap();
+    let fresh = fresh.trim();
+    assert_ne!(fresh, sealed);
+    assert!(native_metrics_request_with_key(base, &sealed).starts_with("HTTP/1.1 401"));
+    let response = native_metrics_request_with_auth(
+        base,
+        &format!("x-api-key: {fresh}\r\nAuthorization: Bearer "),
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (index, request) in requests.into_iter().enumerate() {
+        assert!(
+            request.starts_with("POST /prefix/v1/messages?beta=test "),
+            "{request}"
+        );
+        if index == 0 {
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer metrics-fake-key")
+            );
+        } else {
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("x-api-key: metrics-fake-key")
+            );
+            assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        }
+        assert!(!request.contains("alc-observer-v1."));
+        assert!(request.contains("private-test-prompt"));
+    }
+    let report = alc(&temp).args(["tps", "--json"]).output().unwrap();
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(report["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(report["summary"]["ttft_samples"], 2);
+    assert_eq!(report["summary"]["stream_tps_samples"], 2);
+    let report = alc(&temp)
+        .args(["usage", "--offline", "--source", "alc", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(report["statistics"]["total_usd"], "0.000038");
+    let ledger = std::fs::read_to_string(temp.path().join("usage.jsonl")).unwrap();
+    assert!(
+        !ledger.contains("metrics-fake-key")
+            && !ledger.contains("private-test-prompt")
+            && !ledger.contains("hello")
+    );
+
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "metrics-test",
+            "--anthropic-base-url",
+            "https://different.test",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .args(["claude-credential", route])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("changed its endpoint"));
+}
+
+#[test]
+fn metrics_claude_migrates_an_occupied_port_without_disclosing_native_or_control_keys() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let (upstream, server) = serve_metrics_messages(1);
+    metrics_profile(&temp, &upstream);
+    let fake = fake_claude(work.path());
+    let _stop = StopTheBridge(&temp);
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args([
+            "--metrics",
+            "--provider",
+            "metrics-test",
+            "--no-share",
+            "claude",
+        ])
+        .assert()
+        .success();
+    let (_, _, settings) = what_claude_got(work.path());
+    let old_base = settings["env"]["ANTHROPIC_BASE_URL"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let old_url = reqwest::Url::parse(&old_base).unwrap();
+    let route = old_base.rsplit('/').next().unwrap();
+    let control = std::fs::read_to_string(temp.path().join("run/bridge.token")).unwrap();
+    alc(&temp).args(["bridge", "stop"]).assert().success();
+    let listener = TcpListener::bind(("127.0.0.1", old_url.port().unwrap())).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let signal = Arc::clone(&done);
+    let impostor = thread::spawn(move || {
+        let deadline = std::time::Instant::now() + COMMAND_TIMEOUT;
+        let mut requests = Vec::new();
+        while !signal.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            let Ok((mut stream, _)) = listener.accept() else {
+                thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                .unwrap();
+            let request = read_request(&mut stream);
+            if !request.is_empty() {
+                requests.push(request);
+                respond(
+                    stream,
+                    "200 OK",
+                    r#"{"instance":"impostor","alc":"1.13.0","pid":1,"port":24817,"capabilities":["forward-observer-v2"],"proof":"invalid"}"#,
+                );
+            }
+        }
+        requests
+    });
+    let output = alc(&temp)
+        .args(["claude-credential", route])
+        .output()
+        .unwrap();
+    done.store(true, Ordering::SeqCst);
+    let captured = impostor.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sealed = String::from_utf8(output.stdout).unwrap();
+    let sealed = sealed.trim();
+    assert!(!sealed.contains("metrics-fake-key"));
+    assert!(!captured.is_empty());
+    for request in captured {
+        assert!(
+            request.starts_with("GET /alc/observer-hello ")
+                || request.starts_with("GET /alc/hello "),
+            "{request}"
+        );
+        assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        assert!(!request.contains("metrics-fake-key") && !request.contains(&control));
+    }
+    let (_, _, settings) = what_claude_got(work.path());
+    let new_base = settings["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap();
+    assert_ne!(new_base, old_base);
+    let response = native_metrics_request_with_key(new_base, sealed);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer metrics-fake-key")
+    );
+    assert!(!requests[0].contains("alc-observer-v1."));
+}
+
+#[test]
+fn metrics_claude_refuses_exported_native_auth_that_bypasses_its_sealed_helper() {
+    let temp = tempfile::tempdir().unwrap();
+    metrics_profile(&temp, "https://example.test");
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "metrics-test",
+            "--api-key-env",
+            "ANTHROPIC_API_KEY",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .env("ANTHROPIC_API_KEY", "fake-exported-key-never-echo")
+        .args([
+            "--metrics",
+            "--provider",
+            "metrics-test",
+            "--no-share",
+            "--dry-run",
+            "claude",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("sealed apiKeyHelper"))
+        .stderr(predicate::str::contains("fake-exported-key-never-echo").not());
+    assert!(!temp.path().join("run").exists());
+    assert!(!temp.path().join("usage.jsonl").exists());
+}
+
+#[test]
+fn metrics_dry_run_with_saved_defaults_never_writes_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp).args(["config", "init"]).assert().success();
+    let before = std::fs::read(temp.path().join("config.toml")).unwrap();
+    alc(&temp)
+        .args([
+            "--codex",
+            "--metrics",
+            "--dry-run",
+            "claude",
+            "--model",
+            "gpt-6-astra",
+            "--effort",
+            "high",
+            "--save",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read(temp.path().join("config.toml")).unwrap(),
+        before
+    );
+    assert!(!temp.path().join("usage.jsonl").exists());
+    assert!(!temp.path().join("run").exists());
+}
+
+#[test]
+fn metrics_dry_run_is_read_only_and_unsupported_direct_transport_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    metrics_profile(&temp, "https://example.test");
+    alc(&temp)
+        .args([
+            "--metrics",
+            "--provider",
+            "metrics-test",
+            "--no-share",
+            "--dry-run",
+            "claude",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("metrics: would observe"));
+    assert!(!temp.path().join("usage.jsonl").exists());
+    assert!(!temp.path().join("run").exists());
+    assert!(!temp.path().join("claude").exists());
+    alc(&temp)
+        .args([
+            "--metrics",
+            "--provider",
+            "metrics-test",
+            "--no-share",
+            "--dry-run",
+            "pi",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("persistent shared models.json"));
+    assert!(!temp.path().join("run").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn metrics_qwen_observes_only_opt_in_and_keeps_ephemeral_endpoint_alive_for_child() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let (upstream, server) = serve_metrics_messages(1);
+    metrics_profile(&temp, &upstream);
+    let fake = work.path().join("qwen");
+    std::fs::write(&fake, "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> \"$ALC_FAKE_ARGS\"; done\nenv > \"$ALC_FAKE_ENV\"\nn=0\nwhile [ ! -f \"$ALC_FAKE_DONE\" ]; do n=$((n+1)); [ \"$n\" -lt 400 ] || exit 2; sleep 0.05; done\n").unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let done = work.path().join("done");
+    struct EndChild(std::path::PathBuf);
+    impl Drop for EndChild {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, "done");
+        }
+    }
+    let _end_child = EndChild(done.clone());
+    let env_file = work.path().join("env.txt");
+    let args_file = work.path().join("args.txt");
+    let mut command = alc(&temp);
+    command
+        .env("ALC_QWEN_BIN", &fake)
+        .env("ALC_FAKE_ENV", &env_file)
+        .env("ALC_FAKE_ARGS", &args_file)
+        .env("ALC_FAKE_DONE", &done)
+        .args([
+            "--metrics",
+            "--provider",
+            "metrics-test",
+            "--no-share",
+            "qwen",
+            "--model",
+            "test-model",
+        ]);
+    let child = thread::spawn(move || command.output().unwrap());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let base = loop {
+        if let Ok(env) = std::fs::read_to_string(&env_file)
+            && let Some(base) = env
+                .lines()
+                .find_map(|line| line.strip_prefix("ANTHROPIC_BASE_URL="))
+        {
+            break base.to_owned();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fake Qwen never received the endpoint"
+        );
+        thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(base.starts_with("http://127.0.0.1:") && !base.contains("/f/"));
+    let response = native_metrics_request(&base);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    std::fs::write(&done, "done").unwrap();
+    let output = child.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let upstream_requests = server.join().unwrap();
+    assert_eq!(upstream_requests.len(), 1);
+    let port = reqwest::Url::parse(&base).unwrap().port().unwrap();
+    assert!(
+        std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_err(),
+        "ephemeral observer stayed open after child exit"
+    );
+    assert!(!temp.path().join("run/bridge.port").exists());
+    let tps = alc(&temp).args(["tps", "--json"]).output().unwrap();
+    assert!(tps.status.success());
+    let tps: serde_json::Value = serde_json::from_slice(&tps.stdout).unwrap();
+    assert_eq!(tps["summary"]["ttft_samples"], 1);
+    assert_eq!(tps["rows"][0]["agent"], "qwen");
+
+    alc(&temp)
+        .args([
+            "--provider",
+            "metrics-test",
+            "--no-share",
+            "--dry-run",
+            "qwen",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&upstream))
+        .stdout(predicate::str::contains("metrics: would").not());
 }
 
 /// The arguments and environment the fake received, and the settings file it

@@ -418,7 +418,7 @@ fn check_route(route: &str) -> Result<()> {
     let named = route
         .strip_prefix("profile:")
         .is_some_and(|profile| validate_profile_name(profile).is_ok());
-    if !named && !valid_route_id(route) {
+    if !named && !valid_route_id(route) && !crate::bridge_host::files::valid_forward_id(route) {
         bail!(
             "refusing to build an apiKeyHelper for route {route:?}: alc's routes are `codex-` and \
              twelve hex digits, or `profile:` and a profile name of letters, numbers, '-' and '_'"

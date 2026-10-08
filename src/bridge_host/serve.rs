@@ -14,9 +14,8 @@ use axum::extract::{DefaultBodyLimit, Path as UrlPath, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use futures_util::StreamExt;
-use serde_json::json;
 
 use crate::bridge::auth::AuthManager;
 use crate::bridge::{BridgeConfig, BridgeError, BridgeState};
@@ -43,8 +42,10 @@ pub(crate) struct Host {
     token: String,
     port: u16,
     instance: String,
+    observer_key: super::observer_auth::ObserverKey,
     routes: Mutex<HashMap<String, Arc<BridgeState>>>,
     logins: Mutex<HashMap<PathBuf, Arc<AuthManager>>>,
+    forward: Mutex<HashMap<String, Arc<crate::usage::forward::ForwardTarget>>>,
     activity: Activity,
     stop: Arc<tokio::sync::Notify>,
 }
@@ -86,9 +87,11 @@ impl Host {
             config_dir: config_dir.to_owned(),
             token,
             port,
-            instance: instance_id()?,
+            instance: crate::remote::generate_token()?,
+            observer_key: super::observer_auth::ObserverKey::load(config_dir)?,
             routes: Mutex::default(),
             logins: Mutex::default(),
+            forward: Mutex::default(),
             activity: Activity::new(now_secs()),
             stop: Arc::new(tokio::sync::Notify::new()),
         })
@@ -148,16 +151,11 @@ impl Host {
     }
 }
 
-fn instance_id() -> Result<String> {
-    let mut bytes = [0_u8; 6];
-    getrandom::fill(&mut bytes).context("failed to read operating-system randomness")?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
 pub(crate) fn router(host: Arc<Host>) -> Router {
     let guarded = Router::new()
         .route("/alc/hello", get(hello))
         .route("/alc/stop", post(stop))
+        .route("/alc/forward", post(register_forward))
         .route("/r/{route}/v1/messages", post(messages))
         .route("/r/{route}/v1/messages/count_tokens", post(count_tokens))
         // Added innermost first, so only a request that got past the token
@@ -174,9 +172,21 @@ pub(crate) fn router(host: Arc<Host>) -> Router {
             Arc::clone(&host),
             require_token,
         ));
+    let forwarding = Router::new()
+        .route("/f/{route}/{*suffix}", any(forward))
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&host),
+            track_activity,
+        ));
     Router::new()
         .route("/healthz", get(|| async { (StatusCode::OK, "ok") }))
+        .route("/alc/observer-hello", get(observer_hello))
+        .route(
+            "/alc/observer-forward",
+            post(register_observer_forward).layer(DefaultBodyLimit::max(8192)),
+        )
         .merge(guarded)
+        .merge(forwarding)
         // A long session's turn carries megabytes; the upstream decides what
         // is too large, as it does for the in-process adapter.
         .layer(DefaultBodyLimit::disable())
@@ -257,14 +267,212 @@ impl Drop for InFlight {
     }
 }
 
+fn greeting(host: &Host) -> super::Hello {
+    super::Hello {
+        instance: host.instance.clone(),
+        alc: env!("CARGO_PKG_VERSION").to_owned(),
+        pid: std::process::id(),
+        port: host.port,
+        capabilities: vec![super::FORWARD_CAPABILITY.to_owned()],
+    }
+}
+
 async fn hello(State(host): State<Arc<Host>>) -> Response {
-    axum::Json(json!({
-        "instance": host.instance,
-        "alc": env!("CARGO_PKG_VERSION"),
-        "pid": std::process::id(),
-        "port": host.port,
-    }))
-    .into_response()
+    axum::Json(greeting(&host)).into_response()
+}
+
+async fn observer_hello(State(host): State<Arc<Host>>, headers: HeaderMap) -> Response {
+    let expected_host = format!("127.0.0.1:{}", host.port);
+    let mut hosts = headers.get_all(header::HOST).iter();
+    let mut challenges = headers.get_all("x-alc-observer-challenge").iter();
+    let nonce = challenges.next().and_then(|value| value.to_str().ok());
+    if headers.contains_key(header::ORIGIN)
+        || hosts.next().and_then(|value| value.to_str().ok()) != Some(expected_host.as_str())
+        || hosts.next().is_some()
+        || challenges.next().is_some()
+        || nonce.is_none_or(|nonce| {
+            nonce.len() != 43
+                || !nonce
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        })
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let hello = greeting(&host);
+    let Ok(proof) = host.observer_key.proof(nonce.unwrap_or_default(), &hello) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    axum::Json(super::observer_auth::AuthenticatedHello { hello, proof }).into_response()
+}
+
+async fn register_observer_forward(
+    State(host): State<Arc<Host>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let expected_host = format!("127.0.0.1:{}", host.port);
+    let mut hosts = headers.get_all(header::HOST).iter();
+    if headers.contains_key(header::ORIGIN)
+        || headers.contains_key(header::AUTHORIZATION)
+        || headers.contains_key("x-api-key")
+        || hosts.next().and_then(|value| value.to_str().ok()) != Some(expected_host.as_str())
+        || hosts.next().is_some()
+        || body.len() > 8192
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Ok(body) = std::str::from_utf8(&body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(control) = host
+        .observer_key
+        .open_forward_control(&host.instance, host.port, body)
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !same(control.token.as_bytes(), host.token.as_bytes()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let _activity = InFlight::begin(Arc::clone(&host));
+    register_forward_inner(&host, control.registration)
+}
+
+async fn register_forward(
+    State(host): State<Arc<Host>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if headers.contains_key(header::ORIGIN) || body.len() > 8192 {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Ok(registration) = serde_json::from_slice::<super::ForwardRegistration>(&body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    register_forward_inner(&host, registration)
+}
+
+fn register_forward_inner(host: &Host, registration: super::ForwardRegistration) -> Response {
+    if registration.key_digests.is_empty()
+        || registration.key_digests.len() > 4
+        || registration.key_digests.iter().any(|digest| {
+            digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Ok(Some(route)) = files::read_forward(&host.config_dir, &registration.route) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let ledger = Arc::new(crate::usage::ledger::Ledger::new(
+        host.config_dir.join(crate::usage::ledger::LEDGER_FILE),
+        Agent::Claude,
+        route.profile,
+        route.kind,
+        None,
+    ));
+    match crate::usage::forward::ForwardTarget::new(
+        &route.upstream,
+        ledger,
+        registration.key_digests,
+    ) {
+        Ok(target) => {
+            host.forward
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(route.id, Arc::new(target));
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(_) => StatusCode::BAD_REQUEST.into_response(),
+    }
+}
+
+async fn forward(
+    State(host): State<Arc<Host>>,
+    UrlPath((route, suffix)): UrlPath<(String, String)>,
+    mut request: Request,
+) -> Response {
+    let expected_host = format!("127.0.0.1:{}", host.port);
+    let mut hosts = request.headers().get_all(header::HOST).iter();
+    if request.headers().contains_key(header::ORIGIN)
+        || hosts.next().and_then(|host| host.to_str().ok()) != Some(expected_host.as_str())
+        || hosts.next().is_some()
+        || request
+            .uri()
+            .authority()
+            .is_some_and(|authority| authority.as_str() != expected_host)
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let mut auth = request.headers().get_all(header::AUTHORIZATION).iter();
+    let mut keys = request.headers().get_all("x-api-key").iter();
+    let authorization = auth.next();
+    let api_key = keys.next();
+    if auth.next().is_some() || keys.next().is_some() {
+        return BridgeError::auth("ambiguous local observer credentials").anthropic();
+    }
+    let authorization = authorization
+        .filter(|value| !value.is_empty() && !matches!(value.as_bytes(), b"Bearer" | b"Bearer "));
+    let api_key = api_key.filter(|value| !value.is_empty());
+    if authorization.is_some() && api_key.is_some() {
+        return BridgeError::auth("ambiguous local observer credentials").anthropic();
+    }
+    let (name, credential, bearer) = match (authorization, api_key) {
+        (Some(value), None) => (
+            header::AUTHORIZATION,
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| value.strip_prefix("Bearer ")),
+            true,
+        ),
+        (None, Some(value)) => (
+            header::HeaderName::from_static("x-api-key"),
+            value.to_str().ok(),
+            false,
+        ),
+        _ => return BridgeError::auth("missing local observer credential").anthropic(),
+    };
+    let Some(credential) = credential else {
+        return BridgeError::auth("invalid local observer credential").anthropic();
+    };
+    let Ok(native_key) = host.observer_key.open(&route, &host.instance, credential) else {
+        return BridgeError::auth("invalid local observer credential; rerun apiKeyHelper")
+            .anthropic();
+    };
+    let value = if bearer {
+        format!("Bearer {native_key}")
+    } else {
+        native_key
+    };
+    let Ok(mut value) = header::HeaderValue::from_str(&value) else {
+        return BridgeError::auth("invalid local observer credential").anthropic();
+    };
+    value.set_sensitive(true);
+    request.headers_mut().remove(header::AUTHORIZATION);
+    request.headers_mut().remove("x-api-key");
+    request.headers_mut().insert(name, value);
+    let target = host
+        .forward
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&route)
+        .cloned();
+    let Some(target) = target else {
+        return BridgeError::auth("forwarding route has not registered a credential; rerun its apiKeyHelper or relaunch with --metrics").anthropic();
+    };
+    // The raw URI, rather than decoded wildcard, retains escapes verbatim.
+    let prefix = format!("/f/{route}");
+    let path = request.uri().path();
+    let Some(raw) = path
+        .strip_prefix(&prefix)
+        .filter(|suffix| suffix.starts_with('/'))
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let raw = raw.to_owned();
+    let _ = suffix;
+    crate::usage::forward::relay(target, &raw, request).await
 }
 
 async fn stop(State(host): State<Arc<Host>>) -> StatusCode {
@@ -352,7 +560,7 @@ fn bind(config_dir: &Path, token: String) -> Result<(TcpListener, u16, String)> 
             // Something already holds the port, which is the one case where
             // asking who is there is worth the wait. See `serving_there`.
             Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-                if serving_there(port, &token) {
+                if serving_there(config_dir, port) {
                     bail!("an alc bridge is already serving on 127.0.0.1:{port}")
                 }
             }
@@ -412,9 +620,9 @@ fn bind(config_dir: &Path, token: String) -> Result<(TcpListener, u16, String)> 
 /// to it then fails the token check, the helper hands back the rotated token
 /// and that fails too, and the port stays held by a bridge nothing can use
 /// until it idles out an hour later.
-fn serving_there(port: u16, token: &str) -> bool {
+fn serving_there(config_dir: &Path, port: u16) -> bool {
     says_yes(PROBE_TRIES, PROBE_PAUSE, || {
-        super::hello(port, token).is_ok()
+        super::authenticated_hello(config_dir, port).is_ok()
     })
 }
 
@@ -556,6 +764,214 @@ mod tests {
     /// empty `x-api-key` next to the bearer the helper gave it. Taking the
     /// first header that is present and stopping there answered that request
     /// 401, with nothing in it to diagnose.
+    #[tokio::test]
+    async fn forwarding_registration_needs_control_token_and_model_routes_need_native_auth() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = host(temp.path());
+        let route = files::ForwardRoute::new(
+            "work",
+            crate::config::ProviderKind::Anthropic,
+            "https://example.test",
+        )
+        .unwrap();
+        files::write_forward(temp.path(), &route).unwrap();
+        let bytes = serde_json::to_vec(&super::super::ForwardRegistration {
+            route: route.id.clone(),
+            key_digests: vec![crate::usage::forward::key_digest("native-test-key")],
+        })
+        .unwrap();
+        for headers in [
+            vec![],
+            vec![("authorization", "Bearer wrong")],
+            vec![
+                (
+                    "authorization",
+                    "Bearer t0ken-for-tests-only-xxxxxxxxxxxxxxxxxxxx",
+                ),
+                ("origin", "https://evil.test"),
+            ],
+        ] {
+            let mut request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/alc/forward");
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            let response = router(host.clone())
+                .oneshot(request.body(Body::from(bytes.clone())).unwrap())
+                .await
+                .unwrap();
+            assert!(!response.status().is_success());
+            assert!(host.forward.lock().unwrap().is_empty());
+        }
+        let response = router(host.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/alc/forward")
+                    .header(
+                        "authorization",
+                        "Bearer t0ken-for-tests-only-xxxxxxxxxxxxxxxxxxxx",
+                    )
+                    .body(Body::from(bytes))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(host.forward.lock().unwrap().len(), 1);
+        let path = format!("/f/{}/v1/messages", route.id);
+        for headers in [
+            vec![],
+            vec![("host", "evil.test")],
+            vec![("host", "127.0.0.1:24817"), ("origin", "https://evil.test")],
+        ] {
+            assert_eq!(
+                status(host.clone(), "POST", &path, &headers).await,
+                StatusCode::FORBIDDEN
+            );
+        }
+        assert_eq!(
+            status(host.clone(), "POST", &path, &[("host", "127.0.0.1:24817")]).await,
+            StatusCode::UNAUTHORIZED
+        );
+        let blank = Arc::new(
+            Host::new(
+                temp.path(),
+                "t0ken-for-tests-only-xxxxxxxxxxxxxxxxxxxx".to_owned(),
+                24_817,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            status(
+                blank,
+                "POST",
+                &path,
+                &[
+                    ("host", "127.0.0.1:24817"),
+                    ("authorization", "Bearer native-test-key")
+                ]
+            )
+            .await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert!(!temp.path().join(crate::usage::ledger::LEDGER_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn observer_greeting_proves_a_fresh_challenge_without_holding_the_host_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = host(temp.path());
+        let nonce = crate::remote::generate_token().unwrap();
+        let response = router(host.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/alc/observer-hello")
+                    .header("host", "127.0.0.1:24817")
+                    .header("x-alc-observer-challenge", &nonce)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        let reply: super::super::observer_auth::AuthenticatedHello =
+            serde_json::from_slice(&body).unwrap();
+        host.observer_key.verify(&nonce, &reply).unwrap();
+        assert_eq!(reply.hello.instance, host.instance);
+        assert_eq!(host.activity.in_flight.load(Ordering::SeqCst), 0);
+        let bearer = format!(
+            "Bearer {}",
+            host.observer_key
+                .seal("route-one", &host.instance, "native-test-key")
+                .unwrap()
+        );
+        assert_eq!(
+            status(
+                host.clone(),
+                "POST",
+                "/alc/stop",
+                &[("authorization", &bearer)]
+            )
+            .await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(host, "POST", "/alc/forward", &[("authorization", &bearer)]).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn encrypted_observer_registration_requires_the_existing_control_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = host(temp.path());
+        let route = files::ForwardRoute::new(
+            "work",
+            crate::config::ProviderKind::Anthropic,
+            "https://example.test",
+        )
+        .unwrap();
+        files::write_forward(temp.path(), &route).unwrap();
+        let registration = || super::super::ForwardRegistration {
+            route: route.id.clone(),
+            key_digests: vec![crate::usage::forward::key_digest("native-test-key")],
+        };
+        for (token, status) in [
+            ("wrong", StatusCode::UNAUTHORIZED),
+            (host.token.as_str(), StatusCode::NO_CONTENT),
+        ] {
+            let sealed = host
+                .observer_key
+                .seal_forward_control(&greeting(&host), token, registration())
+                .unwrap();
+            let response = router(host.clone())
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/alc/observer-forward")
+                        .header("host", "127.0.0.1:24817")
+                        .body(Body::from(sealed))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+        }
+        assert_eq!(host.forward.lock().unwrap().len(), 1);
+        let key = host
+            .observer_key
+            .seal(&route.id, &host.instance, "native-test-key")
+            .unwrap();
+        let path = format!("/f/{}/v1/messages", route.id);
+        for headers in [
+            vec![
+                ("host", "127.0.0.1:24817"),
+                ("x-api-key", key.as_str()),
+                ("x-api-key", key.as_str()),
+            ],
+            vec![
+                ("host", "127.0.0.1:24817"),
+                ("x-api-key", key.as_str()),
+                ("authorization", "Bearer conflicting"),
+            ],
+            vec![
+                ("host", "127.0.0.1:24817"),
+                ("x-api-key", "native-test-key"),
+            ],
+        ] {
+            assert_eq!(
+                status(host.clone(), "POST", &path, &headers).await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert!(!temp.path().join(crate::usage::ledger::LEDGER_FILE).exists());
+    }
+
     #[tokio::test]
     async fn an_empty_api_key_does_not_hide_a_correct_bearer_token() {
         let temp = tempfile::tempdir().unwrap();
