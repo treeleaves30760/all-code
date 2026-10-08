@@ -43,15 +43,15 @@ provider —— `--settings ~/.config/alc/claude/settings-<hash>.json` —— �
 
 | 檔案裡有什麼 | 它的作用 |
 | --- | --- |
-| `ANTHROPIC_BASE_URL` | 那個 provider 的 Anthropic 端點，Codex 則是 alc 的背景橋接 |
+| `ANTHROPIC_BASE_URL` | 那個 provider 的 Anthropic 端點、alc 的 Codex 背景橋接，或選擇啟用的 API 觀測 route |
 | 模型相關變數與 `modelPicker` | Claude Code 啟動時用哪個模型、選單裡又列出哪些 |
 | `apiKeyHelper` | `alc claude-credential …`，Claude Code 會執行它來取得憑證 |
 
-這個檔案裡永遠沒有金鑰。helper 印出來的是 alc 本來就存著的那一把 —— profile
-的環境變數，或是用 `alc config key` 存下來的 key —— 若是 Codex，則是背景橋接
-的 token。一把只活在某個 shell 環境裡的 key，在從那個 shell 啟動的 session 裡
-有效；之後才開始跑的背景 session 可能看不到它，這時 helper 會叫你用
-`alc config key <profile>` 把它存起來。它永遠不會退回去用你的 Claude 登入。
+產生的 provider 設定裡沒有金鑰。一般直接 API-key session 的 helper 印出 profile
+環境變數或 `alc config key` 裡的金鑰；Codex 協定轉譯則印出橋接 token。Claude
+API-key `--metrics` 改為回傳下文說明的密封本機觀測憑證，不會透過 loopback HTTP
+傳原始服務商金鑰。只在原本 shell 可用的 key，之後背景重啟可能讀不到；請用
+`alc config key <profile>` 儲存。helper 永遠不會退回去用你的 Claude 登入。
 
 一個背景 session 會一直用著 alc 在啟動時合併好的那份設定。你自己傳
 `--settings` 時，alc 會把它合併進自己寫出來的那份文件，衝突時以你的為準，因為
@@ -75,6 +75,48 @@ alc bridge stop     # the next session that needs it starts it again
 ```
 
 `alc doctor` 的 **Background sessions** 區塊會顯示同樣的內容。
+
+## 背景 session 的 API-key 量測
+
+```sh
+alc --openrouter --metrics claude agents
+alc --openrouter --metrics claude --bg "fix the flaky test"
+alc tps --filter-agent claude
+```
+
+一般 API-key session 維持直接連線。加上 `--metrics` 後，支援的 Claude Code
+API-key 啟動改用持續運作的背景 host 上的**轉送觀測 route**，而不是歸啟動終端機
+所有、短命的 listener。route 轉送 provider 原生的 Anthropic 相容協定，不是
+Codex 協定轉譯器。新請求會記錄 [TTFT/TPS 與用量估算](./usage.md)的中繼資料，
+包含 supervisor 重新啟動之後的請求。
+
+持續保存的設定檔放 loopback 端點與 alc helper，不放金鑰。helper 每次重新啟動時
+解析同一個 profile 的金鑰，需要時啟動 host，再用獨立、只有擁有者可讀的
+`run/bridge.observer-key` 與新的 challenge 驗證 host。它只在記憶體註冊金鑰摘要，
+回傳綁定固定 route 與本次 host instance 的 **AEAD 密封替代憑證**。host 只有在
+派送到該固定上游端點時，才還原原始金鑰／header。觀測產生的檔案不寫入明文服務商
+金鑰；target 註冊只保留摘要，不保留金鑰。host 重啟後，舊替代憑證會收到 HTTP
+401；重新執行 helper 就會產生新 instance 對應的憑證。經驗證的握手／控制
+challenge 不會公開觀測 secret。
+
+route 檔只存固定的 profile/kind/upstream 中繼資料，所以只在原本 shell 裡可用的
+金鑰，仍須用 `alc config key <profile>` 儲存，之後的背景重啟才能使用。修改或
+停用 profile 的端點後需要重新啟動；helper 會拒絕把新金鑰送往舊 route。
+
+保留的是原生 SDK、協定、模型與**上游驗證**，不是本機這一段的明文憑證。請求資料
+平面仍是 loopback HTTP，不是 TLS，也不保證完整的本機機密性。必須信任本機行程：
+替代憑證避免原始服務商金鑰外洩，但本機 port 被劫持時，仍可攔截明文請求內容。
+
+Claude 的原生登入、不需要金鑰的端點，以及被覆寫的端點／驗證或 `apiKeyHelper`
+設定都不在觀測範圍內；alc 無法安全使用自己管理的 API-key 設定位置時，明確要求
+`--metrics` 會被拒絕。所選 `api_key_env` 為 `ANTHROPIC_API_KEY` 或
+`ANTHROPIC_AUTH_TOKEN`、且已匯出非空值的 profile 也會被拒絕，因為它會繞過密封
+helper：請用 `alc config key <profile>` 存金鑰、取消匯出該變數，再重新啟動；
+一般沒加 metrics 的驗證行為不變。量測要求 host 具備經驗證的 `forward-observer-v2` 能力；
+舊 daemon 即使 alc 版本字串相同也會被拒絕，此時執行 `alc bridge stop` 再重新
+啟動。量測 dry-run 不啟動 host／listener，也不寫設定、route 或 observer-key 檔。
+Codex 協定轉譯請求會自動觀測，不必加 `--metrics`；原生／只有歷史的紀錄無法提供
+過去的 TTFT。
 
 ## 每一個 Claude 模型都變成 Codex 模型
 

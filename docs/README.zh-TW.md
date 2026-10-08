@@ -194,6 +194,17 @@ Code，普通的 `claude attach` 也一樣：那個 session 本來就帶著它�
 根本不會碰到模型的指令 —— `mcp`、`doctor`、`plugin`、`update` 之類 —— 也是
 直接交出去，不會啟動橋接，也不會被算成一個 session。
 
+**API-key 量測也能跨背景重啟。** 支援的 `alc --openrouter --metrics claude`
+啟動，使用同一個持續 host 上的原生協定轉送 route。設定裡放 loopback 端點與 alc
+helper，不放金鑰。helper 用獨立、只有擁有者可讀的 `run/bridge.observer-key`
+驗證 host、只註冊摘要，再回傳綁定固定 route／本次 host instance 的 AEAD 密封
+替代憑證 —— 不透過本機 HTTP 傳服務商金鑰。host 只有在派送時才還原上游驗證。
+host 重啟後舊替代憑證收到 HTTP 401；請重新執行 helper。只在 shell 裡的 key
+要用 `alc config key <profile>` 存起來，之後重啟才能使用。一般直接啟動仍是直接
+連線，Claude 原生登入不在觀測範圍內；修改或停用 route 的 provider 端點後須
+重新啟動。Codex 協定轉譯請求會自動觀測。[用量與效能](#ttfttps-與估算成本)
+說明實際量測的是什麼。
+
 ## 任何 provider 都行，不只 Codex
 
 `codex login` 是最短的一條路，不是唯一的一條。八個 agent 中的任何一個都可以
@@ -231,7 +242,8 @@ OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本�
 | `alc config` | 設定用的 TUI；另有 `init`、`show`、`path`、`upsert`、`key`、`set-default`、`remove` |
 | `alc doctor` | 執行檔、憑證、相容性、預設值，以及橋接與遠端狀態 |
 | `alc models` | Codex 橋接提供的 GPT 模型；`--refresh`、`--json` |
-| `alc usage` | 每個 Claude／Codex 登入與 API key 的剩餘額度，以及各 provider 與 agent 的用量；`--json` |
+| `alc usage` | 帳號／額度、相容帳本與 token／成本統計；`--daily`、`--monthly`、`--offline`、`--pricing-file`、`--json` |
+| `alc tps` | 用戶端觀測的 TTFT 與估算／E2E 每秒 token 數；預設最新 20 筆 alc 請求紀錄，`--limit`、`--json` |
 | `alc update` | 就地更新 `alc`；`--check`、`--force` |
 | `alc share <agent>` | 啟動 agent，並把 session 鏡像到網頁 |
 | `alc sessions` | 先是頁面連結，然後是共享中的 session（tmux 的會標示出來） |
@@ -239,7 +251,7 @@ OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本�
 | `alc rename <id> <name>` | 替頁面上某個 session 的卡片改名 |
 | `alc kill <id>` | 停掉一個共享的 session |
 | `alc hub` | 對擁有 session 的那個行程下 `status`、`start`、`stop --drain` |
-| `alc bridge` | Claude Code 的 session 用來連上 Codex 登入的那個背景橋接；`status`、`stop` |
+| `alc bridge` | Claude 的 Codex 協定轉譯與選擇啟用的 API-key 觀測共用的持續背景 host；`status`、`stop` |
 | `alc remote` | `status`、`url`、`on`/`off`、`auto-share`、`allow-host`、`token --rotate` |
 | `alc confirm <ticket>` | 核准某個共享 session 提出的權限變更 |
 
@@ -260,7 +272,7 @@ alc --ollama opencode run "fix the failing test"
 `alc claude -- --model sonnet`。你自己傳的 `--settings` 會被合併進 alc 那
 一份，衝突時以你的為準，因為 Claude Code 只讀一份。
 
-alc 自己的旗標 —— `--share`、`--no-share`、`--bind-lan`、`--name`、
+alc 自己的旗標 —— `--metrics`、`--share`、`--no-share`、`--bind-lan`、`--name`、
 `--permission`、`--tmux`、`-t` —— 必須放在 agent 名稱**之前**。放在後面
 的話，它們會被當成 prompt 文字交給 agent，所以 alc 會就此停下來，並直接
 告訴你 —— 除非你在 agent 名稱後面緊接著寫上 `--`，那就表示你指的是 agent
@@ -277,6 +289,7 @@ alc --codex claude -- --bg --name nightly "run the slow suite"
 **預覽。** `alc --codex --dry-run claude` 會印出解析後的 agent 與
 provider、機密已遮蔽的指令、啟動有用到內建轉接器時的那一行，以及它會
 寫入的每一個檔案 —— 而且會說明哪些啟動會被拒絕，不只是列出哪些會成功。
+Dry-run 不啟動 listener，也不寫入任何東西，包含加了 `--metrics` 的情況。
 
 ## 診斷
 
@@ -312,10 +325,13 @@ Usage by provider and agent
   PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
   codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
   ollama    opencode  1         —      —      —        —       —       12m ago
-  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; a direct launch counts as a launch alone
+  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
 
 ✓ ready
 ```
+
+這份節錄是保留的 Accounts 與相容帳本畫面；一般 CLI 報告現在會在其後新增
+token／成本統計。
 
 alc 會向每個登入所屬的服務商查詢剩餘額度：Codex 登入問 chatgpt.com、Claude
 Code 的登入問 api.anthropic.com，OpenRouter、DeepSeek、Moonshot、MiniMax 與
@@ -332,12 +348,91 @@ alc config upsert codex-work --kind codex --codex-home ~/.codex-work
 alc --provider codex-work claude
 ```
 
-第二張表來自設定目錄裡的 `usage.jsonl`：每次啟動一行，Codex 橋接經手的每個
-回合再一行。`CACHED` 是 `INPUT` 中由 Codex 提示快取提供的部分；`CACHE %` 是
-這部分 token 的整數比例。alc 沒有經手的流量會在 token 欄顯示 `—`，因為數值未知，
-不是零。遠端控制頁面標題列的用量按鈕後面也會顯示這兩個區塊。
+相容表讀取 `usage.jsonl`：啟動紀錄，加上 Codex 協定轉譯橋接與選擇啟用的直接 API
+觀測產生的純中繼資料請求紀錄。`CACHED` 是 `INPUT` 中從提示快取讀取的部分；
+`CACHE %` 是這部分 token 的整數比例。未觀測的流量顯示 `—`，不是零。遠端控制
+頁面保留 Accounts 與這份帳本；新增的原生歷史／成本與 TPS 報告只在 CLI 提供。
 
-完整說明請見 [用量](https://treeleaves30760.github.io/all-code/zh-TW/usage)。
+全域 `--provider`／provider 捷徑**只篩選 Accounts**。帳本不受篩選；要篩選有
+紀錄的統計，請用 `--filter-profile`。`alc usage --json` 保留既有的
+`schema_version: 1`、`accounts` 與 `ledger` 欄位，另加 `statistics`。
+
+### TTFT、TPS 與估算成本
+
+```sh
+alc tps                         # 最新 20 筆符合條件的 alc 請求紀錄
+alc tps --limit 50 --json
+alc usage --offline --daily --since 2026-10-01 --until 2026-10-08
+alc usage --offline --monthly --source claude,codex --json
+alc usage --offline --source alc --filter-profile work --filter-agent claude
+```
+
+兩種查詢都接受 `--source all|alc|claude|codex`（也可用逗號分隔清單）、含起點的
+`--since` 與不含終點的 `--until`（UTC 午夜的 `YYYY-MM-DD` 或 RFC3339），以及
+精確的 `--filter-profile`、`--filter-agent` 與 `--filter-model`。Usage 預設所有
+來源；TPS 預設 `alc`，`--limit` 接受 1–10000。`--daily`／`--monthly` 是互斥的
+UTC 分桶。`alc usage --offline` 只讀本機設定、歷史與價格：不讀憑證／鑰匙圈、
+不查額度、不更新登入、不連網。`alc tps` 也只讀本機、不讀憑證。
+
+可重複指定的 `--claude-dir /absolute/config-root` 讀底下的 `projects/`；
+`--codex-dir /absolute/codex-home` 讀 `sessions/` 與 `archived_sessions/`。
+沒明確指定根目錄時，alc 包含 profile 釘住的目錄，加上對應的 shell 目錄或
+`~/.claude`／`~/.codex`。這些 JSONL 來源唯讀、只保留中繼資料，每行最多 4 MiB：
+不把 prompt、生成輸出、工具內容或金鑰複製進 alc 帳本或匯入快取。過去的原生用量
+不會歸到今天的 alc profile。只有完全相同、協定命名空間相符的 ID 才能證實重複；
+無法驗證的重疊保留各來源小計，**不提供可相加的總計**。Codex 的累計差值與
+checkpoint 不等於請求次數；checkpoint 不會累加為 token 用量。涵蓋診斷會揭露
+跳過或有歧義的紀錄，不把它們當成零。新統計把舊 v1/v2 turn 每個為零的輸入／
+輸出計數分別保留為未知；正值與相容帳本總數維持不變。
+
+**新直接請求要選擇啟用。** Codex 協定轉譯橋接會自動觀測。支援的直接 API 啟動
+使用 `alc --metrics <agent>`；不加時，行為維持不變：
+
+```sh
+alc --openrouter --metrics claude
+alc --metrics --provider openai codex --config model_providers.alc_openai.supports_websockets=false
+alc --openrouter --metrics --dry-run claude
+```
+
+觀測使用支援的、由 alc 管理的端點設定位置，保留 SDK、協定、模型與**上游驗證**；
+持續 Claude 量測在本機使用上述密封 helper 憑證。Codex CLI 只觀測 HTTP，需你
+**明確**傳入
+`--config model_providers.alc_<profile-normalized>.supports_websockets=false`
+（profile 的連字號改成底線）；沒帶或為 true 就拒絕。alc 不會強制停用 WebSocket，
+也不宣稱能觀測它；一般沒加 metrics 的 WebSocket 行為不受影響。OpenCode／Copilot、
+Qwen／Goose 支援的 Anthropic/OpenAI 分支，以及 Kimi 產生的暫存設定有支援的設定
+位置。直接 Pi、原生 OAuth／登入、Qwen Google/Gemini、Goose 原生 OpenRouter/Ollama
+或含 query／fragment 的 OpenAI 分拆端點，以及超出支援位置的明確端點／helper／
+config／provider 覆寫都不被觀測；明確要求不安全／不支援的 `--metrics` 會被拒絕，
+不會偷偷改道。一般沒加 metrics 的啟動不變。Dry-run 不啟動 listener，也不寫入
+任何東西。
+
+持續 Claude 的握手／控制 challenge 驗證 host，不公開 `bridge.observer-key`；
+`forward-observer-v2` 會拒絕舊 daemon，即使版本字串相同（先 `alc bridge stop`，
+再重新啟動）。持續 Claude 觀測檔案不寫入明文服務商金鑰。**本機資料平面仍是
+loopback HTTP，不是 TLS**：需信任本機行程。Claude 替代憑證避免原始服務商金鑰外洩，不能避免
+被劫持的本機 port 攔截明文請求內容；其他 agent 的短命 route 不保證密封憑證。
+
+**時間數字代表什麼。** TTFT 是請求開始到第一份非空的生成文字／thinking／工具
+參數的時間，不是 headers、role、usage 或 ping；隱藏推理的橋接會等可見內容。串流 TPS 只在
+輸出／推理基準已知時估算 `(N - 1) / (terminal - first matching content)`。
+`BASIS` 顯示 `gross`、`non-reasoning` 或 `unknown`。
+E2E TPS 是總輸出除以請求開始到終止的時間，包含排隊／網路／推理 —— **不是
+伺服器解碼速度**。非串流 TTFT 與舊帳本／原生歷史時間是 `N/A`。摘要提供有效
+樣本數與按時間加權的 TPS，不是把同時執行的請求速度相加。
+
+**美元代表什麼。** USD API-token／API-equivalent 快照估算，不是發票或訂閱
+帳單；不含稅、折扣、工具與非 token 費用。缺少計數或精確費率時，保留未知／部分
+成本、原因與可為 `null` 的總額。推理是輸出子集，不重複計費；快取讀寫與 TTL
+保留各自語意。價格是日期為 2026-10-08 的離線精選 LiteLLM 子集，固定在 commit
+`33d908e0ae2c0a257eeb5d546df08527d348a670` 並附 SHA-256／MIT 來源，不是即時價格。
+精確的本機／自訂費率放在獨立的設定目錄 `pricing.toml`，或用
+`alc usage --pricing-file PATH`；找不到價格不等於免費，免費費率要明寫 `"0"`
+字串。歷史用量依具名快照重新定價。見[價格 sidecar
+格式](https://treeleaves30760.github.io/all-code/zh-TW/configuration#價格-sidecar)。
+
+完整量測、涵蓋、成本與 JSON 參考，請見
+[用量](https://treeleaves30760.github.io/all-code/zh-TW/usage)。
 
 ## Provider 與 agent
 
@@ -706,8 +801,21 @@ ticket 五分鐘後過期，而 `alc confirm` 在沒有控制終端機的情況�
 - `remote.toml`：共享設定 —— 開或關、是否預設共享、綁定位址、port 與權限
   上限。`alc config show` 會把 sharing 與 share-by-default 兩個值以註解
   的形式印在輸出的最後。
-- `usage.jsonl`：每次啟動一行，Codex 橋接經手的每個回合再一行。`alc usage`
-  會彙整它；刪掉就從頭重新計算。
+- `usage.jsonl`：啟動紀錄與 Codex 協定轉譯橋接、選擇啟用的 `--metrics` 觀測
+  產生的純中繼資料請求。`alc usage`／`alc tps` 會讀取它；刪除只會重設 alc
+  紀錄，不重設 Claude／Codex 原生歷史。
+- `run/bridge.observer-key`：獨立、只有擁有者可讀的本機觀測 secret（Unix 上為
+  `0600`），不是 API key。驗證 host／控制 challenge，並以 AEAD 把持續 Claude
+  量測憑證密封綁定到固定 route／本次 host instance；握手不公開它，也不送往
+  上游。它不提供 TLS 或本機請求內容的機密性。
+- `pricing.toml`：選用的精確 token 費率覆寫，獨立於 `config.toml`：
+  `version = 1`、`currency = "USD"`、`units = "USD-per-million-tokens"`，
+  加上必填 `provider`／`model` 的 `[[models]]`。選用條件是 `profile`、
+  `endpoint`、`tier`、`context_min_tokens`、`context_max_tokens` 與精確的
+  `aliases`。費率是十進位字串 `input`、`output`、`cache_read`，以及
+  `cache_write` 或 `cache_write_5m`／`cache_write_1h`，單位為每百萬 token 的
+  USD。選到的覆寫取代內建範圍；省略費率仍是未知。見[完整
+  格式](https://treeleaves30760.github.io/all-code/zh-TW/configuration#價格-sidecar)。
 
 可用 `ALC_CONFIG_DIR` 覆寫目錄位置。常用的腳本化指令：
 

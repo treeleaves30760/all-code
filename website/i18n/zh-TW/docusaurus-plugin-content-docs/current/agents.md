@@ -163,6 +163,36 @@ alc kimi
 alc --moonshot kimi
 ```
 
+## 直接 API 量測
+
+`alc --metrics <agent>` 會在支援的、由 alc 管理的端點設定位置啟用觀測，保留原生
+SDK、協定、模型、參數與**上游驗證**。持續 Claude 觀測在本機這一段使用密封
+helper 憑證，不是原始服務商金鑰。不加旗標的一般直接啟動維持不變。Codex
+協定轉譯橋接的流量本來就會自動觀測。原生 Codex CLI 登入流量不是橋接流量。
+
+| Agent | 支援的直接觀測設定位置 |
+| --- | --- |
+| Claude Code | alc 的 API-key 設定／helper 與 Anthropic 端點；經驗證的持續 host 與 AEAD 密封、綁定 route／instance 的替代憑證支援背景重啟。原生登入、無金鑰端點，或被覆寫的 helper／端點／驗證設定會被拒絕。 |
+| Codex CLI | alc 產生的 HTTP Responses provider 設定，須明確傳入 `--config model_providers.alc_<profile-normalized>.supports_websockets=false`（profile 連字號改成底線）；沒帶或為 true 就拒絕。WebSocket 不被觀測、不被強制停用；一般沒加 metrics 的啟動維持不變。原生登入與原生 Ollama 整合會被拒絕。 |
+| OpenCode | 選取的 alc 管理 provider 的行內端點／設定，不是自訂 provider／config 覆寫。 |
+| Copilot CLI | alc 的 Anthropic 或 OpenAI 相容 BYOK 環境。 |
+| Qwen Code | alc 的 Anthropic/OpenAI 分支，不含 Google/Gemini 整合。 |
+| Goose | alc 的 Anthropic/OpenAI 分支，不含原生 OpenRouter/Ollama 整合。OpenAI 分拆端點含 query／fragment 時，量測會被拒絕；一般啟動維持不變。 |
+| Kimi Code CLI | alc 產生的暫存 provider 設定裡的端點，不是使用者的 config／model／provider 覆寫。 |
+| Pi | 不支援直接啟動觀測：端點存在持續共用的 `models.json`，alc 不會讓它指向短命的觀測器。 |
+
+原生 OAuth／登入，以及超出這些設定位置的明確端點／helper／config／provider
+覆寫，不會被偷偷攔截；明確要求 `--metrics` 卻不安全或不支援時，會說明原因並
+失敗。`--dry-run` 只描述計畫，不啟動 listener，也不寫入任何東西。Claude helper
+用只有擁有者可讀的 `run/bridge.observer-key` 驗證 host，只註冊摘要，並密封本機
+憑證；host 只有在派送到固定端點時才還原上游金鑰／header。host 重啟後舊替代憑證
+收到 401；請重新執行 helper。`forward-observer-v2` 能力會拒絕舊 daemon，即使
+版本相同。
+
+本機請求仍用 loopback HTTP，不是 TLS。需信任本機行程：Claude 替代憑證保護
+原始金鑰，不保護遭劫持 port 上的明文請求內容。其他 agent 的短命 route 不保證
+密封憑證。量測基準、成本與涵蓋限制，請見[用量](./usage.md)。
+
 ## 執行檔覆寫
 
 把任何一個 agent 指向特定的執行檔，而不是從 `PATH` 解析：
