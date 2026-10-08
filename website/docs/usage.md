@@ -323,8 +323,10 @@ not an extra billable token count. Cache-write TTL buckets replace the aggregate
 not add to it. Unknown TTL splits are not guessed when 5-minute and 1-hour rates
 differ.
 
-Missing counters, exact model rates, service tiers, or per-request context bands
-produce unknown/partial costs with reasons. Text shows `N/A` or a known subtotal
+Missing counters or applicable exact rates, an unpriced recorded service tier,
+or unavailable per-request context for banded rates produce unknown/partial costs
+with reasons. Absent service-tier metadata assumes standard; OpenAI's `default`
+maps to standard. Text shows `N/A` or a known subtotal
 plus `?`; JSON leaves `total_usd` as `null`. A known zero count is not an absent
 count, and a missing model price is **not free**. Local/custom endpoints need an
 exact override unless an exact official endpoint supplies a supported reference;
