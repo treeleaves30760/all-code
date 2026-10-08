@@ -123,6 +123,8 @@ pub(crate) struct TokenResponse {
 /// CLI do not participate in this advisory lock.
 pub(crate) struct AuthManager {
     path: PathBuf,
+    /// Diagnostics retain the caller's spelling; IO and locks use the canonical path.
+    display_path: PathBuf,
     /// Always [`TOKEN_ENDPOINT`] in a real session. Tests point it at a
     /// loopback listener so the rotation logic can be exercised without a
     /// network, and without an environment variable the launch path would then
@@ -133,9 +135,11 @@ pub(crate) struct AuthManager {
 
 impl AuthManager {
     pub(crate) fn new(path: PathBuf) -> Self {
+        let display_path = path.clone();
         let path = crate::file_lock::canonical_path(&path).unwrap_or(path);
         Self {
             path,
+            display_path,
             endpoint: TOKEN_ENDPOINT.to_owned(),
             state: Mutex::new(None),
         }
@@ -143,9 +147,11 @@ impl AuthManager {
 
     #[cfg(test)]
     fn with_endpoint(path: PathBuf, endpoint: String) -> Self {
+        let display_path = path.clone();
         let path = crate::file_lock::canonical_path(&path).unwrap_or(path);
         Self {
             path,
+            display_path,
             endpoint,
             state: Mutex::new(None),
         }
@@ -161,16 +167,19 @@ impl AuthManager {
             if error.kind() == std::io::ErrorKind::NotFound {
                 BridgeError::auth(format!(
                     "no Codex credentials at {}; run `codex login`",
-                    self.path.display()
+                    self.display_path.display()
                 ))
             } else {
-                BridgeError::auth(format!("could not read {}: {error}", self.path.display()))
+                BridgeError::auth(format!(
+                    "could not read {}: {error}",
+                    self.display_path.display()
+                ))
             }
         })?;
         serde_json::from_slice(&raw).map_err(|error| {
             BridgeError::auth(format!(
                 "{} is not valid JSON: {error}",
-                self.path.display()
+                self.display_path.display()
             ))
         })
     }
@@ -190,7 +199,7 @@ impl AuthManager {
             .map_err(|error| {
                 BridgeError::auth(format!(
                     "could not lock {} for token refresh: {error:#}",
-                    self.path.display()
+                    self.display_path.display()
                 ))
             })
     }
@@ -310,10 +319,10 @@ impl AuthManager {
         let document = serde_json::to_vec_pretty(&file).map_err(|error| {
             BridgeError::auth(format!(
                 "could not re-encode {}: {error}",
-                self.path.display()
+                self.display_path.display()
             ))
         })?;
-        write_atomic(&self.path, &document)
+        write_atomic(&self.path, &self.display_path, &document)
     }
 
     /// The account id the file names, or `None` if it cannot be read.
@@ -337,7 +346,7 @@ impl AuthManager {
             .ok_or_else(|| {
                 BridgeError::auth(format!(
                     "{} holds no Codex access token; run `codex login`",
-                    self.path.display()
+                    self.display_path.display()
                 ))
             })?;
 
@@ -373,7 +382,7 @@ impl AuthManager {
             return Err(BridgeError::auth(format!(
                 "the Codex access token in {} has expired and the file holds no \
                  refresh token; run `codex login`",
-                self.path.display()
+                self.display_path.display()
             )));
         }
 
@@ -477,7 +486,7 @@ impl AuthManager {
         if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             return BridgeError::auth(format!(
                 "the refresh token in {} was refused ({status}{}); run `codex login`",
-                self.path.display(),
+                self.display_path.display(),
                 detail(body)
             ));
         }
@@ -604,11 +613,14 @@ fn detail(body: Result<String, reqwest::Error>) -> String {
 /// rename cannot cross a filesystem boundary, and `tempfile` creates it 0600 —
 /// which is what the result must end up as, since it is about to hold a
 /// bearer token.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), BridgeError> {
+fn write_atomic(path: &Path, display_path: &Path, bytes: &[u8]) -> Result<(), BridgeError> {
     use std::io::Write as _;
 
     let failed = |error: &dyn std::fmt::Display| {
-        BridgeError::auth(format!("could not persist {}: {error}", path.display()))
+        BridgeError::auth(format!(
+            "could not persist {}: {error}",
+            display_path.display()
+        ))
     };
     let directory = path
         .parent()
@@ -1011,6 +1023,26 @@ mod tests {
             Some("acct_jwt"),
             "and the access token is the last place left to look"
         );
+    }
+
+    #[test]
+    fn diagnostics_keep_the_supplied_auth_path_while_io_uses_the_canonical_path() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let supplied = directory.path().join(".").join("missing-auth.json");
+        let manager = AuthManager::new(supplied.clone());
+        assert_eq!(manager.display_path, supplied);
+        assert_eq!(
+            manager.path,
+            crate::file_lock::canonical_path(&supplied).unwrap()
+        );
+        let error = manager.read_file().expect_err("fixture auth is absent");
+        assert!(error.message.contains(&supplied.display().to_string()));
+        let error = manager.refusal(StatusCode::UNAUTHORIZED, Ok(String::new()));
+        assert!(error.message.contains(&supplied.display().to_string()));
+        let canonical_missing = directory.path().join("missing-directory").join("auth.json");
+        let error = write_atomic(&canonical_missing, &supplied, b"{}")
+            .expect_err("fixture persistence directory is absent");
+        assert!(error.message.contains(&supplied.display().to_string()));
     }
 
     #[tokio::test]
