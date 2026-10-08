@@ -450,10 +450,15 @@ pub(crate) fn read_records(config_dir: &Path) -> ReadResult {
                 }
                 let original = record.tokens.clone();
                 record.tokens.validate();
-                if record.tokens != original {
+                if record.tokens.cache_counters_differ(&original) {
                     record
                         .warnings
                         .push("invalid observed token subsets were left unknown".to_owned());
+                }
+                if record.tokens.reasoning_tokens != original.reasoning_tokens {
+                    record
+                        .warnings
+                        .push("invalid observed reasoning counter was left unknown".to_owned());
                 }
                 result.records.push(*record);
             }
@@ -772,6 +777,94 @@ mod tests {
             assert_eq!(summary.rows[0].output_tokens, output);
             assert_eq!(summary.rows[0].total_tokens, total);
         }
+    }
+
+    #[test]
+    fn invalid_observed_reasoning_preserves_verified_cache_and_prices() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = UsageRecord::new(Source::Alc, Agent::Codex, 1);
+        record.provider = Some("openai".to_owned());
+        record.model = Some("gpt-4.1".to_owned());
+        record.billing = Billing::Api;
+        record.tokens = TokenCounts {
+            input_tokens: Some(100),
+            output_tokens: Some(10),
+            cache_read_tokens: Some(20),
+            reasoning_tokens: Some(11),
+            ..TokenCounts::default()
+        };
+        let entry = serde_json::json!({ "t": "request", "v": 3, "record": record });
+        fs::write(dir.path().join(LEDGER_FILE), format!("{entry}\n")).unwrap();
+        let record = read_records(dir.path()).records.remove(0);
+        assert_eq!(record.tokens.reasoning_tokens, None);
+        assert_eq!(
+            record.warnings,
+            ["invalid observed reasoning counter was left unknown"]
+        );
+        let effective = record.effective_tokens();
+        assert!(!effective.invalid_cache);
+        assert_eq!(effective.counts.cache_write_tokens, Some(0));
+        assert_eq!(effective.counts.uncached_input(), Some(80));
+        let cost = crate::usage::pricing::PriceBook::load(dir.path(), None)
+            .unwrap()
+            .estimate(&record);
+        assert_eq!(cost.total_usd.as_deref(), Some("0.00025"));
+        assert_eq!(
+            cost.cost_components
+                .uncached_input
+                .total_usd
+                .unwrap()
+                .to_usd_string(),
+            "0.00016"
+        );
+    }
+
+    #[test]
+    fn invalid_observed_write_aggregate_cannot_be_rebuilt_from_ttl_buckets() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("pricing.toml"),
+            concat!(
+                "version=1\ncurrency=\"USD\"\nunits=\"USD-per-million-tokens\"\n",
+                "[[models]]\nprovider=\"custom\"\nmodel=\"fixture\"\n",
+                "input=\"2\"\noutput=\"8\"\ncache_read=\"0.5\"\ncache_write=\"3\"\n"
+            ),
+        )
+        .unwrap();
+        let mut record = UsageRecord::new(Source::Alc, Agent::Claude, 1);
+        record.provider = Some("custom".to_owned());
+        record.model = Some("fixture".to_owned());
+        record.billing = Billing::Api;
+        record.tokens = TokenCounts {
+            input_tokens: Some(100),
+            output_tokens: Some(10),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(110),
+            cache_write_5m_tokens: Some(4),
+            cache_write_1h_tokens: Some(6),
+            ..TokenCounts::default()
+        };
+        let entry = serde_json::json!({ "t": "request", "v": 3, "record": record });
+        fs::write(dir.path().join(LEDGER_FILE), format!("{entry}\n")).unwrap();
+        let record = read_records(dir.path()).records.remove(0);
+        assert!(
+            record
+                .warnings
+                .iter()
+                .any(|warning| { warning == "invalid observed token subsets were left unknown" })
+        );
+        assert_eq!(record.tokens.cache_write_tokens, None);
+        assert_eq!(record.tokens.cache_write_5m_tokens, None);
+        assert_eq!(record.tokens.cache_write_1h_tokens, None);
+        let cost = crate::usage::pricing::PriceBook::load(dir.path(), None)
+            .unwrap()
+            .estimate(&record);
+        assert_eq!(cost.effective_tokens.cache_write_tokens, None);
+        assert_eq!(cost.effective_tokens.uncached_input(), None);
+        assert_eq!(cost.cost_components.uncached_input.total_usd, None);
+        assert_eq!(cost.cost_components.cache_write.total_usd, None);
+        assert_eq!(cost.known_subtotal_usd, "0.00008");
+        assert_eq!(cost.total, None);
     }
 
     #[test]

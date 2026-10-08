@@ -166,7 +166,7 @@ fn bucket_label(date: NaiveDate, scale: &str) -> String {
     }
 }
 
-fn buckets(days: &[DailyRollup]) -> Result<(Vec<Bucket>, &'static str)> {
+fn buckets(days: &[DailyRollup], possible_overlap: bool) -> Result<(Vec<Bucket>, &'static str)> {
     let dates = days
         .iter()
         .filter_map(|day| NaiveDate::parse_from_str(&day.period, "%Y-%m-%d").ok())
@@ -226,7 +226,16 @@ fn buckets(days: &[DailyRollup]) -> Result<(Vec<Bucket>, &'static str)> {
             }
         }
     }
-    let values = grouped.into_values().collect::<Vec<_>>();
+    let mut values = grouped.into_values().collect::<Vec<_>>();
+    if scale != "daily" && possible_overlap {
+        // Individually safe days do not prove sources are disjoint within a
+        // coarser period. Keep counts/dates, but never reintroduce pooled sums.
+        for bucket in &mut values {
+            bucket.tokens = [None; 3];
+            bucket.subtotal = None;
+            bucket.total = None;
+        }
+    }
     ensure!(
         values.len() <= 120,
         "chart range has more than 120 yearly buckets; select a shorter --since/--until range"
@@ -298,7 +307,7 @@ fn render(report: &Statistics, path: &Path) -> Result<()> {
         16,
         MUTED,
     )?;
-    let (values, scale) = buckets(&report.daily)?;
+    let (values, scale) = buckets(&report.daily, report.possible_overlap)?;
     let token_area = root.clone().shrink((50, 205), (1460, 365));
     draw_tokens(&token_area, &values, scale)?;
     let cost_area = root.clone().shrink((50, 595), (1460, 300));
@@ -789,7 +798,7 @@ mod tests {
             ("2025-01-01", "2026-01-01", "monthly", "2025-02"),
             ("2020-01-01", "2026-01-01", "yearly", "2021"),
         ] {
-            let (values, scale) = buckets(&[day(first), day(last)]).unwrap();
+            let (values, scale) = buckets(&[day(first), day(last)], false).unwrap();
             assert_eq!(scale, expected_scale);
             let gap = values.iter().find(|value| value.label == missing).unwrap();
             assert_eq!(gap.records, 0);
@@ -800,6 +809,44 @@ mod tests {
                 22,
                 "cache must never be counted twice"
             );
+        }
+    }
+
+    #[test]
+    fn overlapping_selection_suppresses_coarser_pooled_buckets_but_keeps_daily_values() {
+        let cost = Money::from_pico_usd(450_000_000);
+        let priced_day = |period| {
+            let mut value = day(period);
+            value.subtotal = Some(cost);
+            value.total = Some(cost);
+            value
+        };
+        let days = [priced_day("2026-01-01"), priced_day("2026-01-02")];
+        assert!(days.iter().all(|day| !day.possible_overlap));
+        let (daily, scale) = buckets(&days, true).unwrap();
+        assert_eq!(scale, "daily");
+        assert!(daily.iter().all(|bucket| bucket.token_total() == Some(11)));
+        assert!(daily.iter().all(|bucket| bucket.cost() == Some(cost)));
+        for (last, expected_scale) in [
+            ("2026-02-20", "weekly"),
+            ("2027-01-01", "monthly"),
+            ("2030-01-01", "yearly"),
+        ] {
+            let days = [
+                priced_day("2026-01-01"),
+                priced_day("2026-01-02"),
+                day(last),
+            ];
+            let (safe, scale) = buckets(&days, false).unwrap();
+            assert_eq!(scale, expected_scale);
+            assert_eq!(safe[0].token_total(), Some(22));
+            assert_eq!(safe[0].cost(), cost.checked_add(cost));
+            let (overlapping, scale) = buckets(&days, true).unwrap();
+            assert_eq!(scale, expected_scale);
+            assert_eq!(overlapping[0].records, 2);
+            assert!(overlapping.iter().all(|bucket| {
+                bucket.tokens == [None; 3] && bucket.subtotal.is_none() && bucket.total.is_none()
+            }));
         }
     }
 

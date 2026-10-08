@@ -73,6 +73,13 @@ impl TokenCounts {
         }
     }
 
+    pub(crate) fn cache_counters_differ(&self, other: &Self) -> bool {
+        self.cache_read_tokens != other.cache_read_tokens
+            || self.cache_write_tokens != other.cache_write_tokens
+            || self.cache_write_5m_tokens != other.cache_write_5m_tokens
+            || self.cache_write_1h_tokens != other.cache_write_1h_tokens
+    }
+
     pub(crate) fn validate(&mut self) {
         if self.input_basis == InputBasis::Inclusive
             && let Some(input) = self.input_tokens
@@ -81,13 +88,19 @@ impl TokenCounts {
                 self.cache_read_tokens = None;
             }
             if self.cache_write_tokens.is_some_and(|write| write > input) {
+                // Reject the buckets with their aggregate, before preprocessing
+                // can lose the evidence and derive a replacement write count.
                 self.cache_write_tokens = None;
+                self.cache_write_5m_tokens = None;
+                self.cache_write_1h_tokens = None;
             }
             if let (Some(read), Some(write)) = (self.cache_read_tokens, self.cache_write_tokens)
                 && read.checked_add(write).is_none_or(|cached| cached > input)
             {
                 self.cache_read_tokens = None;
                 self.cache_write_tokens = None;
+                self.cache_write_5m_tokens = None;
+                self.cache_write_1h_tokens = None;
             }
         }
         if let (Some(reasoning), Some(output)) = (self.reasoning_tokens, self.output_tokens)
@@ -252,10 +265,7 @@ impl UsageRecord {
             });
         let normalized = view.counts.clone();
         view.counts.validate();
-        view.invalid_cache |= view.counts.cache_read_tokens != normalized.cache_read_tokens
-            || view.counts.cache_write_tokens != normalized.cache_write_tokens
-            || view.counts.cache_write_5m_tokens != normalized.cache_write_5m_tokens
-            || view.counts.cache_write_1h_tokens != normalized.cache_write_1h_tokens;
+        view.invalid_cache |= view.counts.cache_counters_differ(&normalized);
         if normalized.cache_write_tokens.is_some() && view.counts.cache_write_tokens.is_none() {
             // An invalid aggregate cannot be resurrected by its TTL buckets.
             view.counts.cache_write_5m_tokens = None;
@@ -526,6 +536,33 @@ mod tests {
         tokens.cache_read_tokens = Some(110);
         tokens.validate();
         assert_eq!(tokens.cache_read_tokens, None);
+    }
+
+    #[test]
+    fn rejected_inclusive_write_aggregate_also_invalidates_its_ttl_buckets() {
+        for (read, write) in [(0, 110), (60, 50)] {
+            let mut tokens = TokenCounts {
+                input_tokens: Some(100),
+                cache_read_tokens: Some(read),
+                cache_write_tokens: Some(write),
+                cache_write_5m_tokens: Some(4),
+                cache_write_1h_tokens: Some(6),
+                ..TokenCounts::default()
+            };
+            tokens.validate();
+            assert_eq!(tokens.cache_write_tokens, None);
+            assert_eq!(tokens.cache_write_5m_tokens, None);
+            assert_eq!(tokens.cache_write_1h_tokens, None);
+            let mut record = UsageRecord::new(Source::Alc, Agent::Claude, 0);
+            record.tokens = tokens;
+            record
+                .warnings
+                .push("invalid observed token subsets were left unknown".to_owned());
+            let effective = record.effective_tokens();
+            assert!(effective.invalid_cache);
+            assert_eq!(effective.counts.cache_write_tokens, None);
+            assert_eq!(effective.counts.uncached_input(), None);
+        }
     }
 
     #[test]
