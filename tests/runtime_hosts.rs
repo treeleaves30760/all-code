@@ -104,6 +104,22 @@ impl Drop for StopHosts {
     }
 }
 
+fn snapshot_bytes(path: &Path) -> Vec<u8> {
+    if matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("hub.owner.lock" | "bridge.owner.lock")
+    ) {
+        // Windows byte-range ownership locks deny reads even on empty files.
+        // Their contract is presence and zero length, not readable contents.
+        let metadata = fs::metadata(path).unwrap();
+        assert!(metadata.is_file(), "{}", path.display());
+        assert_eq!(metadata.len(), 0, "{}", path.display());
+        Vec::new()
+    } else {
+        fs::read(path).unwrap_or_else(|error| panic!("snapshot {}: {error}", path.display()))
+    }
+}
+
 fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut files = BTreeMap::new();
     let mut pending = vec![root.to_owned()];
@@ -118,7 +134,7 @@ fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             } else if path.is_file() {
                 files.insert(
                     path.strip_prefix(root).unwrap().to_owned(),
-                    fs::read(path).unwrap(),
+                    snapshot_bytes(&path),
                 );
             }
         }
@@ -536,10 +552,7 @@ fn legacy_and_generation_hosts_coexist_without_rewriting_legacy_state() {
         credentials
     );
     for (path, bytes) in legacy_state {
-        assert_eq!(
-            fs::read(config.path().join("run").join(path)).unwrap(),
-            bytes
-        );
+        assert_eq!(snapshot_bytes(&config.path().join("run").join(path)), bytes);
     }
     let stop = command(config.path(), None)
         .args(["hub", "stop"])
