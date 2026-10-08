@@ -152,15 +152,46 @@ fn settings_from(args: &Path) -> (PathBuf, Value) {
     (path, settings)
 }
 
+fn assert_generation_helper(config: &Path, line: &str) {
+    let digest: String = Sha256::digest(fs::read(binary()).unwrap())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let pinned = fs::canonicalize(config)
+        .unwrap()
+        .join("runtime")
+        .join(".alc")
+        .join("generations")
+        .join(&digest)
+        .join(if cfg!(windows) { "alc.exe" } else { "alc" });
+    #[cfg(unix)]
+    let prefix = format!("'{}' --config-dir ", pinned.display());
+    #[cfg(windows)]
+    let prefix = format!("\"{}\" --config-dir ", pinned.display());
+    assert!(line.starts_with(&prefix), "{line}; expected {prefix}");
+    assert!(
+        line.contains(&format!(" --runtime {} claude-credential ", &digest[..12])),
+        "{line}"
+    );
+}
+
 fn helper(config: &Path, work: &Path, line: &str) -> String {
     #[cfg(unix)]
     let mut command = Command::new("/bin/sh");
     #[cfg(unix)]
     command.args(["-c", line]);
     #[cfg(windows)]
-    let mut command = Command::new("cmd");
-    #[cfg(windows)]
-    command.args(["/D", "/S", "/C", line]);
+    let mut command = {
+        use std::os::windows::process::CommandExt;
+
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/D", "/S", "/C"]);
+        // This is a complete shell script, not a CRT-encoded argument: `arg`
+        // would turn its quotes into literal backslash-quotes seen by cmd.
+        // /S removes this outer pair, leaving the helper's own path quotes.
+        command.raw_arg(format!("\"{line}\""));
+        Command::from_std(command)
+    };
     let output = command
         .current_dir(work)
         .env("CLAUDE_CONFIG_DIR", config.join("claude-history"))
@@ -386,11 +417,13 @@ fn dry_run_names_pinned_generation_helper_without_creating_runtime_state() {
         .stdout
         .clone();
     let text = String::from_utf8(output).unwrap();
-    assert!(
-        text.contains(&format!("--runtime {}", generation())),
-        "{text}"
-    );
-    assert!(text.contains(".alc/generations/"), "{text}");
+    let settings: Value = serde_json::from_str(
+        text.lines()
+            .find_map(|line| line.strip_prefix("settings: "))
+            .expect("dry-run must show the planned settings document"),
+    )
+    .unwrap();
+    assert_generation_helper(config.path(), settings["apiKeyHelper"].as_str().unwrap());
     assert!(!text.contains("dry-run-test-key"));
     assert_eq!(before, tree(config.path()));
     assert!(!config.path().join("run").exists());
@@ -424,13 +457,11 @@ fn legacy_and_generation_hosts_coexist_without_rewriting_legacy_state() {
         .assert()
         .success();
     let (new_path, new_settings) = launch_metrics(config.path(), work.path(), None);
-    assert!(new_path.starts_with(config.path().join("run/g").join(&id).join("claude")));
+    assert!(fs::canonicalize(&new_path).unwrap().starts_with(
+        fs::canonicalize(config.path().join("run/g").join(&id).join("claude")).unwrap()
+    ));
     let new_helper = new_settings["apiKeyHelper"].as_str().unwrap();
-    assert!(
-        new_helper.contains(&format!("--runtime {id}")),
-        "{new_helper}"
-    );
-    assert!(new_helper.contains(".alc/generations/"));
+    assert_generation_helper(config.path(), new_helper);
     let new_credential = helper(config.path(), work.path(), new_helper);
     let old_base = old_settings["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap();
     let new_base = new_settings["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap();
