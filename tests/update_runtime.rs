@@ -479,6 +479,9 @@ impl Drop for TestServer {
 }
 
 fn read_request(stream: &mut TcpStream) -> String {
+    // Accepted macOS sockets inherit O_NONBLOCK from the listener; the read
+    // timeout must wait for request bytes instead of closing a real connection.
+    stream.set_nonblocking(false).unwrap();
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 1024];
     while bytes.len() < 8192 && !bytes.windows(4).any(|part| part == b"\r\n\r\n") {
@@ -643,6 +646,76 @@ fn interrupted_initial_activation_recovers_marker_and_preserves_rollback_metadat
         serde_json::from_slice(&fs::read(root.join("active.json")).unwrap()).unwrap();
     assert_eq!(recovered["current"]["version"], VERSION);
     assert_eq!(recovered["previous"]["version"], "1.0.0");
+}
+
+#[test]
+fn online_same_version_retry_finishes_initial_activation_without_downloading() {
+    let install = Install::new();
+    let root = install.front.parent().unwrap().join(".alc");
+    let activation = fs::read(root.join("active.json")).unwrap();
+    fs::write(root.join("activation.json"), &activation).unwrap();
+    fs::remove_file(root.join("active.json")).unwrap();
+    let server = TestServer::new(|path, _| {
+        assert_eq!(path, "/latest", "recovery must not download a payload");
+        serde_json::to_vec(&json!({
+            "tag_name": format!("v{VERSION}"),
+            "html_url": "https://example.invalid/release",
+            "assets": []
+        }))
+        .unwrap()
+    });
+    let output = command(&install.front, &install.config)
+        .arg("update")
+        .env("ALC_UPDATE_API_URL", format!("{}/latest", server.address))
+        .output()
+        .unwrap();
+    success(&output);
+    assert_eq!(fs::read(root.join("active.json")).unwrap(), activation);
+    assert!(!root.join("activation.json").exists());
+    assert_eq!(server.count.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn rollback_cancels_interrupted_activation_before_changing_active() {
+    let install = Install::new();
+    let next = install.bundle("next", &fixtures().next, "3.0.0");
+    let newer = install.bundle("newer", &fixtures().newer, "4.0.0");
+    success(&install.apply(&next, false));
+    let previous = install.active();
+    success(&install.apply(&newer, false));
+    let root = install.front.parent().unwrap().join(".alc");
+    // Crash immediately before the newer active.json rename: both generations
+    // are verified, but active still selects next and marker proposes newer.
+    fs::copy(root.join("active.json"), root.join("activation.json")).unwrap();
+    fs::write(
+        root.join("active.json"),
+        serde_json::to_vec(&previous).unwrap(),
+    )
+    .unwrap();
+    fs::write(root.join("pending.json"), b"{}").unwrap();
+    let output = command(&install.pinned, &install.config)
+        .args(["update", "--rollback", "previous", "--offline"])
+        .output()
+        .unwrap();
+    success(&output);
+    assert_eq!(install.active()["current"]["version"], VERSION);
+    assert!(!root.join("activation.json").exists());
+    assert!(!root.join("pending.json").exists());
+    success(&install.apply(&newer, false));
+    assert_eq!(install.active()["current"]["version"], "4.0.0");
+}
+
+#[test]
+fn offline_same_version_retry_completes_pending_activation_before_noop() {
+    let install = Install::new();
+    let bundle = install.bundle("same", &install.pinned, VERSION);
+    let root = install.front.parent().unwrap().join(".alc");
+    let activation = fs::read(root.join("active.json")).unwrap();
+    fs::write(root.join("activation.json"), &activation).unwrap();
+    fs::remove_file(root.join("active.json")).unwrap();
+    success(&install.apply(&bundle, false));
+    assert_eq!(fs::read(root.join("active.json")).unwrap(), activation);
+    assert!(!root.join("activation.json").exists());
 }
 
 #[test]

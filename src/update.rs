@@ -1,6 +1,7 @@
 //! Acquire/verify/publish/activate alc updates. No agent, hub, bridge, or user
 //! session is stopped, and no loaded generation executable is overwritten.
 
+use std::collections::HashSet;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Cursor, Read};
@@ -24,6 +25,7 @@ const CHECKSUM_DOWNLOAD_LIMIT: u64 = 1024 * 1024;
 const ARCHIVE_DOWNLOAD_LIMIT: u64 = 256 * 1024 * 1024;
 const EXTRACTED_ARCHIVE_LIMIT: u64 = 640 * 1024 * 1024;
 const ARCHIVE_ENTRY_LIMIT: usize = 4096;
+const ZIP_METADATA_LIMIT: u64 = 4 * 1024 * 1024;
 const VERSION_OUTPUT_LIMIT: u64 = 64 * 1024;
 const VERSION_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -107,8 +109,9 @@ pub fn run(
             return Ok(0);
         }
         if download_only.is_none() {
+            let pending = recover_pending_activation(&runtime::install_front()?)?;
             let current = installed_version()?;
-            if latest < current || (latest == current && !force) {
+            if !pending && (latest < current || (latest == current && !force)) {
                 print_no_update(&current, &latest);
                 return Ok(0);
             }
@@ -490,9 +493,202 @@ fn extract_binary(archive: &[u8], asset: &str, destination: &Path) -> Result<Pat
     Ok(output)
 }
 
+fn validate_zip_headers(bytes: &[u8]) -> Result<()> {
+    const EOCD: &[u8] = b"PK\x05\x06";
+    const CENTRAL: &[u8] = b"PK\x01\x02";
+    const LOCAL: &[u8] = b"PK\x03\x04";
+    const ZIP64_LOCATOR: &[u8] = b"PK\x06\x07";
+
+    ensure!(bytes.len() >= 22, "truncated release ZIP end record");
+    let mut end = None;
+    // The zip parser searches the entire input and can fall back to an earlier
+    // end record. Reject every second structurally plausible candidate before
+    // giving that parser any untrusted count.
+    for (offset, magic) in bytes.windows(4).enumerate() {
+        if magic != EOCD {
+            continue;
+        }
+        let Some(header) = bytes.get(offset..offset + 22) else {
+            continue;
+        };
+        let comment = zip_u16(header, 20) as usize;
+        if offset + 22 + comment > bytes.len() {
+            continue;
+        }
+        let central = zip_u32(header, 16) as usize;
+        let has_locator = offset >= 20 && bytes[offset - 20..].starts_with(ZIP64_LOCATOR);
+        let terminal = offset + 22 + comment == bytes.len();
+        // Known(0) makes the advertised central signature mandatory. Zero-entry
+        // records and ZIP64 locators are the parser's other candidate paths.
+        let plausible = zip_u16(header, 10) == 0
+            || has_locator
+            || (central < offset && bytes[central..].starts_with(CENTRAL));
+        if terminal || plausible {
+            ensure!(end.is_none(), "release ZIP contains ambiguous end records");
+            end = Some(offset);
+        }
+    }
+    let end = end.context("release ZIP has no end record")?;
+    ensure!(
+        !(end >= 20 && bytes[end - 20..].starts_with(ZIP64_LOCATOR)),
+        "release ZIP uses unsupported ZIP64 metadata"
+    );
+    let header = &bytes[end..end + 22];
+    ensure!(
+        end + 22 + zip_u16(header, 20) as usize == bytes.len(),
+        "release ZIP has trailing data"
+    );
+    ensure!(
+        zip_u16(header, 4) == 0 && zip_u16(header, 6) == 0,
+        "release ZIP uses unsupported multiple disks"
+    );
+    let count = zip_u16(header, 10) as usize;
+    ensure!(
+        count != u16::MAX as usize
+            && zip_u32(header, 12) != u32::MAX
+            && zip_u32(header, 16) != u32::MAX,
+        "release ZIP uses unsupported ZIP64 metadata"
+    );
+    ensure!(
+        count <= ARCHIVE_ENTRY_LIMIT,
+        "release ZIP contains too many entries"
+    );
+    ensure!(
+        zip_u16(header, 8) as usize == count,
+        "release ZIP has inconsistent disk entry counts"
+    );
+    let start = zip_u32(header, 16) as usize;
+    let size = zip_u32(header, 12) as usize;
+    ensure!(
+        start.checked_add(size) == Some(end),
+        "release ZIP central directory has invalid bounds"
+    );
+    let mut position = start;
+    let mut names = HashSet::new();
+    let mut metadata_size = 0_usize;
+    for _ in 0..count {
+        let fixed_end = position.checked_add(46).context("ZIP header overflow")?;
+        ensure!(fixed_end <= end, "truncated release ZIP central header");
+        let entry = &bytes[position..fixed_end];
+        ensure!(
+            entry.starts_with(CENTRAL),
+            "invalid release ZIP central header"
+        );
+        ensure!(
+            zip_u16(entry, 34) == 0,
+            "release ZIP entry uses unsupported multiple disks"
+        );
+        let compressed = zip_u32(entry, 20);
+        let uncompressed = zip_u32(entry, 24);
+        let local = zip_u32(entry, 42);
+        ensure!(
+            compressed != u32::MAX && uncompressed != u32::MAX && local != u32::MAX,
+            "release ZIP uses unsupported ZIP64 metadata"
+        );
+        ensure!(
+            u64::from(compressed) <= ARCHIVE_DOWNLOAD_LIMIT
+                && u64::from(uncompressed) <= runtime::BINARY_LIMIT,
+            "release ZIP entry exceeds its size limit"
+        );
+        let name_end = fixed_end + zip_u16(entry, 28) as usize;
+        let extra_end = name_end + zip_u16(entry, 30) as usize;
+        let entry_end = extra_end + zip_u16(entry, 32) as usize;
+        ensure!(entry_end <= end, "truncated release ZIP central fields");
+        metadata_size = metadata_size
+            .checked_add(entry_end - fixed_end)
+            .context("ZIP metadata size overflow")?;
+        ensure!(
+            metadata_size as u64 <= ZIP_METADATA_LIMIT,
+            "release ZIP metadata exceeds its size limit"
+        );
+        let name = &bytes[fixed_end..name_end];
+        ensure!(
+            names.insert(name),
+            "release ZIP contains duplicate entry names"
+        );
+        validate_zip_extra(&bytes[name_end..extra_end])?;
+
+        // Require unshifted classic local headers, and bound their data before
+        // the central directory. ZIP64 extras must not rewrite checked sizes.
+        let local = local as usize;
+        let local_end = local.checked_add(30).context("ZIP local header overflow")?;
+        ensure!(
+            local_end <= start,
+            "invalid release ZIP local header bounds"
+        );
+        let local_header = &bytes[local..local_end];
+        ensure!(
+            local_header.starts_with(LOCAL),
+            "invalid release ZIP local header"
+        );
+        ensure!(
+            zip_u32(local_header, 18) != u32::MAX && zip_u32(local_header, 22) != u32::MAX,
+            "release ZIP uses unsupported ZIP64 metadata"
+        );
+        let local_name_end = local_end + zip_u16(local_header, 26) as usize;
+        let data_start = local_name_end + zip_u16(local_header, 28) as usize;
+        ensure!(data_start <= start, "invalid release ZIP local fields");
+        ensure!(
+            &bytes[local_end..local_name_end] == name,
+            "release ZIP local and central names disagree"
+        );
+        validate_zip_extra(&bytes[local_name_end..data_start])?;
+        ensure!(
+            data_start
+                .checked_add(compressed as usize)
+                .is_some_and(|data_end| data_end <= start),
+            "release ZIP entry data exceeds its bounds"
+        );
+        position = entry_end;
+    }
+    ensure!(
+        position == end,
+        "release ZIP central directory size disagrees with its count"
+    );
+    Ok(())
+}
+
+fn zip_u16(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+fn zip_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
+fn validate_zip_extra(mut bytes: &[u8]) -> Result<()> {
+    while !bytes.is_empty() {
+        ensure!(bytes.len() >= 4, "truncated release ZIP extra field");
+        ensure!(
+            zip_u16(bytes, 0) != 1,
+            "release ZIP uses unsupported ZIP64 metadata"
+        );
+        let size = zip_u16(bytes, 2) as usize;
+        bytes = bytes
+            .get(4 + size..)
+            .context("truncated release ZIP extra field")?;
+    }
+    Ok(())
+}
+
 fn extract_zip_file(bytes: &[u8], destination: &Path) -> Result<()> {
-    let mut archive =
-        zip::ZipArchive::new(Cursor::new(bytes)).context("release is not a valid ZIP archive")?;
+    validate_zip_headers(bytes)?;
+    let mut archive = zip::ZipArchive::with_config(
+        zip::read::Config {
+            archive_offset: zip::read::ArchiveOffset::Known(0),
+        },
+        Cursor::new(bytes),
+    )
+    .context("release is not a valid ZIP archive")?;
+    ensure!(
+        archive.offset() == 0,
+        "release ZIP has a shifted archive offset"
+    );
     ensure!(
         archive.len() <= ARCHIVE_ENTRY_LIMIT,
         "release ZIP contains too many entries"
@@ -641,8 +837,8 @@ fn validate_tar_headers(bytes: &[u8]) -> Result<()> {
             return Ok(());
         }
         ensure!(
-            !matches!(header[156], b'L' | b'K' | b'x' | b'g'),
-            "release tar uses unsupported extended metadata"
+            matches!(header[156], 0 | b'0'..=b'6'),
+            "release tar uses unsupported extended metadata or entry type"
         );
         // Only the traditional bounded octal size field is accepted. GNU binary
         // numbers/PAX overrides are unnecessary for alc's release artifacts.
@@ -732,6 +928,60 @@ fn parse_binary_version(output: &str) -> Result<Version> {
     Version::parse(version).with_context(|| format!("invalid packaged alc version: {version}"))
 }
 
+/// Finish a durable activation before an online up-to-date decision. A pending
+/// front bootstrap still needs the requested payload; do not silently skip it.
+fn recover_pending_activation(front: &Path) -> Result<bool> {
+    let front = canonical_path(front)?;
+    let root = front
+        .parent()
+        .context("install entrypoint has no parent")?
+        .join(".alc");
+    if !root.try_exists()? {
+        return Ok(false);
+    }
+    runtime::require_directory(&root)?;
+    let _lock = FileLock::acquire(&root.join("publish.lock"))?;
+    let active = runtime::read_active(&root)?;
+    let marker = runtime::read_activation_marker(&root)?;
+    let stable = runtime::read_front(&root, &front)?;
+    finish_pending_activation(&root, active.as_ref(), marker.as_ref(), stable.as_ref())?;
+    Ok(stable.is_none() && marker.is_some())
+}
+
+fn finish_pending_activation(
+    root: &Path,
+    active: Option<&ActiveManifest>,
+    marker: Option<&ActiveManifest>,
+    stable: Option<&FrontManifest>,
+) -> Result<bool> {
+    let Some(marker) = marker else {
+        return Ok(false);
+    };
+    if let Some(active) = active {
+        ensure!(
+            marker.current == active.current || marker.previous.as_ref() == Some(&active.current),
+            "pending activation does not extend the installed generation"
+        );
+    }
+    if stable.is_none() {
+        return Ok(false);
+    }
+    runtime::write_active(root, marker)?;
+    cancel_pending_activation(root)?;
+    Ok(true)
+}
+
+fn cancel_pending_activation(root: &Path) -> Result<()> {
+    for name in ["activation.json", "pending.json"] {
+        match fs::remove_file(root.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("could not cancel pending activation"),
+        }
+    }
+    runtime::sync_directory(root)
+}
+
 fn publish_and_activate(front: &Path, payload: &VerifiedPayload, force: bool) -> Result<()> {
     let front = canonical_path(front)?;
     ensure!(
@@ -755,18 +1005,20 @@ fn publish_and_activate(front: &Path, payload: &VerifiedPayload, force: bool) ->
 
     // Another updater may have activated a newer version while acquisition was
     // in progress. The compiled/running version is not the installed version.
-    let active = runtime::read_active(&root)?;
+    let mut active = runtime::read_active(&root)?;
     // A durable marker records the intended activation before an initial front
-    // rename. Recover a crash after that rename/metadata publication without
-    // mistaking its now-new version for an already completed installation.
-    let activation_marker = runtime::read_activation_marker(&root)?;
-    if let (Some(marker), Some(active)) = (&activation_marker, &active) {
-        ensure!(
-            marker.current == active.current || marker.previous.as_ref() == Some(&active.current),
-            "pending activation does not extend the installed generation"
-        );
-    }
+    // rename. Recover before version comparisons, including same-version retries.
+    let mut activation_marker = runtime::read_activation_marker(&root)?;
     let front_manifest = runtime::read_front(&root, &front)?;
+    if finish_pending_activation(
+        &root,
+        active.as_ref(),
+        activation_marker.as_ref(),
+        front_manifest.as_ref(),
+    )? {
+        active = runtime::read_active(&root)?;
+        activation_marker = None;
+    }
     let existing = if let Some(active) = &active {
         Some(active.current.clone())
     } else if let Some(marker) = &activation_marker {
@@ -846,9 +1098,7 @@ fn publish_and_activate(front: &Path, payload: &VerifiedPayload, force: bool) ->
     }
 
     runtime::write_active(&root, &activation)?;
-    fs::remove_file(root.join("activation.json"))?;
-    runtime::sync_directory(&root)?;
-    let _ = fs::remove_file(root.join("pending.json"));
+    cancel_pending_activation(&root)?;
     println!("Activated alc {} at {}.", next.version, front.display());
     println!(
         "Existing sessions keep their pinned executables; retained generations are available for --rollback."
@@ -947,9 +1197,13 @@ fn rollback_to(front: &Path, selector: &str) -> Result<()> {
         "retained rollback metadata does not match its executable"
     );
     if next.digest == active.current.digest {
+        cancel_pending_activation(&root)?;
         println!("alc {} is already active.", next.version);
         return Ok(());
     }
+    // Persist cancellation before changing active: a crash must not leave a
+    // marker whose previous/current no longer extends the rollback generation.
+    cancel_pending_activation(&root)?;
     runtime::write_active(
         &root,
         &ActiveManifest {
@@ -1097,6 +1351,145 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("unsupported extended")
+        );
+    }
+
+    #[test]
+    fn zip_preflight_bounds_raw_count_and_rejects_duplicate_names() {
+        let bytes = small_zip();
+        validate_zip_headers(&bytes).unwrap();
+        let end = bytes.len() - 22;
+        let central = zip_u32(&bytes[end..], 16) as usize;
+
+        let mut excessive = bytes.clone();
+        excessive[end + 8..end + 12].copy_from_slice(&[1, 16, 1, 16]); // 4097
+        assert!(
+            validate_zip_headers(&excessive)
+                .unwrap_err()
+                .to_string()
+                .contains("too many")
+        );
+
+        let record = &bytes[central..end];
+        let mut duplicate = bytes[..end].to_vec();
+        duplicate.extend_from_slice(record);
+        let duplicate_end = duplicate.len();
+        duplicate.extend_from_slice(&bytes[end..]);
+        duplicate[duplicate_end + 8..duplicate_end + 12].copy_from_slice(&[2, 0, 2, 0]);
+        duplicate[duplicate_end + 12..duplicate_end + 16]
+            .copy_from_slice(&((record.len() * 2) as u32).to_le_bytes());
+        // The dependency silently deduplicates this valid raw pair; preflight
+        // must reject it before allocating or trusting its file map.
+        assert_eq!(
+            zip::ZipArchive::new(Cursor::new(&duplicate)).unwrap().len(),
+            1
+        );
+        assert!(
+            validate_zip_headers(&duplicate)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate")
+        );
+    }
+
+    fn small_zip() -> Vec<u8> {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("alc.exe", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"small payload").unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn zip_preflight_rejects_zip64_multiple_disks_and_parser_fallback() {
+        let bytes = small_zip();
+        let end = bytes.len() - 22;
+        for offset in [4, 6] {
+            let mut multiple_disks = bytes.clone();
+            multiple_disks[end + offset] = 1;
+            assert!(
+                validate_zip_headers(&multiple_disks)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("multiple disks")
+            );
+        }
+        let mut zip64 = bytes.clone();
+        zip64[end + 10..end + 12].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(
+            validate_zip_headers(&zip64)
+                .unwrap_err()
+                .to_string()
+                .contains("ZIP64")
+        );
+        let central = zip_u32(&bytes[end..], 16) as usize;
+        let mut central_disk = bytes.clone();
+        central_disk[central + 34] = 1;
+        assert!(
+            validate_zip_headers(&central_disk)
+                .unwrap_err()
+                .to_string()
+                .contains("multiple disks")
+        );
+        let mut shifted = bytes.clone();
+        shifted.insert(0, 0);
+        assert!(validate_zip_headers(&shifted).is_err());
+        assert!(
+            validate_zip_extra(&[1, 0, 0, 0])
+                .unwrap_err()
+                .to_string()
+                .contains("ZIP64")
+        );
+        let mut locator = bytes[..end].to_vec();
+        locator.extend_from_slice(b"PK\x06\x07");
+        locator.extend_from_slice(&[0; 16]);
+        locator.extend_from_slice(&bytes[end..]);
+        assert!(
+            validate_zip_headers(&locator)
+                .unwrap_err()
+                .to_string()
+                .contains("ZIP64")
+        );
+
+        let mut fallback = bytes.clone();
+        let terminal = fallback.len();
+        fallback.extend_from_slice(&bytes[end..]);
+        // Make the terminal directory invalid. The dependency can fall back to
+        // the earlier valid EOCD instead; validation must reject both records.
+        fallback[terminal + 8..terminal + 12].copy_from_slice(&[2, 0, 2, 0]);
+        assert!(zip::ZipArchive::new(Cursor::new(&fallback)).is_ok());
+        assert!(
+            validate_zip_headers(&fallback)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_preflight_rejects_sparse_before_parsing_extension_blocks() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+        let mut header = tar::Header::new_gnu();
+        header.set_path("metadata").unwrap();
+        header.set_entry_type(tar::EntryType::GNUSparse);
+        header.set_size(runtime::BINARY_LIMIT);
+        header.as_gnu_mut().unwrap().set_is_extended(true);
+        header.set_cksum();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(header.as_bytes()).unwrap();
+        // No large body or allocation stress is necessary: rejection must occur
+        // on this first header, before any sparse extension parsing.
+        let bytes = encoder.finish().unwrap();
+        assert!(
+            validate_tar_headers(&bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported")
         );
     }
 
