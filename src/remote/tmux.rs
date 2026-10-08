@@ -319,11 +319,13 @@ impl Found {
 
     #[cfg(windows)]
     pub(crate) fn materialized_launcher(&self, config_dir: &Path) -> Result<PathBuf> {
-        let launcher = pane_launcher(&crate::runtime::materialize_exe(config_dir)?)?;
+        let launcher = crate::runtime::materialize_exe(config_dir)?;
         if launcher != self.launcher {
             bail!("the pinned tmux launcher changed after planning; retry the launch");
         }
-        Ok(launcher)
+        // A first standalone launch has no pinned leaf during planning. Resolve
+        // its Windows short spelling only after publishing the immutable copy.
+        pane_launcher(&launcher)
     }
 }
 
@@ -355,7 +357,10 @@ pub(crate) fn find() -> Result<Found> {
 /// works rather than a refusal over the one that happens to come first.
 #[cfg(windows)]
 pub(crate) fn find() -> Result<Found> {
-    find_with_launcher(&std::env::current_exe().context("failed to find alc's own path")?)
+    let exe = std::env::current_exe().context("failed to find alc's own path")?;
+    let found = find_with_launcher(&exe)?;
+    pane_launcher(&exe)?;
+    Ok(found)
 }
 
 /// Read-only resolution, including the immutable launcher a real spawn will
@@ -374,10 +379,15 @@ pub(crate) fn find_for(config_dir: &Path) -> Result<Found> {
 
 #[cfg(windows)]
 fn find_with_launcher(exe: &Path) -> Result<Found> {
-    const INSTALL: &str = "`winget install arndawg.tmux-windows`";
     let candidates: Vec<PathBuf> = which::which_all("tmux")
         .map(Iterator::collect)
         .unwrap_or_default();
+    find_from_candidates(exe, candidates)
+}
+
+#[cfg(windows)]
+fn find_from_candidates(exe: &Path, candidates: Vec<PathBuf>) -> Result<Found> {
+    const INSTALL: &str = "`winget install arndawg.tmux-windows`";
     let mut refused = None;
     for binary in candidates {
         let text = read_version(&binary)?;
@@ -387,11 +397,10 @@ fn find_with_launcher(exe: &Path) -> Result<Found> {
                     format!("could not read a version out of `{} -V`", binary.display())
                 })?;
                 require_floor(version)?;
-                let launcher = pane_launcher(exe)?;
                 return Ok(Found {
                     binary,
                     version,
-                    launcher,
+                    launcher: exe.to_owned(),
                 });
             }
             port => {
@@ -1815,6 +1824,25 @@ mod tests {
             strings(tmux.mirror_argv()),
             vec!["-L", "alc-claude-abcdefghjk", "attach-session", "-t", "alc"]
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_launcher_is_not_shortened_before_its_immutable_copy_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake_tmux = directory.path().join("tmux.cmd");
+        std::fs::write(&fake_tmux, "@echo off\r\necho tmux 3.6a-win32\r\n").unwrap();
+        let planned = directory
+            .path()
+            .join("尚未建立")
+            .join(".alc")
+            .join("generations")
+            .join("0123456789ab")
+            .join("alc.exe");
+        assert!(!planned.exists());
+        let found = find_from_candidates(&planned, vec![fake_tmux]).unwrap();
+        assert_eq!(found.launcher, planned);
+        assert!(!directory.path().join("尚未建立").exists());
     }
 
     /// tmux for Windows reads the basename of a `-S` path as a label of its
