@@ -23,8 +23,12 @@ Files:
 - `config.toml`: provider metadata, models, defaults, URLs, and env-var names.
 - `credentials.toml`: locally saved API keys, mode `0600` on Unix.
 - `remote.toml`: the [remote-control](./remote-control.md) settings.
-- `usage.jsonl`: the launch and turn ledger [`alc usage`](./usage.md)
-  aggregates. Delete it to start counting again.
+- `usage.jsonl`: launch entries and metadata-only request records from the Codex
+  translation bridge and opt-in `--metrics` observation. [`alc usage` and
+  `alc tps`](./usage.md) read it. Deleting it resets alc's records, not the
+  separate native Claude/Codex histories.
+- `pricing.toml`: optional exact USD token-rate overrides for usage estimates.
+  This is a [separate sidecar](#pricing-sidecar), not a table in `config.toml`.
 - `claude/settings-*.json`: the settings documents alc hands Claude Code with
   `--settings` — the endpoint, the model variables, the picker and the
   `apiKeyHelper` line, and no key of any kind. Each is named after a hash of its
@@ -37,11 +41,25 @@ Files:
   `--settings` of your own is merged into the document, so a credential you put
   in your file is in alc's copy too.
 - `run/bridge.port`, `run/bridge.token`: where the [background
-  bridge](./background-sessions.md#the-background-bridge) is listening, and the
-  token every request to it must carry.
-- `run/bridge/routes/`: one file per route the bridge serves — the provider
+  bridge](./background-sessions.md#the-background-bridge) is listening, and its
+  control/translation token; the token is not sent to the API vendor. Durable
+  Claude API observation uses a sealed surrogate on the local request hop.
+- `run/bridge.observer-key`: an independent owner-only local observer secret
+  (`0600` on Unix), not a vendor API key. It authenticates fresh host/control
+  challenges and seals Claude metrics credentials to a frozen route/current host
+  instance. It is never published by the handshake or sent upstream. The data
+  plane remains loopback HTTP; this secret does not provide TLS or hide plaintext
+  request bodies from a hijacked local port.
+- `run/bridge/routes/`: one file per Codex translation route — the provider
   profile it spends, the Codex `auth.json` its requests are signed with, and
   where Claude Code's own model ids land.
+- `run/bridge/forward/`: durable Claude API-key observation routes used by
+  `--metrics`; frozen profile/kind/upstream metadata only, no API key. The
+  [helper](./background-sessions.md#api-key-metrics-in-background-sessions)
+  resolves the key, authenticates the host, registers only its digest in memory,
+  and returns an AEAD-sealed local surrogate. The host restores upstream
+  authentication only on dispatch; observation artifacts never store the plaintext
+  vendor key. Host restarts invalidate old surrogates; rerun the helper.
 
 Override the directory with `ALC_CONFIG_DIR`.
 
@@ -99,6 +117,60 @@ Both paths must be absolute, `codex_home` belongs to a `codex` profile and
 `claude_config_dir` to an `anthropic` one, and each beats the matching
 environment variable so a shell setting cannot move which account a named
 profile spends. [Usage](./usage.md) has the whole flow.
+
+## Pricing sidecar
+
+[`alc usage`](./usage.md#what-an-estimated-dollar-means) estimates with a bundled,
+offline curated LiteLLM subset and optional local overrides. It never fetches
+prices at report time. The bundled snapshot is dated 2026-10-08 and pins LiteLLM
+commit `33d908e0ae2c0a257eeb5d546df08527d348a670`, upstream SHA-256, and MIT license
+provenance. The report's `pricing_snapshot` identifies the bundled data and any
+selected override by hash; historical usage is repriced with that snapshot,
+not reconstructed into historical invoices.
+
+Put overrides in **`<alc-config-dir>/pricing.toml`**, or choose another file with
+`alc usage --pricing-file /absolute/path/pricing.toml`. Do not add `[pricing]` to
+`config.toml`. Example for an explicitly free local model — use this only if you
+intend a zero API-token reference, not to account for electricity or hardware:
+
+```toml
+version = 1
+currency = "USD"
+units = "USD-per-million-tokens"
+
+[[models]]
+provider = "custom"
+model = "local-model"
+profile = "local-work"
+endpoint = "http://127.0.0.1:8080/v1"
+input = "0"
+output = "0"
+cache_read = "0"
+cache_write = "0"
+```
+
+| Field | Rule |
+| --- | --- |
+| `version`, `currency`, `units` | Required exactly as above: `1`, `"USD"`, `"USD-per-million-tokens"`. |
+| `[[models]].provider`, `model` | Required exact recorded provider kind/reference provider and model ID; the profile name belongs in `profile`, not `provider`. No fuzzy matching or automatic prefix stripping. |
+| `aliases` | Optional list of additional exact model IDs. Each name must belong unambiguously to one model family in the same scope. |
+| `profile`, `endpoint` | Optional exact selectors. Endpoint is an absolute HTTP(S) URL without credentials, query, or fragment, matching recorded upstream metadata rather than the loopback observation route. |
+| `tier` | Optional service-tier selector; defaults to `"standard"`. Missing recorded tier assumes standard; OpenAI's `"default"` maps to standard. Other actual tiers need their own rates. |
+| `context_min_tokens`, `context_max_tokens` | Optional inclusive gross-input bounds. The selected band's rates apply to the whole request, not marginal tokens; cumulative deltas cannot select per-request bands. |
+| `input`, `output`, `cache_read`, `cache_write` | Optional nonnegative decimal **strings** in USD per million tokens, with at most six fractional digits. At least one explicit rate is required per entry. |
+| `cache_write_5m`, `cache_write_1h` | TTL-specific write rates instead of `cache_write`; do not mix flat and TTL-specific rates in one entry. The counters replace aggregate cache writes, not add another charge. |
+
+Unknown fields, malformed rates, overlapping context bands, duplicate tiers, and
+ambiguous profile-only/endpoint-only scopes are rejected. A more specific exact
+profile/endpoint scope can replace a broader scope. **The selected override
+family replaces bundled prices as a whole**: omitted rates, tiers, and context
+bands do not inherit fallback prices. Missing counters or positive usage without
+a rate stay unknown/partial; explicit `"0"` is the only free rate. Local/custom
+models need exact overrides unless a supported exact official endpoint supplies
+a reference. An override never invents unknown native provider/profile metadata.
+
+Cost excludes subscription fees, taxes, discounts, tools, and other non-token
+charges. It is an API-token or API-equivalent reference estimate, not a bill.
 
 ## Credential precedence
 

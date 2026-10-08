@@ -42,16 +42,17 @@ drops.
 
 | In the file | What it does |
 | --- | --- |
-| `ANTHROPIC_BASE_URL` | the provider's Anthropic endpoint, or alc's background bridge for Codex |
+| `ANTHROPIC_BASE_URL` | the provider's Anthropic endpoint, alc's Codex background bridge, or an opt-in API observation route |
 | model variables and `modelPicker` | the models Claude Code starts on and offers |
 | `apiKeyHelper` | `alc claude-credential …`, which Claude Code runs for the credential |
 
-The file never contains a key. The helper prints the key alc already keeps - the
-profile's environment variable, or the key saved with `alc config key` - or, for
-Codex, the background bridge's token. A key that lives only in one shell's
-environment works in the sessions started from that shell; a background session
-started later may not see it, and then the helper says to save it with
-`alc config key <profile>`. It never falls back to your Claude login.
+The generated provider settings contain no key. For ordinary direct API-key
+sessions, the helper prints the key from the profile's environment variable or
+`alc config key` store; for Codex translation it prints the bridge token. With
+Claude API-key `--metrics`, it instead returns a sealed local observer credential
+as described below, never the raw vendor key over loopback HTTP. A key available
+only in the original shell may be missing on a later background restart; save it
+with `alc config key <profile>`. The helper never falls back to your Claude login.
 
 A background session keeps the settings alc merged at launch. If you pass your
 own `--settings`, alc merges it into the document it writes, yours winning,
@@ -75,6 +76,57 @@ alc bridge stop     # the next session that needs it starts it again
 ```
 
 `alc doctor` shows the same under **Background sessions**.
+
+## API-key metrics in background sessions
+
+```sh
+alc --openrouter --metrics claude agents
+alc --openrouter --metrics claude --bg "fix the flaky test"
+alc tps --filter-agent claude
+```
+
+Ordinary API-key sessions stay direct. With `--metrics`, supported Claude Code
+API-key launches use a **forwarding observation route** on the durable background
+host, not a short-lived listener owned by the launching terminal. The route
+forwards the provider's native Anthropic-compatible protocol; it is not the
+Codex translation adapter. New requests record metadata for [TTFT/TPS and
+usage estimates](./usage.md), including after a supervisor restart.
+
+The durable settings file contains the loopback endpoint and alc's helper, not
+the key. On each restart the helper resolves the same profile key, starts the
+host if needed, and authenticates it with a fresh challenge using the independent,
+owner-only `run/bridge.observer-key`. It registers only a key digest in memory and
+returns an **AEAD-sealed surrogate** bound to the frozen route and current host
+instance. The host restores the original upstream key/header only when dispatching
+to that fixed endpoint. Observation artifacts never write the plaintext vendor
+key; target registration retains digests, not the key. After a host restart, an
+old surrogate gets HTTP 401; rerunning the helper creates one for the new instance.
+The authenticated handshake/control challenges do not publish the observer secret.
+
+The route file stores only frozen profile/kind/upstream metadata, so a key
+available only in the original shell still needs to be saved with
+`alc config key <profile>` for later background restarts. Changing or disabling
+that profile's endpoint requires a fresh launch; the helper refuses to send a
+new key to the old route.
+
+This preserves the native SDK, protocol, model, and **upstream authentication**,
+not the plaintext credential on the local hop. The local request data plane is
+still loopback HTTP, not TLS or full local confidentiality. Trust local processes:
+the surrogate prevents raw vendor-key disclosure, but a hijacked local port can
+still intercept plaintext request bodies.
+
+Claude's native login, keyless endpoints, and overridden endpoint/authentication
+or `apiKeyHelper` settings are not observed; explicit `--metrics` is refused
+when alc cannot safely use its own API-key seam. It also refuses a profile whose
+selected `api_key_env` is `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` and exported
+nonempty, because that bypasses the sealed helper: save with
+`alc config key <profile>`, unset that exported variable, and relaunch; ordinary
+no-metrics auth behavior is unchanged. Metrics requires the authenticated
+`forward-observer-v2` host capability; an older daemon is refused even when its
+alc version string matches. Run `alc bridge stop` and relaunch in that case.
+A metrics dry-run starts no host/listener and writes no settings, route, or
+observer-key file. Codex translation requests are observed automatically and need
+no `--metrics`; native/history-only records cannot supply past TTFT.
 
 ## Every Claude model becomes a Codex model
 

@@ -18,6 +18,20 @@ runs inside the `alc` process on a loopback port, serves only the agent that
 launch started, and stops when that session ends. Credentials are never copied
 into the alc configuration.
 
+# Bundled pricing data
+
+`alc usage` includes a curated, offline subset of LiteLLM's model pricing map
+from [BerriAI/litellm](https://github.com/BerriAI/litellm), pinned to commit
+`33d908e0ae2c0a257eeb5d546df08527d348a670` (2026-10-08). Only selected,
+provider-verified reference rates are included; the full map is not shipped or
+fetched at runtime. The exact source URL, SHA-256 digest and verification notes
+are recorded in `src/usage/prices/source.toml`.
+
+The data is MIT-licensed, copyright (c) 2023 Berri AI. Its notice is retained in
+`src/usage/prices/LICENSE` and `THIRD_PARTY_LICENSES/LiteLLM-LICENSE`; the latter
+is included in every release archive. These rates support API-equivalent cost
+estimates, not invoices or subscription charges.
+
 # Vendored browser assets
 
 The remote-control page (`alc --share`) is served out of the `alc` binary

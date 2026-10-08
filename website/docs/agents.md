@@ -167,6 +167,40 @@ alc kimi
 alc --moonshot kimi
 ```
 
+## Direct API metrics
+
+`alc --metrics <agent>` opts into observation at supported alc-managed endpoint
+seams. It preserves the native SDK, protocol, model, arguments, and **upstream
+authentication**. Durable Claude observation uses a sealed-helper credential on
+the local hop, not the raw vendor key. Ordinary direct launches without the flag
+remain unchanged. Codex translation-bridge traffic is already observed
+automatically. Native Codex CLI login traffic is not bridge traffic.
+
+| Agent | Supported direct observation seam |
+| --- | --- |
+| Claude Code | alc's API-key settings/helper and Anthropic endpoint; an authenticated durable host and AEAD-sealed route/instance-bound surrogate support background restarts. Native login, keyless endpoints, or an overridden helper/endpoint/auth setting are refused. |
+| Codex CLI | alc-generated HTTP Responses provider configuration, requiring an explicit passthrough `--config model_providers.alc_<profile-normalized>.supports_websockets=false` (profile hyphens become underscores); missing/true is refused. WebSockets are not observed or force-disabled; ordinary no-metrics launches are unchanged. Native login and native Ollama integration are refused. |
+| OpenCode | The selected alc-managed provider's inline endpoint/configuration, not a custom provider/config override. |
+| Copilot CLI | alc's Anthropic- or OpenAI-compatible BYOK environment. |
+| Qwen Code | alc's Anthropic/OpenAI branches, not the Google/Gemini integration. |
+| Goose | alc's Anthropic/OpenAI branches, not native OpenRouter/Ollama integrations. OpenAI split endpoints containing query/fragment are refused for metrics; ordinary launches are unchanged. |
+| Kimi Code CLI | The endpoint in alc's generated temporary provider config, not a user config/model/provider override. |
+| Pi | Unavailable for direct launches: its endpoint is in a persistent shared `models.json`, which alc will not point at an ephemeral observer. |
+
+Native OAuth/login and explicit endpoint/helper/config/provider overrides
+outside these seams are not silently intercepted; explicit `--metrics` fails
+with a reason when unsafe or unsupported. `--dry-run` only describes the plan,
+starts no listener, and writes nothing. Claude's helper authenticates the host
+using owner-only `run/bridge.observer-key`, registers digests only, and seals the
+local credential; the host restores the upstream key/header only on fixed-endpoint
+dispatch. Old surrogates receive 401 after a restart; rerun the helper. The
+`forward-observer-v2` capability refuses older daemons even with the same version.
+
+Local requests still use loopback HTTP, not TLS. Trust local processes: the
+Claude surrogate protects the raw key, not plaintext request bodies at a hijacked
+port. Other agents' ephemeral routes do not promise sealed credentials. Read
+[Usage](./usage.md) for timing basis, cost, and coverage limits.
+
 ## Binary overrides
 
 Point any agent at a specific binary instead of resolving it from `PATH`:
