@@ -566,6 +566,9 @@ pub(crate) struct Statistics {
     pub(crate) monthly: Vec<DailyRollup>,
     #[serde(skip)]
     pub(crate) activity: Activity,
+    /// Today in the selected timezone, the reference for "days ago".
+    #[serde(skip)]
+    pub(crate) today: NaiveDate,
 }
 
 /// When and where the selected usage happened, for the wrapped image. Token
@@ -1206,6 +1209,7 @@ fn statistics_at(
             sessions: sessions.len() as u64,
             ..activity
         },
+        today: query.timezone.date(now),
     })
 }
 

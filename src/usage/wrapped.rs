@@ -210,9 +210,12 @@ fn render(summary: &Summary, path: &Path, today: NaiveDate) -> Result<()> {
         .max_by_key(|(hour, total)| (**total, std::cmp::Reverse(*hour)))
         .filter(|(_, total)| **total > 0)
         .map(|(hour, _)| format!("{hour:02}:00"));
+    // The terminal view's markers: `~` may double count, `+` is at least.
     let cost = if !summary.priced {
         "—".to_owned()
-    } else if summary.unpriced || summary.overlap {
+    } else if summary.overlap {
+        format!("~{}", usd(summary.cost))
+    } else if summary.unpriced {
         format!("{}+", usd(summary.cost))
     } else {
         usd(summary.cost)
@@ -422,7 +425,11 @@ fn weekly_card(
             day,
             (center, base + 12),
             15,
-            if Some(index) == peak { INK } else { MUTED },
+            if Some(index) == peak && *total > 0 {
+                INK
+            } else {
+                MUTED
+            },
             HPos::Center,
         )?;
     }
@@ -445,26 +452,32 @@ fn heatmap_card(
             HPos::Left,
         );
     };
-    let start = *first - Duration::days(i64::from(first.weekday().num_days_from_monday()));
-    let weeks = ((*last - start).num_days() / 7 + 1).max(1) as i32;
     let available = w - 56 - 36;
-    let pitch = (available / weeks).clamp(4, 26);
+    let top = y + 96;
+    // Seven rows and the legend must fit the card; long histories keep the
+    // most recent weeks that fit rather than spilling past the edge.
+    let tallest = ((h - 96 - 44) / 7).min(26);
+    let narrowest = 8;
+    let monday =
+        |date: NaiveDate| date - Duration::days(i64::from(date.weekday().num_days_from_monday()));
+    let mut start = monday(*first);
+    let mut weeks = ((*last - start).num_days() / 7 + 1).max(1) as i32;
+    let fits = (available / narrowest).max(1);
+    if weeks > fits {
+        start = monday(*last) - Duration::days(i64::from(fits - 1) * 7);
+        weeks = fits;
+    }
+    let shown_from = (*first).max(start);
+    let pitch = (available / weeks).clamp(narrowest, tallest);
     let cell = (pitch - pitch.clamp(1, 4)).max(3);
     let left = x + 28 + 36;
-    let top = y + 96;
 
     let totals: BTreeMap<NaiveDate, u64> = summary.days.iter().copied().collect();
     // Levels from the quantiles of active days, so one huge day does not
     // flatten the rest of the year into the lightest step.
     let mut active: Vec<u64> = totals.values().copied().filter(|t| *t > 0).collect();
     active.sort_unstable();
-    let level = |total: u64| -> Option<usize> {
-        if total == 0 || active.is_empty() {
-            return None;
-        }
-        let rank = active.partition_point(|value| *value < total);
-        Some((rank * BLUE.len() / active.len()).min(BLUE.len() - 1))
-    };
+    let level = |total: u64| heat_level(&active, total);
 
     for (row, label) in [(0, "Mon"), (2, "Wed"), (4, "Fri")] {
         text(
@@ -477,11 +490,13 @@ fn heatmap_card(
         )?;
     }
     let mut month = None;
+    let mut label_end = i32::MIN;
     for week in 0..weeks {
         let monday = start + Duration::days(i64::from(week) * 7);
         let wx = left + week * pitch;
-        if month != Some(monday.month()) && wx + 30 < x + w {
+        if month != Some(monday.month()) && wx >= label_end && wx + 30 < x + w {
             month = Some(monday.month());
+            label_end = wx + 36;
             text(
                 root,
                 &monday.format("%b").to_string(),
@@ -493,7 +508,7 @@ fn heatmap_card(
         }
         for row in 0..7 {
             let date = monday + Duration::days(i64::from(row));
-            if date < *first || date > *last {
+            if date < shown_from || date > *last {
                 continue;
             }
             let color = level(totals.get(&date).copied().unwrap_or(0))
@@ -503,7 +518,7 @@ fn heatmap_card(
             rounded(root, wx, cy, wx + cell, cy + cell, 3.min(cell / 3), color)?;
         }
     }
-    let legend_y = top + 7 * pitch + 18;
+    let legend_y = y + h - 26;
     text(root, "Less", (left, legend_y), 13, MUTED, HPos::Left)?;
     let mut lx = left + 40;
     for color in std::iter::once(EMPTY).chain(BLUE) {
@@ -511,6 +526,21 @@ fn heatmap_card(
         lx += 16;
     }
     text(root, "More", (lx + 6, legend_y), 13, MUTED, HPos::Left)
+}
+
+/// The ramp step for a day: its rank among sorted active days, so the
+/// busiest day is the darkest and equal days share a step. `None` is idle.
+fn heat_level(active: &[u64], total: u64) -> Option<usize> {
+    if total == 0 || active.is_empty() {
+        return None;
+    }
+    let rank = active.partition_point(|value| *value <= total).max(1);
+    Some(
+        (rank * BLUE.len())
+            .div_ceil(active.len())
+            .clamp(1, BLUE.len())
+            - 1,
+    )
 }
 
 fn agents_card(
@@ -557,7 +587,15 @@ fn agents_card(
             3,
             agent_color(*agent),
         )?;
-        text(root, agent.as_str(), (x + 54, row), 21, INK, HPos::Left)?;
+        text_within(
+            root,
+            agent.as_str(),
+            (x + 54, row),
+            21,
+            INK,
+            HPos::Left,
+            Some(w - 54 - 28 - 170),
+        )?;
         text(
             root,
             &format!("{} · {}", compact(*value), percent(*value, total)),
@@ -592,7 +630,15 @@ fn ranked_card(
             if index == 0 { ACCENT } else { MUTED },
             HPos::Left,
         )?;
-        text(root, name, (x + 56, row), 21, INK, HPos::Left)?;
+        text_within(
+            root,
+            name,
+            (x + 56, row),
+            21,
+            INK,
+            HPos::Left,
+            Some(w - 56 - 28 - 76),
+        )?;
         text(
             root,
             &percent(*value, total),
@@ -630,7 +676,15 @@ fn tile(
         SECONDARY,
         HPos::Center,
     )?;
-    text(root, value, (x + w / 2, y + 84), 44, INK, HPos::Center)
+    text_within(
+        root,
+        value,
+        (x + w / 2, y + 84),
+        44,
+        INK,
+        HPos::Center,
+        Some(w - 32),
+    )
 }
 
 fn footer(root: &Area<'_>, summary: &Summary) -> Result<()> {
@@ -784,18 +838,51 @@ fn text(
     color: RGBColor,
     anchor: HPos,
 ) -> Result<()> {
+    text_within(root, value, at, size, color, anchor, None)
+}
+
+/// [`text`] kept within `max` pixels: it shrinks to a floor, then ends in an
+/// ellipsis. Characters the bundled Latin font lacks (CJK, emoji) become `?`
+/// rather than empty boxes.
+fn text_within(
+    root: &Area<'_>,
+    value: &str,
+    at: (i32, i32),
+    size: u32,
+    color: RGBColor,
+    anchor: HPos,
+    max: Option<i32>,
+) -> Result<()> {
     let face = face()?;
-    let measure = |scale: PxScale| measure(face, value, scale);
-    let limit = match anchor {
+    let mut value: String = value
+        .chars()
+        .map(|character| {
+            if character.is_whitespace() || face.glyph_id(character).0 != 0 {
+                character
+            } else {
+                '?'
+            }
+        })
+        .collect();
+    let edge = match anchor {
         HPos::Left => WIDTH as i32 - at.0 - 8,
         HPos::Right => at.0 - 8,
         HPos::Center => WIDTH as i32,
-    }
-    .max(40) as f32;
+    };
+    let limit = max.map_or(edge, |max| max.min(edge)).max(24) as f32;
+    let floor = (size as f32 * 0.7).max(10.0);
     let mut scale = PxScale::from(size as f32);
-    while measure(scale) > limit && scale.y > 10.0 {
+    while measure(face, &value, scale) > limit && scale.y > floor {
         scale = PxScale::from(scale.y - 1.0);
     }
+    while measure(face, &value, scale) > limit && value.chars().count() > 1 {
+        let kept: String = value.trim_end_matches('…').chars().collect();
+        let mut kept: Vec<char> = kept.chars().collect();
+        kept.pop();
+        value = kept.into_iter().collect::<String>() + "…";
+    }
+    let value = value.as_str();
+    let measure = |scale: PxScale| measure(face, value, scale);
     let scaled = face.as_scaled(scale);
     let width = measure(scale);
     let mut caret = match anchor {
@@ -935,6 +1022,16 @@ mod tests {
         let week = summary(&[("2026-01-05", 3), ("2026-01-11", 7)]).weekdays();
         assert_eq!(week[0], 3);
         assert_eq!(week[6], 7);
+    }
+
+    #[test]
+    fn the_busiest_day_is_the_darkest_and_idle_days_are_empty() {
+        assert_eq!(heat_level(&[5], 5), Some(BLUE.len() - 1));
+        assert_eq!(heat_level(&[5, 5, 5], 5), Some(BLUE.len() - 1));
+        let days: Vec<u64> = (1..=12).collect();
+        assert_eq!(heat_level(&days, 1), Some(0));
+        assert_eq!(heat_level(&days, 12), Some(BLUE.len() - 1));
+        assert_eq!(heat_level(&days, 0), None);
     }
 
     #[test]

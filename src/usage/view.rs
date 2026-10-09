@@ -38,7 +38,8 @@ pub(crate) fn terminal_width() -> Option<usize> {
     crossterm::terminal::size()
         .ok()
         .map(|(columns, _)| usize::from(columns))
-        .filter(|columns| *columns >= 40)
+        // A very narrow terminal still gets the narrowest layout, not none.
+        .map(|columns| columns.max(20))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -227,10 +228,10 @@ impl BoxTable {
         };
         if let Some(max) = max {
             loop {
+                // Start each pass from natural widths, so space a dropped
+                // column frees goes back to the lists squeezed before it.
+                widths = self.natural_widths();
                 let mut excess = total(&widths, &visible).saturating_sub(max);
-                if excess == 0 {
-                    break;
-                }
                 // Take a column at a time from whichever list has the most
                 // slack, so the widest one wraps first.
                 while excess > 0 {
@@ -264,7 +265,28 @@ impl BoxTable {
                     .map(|(index, _)| index);
                 match candidate {
                     Some(index) => visible[index] = false,
-                    None => break,
+                    None => {
+                        // Nothing left to drop: truncate the widest text
+                        // columns, headers included, rather than overflow the
+                        // line; numbers are cut only when no text is left.
+                        while excess > 0 {
+                            let Some((_, _, _, index)) = (0..widths.len())
+                                .filter(|index| visible[*index] && widths[*index] > 3)
+                                .map(|index| {
+                                    // Text above 8 columns first, then any text.
+                                    let text = self.columns[index].align == Align::Left;
+                                    let roomy = text && widths[index] > 8;
+                                    (roomy, text, widths[index], index)
+                                })
+                                .max()
+                            else {
+                                break;
+                            };
+                            widths[index] -= 1;
+                            excess -= 1;
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -319,7 +341,10 @@ impl BoxTable {
         lines.push(line(
             shown
                 .iter()
-                .map(|index| vec![(self.columns[*index].header.to_owned(), Tone::Head)])
+                .map(|index| {
+                    let header = truncate(self.columns[*index].header, widths[*index], unicode);
+                    vec![(header, Tone::Head)]
+                })
                 .collect(),
             false,
         ));
@@ -371,25 +396,33 @@ pub(crate) fn fit(theme: &Theme, max: Option<usize>, build: impl Fn(bool) -> Box
 /// `1.23M`-style, three significant digits.
 pub(crate) fn compact(value: u64) -> String {
     const UNITS: [(u64, &str); 4] = [
-        (1_000_000_000_000, "T"),
-        (1_000_000_000, "B"),
-        (1_000_000, "M"),
         (1_000, "K"),
+        (1_000_000, "M"),
+        (1_000_000_000, "B"),
+        (1_000_000_000_000, "T"),
     ];
-    for (scale, suffix) in UNITS {
-        if value >= scale {
-            let scaled = value as f64 / scale as f64;
-            let text = if scaled >= 100.0 {
-                format!("{scaled:.0}")
-            } else if scaled >= 10.0 {
-                format!("{scaled:.1}")
-            } else {
-                format!("{scaled:.2}")
-            };
-            return format!("{text}{suffix}");
-        }
+    if value < 1_000 {
+        return value.to_string();
     }
-    value.to_string()
+    // The largest unit at or below the value, moved up one when rounding
+    // would print 1000 of it (999,999 is 1.00M, not 1000K).
+    let mut unit = UNITS
+        .iter()
+        .rposition(|(scale, _)| value >= *scale)
+        .unwrap_or(0);
+    let scaled = |unit: usize| value as f64 / UNITS[unit].0 as f64;
+    if scaled(unit) >= 999.5 && unit + 1 < UNITS.len() {
+        unit += 1;
+    }
+    let number = scaled(unit);
+    let text = if number >= 99.95 {
+        format!("{number:.0}")
+    } else if number >= 9.995 {
+        format!("{number:.1}")
+    } else {
+        format!("{number:.2}")
+    };
+    format!("{text}{}", UNITS[unit].1)
 }
 
 pub(crate) fn count(value: u64, short: bool) -> String {
@@ -529,7 +562,7 @@ fn snapshot_name(snapshot: &str) -> String {
     }
 }
 
-fn subtitle(report: &Statistics, theme: &Theme) -> String {
+fn subtitle(report: &Statistics) -> String {
     let date = |label: &Option<String>| {
         label
             .as_deref()
@@ -541,20 +574,22 @@ fn subtitle(report: &Statistics, theme: &Theme) -> String {
         (None, Some(end)) => format!("before {end}"),
         (Some(start), Some(end)) => format!("{start} to {end} (exclusive)"),
     };
-    theme.paint(
-        Tone::Dim,
-        &format!(
-            "{range} · {} · {} records · prices {}",
-            report.timezone,
-            format_count(report.records),
-            snapshot_name(&report.pricing_snapshot)
-        ),
+    format!(
+        "{range} · {} · {} records · prices {}",
+        report.timezone,
+        format_count(report.records),
+        snapshot_name(&report.pricing_snapshot)
     )
 }
 
 pub(crate) fn render_statistics(report: &Statistics, theme: &Theme, view: View) -> String {
     let mut out = heading_text(theme, "Token usage");
-    out.push_str(&format!("{INDENT}{}\n", subtitle(report, theme)));
+    let room = view
+        .width
+        .map(|columns| columns.saturating_sub(width(INDENT)));
+    for line in wrap_words(&subtitle(report), room) {
+        out.push_str(&format!("{INDENT}{}\n", theme.paint(Tone::Dim, &line)));
+    }
     if report.records == 0 {
         out.push_str(&format!(
             "{INDENT}{}\n",
@@ -616,19 +651,22 @@ pub(crate) fn render_statistics(report: &Statistics, theme: &Theme, view: View) 
         let mut table = BoxTable::new(vec![
             Column::left("Agent"),
             Column::left("Model").wrap(12),
-            Column::right("Requests").optional(2),
-            Column::right("Input"),
-            Column::right("Output"),
-            Column::right("Cache write").optional(1),
-            Column::right("Cache read").optional(1),
+            Column::right("Requests").optional(5),
+            Column::right("Input").optional(2),
+            Column::right("Output").optional(1),
+            Column::right("Cache write").optional(4),
+            Column::right("Cache read").optional(3),
             Column::right("Total tokens"),
-            Column::left("Share").optional(3),
+            Column::left("Share").optional(6),
             Column::right("Cost"),
         ]);
         for line in &by_model {
             let mut cells = vec![
                 Cell::plain(line.label.clone()),
-                Cell::Items(models(&line.models), Tone::Plain),
+                Cell::Items(
+                    line.models.iter().map(|model| short_model(model)).collect(),
+                    Tone::Plain,
+                ),
                 Cell::plain(if line.requests == 0 {
                     theme.dash().to_owned()
                 } else {
@@ -648,7 +686,7 @@ pub(crate) fn render_statistics(report: &Statistics, theme: &Theme, view: View) 
         table
     }));
 
-    out.push_str(&legend(report, &lines, &by_model, theme));
+    out.push_str(&legend(report, &lines, &by_model, theme, view.width));
     out
 }
 
@@ -715,19 +753,28 @@ fn by_model(report: &Statistics) -> Vec<Line> {
     lines
 }
 
-fn legend(report: &Statistics, periods: &[Line], models: &[Line], theme: &Theme) -> String {
-    let mut notes = Vec::new();
+fn legend(
+    report: &Statistics,
+    periods: &[Line],
+    models: &[Line],
+    theme: &Theme,
+    width: Option<usize>,
+) -> String {
+    // (marker, its tone, text); a marker is one column wide.
+    let mut notes: Vec<(Option<(&str, Tone)>, String)> = Vec::new();
     let all = || periods.iter().chain(models);
-    if all().any(|line| !line.overlap && (line.known.incomplete || line.unpriced)) {
-        notes.push(format!(
-            "{}  at least: some records carry no token counts or no price",
-            theme.paint(Tone::Warn, "+")
+    // Only when a `+` was actually drawn: on a token total, or on a cost.
+    if all().any(|line| !line.overlap && (line.known.incomplete || (line.priced && line.unpriced)))
+    {
+        notes.push((
+            Some(("+", Tone::Warn)),
+            "at least: some records carry no token counts or no price".to_owned(),
         ));
     }
     if all().any(|line| line.overlap) {
-        notes.push(format!(
-            "{}  approximate: alc's ledger and a native history both saw this agent and may count a request twice; --source picks one",
-            theme.paint(Tone::Warn, "~")
+        notes.push((
+            Some(("~", Tone::Warn)),
+            "approximate: alc's ledger and a native history both saw this agent and may count a request twice; --source picks one".to_owned(),
         ));
     }
     let unpriced: BTreeSet<String> = report
@@ -741,30 +788,65 @@ fn legend(report: &Statistics, periods: &[Line], models: &[Line], theme: &Theme)
     if !unpriced.is_empty() {
         let shown: Vec<_> = unpriced.iter().take(6).cloned().collect();
         let more = unpriced.len().saturating_sub(shown.len());
-        notes.push(format!(
-            "{}  no price for {}{}; add rates with --pricing-file",
-            theme.paint(Tone::Dim, theme.dash()),
-            shown.join(", "),
-            if more > 0 {
-                format!(" and {more} more")
-            } else {
-                String::new()
-            }
+        notes.push((
+            Some((theme.dash(), Tone::Dim)),
+            format!(
+                "no price for {}{}; add rates with --pricing-file",
+                shown.join(", "),
+                if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                }
+            ),
         ));
     }
     if report.coverage_incomplete {
-        notes
-            .push("Some history lines were skipped or ambiguous, so totals can be low.".to_owned());
+        notes.push((
+            None,
+            "Some history lines were skipped or ambiguous, so totals can be low.".to_owned(),
+        ));
     }
-    notes.push(
-        "Costs are API-equivalent estimates, not bills. --details explains every row; --json has the exact figures."
-            .to_owned(),
-    );
+    notes.push((
+        None,
+        "Costs are API-equivalent estimates, not bills. --details explains every row; --json has the exact figures.".to_owned(),
+    ));
     let mut out = String::from("\n");
-    for note in notes {
-        out.push_str(&format!("{INDENT}{}\n", theme.paint(Tone::Dim, &note)));
+    for (marker, text) in notes {
+        let lead = if marker.is_some() { 3 } else { 0 };
+        let room = width.map(|columns| columns.saturating_sub(self::width(INDENT) + lead));
+        for (index, line) in wrap_words(&text, room).into_iter().enumerate() {
+            let prefix = match (index, marker) {
+                (0, Some((mark, tone))) => format!("{}  ", theme.paint(tone, mark)),
+                _ => " ".repeat(lead),
+            };
+            out.push_str(&format!(
+                "{INDENT}{prefix}{}\n",
+                theme.paint(Tone::Dim, &line)
+            ));
+        }
     }
     out
+}
+
+/// Greedy word wrap; `None` keeps one line.
+fn wrap_words(text: &str, room: Option<usize>) -> Vec<String> {
+    let Some(room) = room.filter(|room| *room >= 20) else {
+        return vec![text.to_owned()];
+    };
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split(' ') {
+        if !current.is_empty() && width(&current) + 1 + width(word) > room {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    lines.push(current);
+    lines
 }
 
 #[cfg(test)]
@@ -778,6 +860,9 @@ mod tests {
         assert_eq!(compact(45_600_000), "45.6M");
         assert_eq!(compact(1_511_132_672), "1.51B");
         assert_eq!(compact(312_000_000_000), "312B");
+        assert_eq!(compact(999_999), "1.00M");
+        assert_eq!(compact(99_999), "100K");
+        assert_eq!(compact(9_999), "10.0K");
     }
 
     #[test]
@@ -860,6 +945,33 @@ mod tests {
         let dropped = table().render(&theme, Some(28), true).unwrap();
         assert!(dropped.iter().all(|line| width(line) <= 28), "{dropped:#?}");
         assert!(!dropped[1].contains("Extra"));
+        // Nothing left to drop: columns truncate instead of overflowing.
+        let tiny = table().render(&theme, Some(20), true).unwrap();
+        assert!(tiny.iter().all(|line| width(line) <= 20), "{tiny:#?}");
+    }
+
+    #[test]
+    fn a_dropped_column_gives_its_room_back_to_wrapped_lists() {
+        let theme = Theme::for_test(false, false);
+        let mut table = BoxTable::new(vec![
+            Column::left("Date"),
+            Column::left("Models").wrap(6),
+            Column::right("Extra column").optional(1),
+        ]);
+        table.push(vec![
+            Cell::plain("2026-01-02"),
+            Cell::Items(vec!["opus-4-5".into(), "gpt-5.1-codex".into()], Tone::Plain),
+            Cell::plain("x"),
+        ]);
+        // With Extra, even Models at its floor is too wide for 36 columns;
+        // once Extra goes, Models gets back room for each whole name.
+        let lines = table.render(&theme, Some(36), true).unwrap();
+        assert!(lines.iter().all(|line| width(line) <= 36), "{lines:#?}");
+        assert!(!lines[1].contains("Extra"), "{lines:#?}");
+        assert!(
+            lines.iter().any(|line| line.contains("gpt-5.1-codex")),
+            "{lines:#?}"
+        );
     }
 
     #[test]

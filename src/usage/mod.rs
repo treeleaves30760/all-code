@@ -399,7 +399,7 @@ pub(crate) fn run_statistics(
     }
     if let Some(path) = options.wrapped.as_deref() {
         let path = chart::destination(path, "alc-wrapped.png")?;
-        wrapped::export(&statistics, &path, chrono::Local::now().date_naive())?;
+        wrapped::export(&statistics, &path, statistics.today)?;
         eprintln!("Wrapped image: {}", path.display());
         if !options.json {
             // The image is the report; skip the quota lookups and tables.
