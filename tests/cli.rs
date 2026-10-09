@@ -1784,25 +1784,39 @@ fn usage_reports_cache_reads_and_distinguishes_zero_from_unknown() {
         .expect("run usage");
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("utf-8 output");
-    assert!(
-        stdout.lines().any(|line| line
-            .split_whitespace()
+    // The ledger is a boxed table; ALC_ASCII draws its cells between '|'.
+    let cells = |line: &str| {
+        line.split('|')
+            .map(str::trim)
+            .filter(|cell| !cell.is_empty())
+            .map(str::to_owned)
             .collect::<Vec<_>>()
-            .windows(4)
-            .any(|words| words == ["INPUT", "CACHED", "CACHE", "%"])),
+    };
+    assert!(
+        stdout.lines().any(|line| cells(line)
+            .windows(3)
+            .any(|words| words == ["Input", "Cached", "Cache %"])),
         "{stdout}"
     );
     let row = |provider: &str| {
-        stdout
-            .lines()
-            .find(|line| line.contains(provider))
-            .unwrap_or_else(|| panic!("no {provider} row in {stdout}"))
+        cells(
+            stdout
+                .lines()
+                .find(|line| line.contains(provider))
+                .unwrap_or_else(|| panic!("no {provider} row in {stdout}")),
+        )
     };
-    assert!(row("codex-hit").contains("67%"), "{stdout}");
-    let missed = row("codex-miss").split_whitespace().collect::<Vec<_>>();
-    assert_eq!(&missed[4..8], &["100", "0", "0%", "10"], "{stdout}");
-    let unknown = row("codex-unknown").split_whitespace().collect::<Vec<_>>();
-    assert_eq!(&unknown[4..8], &["100", "-", "-", "10"], "{stdout}");
+    assert_eq!(row("codex-hit")[6], "67%", "{stdout}");
+    assert_eq!(
+        &row("codex-miss")[4..8],
+        &["100", "0", "0%", "10"],
+        "{stdout}"
+    );
+    assert_eq!(
+        &row("codex-unknown")[4..8],
+        &["100", "-", "-", "10"],
+        "{stdout}"
+    );
 }
 
 #[test]
