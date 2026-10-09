@@ -19,6 +19,7 @@ pub(crate) mod accounts;
 mod chart;
 pub(crate) mod forward;
 pub(crate) mod ledger;
+mod litellm;
 pub(crate) mod native;
 pub(crate) mod observer;
 pub(crate) mod pricing;

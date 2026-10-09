@@ -20,6 +20,8 @@ fn alc(temp: &tempfile::TempDir) -> Command {
     // Reports can read native histories. Never discover a developer's sessions.
     command.env("CLAUDE_CONFIG_DIR", temp.path().join("claude-history"));
     command.env("CODEX_HOME", temp.path().join("codex-history"));
+    // Never fetch LiteLLM's live price map from a test.
+    command.env("ALC_LITELLM_URL", "off");
     // Which bridge a run uses changes the models it offers and what it calls
     // its adapter, so a developer who has been exercising the native one must
     // not see different results from CI.

@@ -72,6 +72,7 @@ impl Fixture {
             .env("LOCALAPPDATA", &home)
             .env("XDG_CONFIG_HOME", &home)
             .env("XDG_DATA_HOME", &home)
+            .env("ALC_LITELLM_URL", "off")
             .env("NO_COLOR", "1")
             .timeout(Duration::from_secs(45));
         command

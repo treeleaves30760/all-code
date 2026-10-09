@@ -1012,14 +1012,16 @@ pub(crate) fn statistics(
     config: &Config,
     options: &UsageOptions,
 ) -> Result<Statistics> {
-    statistics_at(config_dir, config, options, Utc::now())
+    statistics_at(config_dir, config, options, Utc::now(), !options.offline)
 }
 
+/// `network` allows refreshing LiteLLM's price map; a cached copy is used either way.
 fn statistics_at(
     config_dir: &Path,
     config: &Config,
     options: &UsageOptions,
     now: DateTime<Utc>,
+    network: bool,
 ) -> Result<Statistics> {
     if options.window.is_some() && (options.daily || options.monthly) {
         bail!("calendar window cannot be used with --daily or --monthly grouping");
@@ -1047,7 +1049,10 @@ fn statistics_at(
                 .extend(&row.provenance);
         }
     }
-    let book = PriceBook::load(config_dir, options.pricing_file.as_deref())?;
+    let mut book = PriceBook::load(config_dir, options.pricing_file.as_deref())?;
+    if book.has_gaps(records.iter().map(|row| &row.record)) {
+        book = book.with_live(config_dir, network);
+    }
     let mut groups = BTreeMap::<GroupKey, UsageGroup>::new();
     let mut days = BTreeMap::<String, Tally>::new();
     let mut months = BTreeMap::<String, Tally>::new();
@@ -1880,6 +1885,7 @@ mod tests {
             &Config::default(),
             &options,
             parse("2021-01-01T12:00:00Z"),
+            false,
         )
         .unwrap();
         assert_eq!(report.records, 2);
@@ -1919,6 +1925,7 @@ mod tests {
             &Config::default(),
             &options,
             parse("2021-01-01T12:00:00Z"),
+            false,
         )
         .unwrap();
         assert_eq!(all.records, 4);

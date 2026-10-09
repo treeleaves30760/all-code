@@ -517,8 +517,16 @@ fn agents(agents: &BTreeSet<Agent>) -> Vec<String> {
         .collect()
 }
 
-fn snapshot_name(snapshot: &str) -> &str {
-    snapshot.split(":sha256:").next().unwrap_or(snapshot)
+/// `alc-curated-…` plus, when LiteLLM's runtime map filled gaps, its date.
+fn snapshot_name(snapshot: &str) -> String {
+    let base = snapshot.split(":sha256:").next().unwrap_or(snapshot);
+    match snapshot
+        .split_once("+litellm-live-")
+        .and_then(|(_, rest)| rest.split(':').next())
+    {
+        Some(date) => format!("{base} + LiteLLM {date}"),
+        None => base.to_owned(),
+    }
 }
 
 fn subtitle(report: &Statistics, theme: &Theme) -> String {
@@ -734,7 +742,7 @@ fn legend(report: &Statistics, periods: &[Line], models: &[Line], theme: &Theme)
         let shown: Vec<_> = unpriced.iter().take(6).cloned().collect();
         let more = unpriced.len().saturating_sub(shown.len());
         notes.push(format!(
-            "{}  no price in the snapshot for {}{}; add rates with --pricing-file",
+            "{}  no price for {}{}; add rates with --pricing-file",
             theme.paint(Tone::Dim, theme.dash()),
             shown.join(", "),
             if more > 0 {
@@ -779,6 +787,15 @@ mod tests {
         assert_eq!(
             usd(Money::from_pico_usd(1_234_567_000_000_000)),
             "$1,234.57"
+        );
+    }
+
+    #[test]
+    fn snapshot_names_hide_hashes_and_show_the_live_map_date() {
+        assert_eq!(snapshot_name("alc-curated-x:sha256:ab"), "alc-curated-x");
+        assert_eq!(
+            snapshot_name("alc-curated-x:sha256:ab+litellm-live-2026-10-10:sha256:cd"),
+            "alc-curated-x + LiteLLM 2026-10-10"
         );
     }
 

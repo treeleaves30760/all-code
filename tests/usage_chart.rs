@@ -47,6 +47,7 @@ impl Fixture {
             .env("HOME", self.temp.path().join("home"))
             .env("USERPROFILE", self.temp.path().join("home"))
             .env("NO_COLOR", "1")
+            .env("ALC_LITELLM_URL", "off")
             .timeout(Duration::from_secs(45));
         command
     }
