@@ -401,7 +401,7 @@ alc usage --offline --source alc --filter-profile work --filter-agent claude
 `YYYY-MM-DD` 界線、曆法視窗與日期分桶；RFC3339 界線仍是其時區偏移指定的確切
 時刻。Usage 預設所有來源；TPS 預設 `alc`，`--limit` 接受 1–10000。
 `alc usage --offline` 只讀本機設定、歷史與價格：不讀憑證／鑰匙圈、不查額度、
-不更新登入、不連網。`alc tps` 也只讀本機、不讀憑證，不探測執行中的 daemon。
+不更新登入、不連網（仍會讀取已快取的 LiteLLM 價格表）。`alc tps` 也只讀本機、不讀憑證，不探測執行中的 daemon。
 
 終端畫面以依終端寬度調整的框線表格，顯示每日（或 `--monthly`）總計與依模型的
 統計：寬度不夠時先讓模型清單換行，再改用 `1.23M` 形式的數字，最後才省略次要欄位；
@@ -490,9 +490,11 @@ session 才能取得後續量測，不必停止舊 session。
 再相加。JSON 保留總輸入 `input_tokens`，新增 `uncached_input_tokens` 與
 `cost_components`，分開未快取輸入、快取讀取、快取寫入與輸出。金額用精確的
 pico-dollar 運算與十進位 USD 字串，不用浮點總數。推理是輸出子集，不重複計費；
-快取讀寫與 TTL 保留各自語意。價格是日期為 2026-10-08 的離線精選 LiteLLM 子集，固定在 commit
-`33d908e0ae2c0a257eeb5d546df08527d348a670` 並附 SHA-256／MIT 來源，不是即時價格。
-精確的本機／自訂費率放在獨立的設定目錄 `pricing.toml`，或用
+快取讀寫與 TTL 保留各自語意。價格先取日期為 2026-10-08 的離線精選 LiteLLM 子集，固定在 commit
+`33d908e0ae2c0a257eeb5d546df08527d348a670` 並附 SHA-256／MIT 來源。子集沒有的模型，
+改用 LiteLLM 公開的價格表定價，也就是 `npx ccusage` 讀的同一個檔案：alc 每天最多下載
+一次到設定目錄的 `litellm-prices.json`，只採用 Anthropic 與 OpenAI 官方列，且絕不取代
+精選或覆寫的費率。`--offline` 只使用這份快取。精確的本機／自訂費率放在獨立的設定目錄 `pricing.toml`，或用
 `alc usage --pricing-file PATH`；找不到價格不等於免費，免費費率要明寫 `"0"`
 字串。歷史用量依具名快照重新定價。見[價格 sidecar
 格式](https://treeleaves30760.github.io/all-code/zh-TW/configuration#價格-sidecar)。

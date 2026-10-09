@@ -454,10 +454,20 @@ count, and a missing model price is **not free**. Local/custom endpoints need an
 exact override unless an exact official endpoint supplies a supported reference;
 free reference rates must be explicit `"0"` strings.
 
-Pricing is an offline curated LiteLLM subset, not the full upstream catalog or
-a live price feed. The bundled snapshot is dated **2026-10-08**, pinned to
-LiteLLM commit `33d908e0ae2c0a257eeb5d546df08527d348a670`, with upstream SHA-256
-and MIT license provenance. Historical usage is repriced with this snapshot;
+Pricing starts from an offline curated LiteLLM subset. The bundled snapshot is
+dated **2026-10-08**, pinned to LiteLLM commit
+`33d908e0ae2c0a257eeb5d546df08527d348a670`, with upstream SHA-256 and MIT license
+provenance. Models it lacks are priced from **LiteLLM's public price map**, the
+same file `npx ccusage` reads. alc downloads it at most once a day to
+`litellm-prices.json` in the config directory, and only when some record has no
+price. It takes only first-party Anthropic and OpenAI rows, including service
+tiers and long-context bands, and never lets them replace a curated or override
+rate. `--offline` uses the cached copy without fetching. The report's
+`pricing_snapshot` then ends in `+litellm-live-<date>:sha256:<hash>`, and each
+such row's `price_sources` has kind `litellm`. These rates are not first-party
+verified. When a request's cache counters are unknown, its long-context band is
+chosen from the known lower bound of its input, so the cost stays a marked lower
+bound. Historical usage is repriced with these prices;
 taxes, discounts, subscriptions, unrecorded tools, and non-token charges are
 excluded. Add exact rates in the config directory's **`pricing.toml`** or select
 one with **`alc usage --pricing-file PATH`**. The [pricing sidecar

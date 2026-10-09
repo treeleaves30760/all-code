@@ -433,7 +433,7 @@ UTC and controls date-only `YYYY-MM-DD` bounds, calendar windows, and buckets;
 RFC3339 bounds remain the exact instant their offset specifies. Usage defaults
 to all sources; TPS defaults to `alc` and accepts `--limit` 1–10000.
 `alc usage --offline` reads only local configuration, histories, and pricing:
-no credentials/Keychain, quota calls, refresh, or network. `alc tps` is also a
+no credentials/Keychain, quota calls, refresh, or network (a cached LiteLLM price map is still read). `alc tps` is also a
 local, credential-free read and does not probe running daemons.
 
 The terminal view shows daily (or `--monthly`) rollups and a by-model table in
@@ -549,10 +549,14 @@ context, and cache TTL before addition. JSON preserves gross `input_tokens`
 and adds `uncached_input_tokens` and `cost_components` for uncached input,
 cache read, cache write, and output. Money uses exact pico-dollar arithmetic
 and decimal USD strings, not floating-point totals. Reasoning is an output
-subset, not billed again; cache reads/writes and TTLs keep their distinct semantics. Pricing is an
-offline curated LiteLLM subset dated 2026-10-08, pinned to commit
-`33d908e0ae2c0a257eeb5d546df08527d348a670` with SHA-256/MIT provenance, not a live
-price feed. Add exact local/custom rates in the separate config-directory
+subset, not billed again; cache reads/writes and TTLs keep their distinct semantics. Prices
+come first from an offline curated LiteLLM subset dated 2026-10-08, pinned to commit
+`33d908e0ae2c0a257eeb5d546df08527d348a670` with SHA-256/MIT provenance. Models it
+lacks are priced from LiteLLM's public price map, the same file `npx ccusage`
+reads: alc downloads it at most once a day to `litellm-prices.json` in the config
+directory, takes only first-party Anthropic and OpenAI rows, and never lets it
+replace a curated or override rate. `--offline` uses only that cached copy. Add
+exact local/custom rates in the separate config-directory
 `pricing.toml`, or use `alc usage --pricing-file PATH`; missing prices are not
 free, and free rates must be explicit `"0"` strings. Historical usage is
 repriced with the named snapshot. See the [pricing sidecar

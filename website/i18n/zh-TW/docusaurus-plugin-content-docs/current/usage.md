@@ -398,10 +398,15 @@ JSON 的 `total_usd` 保留 `null`。
 已知的零計數不等於缺少計數，找不到模型價格**不代表免費**。本機／自訂端點需要
 精確覆寫，除非精確的官方端點能提供支援的參考；免費參考費率必須明寫 `"0"` 字串。
 
-價格是離線、精選的 LiteLLM 子集，不是完整上游目錄或即時價格來源。內建快照日期為
-**2026-10-08**，固定在 LiteLLM commit
-`33d908e0ae2c0a257eeb5d546df08527d348a670`，附上游 SHA-256 與 MIT 授權來源。
-歷史用量依這份快照重新定價；不含稅、折扣、訂閱、未記錄的工具或非 token 費用。
+價格先取離線、精選的 LiteLLM 子集。內建快照日期為 **2026-10-08**，固定在 LiteLLM
+commit `33d908e0ae2c0a257eeb5d546df08527d348a670`，附上游 SHA-256 與 MIT 授權來源。
+子集沒有的模型改用 **LiteLLM 公開的價格表**定價，也就是 `npx ccusage` 讀的同一個
+檔案。alc 每天最多下載一次到設定目錄的 `litellm-prices.json`，而且只在有紀錄缺價格
+時才下載。它只採用 Anthropic 與 OpenAI 的官方列（含服務層級與長上下文區間），且絕不
+取代精選或覆寫的費率。`--offline` 只用快取、不下載。此時報告的 `pricing_snapshot`
+結尾會是 `+litellm-live-<日期>:sha256:<雜湊>`，這些列的 `price_sources` 種類為
+`litellm`；這些費率未經官方驗證。請求的快取計數器未知時，長上下文區間依已知的輸入
+下限選擇，因此成本仍標示為下限。歷史用量依這些價格重新定價；不含稅、折扣、訂閱、未記錄的工具或非 token 費用。
 精確費率加在設定目錄的 **`pricing.toml`**，或用
 **`alc usage --pricing-file PATH`** 指定檔案。[價格 sidecar 參考](./configuration.md#價格-sidecar)
 列出格式；它不是主要 `config.toml` 裡的一張 table。
