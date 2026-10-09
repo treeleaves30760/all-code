@@ -1287,6 +1287,44 @@ mod tests {
     }
 
     #[test]
+    fn the_captured_stream_records_a_real_token_time_span() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = crate::usage::ledger::Ledger::new(
+            dir.path().join(crate::usage::ledger::LEDGER_FILE),
+            crate::config::Agent::Claude,
+            "codex".to_owned(),
+            crate::config::ProviderKind::Codex,
+            None,
+        );
+        let observed = RequestObservation::new(
+            std::sync::Arc::new(ledger),
+            "fallback-model",
+            true,
+            WireProtocol::Responses,
+            OutputBasis::NonReasoning,
+        );
+        let mut stream = StreamObservation::new(observed);
+        for (index, frame) in parse_sse(&Case::load("messages-tool-call-streaming").upstream_sse())
+            .into_iter()
+            .enumerate()
+        {
+            let wire = format!("data: {}\n\n", frame.data);
+            stream.push_at(wire.as_bytes(), (index as u64 + 1) * 100_000);
+        }
+        stream.eof();
+        let records = crate::usage::ledger::read_records(dir.path()).records;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].outcome, Outcome::Completed);
+        let metrics = records[0].metrics();
+        assert!(metrics.ttft_ms.is_some_and(|value| value > 0.0));
+        assert!(metrics.e2e_tps.is_some_and(|value| value > 0.0));
+        assert!(metrics.stream_tps.is_some_and(|value| value > 0.0));
+        assert_eq!(metrics.stream_output_basis, OutputBasis::NonReasoning);
+        let timing = records[0].timing.as_ref().unwrap();
+        assert!(timing.terminal_us > timing.first_visible_us);
+    }
+
+    #[test]
     fn the_captured_upstream_requests_round_trip_unchanged() {
         for name in [
             "messages-tool-call-streaming",

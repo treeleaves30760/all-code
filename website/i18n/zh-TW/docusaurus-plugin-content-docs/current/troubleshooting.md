@@ -142,14 +142,19 @@ provider，要嘛直接說它做不到。
 
 ## 橋接換了位置之後，背景 session 連不上
 
-橋接會一直用它挑中的那個 port，但它也可能失去那個 port —— 它關著的時候，port
-被別的程式佔走了，於是橋接回來時換了一個。還在對著舊 port 跑的 session，那裡
-什麼都找不到。把它們重新啟動，它們就會接上新的：
+世代橋接記住的 port 是固定設定／origin 的一部分。Host 關著時若被無關的程式
+佔走，alc 會失敗，不輪替 token 或改寫 origin。請解決衝突的 listener，不要只
+為了更新停掉另一個執行中的 alc 世代。第一次分配可以用 ephemeral port，
+`alc sessions` 會顯示不同 owner 與各自的連結。
+
+Legacy 保留舊的 port 遷移行為；legacy 橋接若改用新 port，只需讓受影響的
+legacy session 讀到新位置：
 
 ```sh
 claude respawn <id>
-claude respawn --all
 ```
+
+alc 更新本身不搬動舊 session，也不要求重啟它們。
 
 ## 我派出的 session 是 Anthropic 在回答，不是 Codex
 
@@ -208,8 +213,50 @@ session。
 
 ## `alc update` 找不到釋出的壓縮檔
 
-1.4.0 之前裝好的版本，會去找一個已經不再發布的第二個執行檔。重新跑一次安裝器就好，
-它會把整份安裝換掉。
+1.4.0 之前裝好的版本，會找已不再發布的第二個執行檔。請用 2.0.1 以上的安裝器遷移到
+穩定入口；Windows 若鎖住舊執行檔，請延後或並排安裝，不要停止執行中的工作。
+見[首次遷移](./getting-started.md#從舊-alc-首次遷移)。
+
+## `alc tps` 沒有量測列，或舊列全部 `N/A`
+
+舊 v1/v2 turn、啟動、原生歷史與累計 checkpoint 沒有實際觀測的請求時間。
+它們不是速度為零的請求，也無法事後還原 TTFT/TPS。CLI 更新後，重用的舊橋接
+仍可能繼續寫這類 turn。
+
+預設報告在排序／limit 前先選有 timing 的 `Request`，涵蓋計數說明排除的歷史。
+要查看它們：
+
+```sh
+alc tps --include-unmeasured --source all --json
+```
+
+後續量測請在新世代開新 session，host 必須宣告 `request-metrics-v3`。既有舊
+host／session 可以繼續跑。即使是有量測的失敗／取消或沒有 usage 的請求，個別
+數字仍可能無法計算；見[時間定義](./usage.md#ttft-與每秒-token-數)。
+
+## Windows 遷移是待處理，不是完成
+
+舊 2.0.0 自我更新使用退出後 finalizer；新 payload 不能追溯改變舊 updater。
+請用 2.0.1 以上的安裝器建立穩定入口。舊入口被鎖住時會明確失敗，保留已驗證 payload
+供重試，不排程新 finalizer、不殺行程，也不切換 active。等舊行程自然結束，
+或改用另一個 `ALC_INSTALL_DIR` 並排安裝，明確呼叫該路徑。完成首次建立後，
+更新只啟用 manifest，不替換入口。
+
+## 本機更新 bundle 驗證失敗
+
+請完整保留 `alc update --download-only BUNDLE_DIR` 產生的目錄；目標須為新建或
+空目錄，各 bundle 分開保存。
+`alc update --from BUNDLE_DIR --offline` 不查 GitHub、不連網，啟用前以有界驗證
+核對中繼資料、壓縮檔檢查碼、平台與包內執行檔版本。不繞過不符的驗證，也不執行
+bundle 裡的腳本；請為此平台取得新的已驗證 bundle。驗證失敗不改 active 世代。
+回滾需要保留的世代，不回滾設定／憑證，也不重啟 host。
+
+## 停止 host 或 session 前綴有歧義
+
+`alc sessions` 列出 legacy 與各世代的 owner 及其頁面 URL。請用完整 session ID，
+或全域 `--runtime <id|legacy>` 指定目標 owner。多個 owner 執行中時，`hub stop`
+與 `bridge stop` 要明確指定目標。停止橋接可能中斷長請求；`hub stop --drain`
+會結束它的 session。不要把它們當作更新步驟。
 
 ## 在 `alc config` 裡找不到共享設定
 

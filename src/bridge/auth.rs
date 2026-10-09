@@ -117,13 +117,14 @@ pub(crate) struct TokenResponse {
 
 /// Holds the current credentials and serialises refreshes.
 ///
-/// The mutex is the point, not the storage: several of alc's agents fire
-/// concurrent requests, and without single-flighting they each rotate the
-/// refresh token, and all but one of the resulting tokens is immediately
-/// invalid. Reload from disk *after* taking the lock — another alc process may
-/// have rotated while this one waited.
+/// The async mutex single-flights one manager. A canonical auth-path sidecar
+/// lock additionally serialises alc-managed runtimes in other processes; disk
+/// is read again after that lock is acquired. Old alc and the external Codex
+/// CLI do not participate in this advisory lock.
 pub(crate) struct AuthManager {
     path: PathBuf,
+    /// Diagnostics retain the caller's spelling; IO and locks use the canonical path.
+    display_path: PathBuf,
     /// Always [`TOKEN_ENDPOINT`] in a real session. Tests point it at a
     /// loopback listener so the rotation logic can be exercised without a
     /// network, and without an environment variable the launch path would then
@@ -134,8 +135,11 @@ pub(crate) struct AuthManager {
 
 impl AuthManager {
     pub(crate) fn new(path: PathBuf) -> Self {
+        let display_path = path.clone();
+        let path = crate::file_lock::canonical_path(&path).unwrap_or(path);
         Self {
             path,
+            display_path,
             endpoint: TOKEN_ENDPOINT.to_owned(),
             state: Mutex::new(None),
         }
@@ -143,8 +147,11 @@ impl AuthManager {
 
     #[cfg(test)]
     fn with_endpoint(path: PathBuf, endpoint: String) -> Self {
+        let display_path = path.clone();
+        let path = crate::file_lock::canonical_path(&path).unwrap_or(path);
         Self {
             path,
+            display_path,
             endpoint,
             state: Mutex::new(None),
         }
@@ -160,18 +167,41 @@ impl AuthManager {
             if error.kind() == std::io::ErrorKind::NotFound {
                 BridgeError::auth(format!(
                     "no Codex credentials at {}; run `codex login`",
-                    self.path.display()
+                    self.display_path.display()
                 ))
             } else {
-                BridgeError::auth(format!("could not read {}: {error}", self.path.display()))
+                BridgeError::auth(format!(
+                    "could not read {}: {error}",
+                    self.display_path.display()
+                ))
             }
         })?;
         serde_json::from_slice(&raw).map_err(|error| {
             BridgeError::auth(format!(
                 "{} is not valid JSON: {error}",
-                self.path.display()
+                self.display_path.display()
             ))
         })
+    }
+
+    /// OS locking may wait for another process's refresh, so do that bounded
+    /// wait on Tokio's blocking pool, never on an async worker. The returned
+    /// guard stays held through the issuer exchange and atomic write-back.
+    async fn refresh_lock(&self) -> Result<crate::file_lock::FileLock, BridgeError> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || crate::file_lock::lock_for(&path))
+            .await
+            .map_err(|error| {
+                BridgeError::auth(format!(
+                    "could not wait for the Codex refresh lock: {error}"
+                ))
+            })?
+            .map_err(|error| {
+                BridgeError::auth(format!(
+                    "could not lock {} for token refresh: {error:#}",
+                    self.display_path.display()
+                ))
+            })
     }
 
     /// The credentials to sign the next upstream request with, refreshing
@@ -219,6 +249,21 @@ impl AuthManager {
             return Ok(held.clone());
         }
 
+        let _refresh = self.refresh_lock().await?;
+        // The first read decided whether a lock was needed. A sibling may
+        // have rotated while we waited; only this second read can decide what
+        // refresh token is safe to exchange.
+        let stored = self.stored()?;
+        if stored.is_fresh(now_ms()) {
+            *cached = Some(stored.clone());
+            return Ok(stored);
+        }
+        if let Some(held) = cached.as_ref()
+            && held.access_token == stored.access_token
+            && held.is_fresh(now_ms())
+        {
+            return Ok(held.clone());
+        }
         self.rotate(http, &stored, &mut cached).await
     }
 
@@ -235,6 +280,7 @@ impl AuthManager {
         rejected: Option<&str>,
     ) -> Result<Credentials, BridgeError> {
         let mut cached = self.state.lock().await;
+        let _refresh = self.refresh_lock().await?;
         let stored = self.stored()?;
         if rejected.is_some_and(|token| token != stored.access_token) {
             *cached = Some(stored.clone());
@@ -273,10 +319,10 @@ impl AuthManager {
         let document = serde_json::to_vec_pretty(&file).map_err(|error| {
             BridgeError::auth(format!(
                 "could not re-encode {}: {error}",
-                self.path.display()
+                self.display_path.display()
             ))
         })?;
-        write_atomic(&self.path, &document)
+        write_atomic(&self.path, &self.display_path, &document)
     }
 
     /// The account id the file names, or `None` if it cannot be read.
@@ -300,7 +346,7 @@ impl AuthManager {
             .ok_or_else(|| {
                 BridgeError::auth(format!(
                     "{} holds no Codex access token; run `codex login`",
-                    self.path.display()
+                    self.display_path.display()
                 ))
             })?;
 
@@ -336,7 +382,7 @@ impl AuthManager {
             return Err(BridgeError::auth(format!(
                 "the Codex access token in {} has expired and the file holds no \
                  refresh token; run `codex login`",
-                self.path.display()
+                self.display_path.display()
             )));
         }
 
@@ -440,7 +486,7 @@ impl AuthManager {
         if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             return BridgeError::auth(format!(
                 "the refresh token in {} was refused ({status}{}); run `codex login`",
-                self.path.display(),
+                self.display_path.display(),
                 detail(body)
             ));
         }
@@ -567,11 +613,14 @@ fn detail(body: Result<String, reqwest::Error>) -> String {
 /// rename cannot cross a filesystem boundary, and `tempfile` creates it 0600 —
 /// which is what the result must end up as, since it is about to hold a
 /// bearer token.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), BridgeError> {
+fn write_atomic(path: &Path, display_path: &Path, bytes: &[u8]) -> Result<(), BridgeError> {
     use std::io::Write as _;
 
     let failed = |error: &dyn std::fmt::Display| {
-        BridgeError::auth(format!("could not persist {}: {error}", path.display()))
+        BridgeError::auth(format!(
+            "could not persist {}: {error}",
+            display_path.display()
+        ))
     };
     let directory = path
         .parent()
@@ -976,6 +1025,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn diagnostics_keep_the_supplied_auth_path_while_io_uses_the_canonical_path() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let supplied = directory.path().join(".").join("missing-auth.json");
+        let manager = AuthManager::new(supplied.clone());
+        assert_eq!(manager.display_path, supplied);
+        assert_eq!(
+            manager.path,
+            crate::file_lock::canonical_path(&supplied).unwrap()
+        );
+        let error = manager.read_file().expect_err("fixture auth is absent");
+        assert!(error.message.contains(&supplied.display().to_string()));
+        let error = manager.refusal(StatusCode::UNAUTHORIZED, Ok(String::new()));
+        assert!(error.message.contains(&supplied.display().to_string()));
+        let canonical_missing = directory.path().join("missing-directory").join("auth.json");
+        let error = write_atomic(&canonical_missing, &supplied, b"{}")
+            .expect_err("fixture persistence directory is absent");
+        assert!(error.message.contains(&supplied.display().to_string()));
+    }
+
     #[tokio::test]
     async fn a_missing_auth_file_says_where_it_looked_and_to_run_codex_login() {
         let directory = tempfile::TempDir::new().unwrap();
@@ -1132,6 +1201,136 @@ mod tests {
             issuer.requests().len(),
             1,
             "a second rotation would retire the token the first one just won"
+        );
+    }
+
+    /// Spawned only by the following test, in a separate harness process.
+    /// Its explicitly supplied temporary auth path and loopback issuer keep
+    /// this test seam out of the production environment/configuration API.
+    #[test]
+    fn refresh_subprocess_worker() {
+        let Some(path) = std::env::var_os("ALC_TEST_REFRESH_AUTH") else {
+            return;
+        };
+        let endpoint = std::env::var("ALC_TEST_REFRESH_ENDPOINT").unwrap();
+        assert!(endpoint.starts_with("http://127.0.0.1:"));
+        let auth = AuthManager::with_endpoint(PathBuf::from(path), endpoint);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(auth.credentials(&reqwest::Client::new()))
+            .unwrap();
+    }
+
+    #[test]
+    fn independent_processes_rotate_one_canonical_auth_path_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let issuer = FakeIssuer::start(
+            "200 OK",
+            &json!({
+                "access_token": access_token(3600), "refresh_token":"cross-process-refresh",
+            })
+            .to_string(),
+        );
+        let path = write_auth_json(
+            dir.path(),
+            json!({
+                "access_token": access_token(-60), "refresh_token":"original-refresh",
+            }),
+        );
+        let mut children = Vec::new();
+        for _ in 0..2 {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "bridge::auth::tests::refresh_subprocess_worker",
+                    "--nocapture",
+                ])
+                .env("ALC_TEST_REFRESH_AUTH", &path)
+                .env("ALC_TEST_REFRESH_ENDPOINT", &issuer.endpoint)
+                .env_remove("HTTP_PROXY")
+                .env_remove("HTTPS_PROXY")
+                .env_remove("ALL_PROXY")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            children.push(child);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut outcomes = Vec::new();
+        for child in &mut children {
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    outcomes.push(status.success());
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    outcomes.push(false);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert!(outcomes.into_iter().all(|success| success));
+        assert_eq!(issuer.requests().len(), 1);
+        assert_eq!(
+            read_back(&path)["tokens"]["refresh_token"],
+            "cross-process-refresh"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn independent_managers_reread_under_the_canonical_refresh_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let rotated = access_token(3600);
+        let issuer = FakeIssuer::start(
+            "200 OK",
+            &json!({
+                "access_token": rotated, "refresh_token": "rotated-refresh",
+            })
+            .to_string(),
+        );
+        let path = write_auth_json(
+            dir.path(),
+            json!({
+                "access_token": access_token(-60), "refresh_token": "old-refresh",
+            }),
+        );
+        #[cfg(unix)]
+        let alias = {
+            let alias = dir.path().join("alias.json");
+            std::os::unix::fs::symlink(&path, &alias).unwrap();
+            alias
+        };
+        #[cfg(not(unix))]
+        let alias = path.clone();
+        let first = AuthManager::with_endpoint(path.clone(), issuer.endpoint.clone());
+        let second = AuthManager::with_endpoint(alias.clone(), issuer.endpoint.clone());
+        let http = reqwest::Client::new();
+        // With a blocking lock on this current-thread runtime, the second
+        // future would prevent the first issuer exchange from ever finishing.
+        let (one, two) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(first.credentials(&http), second.credentials(&http))
+        })
+        .await
+        .unwrap();
+        assert_eq!(one.unwrap().access_token, two.unwrap().access_token);
+        assert_eq!(issuer.requests().len(), 1);
+        assert_eq!(
+            read_back(&path)["tokens"]["refresh_token"],
+            "rotated-refresh"
+        );
+        #[cfg(unix)]
+        assert!(
+            std::fs::symlink_metadata(alias)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 

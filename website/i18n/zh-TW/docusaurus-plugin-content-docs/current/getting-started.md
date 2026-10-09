@@ -44,6 +44,11 @@ PATH；做不到時，就印出你該自己加入的目錄。macOS／Linux 請�
 PATH，Windows 則會。支援 Windows PowerShell 5.1 與 PowerShell 7，包含
 64 位元 Windows 上執行的 32 位元 PowerShell。
 
+安裝器驗證 payload，再執行 alc 內部安裝交易。`alc` 仍是完整執行檔的穩定入口，
+旁邊的 `.alc/active.json` 選定 `.alc/generations/<digest>/alc`（Windows 為
+`alc.exe`）。完成首次遷移後，後續啟用只切換 manifest，不替換 Windows 鎖住的
+入口。請把旁邊的 `.alc` 目錄與入口一起保留。
+
 ### 選用的 tmux 補裝
 
 下載 alc、通過 SHA-256 驗證並完成安裝後，安裝器會用 `tmux -V` 檢查是否為
@@ -158,8 +163,8 @@ alc --openrouter claude --print "summarize the diff"
 alc claude -- --model sonnet      # `--` hands even those names to Claude
 ```
 
-alc 自己的旗標 —— `--share`、`--no-share`、`--bind-lan`、`--name`、
-`--permission`、`--tmux`、`-t` —— 要寫在 agent 名稱前面。寫在後面，alc
+alc 自己的旗標 —— `--metrics`、`--runtime`、`--share`、`--no-share`、`--bind-lan`、
+`--name`、`--permission`、`--tmux`、`-t` —— 要寫在 agent 名稱前面。寫在後面，alc
 會直接停下來，而不是把它們交給 agent —— 除非你在 agent 名稱後面緊接著寫上
 `--`，那就表示你指的是 agent 自己的旗標：
 
@@ -182,15 +187,65 @@ alc doctor                     # binaries, credentials, compatibility, defaults,
 ```sh
 alc update --check
 alc update
+alc update --download-only "$HOME/alc-bundle"
+alc update --from "$HOME/alc-bundle" --offline
+alc update --rollback previous --offline
 ```
 
-`alc update` 會挑出符合這台機器作業系統與 CPU 的發行包，核對它的 SHA-256
-檢查碼，再替換掉 `alc`。Linux 與 macOS 會立刻換好；Windows 則等目前執行中的
-`alc.exe` 結束後才完成替換。`--force` 會重裝目前這個版本。已經在跑的 session
-會繼續使用啟動當下的執行檔，請重開它們；hub 也一樣，等它底下的 session
-都結束後再執行 `alc hub stop`。
+`alc update` 會選擇符合這台機器作業系統與 CPU 的發行包，核對公開 SHA-256 與
+包內執行檔版本，發布不可變世代，再原子啟用。完整執行檔的穩定入口讀取旁邊的
+`.alc/active.json`，將新呼叫轉到 `.alc/generations/<digest>/alc[.exe]`。
+執行中的世代不會跟著新的 active 選擇走；helper 與 daemon 使用雜湊釘住的
+執行檔路徑。
+
+既有前景／背景／共享 session 與舊 host 不會被重啟或 drain。新啟動使用自己
+世代的 hub／橋接。Runtime 檔放在 `<config>/run/g/<shortid>` 命名空間，legacy
+保留 `<config>/run`。真實 provider 設定、憑證、共享政策與用量帳本仍共用。
+舊世代保留，不自動回收；不要刪掉仍被 session 或 helper 使用的世代。
+
+| 選項 | 作用 |
+| --- | --- |
+| `--check` | 在線上檢查，不套用。 |
+| `--force` | 即使目前版本相同，也重新安裝選定發行包。 |
+| `--download-only BUNDLE_DIR` | 保存已驗證 bundle，不套用；最新版本已安裝時也一樣會下載。 |
+| `--from BUNDLE_DIR --offline` | 驗證並套用完整本機 bundle，**不查 GitHub、不連網**；啟用前有界核對中繼資料、壓縮檔檢查碼、平台與包內執行檔版本。 |
+| `--rollback previous` 或 `--rollback <digest>` | 啟用保留的世代，不回復設定、憑證或用量紀錄；可以加 `--offline`。 |
+
+Download-only 永遠不啟用，目標須為新建或空目錄；各 bundle 各自保存。
+Bundle 或驗證失敗不切換 active 世代。回滾仍保留其他
+世代，不重啟 host。Self-update 只改 alc：**`alc --codex update` 仍是 alc 自我
+更新，不是更新 Codex CLI**。不更新 agent、tmux 或 PATH。外部套件更新與共用
+驗證憑證輪替不在此保證內；舊 host 與外部 Codex 不使用新版 alc 的更新鎖。
+
+### 管理舊 owner
+
+`alc sessions` 彙整 legacy 與各世代 owner，每個 owner 各有瀏覽器 URL。
+`attach`、`kill`、`rename` 會跨 owner 找到真正擁有者；ID 前綴有歧義就拒絕。
+`--runtime <id|legacy>` 是全域的 owner 選取參數：
+
+```sh
+alc sessions
+alc attach 7QK2
+alc --runtime legacy bridge stop
+alc --runtime legacy hub stop --drain
+```
+
+多個 owner 執行中時，`hub stop` 與 `bridge stop` 要明確指定 runtime。停止橋接
+可能中斷長請求，hub drain 會結束該 owner 的 session；兩者都不是零中斷，
+也不是更新步驟。各 owner 的頁面只列自己的 session，不是瀏覽器的合併檢視。
+
+### 從舊 alc 首次遷移
+
+舊 2.0.0 updater，尤其 Windows 的退出後 finalizer，無法被下載的 2.0.1 payload
+追溯修復。請用 2.0.1 以上的安裝器建立穩定入口。Unix 的首次操作可以原子替換舊入口；
+Windows 若鎖住入口，新交易會以錯誤結束，保留驗證過的 payload 供重試，不啟用、
+不殺使用者行程，也不排程新的 finalizer。後續切換 manifest 不覆寫入口。
+
+等舊行程自然結束後重試，或用不同的 `ALC_INSTALL_DIR` 並排安裝，明確呼叫該路徑。
+待處理不等於完成；不要只為了更新而停止執行中的工作。
 
 ## 解除安裝
 
-把 `alc` 從安裝目錄刪掉。設定目錄的位置由 `alc config path` 告訴你；刪掉它
-的同時，也會刪掉本機儲存的 API key。
+等使用保留世代的 session／helper 都結束，再刪除 `alc` 與旁邊的 `.alc` 安裝
+目錄。設定目錄的位置由 `alc config path` 告訴你；刪掉它的同時，也會刪掉本機
+儲存的 API key。

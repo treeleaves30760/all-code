@@ -23,6 +23,10 @@ pub(crate) fn run_dir(config_dir: &Path) -> PathBuf {
     Secrets::run_dir(config_dir)
 }
 
+pub(crate) fn run_dir_for(config_dir: &Path, scope: &crate::runtime::RuntimeScope) -> PathBuf {
+    crate::runtime::run_dir_for(config_dir, scope)
+}
+
 pub(crate) fn port_path(config_dir: &Path) -> PathBuf {
     run_dir(config_dir).join("bridge.port")
 }
@@ -32,13 +36,21 @@ pub(crate) fn token_path(config_dir: &Path) -> PathBuf {
 }
 
 pub(super) fn load_or_create_observer_key(config_dir: &Path) -> Result<String> {
-    restricted_dir(&run_dir(config_dir))?;
-    let path = run_dir(config_dir).join("bridge.observer-key");
+    crate::runtime::claim_namespace(config_dir)?;
+    let run_dir = run_dir(config_dir);
+    restricted_dir(&run_dir)?;
+    let path = run_dir.join("bridge.observer-key");
     match fs::read_to_string(&path) {
         Ok(text) => Ok(text.trim().to_owned()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => create_token(&path),
         Err(error) => Err(error).context("could not read the local observer secret"),
     }
+}
+
+pub(super) fn read_observer_key_at(run_dir: &Path) -> Result<String> {
+    fs::read_to_string(run_dir.join("bridge.observer-key"))
+        .map(|text| text.trim().to_owned())
+        .context("could not read the local observer secret")
 }
 
 pub(crate) fn lock_path(config_dir: &Path) -> PathBuf {
@@ -50,7 +62,11 @@ pub(crate) fn routes_dir(config_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn read_token(config_dir: &Path) -> Option<String> {
-    fs::read_to_string(token_path(config_dir))
+    read_token_at(&run_dir(config_dir))
+}
+
+pub(crate) fn read_token_at(run_dir: &Path) -> Option<String> {
+    fs::read_to_string(run_dir.join("bridge.token"))
         .ok()
         .map(|token| token.trim().to_owned())
         .filter(|token| !token.is_empty())
@@ -66,6 +82,7 @@ pub(crate) fn read_token(config_dir: &Path) -> Option<String> {
 /// is what something that died left behind, not a token on its way, so it is
 /// cleared rather than waited on.
 pub(crate) fn load_or_create_token(config_dir: &Path) -> Result<String> {
+    crate::runtime::claim_namespace(config_dir)?;
     restricted_dir(&run_dir(config_dir))?;
     let path = token_path(config_dir);
     match fs::read_to_string(&path) {
@@ -89,6 +106,7 @@ pub(crate) fn load_or_create_token(config_dir: &Path) -> Result<String> {
 /// rotates, when it has to move ports; everything else goes through
 /// `load_or_create_token`, which never replaces a token.
 pub(crate) fn rotate_token(config_dir: &Path) -> Result<String> {
+    crate::runtime::claim_namespace(config_dir)?;
     restricted_dir(&run_dir(config_dir))?;
     let token = generate_token()?;
     crate::config::atomic_write(&token_path(config_dir), token.as_bytes(), true)?;
@@ -96,7 +114,11 @@ pub(crate) fn rotate_token(config_dir: &Path) -> Result<String> {
 }
 
 pub(crate) fn remembered_port(config_dir: &Path) -> Option<u16> {
-    fs::read_to_string(port_path(config_dir))
+    remembered_port_at(&run_dir(config_dir))
+}
+
+pub(crate) fn remembered_port_at(run_dir: &Path) -> Option<u16> {
+    fs::read_to_string(run_dir.join("bridge.port"))
         .ok()?
         .trim()
         .parse()
@@ -105,6 +127,7 @@ pub(crate) fn remembered_port(config_dir: &Path) -> Option<u16> {
 }
 
 pub(crate) fn remember_port(config_dir: &Path, port: u16) -> Result<()> {
+    crate::runtime::claim_namespace(config_dir)?;
     restricted_dir(&run_dir(config_dir))?;
     crate::config::atomic_write(&port_path(config_dir), port.to_string().as_bytes(), false)
 }
@@ -128,15 +151,31 @@ pub(crate) struct RouteRecord {
     pub auth_file: PathBuf,
     /// Where Claude's own model ids land; see `bridge::tiers`.
     pub tiers: ModelTiers,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
 }
 
 impl RouteRecord {
     pub(crate) fn new(profile: &str, auth_file: PathBuf, tiers: ModelTiers) -> Self {
+        Self::new_for(profile, auth_file, tiers, crate::runtime::scope())
+    }
+
+    fn new_for(
+        profile: &str,
+        auth_file: PathBuf,
+        tiers: ModelTiers,
+        scope: &crate::runtime::RuntimeScope,
+    ) -> Self {
+        let generation = match scope {
+            crate::runtime::RuntimeScope::Legacy => None,
+            scope => Some(scope.identity().to_owned()),
+        };
         Self {
-            id: route_id(profile, &auth_file),
+            id: scoped_route_id(profile, &auth_file, &tiers, scope),
             profile: profile.to_owned(),
             auth_file,
             tiers,
+            generation,
         }
     }
 }
@@ -157,9 +196,43 @@ pub(crate) fn route_id(profile: &str, auth_file: &Path) -> String {
     format!("codex-{hex}")
 }
 
+/// A generation route captures every adapter setting the host consumes. Its
+/// default tier is part of the identity, so another launch cannot move a live
+/// session to a newly selected model or overwrite a cached bridge state.
+fn scoped_route_id(
+    profile: &str,
+    auth_file: &Path,
+    tiers: &ModelTiers,
+    scope: &crate::runtime::RuntimeScope,
+) -> String {
+    if matches!(scope, crate::runtime::RuntimeScope::Legacy) {
+        return route_id(profile, auth_file);
+    }
+    let mut hash = Sha256::new();
+    for value in [
+        b"alc-codex-route-v1".as_slice(),
+        scope.identity().as_bytes(),
+        profile.as_bytes(),
+        auth_file.as_os_str().as_encoded_bytes(),
+        tiers.strongest.as_bytes(),
+        tiers.default.as_bytes(),
+        tiers.cheapest.as_bytes(),
+    ] {
+        hash.update((value.len() as u64).to_le_bytes());
+        hash.update(value);
+    }
+    let hex: String = hash
+        .finalize()
+        .iter()
+        .take(12)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("codex-{hex}")
+}
+
 pub(crate) fn valid_route_id(id: &str) -> bool {
     id.strip_prefix("codex-").is_some_and(|hex| {
-        hex.len() == 12
+        matches!(hex.len(), 12 | 24)
             && hex
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -181,13 +254,23 @@ pub(crate) fn write_route(config_dir: &Path, route: &RouteRecord) -> Result<()> 
             route.id
         );
     }
-    let own = route_id(&route.profile, &route.auth_file);
-    if route.id != own {
+    let own = scoped_route_id(
+        &route.profile,
+        &route.auth_file,
+        &route.tiers,
+        crate::runtime::scope(),
+    );
+    let generation = match crate::runtime::scope() {
+        crate::runtime::RuntimeScope::Legacy => None,
+        scope => Some(scope.identity()),
+    };
+    if route.id != own || route.generation.as_deref() != generation {
         bail!(
             "refusing to write bridge route {}: the profile and Codex login it holds make route {own}",
             route.id
         );
     }
+    crate::runtime::claim_namespace(config_dir)?;
     restricted_dir(&run_dir(config_dir))?;
     let dir = routes_dir(config_dir);
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
@@ -197,7 +280,33 @@ pub(crate) fn write_route(config_dir: &Path, route: &RouteRecord) -> Result<()> 
     // one profile, or a launch and the hub, never share one. A shared temp is
     // truncated under the other writer and renamed away before it gets there.
     // Owner-only costs nothing inside the 0700 run directory.
-    crate::config::atomic_write(&dir.join(format!("{}.json", route.id)), &bytes, true)
+    let path = dir.join(format!("{}.json", route.id));
+    if matches!(
+        crate::runtime::scope(),
+        crate::runtime::RuntimeScope::Legacy
+    ) {
+        // Preserve the old route's profile/login identity and write contract.
+        crate::config::atomic_write(&path, &bytes, true)
+    } else {
+        publish_immutable(&path, &bytes)
+    }
+}
+
+/// Publish once under the content-derived name. A racing identical writer
+/// adopts the file; a mismatch is refused without rewriting a live document.
+pub(crate) fn publish_immutable(path: &Path, bytes: &[u8]) -> Result<()> {
+    let _writing = crate::file_lock::lock_for(path)?;
+    match fs::read(path) {
+        Ok(existing) if existing == bytes => Ok(()),
+        Ok(_) => bail!(
+            "{} is immutable and contains different bytes",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            crate::config::atomic_write(path, bytes, true)
+        }
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
 }
 
 /// The route named `id`, or `None` when there is none - including when `id` is
@@ -208,9 +317,24 @@ pub(crate) fn read_route(config_dir: &Path, id: &str) -> Result<Option<RouteReco
     }
     let path = routes_dir(config_dir).join(format!("{id}.json"));
     match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .with_context(|| format!("{} is not a route alc can read", path.display())),
+        Ok(bytes) => {
+            let route: RouteRecord = serde_json::from_slice(&bytes)
+                .with_context(|| format!("{} is not a route alc can read", path.display()))?;
+            if matches!(
+                crate::runtime::scope(),
+                crate::runtime::RuntimeScope::Generation(_)
+            ) {
+                let expected =
+                    RouteRecord::new(&route.profile, route.auth_file.clone(), route.tiers.clone());
+                if route != expected || route.id != id {
+                    bail!(
+                        "{} does not match its immutable runtime route identity",
+                        path.display()
+                    );
+                }
+            }
+            Ok(Some(route))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
     }
@@ -288,14 +412,25 @@ pub(crate) fn write_forward(config_dir: &Path, route: &ForwardRoute) -> Result<(
     if own != *route {
         bail!("invalid frozen forwarding route");
     }
+    crate::runtime::claim_namespace(config_dir)?;
     restricted_dir(&run_dir(config_dir))?;
     let dir = forward_dir(config_dir);
     fs::create_dir_all(&dir).context("could not create forwarding route directory")?;
-    crate::config::atomic_write(
-        &dir.join(format!("{}.json", route.id)),
-        &serde_json::to_vec(route)?,
-        true,
-    )
+    if matches!(
+        crate::runtime::scope(),
+        crate::runtime::RuntimeScope::Legacy
+    ) {
+        crate::config::atomic_write(
+            &dir.join(format!("{}.json", route.id)),
+            &serde_json::to_vec(route)?,
+            true,
+        )
+    } else {
+        publish_immutable(
+            &dir.join(format!("{}.json", route.id)),
+            &serde_json::to_vec(route)?,
+        )
+    }
 }
 
 pub(crate) fn read_forward(config_dir: &Path, id: &str) -> Result<Option<ForwardRoute>> {
@@ -407,6 +542,50 @@ mod tests {
             }
         }
         files
+    }
+
+    #[test]
+    fn generation_route_identity_freezes_every_effective_tier() {
+        let scope = crate::runtime::RuntimeScope::parse("0123456789ab").unwrap();
+        let auth = PathBuf::from("/test-only/codex/auth.json");
+        let first = RouteRecord::new_for("work", auth.clone(), tiers(), &scope);
+        assert!(valid_route_id(&first.id));
+        assert_eq!(first.generation.as_deref(), Some(scope.identity()));
+        for field in 0..3 {
+            let mut changed = tiers();
+            match field {
+                0 => changed.strongest = "other-strongest".to_owned(),
+                1 => changed.default = "other-default".to_owned(),
+                _ => changed.cheapest = "other-cheapest".to_owned(),
+            }
+            assert_ne!(
+                first.id,
+                RouteRecord::new_for("work", auth.clone(), changed, &scope).id
+            );
+        }
+        let other = crate::runtime::RuntimeScope::parse("fedcba987654").unwrap();
+        assert_ne!(
+            first.id,
+            RouteRecord::new_for("work", auth.clone(), tiers(), &other).id
+        );
+        let legacy = RouteRecord::new_for(
+            "work",
+            auth.clone(),
+            tiers(),
+            &crate::runtime::RuntimeScope::Legacy,
+        );
+        assert_eq!(legacy.id, route_id("work", &auth));
+        assert_eq!(legacy.generation, None);
+    }
+
+    #[test]
+    fn immutable_publish_adopts_identical_bytes_but_never_overwrites() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        publish_immutable(&path, b"first").unwrap();
+        publish_immutable(&path, b"first").unwrap();
+        assert!(publish_immutable(&path, b"second").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"first");
     }
 
     #[test]

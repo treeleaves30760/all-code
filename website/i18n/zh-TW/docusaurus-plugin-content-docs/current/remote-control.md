@@ -3,7 +3,7 @@ id: remote-control
 title: 遠端控制
 sidebar_label: 遠端控制
 sidebar_position: 5
-description: 把任何 coding agent 的 session 鏡射到一個網頁，用手機操作它 —— 每個 agent 都是同一個頁面，還有權限模式、tmux 尺寸，以及一套把連結本身當成憑證的安全模型。
+description: 把任何 coding agent 的 session 鏡射到其 owner 的網頁，用手機操作；包含權限模式、tmux 尺寸、跨世代 session 搜尋，以及連結本身就是憑證的安全模型。
 keywords:
   - claude code on phone
   - remote coding agent
@@ -15,9 +15,9 @@ keywords:
 
 # 遠端控制
 
-把執行中的 session 鏡射到一個網頁，從另一台裝置操作它 —— 不管哪一個 agent、
-哪一個 provider，都是同一個頁面。你的終端機照常運作；分享是把 session
-鏡射出去，不是把它拿走。
+把執行中的 session 鏡射到其 owner 的網頁，從另一台裝置操作；每個 agent、
+provider 的介面都一樣，但各 runtime owner 各有自己的頁面。你的終端機照常
+運作；分享是把 session 鏡射出去，不是把它拿走。
 
 ```sh
 alc --share claude
@@ -36,7 +36,11 @@ alc session claude-7QK2M9XB4T (claude@all-code)
 
 ## 從手機連上
 
-預設只綁 loopback。在你開口之前，什麼都不會對外。
+預設只綁 loopback。在你開口之前，什麼都不會對外。多個 runtime owner 時，
+Tailscale／Cloudflare 請用目標 owner 頁面 URL 的 port，不要假設永遠是 8787。
+以下指令以預設 port 為例。既有 hub 保留啟動時的 allowlist；等 session 結束後，
+再明確停止／重啟該 owner 才能讀到新允許的名字。Drain 會結束 session，不是
+更新步驟。
 
 **Tailscale** —— alc 留在 loopback 上，對外的事交給 Tailscale。走 HTTPS，
 中間沒有第三方。
@@ -44,14 +48,14 @@ alc session claude-7QK2M9XB4T (claude@all-code)
 ```sh
 alc remote allow-host box.tail1a2b.ts.net
 tailscale serve 8787
-alc claude --share
+alc --share claude
 ```
 
 **你自己的 Wi-Fi** —— 什麼都不必裝，但走的是純 HTTP，token 會以明文穿過網路。
 在家沒問題；在咖啡廳的 Wi-Fi 上請改用 tunnel。
 
 ```sh
-alc claude --share --bind-lan
+alc --share --bind-lan claude
 ```
 
 **Cloudflare Tunnel** —— 從任何地方都連得上，行動網路也行。TLS 由 Cloudflare
@@ -61,7 +65,7 @@ alc claude --share --bind-lan
 ```sh
 alc remote allow-host '*.trycloudflare.com'
 cloudflared tunnel --url http://127.0.0.1:8787
-alc claude --share
+alc --share claude
 ```
 
 alc 只回應你允許過的名字：它拿 `Host` 標頭去比對一份清單，並且允許 host
@@ -80,8 +84,8 @@ alc remote status                           # what it answers to now
 agent 一畫出自己的介面，那個連結就捲走了。
 
 ```sh
-alc remote url        # just the link
-alc sessions          # the link, then what is running
+alc remote url        # 選定 runtime 的連結
+alc sessions          # 所有 owner、各自的連結與 session
 ```
 
 ```text
@@ -92,13 +96,13 @@ claude-7QK2M9XB4T      claude   running   ask        ~/src/all-code
 codex-68B8XMJ6F5       codex    running   plan       ~/src/api
 ```
 
-每一個允許的名字各有一行。`alc remote token --rotate` 會讓目前為止發出去的
-每一個連結全部失效。
+每一個允許的名字各有一行。`alc remote token --rotate` 讓選定 runtime 的連結
+失效，不會讓其他 owner 的所有連結一起失效。
 
 ## 預設就分享
 
 ```sh
-alc remote auto-share on     # `alc claude` now behaves like `alc claude --share`
+alc remote auto-share on     # `alc claude` now behaves like `alc --share claude`
 alc --no-share claude        # opt one launch out
 ```
 
@@ -162,28 +166,37 @@ the page can apply it once, within the next minute.
 
 ## session 與 hub
 
-分享出去的 session 屬於一個 **hub** —— 你第一次分享時 alc 會啟動的背景行程。
-就是它讓同一個頁面能列出每一個 session，也讓 session 活得比啟動它的那個
-終端機還久。
+共享 session 屬於其 runtime 世代的 **hub**。該世代第一次分享時會啟動 hub，
+讓 session 活得比啟動它的終端機久。各 owner 提供自己的頁面；`alc sessions`
+彙整 legacy 與各世代 owner，列出各自的頁面 URL。
 
 ```sh
-alc claude --share           # starts a hub if one is not running
-# ctrl-\ then d              # detach; the session keeps running
-alc sessions                 # what is running
-alc attach 7QK2              # back on it, from any terminal
-alc kill 7QK2                # stop one
-alc rename 7QK2 review       # rename its card
+alc --share claude            # 需要時啟動本世代的 hub
+# ctrl-\ then d              # 卸離；session 繼續執行
+alc sessions                 # 所有 owner 與其 session
+alc attach 7QK2              # 從任何終端機接回去
+alc kill 7QK2                # 到真正的 owner 停掉一個 session
+alc rename 7QK2 review       # 到 owner 替卡片改名
 alc hub status
-alc hub stop [--drain]       # refuses while sessions run unless --drain
+alc --runtime legacy hub stop --drain # 明確結束該 owner 的 session
 ```
 
 id 長得像 `claude-7QK2M9XB4T`；任何不會有歧義的前綴，或者只寫後面那一段，
-都可以，大小寫不拘。
+都可以，大小寫不拘。`attach`、`kill`、`rename` 會跨命名空間找到真正的 owner。
+前綴符合多個 owner 就拒絕；請用完整 ID 或全域 `--runtime <id|legacy>` 指定 owner。
 
-每一次啟動都帶著提出要求的那個 shell 的工作目錄與環境，所以在某個 repository
-裡開的 session，永遠不會去改另一個。hub 若被直接砍掉，agent 會繼續以 detached
-的狀態跑下去，而下一個 hub 會把上一個來不及收的東西清掉。它不留 log 檔；
-hub 起不來的時候，執行 `alc hub start --foreground` 看它說什麼。
+新 runtime 檔放在 `<config>/run/g/<shortid>`；legacy 保留 `<config>/run`。
+設定、憑證、用量紀錄與 `remote.toml` 共享政策仍共用。既有 listener 保留綁定的
+位址／port；新世代可以選可用的 port，請用目標 owner 的連結，不要假設所有頁面
+都在 8787。更新不重啟或 drain 舊 hub。多個 owner 執行中時，`hub stop` 與
+`bridge stop` 須明確指定 runtime。`hub stop` 有 session 在跑就拒絕，除非加
+`--drain`；drain 會結束那些 session，停止橋接則可能中斷處理中的請求。兩者都
+不是零中斷，也不是更新的必要步驟。
+
+每一次啟動都帶著提出要求的 shell 的工作目錄與環境。Hub 若被直接砍掉，agent
+可能繼續 detached 執行；替代 host 先取得 owner lock，再只清理自己的命名空間，
+不碰另一個世代的 session。它不留 log 檔；hub 起不來的時候，用
+`alc hub start --foreground` 看它說什麼。
 
 ## 尺寸歸誰管
 

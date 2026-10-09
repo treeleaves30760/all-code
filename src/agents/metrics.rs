@@ -310,7 +310,8 @@ fn claude_plan(spec: &LaunchSpec, store: &Store, provider: &Provider) -> Result<
         .settings_plan
         .as_ref()
         .context("--metrics is unavailable: Claude has no provider settings plan")?;
-    let alc = env::current_exe().context("--metrics: cannot resolve alc's credential helper")?;
+    let alc = crate::runtime::planned_exe(&store.dir)
+        .context("--metrics: cannot plan alc's pinned credential helper")?;
     let dir = std::path::absolute(&store.dir)
         .context("--metrics: cannot resolve the credential helper's config directory")?;
     let expected_helper = claude_settings::helper_command(

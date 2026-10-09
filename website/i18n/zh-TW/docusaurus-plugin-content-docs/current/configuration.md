@@ -29,34 +29,47 @@ keywords:
   刪除只會重設 alc 紀錄，不會重設獨立的 Claude／Codex 原生歷史。
 - `pricing.toml`：用量估算選用的精確 USD token 費率覆寫。這是[獨立的
   sidecar](#價格-sidecar)，不是 `config.toml` 裡的一張 table。
-- `claude/settings-*.json`：alc 用 `--settings` 交給 Claude Code 的那些設定
-  文件 —— 端點、模型相關變數、選單，以及 `apiKeyHelper` 那一行，裡面沒有任何
-  一種金鑰。每一份都以自己內容的雜湊命名，所以每一次解析到同一份文件的啟動，
-  用的都是同一個檔案；在 Unix 上一律以 `0600` 權限寫入。alc 從不刪除它們，
+- `claude/settings-*.json`（legacy）或
+  `run/g/<shortid>/claude/settings-*.json`（新世代）：alc 用 `--settings` 交給
+  Claude Code 的設定文件 —— 端點、模型相關變數、選單，以及釘住的
+  `apiKeyHelper`，裡面沒有任何一種金鑰。每一份都以自己內容的雜湊命名，
+  所以解析到同一份文件的啟動會重用同一個檔案；Unix 上以 `0600` 權限寫入。alc 從不刪除它們，
   因為[背景 session](./background-sessions.md)每次被 Claude Code 重新啟動時，
   都會再讀一次自己的那個檔案。沒有背景 session 在跑的時候，把它們刪掉是安全
   的；刪掉某個還在跑的 session 正在用的那一份，那個 session 就會壞掉，直到它
   下一次重新啟動為止。把它們留在那裡之前有一件事要知道：你自己傳的
   `--settings` 會被合併進那份文件，所以你放進自己檔案裡的憑證，也會在 alc
   那一份裡。
-- `run/bridge.port`、`run/bridge.token`：[背景橋接](./background-sessions.md#背景橋接)
+- `run/`（legacy）、`run/g/<shortid>/`（新世代）：host 命名空間。以下 runtime
+  產物路徑相對於選定命名空間，不是另一個設定目錄。Provider 設定、憑證、
+  `usage.jsonl` 與 `remote.toml` 共享政策仍共用；legacy 檔案不搬走。
+- Runtime `bridge.port`、`bridge.token`：[背景橋接](./background-sessions.md#背景橋接)
   的監聽位置與控制／轉譯 token；這個 token 不會送給 API 服務商。持續 Claude
   API 觀測在本機請求這一段使用密封替代憑證。
-- `run/bridge.observer-key`：獨立、只有擁有者可讀的本機觀測 secret（Unix 上為
+- Runtime `bridge.observer-key`：獨立、只有擁有者可讀的本機觀測 secret（Unix 上為
   `0600`），不是服務商 API key。它驗證新的 host／控制 challenge，並把 Claude
   量測憑證密封綁定到固定 route／本次 host instance。握手不會公開它，也不會送到
   上游。資料平面仍是 loopback HTTP；這個 secret 不提供 TLS，也不能讓明文請求
   內容免於遭劫持的本機 port 攔截。
-- `run/bridge/routes/`：Codex 協定轉譯的每一條 route 各一個檔案 —— 它花掉的是
-  哪個 provider profile、請求用哪一份 Codex `auth.json` 簽署，以及 Claude Code
-  自己的 model id 會落到哪裡。
-- `run/bridge/forward/`：`--metrics` 使用的持續 Claude API-key 觀測 route；
-  只放固定的 profile/kind/upstream 中繼資料，不放 API key。[helper](./background-sessions.md#背景-session-的-api-key-量測)
-  解析金鑰、驗證 host、只在記憶體註冊摘要，再回傳 AEAD 密封的本機替代憑證。
-  host 只有在派送時才還原上游驗證；觀測檔案從不儲存明文服務商金鑰。host 重啟會
-  讓舊替代憑證失效；請重新執行 helper。
+- Runtime `bridge/routes/`：內容定址、不可變的 Codex 協定轉譯 route，包含 provider
+  profile、Codex auth 路徑與完整有效模型 tier 對應。後續啟動不能覆寫舊
+  session 的 route。
+- Runtime `bridge/forward/`：`--metrics` 使用的持續 Claude API-key 觀測 route；
+  只放固定的 profile/kind/upstream 中繼資料，不放 API key。同一固定
+  身分的金鑰摘要 allowlist 取聯集，保留仍被其他 session 使用的金鑰。
+  [Helper](./background-sessions.md#背景-session-的-api-key-量測)解析金鑰、驗證 host、
+  只在記憶體註冊摘要，再回傳 AEAD 密封的本機替代憑證。host 只有在派送時才還原
+  上游驗證；觀測檔案從不儲存明文服務商金鑰。host 重啟會讓舊替代憑證失效；請
+  重新執行 helper。
 
-可用 `ALC_CONFIG_DIR` 覆寫目錄位置。
+可用 `ALC_CONFIG_DIR` 覆寫真實設定目錄。新 helper 釘住執行檔，明確傳入
+`--runtime <id>`；舊的未指定 scope 的 `claude-credential` 仍用 legacy。
+`--runtime <id|legacy>` 也是管理 host 的全域 owner 選取參數，不是帳號／設定覆寫。
+
+安裝目錄是另一回事：完整執行檔的 `alc` 入口讀旁邊的 `.alc/active.json`，轉到
+`.alc/generations/<digest>/alc`（Windows 為 `alc.exe`）。世代都會保留；不要移除
+背景 session 還需要的 payload 或設定。[更新](./getting-started.md#更新)說明本機
+bundle、回滾與首次遷移。
 
 ## 設定用的 TUI
 

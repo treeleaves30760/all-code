@@ -4,29 +4,35 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, NaiveDate, Utc};
-use clap::Args;
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone, Utc};
+use chrono_tz::Tz;
+use clap::builder::TypedValueParser;
+use clap::{Args, ValueEnum};
 use serde::Serialize;
 
 use super::native;
-use super::pricing::{CostStatus, Money, PriceBook, PriceSource};
+use super::pricing::{CostComponents, CostEstimate, CostStatus, Money, PriceBook, PriceSource};
 use super::records::{
-    Granularity, Metrics, OutputBasis, ReadResult, Source, SourceDiagnostics, UsageRecord,
+    Granularity, Metrics, OutputBasis, ReadResult, Source, SourceDiagnostics, TokenCounts,
+    UsageRecord,
 };
 use crate::config::{Agent, Config};
 use crate::doctor::{Cell, INDENT, Table, Theme, Tone, heading_text};
 
-#[derive(Debug, Clone, Default, Args)]
+#[derive(Debug, Clone, Args)]
 pub(crate) struct QueryArgs {
     /// alc, claude, codex, or all; accepts comma-separated sources.
     #[arg(long, value_delimiter = ',')]
     pub source: Vec<String>,
-    /// Inclusive start: YYYY-MM-DD (UTC) or RFC3339.
+    /// Inclusive start: YYYY-MM-DD in --timezone, or RFC3339.
     #[arg(long, value_name = "DATE")]
     pub since: Option<String>,
-    /// Exclusive end: YYYY-MM-DD (UTC) or RFC3339.
+    /// Exclusive end: YYYY-MM-DD in --timezone, or RFC3339.
     #[arg(long, value_name = "DATE")]
     pub until: Option<String>,
+    /// Timezone for date-only bounds and calendar periods: UTC, local, or an IANA name.
+    #[arg(long, default_value = "UTC", value_name = "ZONE")]
+    pub timezone: String,
     /// Filter recorded alc profiles; native histories may have no profile.
     #[arg(long, value_name = "PROFILE")]
     pub filter_profile: Option<String>,
@@ -44,14 +50,41 @@ pub(crate) struct QueryArgs {
     pub codex_dir: Vec<PathBuf>,
 }
 
+impl Default for QueryArgs {
+    fn default() -> Self {
+        Self {
+            source: Vec::new(),
+            since: None,
+            until: None,
+            timezone: "UTC".to_owned(),
+            filter_profile: None,
+            filter_agent: None,
+            filter_model: None,
+            claude_dir: Vec::new(),
+            codex_dir: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum CalendarWindow {
+    Weekly,
+    Monthly,
+    Yearly,
+}
+
 #[derive(Debug, Clone, Default, Args)]
 pub(crate) struct UsageOptions {
     #[command(flatten)]
     pub query: QueryArgs,
-    /// Group estimated usage by UTC day.
+    /// Select the current calendar week (Monday start), month, or year; retain daily details.
+    #[arg(value_enum, value_name = "WINDOW", conflicts_with_all = ["since", "until", "daily", "monthly"])]
+    pub window: Option<CalendarWindow>,
+    /// Group all selected history by day in --timezone (no implicit date window).
     #[arg(long, conflicts_with = "monthly")]
     pub daily: bool,
-    /// Group estimated usage by UTC month.
+    /// Group all selected history by month in --timezone (no implicit date window).
     #[arg(long)]
     pub monthly: bool,
     /// Read only local statistics; do not read credentials or query quota APIs.
@@ -60,6 +93,9 @@ pub(crate) struct UsageOptions {
     /// Override pricing.toml; rates are USD per million tokens.
     #[arg(long, value_name = "PATH")]
     pub pricing_file: Option<PathBuf>,
+    /// Write an offline PNG chart; without a path, use ~/ai-usage.png.
+    #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "PATH", value_parser = clap::builder::OsStringValueParser::new().map(PathBuf::from))]
+    pub chart: Option<PathBuf>,
     /// Print the report as JSON.
     #[arg(long)]
     pub json: bool,
@@ -72,9 +108,103 @@ pub(crate) struct TpsOptions {
     /// Number of most recent matching requests to show.
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=10000))]
     pub limit: u32,
+    /// Also show historical, non-request, and untimed records (metrics stay unavailable).
+    #[arg(long)]
+    pub include_unmeasured: bool,
     /// Print timing, token counters and coverage as JSON.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Clone)]
+enum QueryTimezone {
+    Utc,
+    Local,
+    Named(Tz),
+}
+
+impl QueryTimezone {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "UTC" => Ok(Self::Utc),
+            "local" => Ok(Self::Local),
+            _ => value.parse::<Tz>().map(Self::Named).with_context(|| {
+                format!("unknown timezone '{value}'; expected UTC, local, or an IANA timezone name")
+            }),
+        }
+    }
+
+    fn name(&self) -> String {
+        match self {
+            Self::Utc => "UTC".to_owned(),
+            Self::Local => "local".to_owned(),
+            Self::Named(zone) => zone.name().to_owned(),
+        }
+    }
+
+    fn date(&self, timestamp: DateTime<Utc>) -> NaiveDate {
+        match self {
+            Self::Utc => timestamp.date_naive(),
+            Self::Local => timestamp.with_timezone(&Local).date_naive(),
+            Self::Named(zone) => timestamp.with_timezone(zone).date_naive(),
+        }
+    }
+
+    fn midnight(&self, date: NaiveDate) -> Result<DateTime<Utc>> {
+        let naive = date
+            .and_hms_opt(0, 0, 0)
+            .context("invalid calendar boundary")?;
+        // A repeated midnight starts at its first occurrence. A nonexistent
+        // midnight is rejected explicitly rather than silently shifted to UTC.
+        let timestamp = match self {
+            Self::Utc => Some(naive.and_utc()),
+            Self::Local => Local
+                .from_local_datetime(&naive)
+                .earliest()
+                .map(|dt| dt.with_timezone(&Utc)),
+            Self::Named(zone) => zone
+                .from_local_datetime(&naive)
+                .earliest()
+                .map(|dt| dt.with_timezone(&Utc)),
+        };
+        timestamp.with_context(|| {
+            format!(
+                "midnight on {date} does not exist in timezone {}",
+                self.name()
+            )
+        })
+    }
+
+    fn label(&self, timestamp_ms: u64) -> Option<String> {
+        let timestamp = timestamp(timestamp_ms)?;
+        Some(match self {
+            Self::Utc => timestamp.to_rfc3339(),
+            Self::Local => timestamp.with_timezone(&Local).to_rfc3339(),
+            Self::Named(zone) => timestamp.with_timezone(zone).to_rfc3339(),
+        })
+    }
+
+    fn period(&self, timestamp_ms: u64, monthly: bool) -> String {
+        timestamp(timestamp_ms)
+            .map(|timestamp| {
+                self.date(timestamp)
+                    .format(if monthly { "%Y-%m" } else { "%Y-%m-%d" })
+                    .to_string()
+            })
+            .unwrap_or_else(|| "unknown-date".to_owned())
+    }
+}
+
+fn timestamp(timestamp_ms: u64) -> Option<DateTime<Utc>> {
+    DateTime::<Utc>::from_timestamp_millis(i64::try_from(timestamp_ms).ok()?)
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct QueryRange {
+    /// Inclusive resolved boundary, with the selected timezone's offset.
+    pub start: Option<String>,
+    /// Exclusive resolved boundary, with the selected timezone's offset.
+    pub end: Option<String>,
 }
 
 #[derive(Debug)]
@@ -82,10 +212,16 @@ struct Query {
     sources: BTreeSet<Source>,
     since: Option<u64>,
     until: Option<u64>,
+    timezone: QueryTimezone,
 }
 
 impl Query {
-    fn new(args: &QueryArgs, default_all: bool) -> Result<Self> {
+    fn new(
+        args: &QueryArgs,
+        default_all: bool,
+        window: Option<CalendarWindow>,
+        now: DateTime<Utc>,
+    ) -> Result<Self> {
         let mut sources = BTreeSet::new();
         let selected = if args.source.is_empty() {
             vec![if default_all { "all" } else { "alc" }.to_owned()]
@@ -115,8 +251,28 @@ impl Query {
         {
             bail!("--claude-dir and --codex-dir must be absolute configuration directories");
         }
-        let since = args.since.as_deref().map(parse_bound).transpose()?;
-        let until = args.until.as_deref().map(parse_bound).transpose()?;
+        let timezone = QueryTimezone::parse(&args.timezone)?;
+        if window.is_some() && (args.since.is_some() || args.until.is_some()) {
+            bail!("calendar window cannot be used with --since or --until");
+        }
+        let (since, until) = if let Some(window) = window {
+            let (start, end) = calendar_dates(timezone.date(now), window)?;
+            (
+                Some(epoch_ms(timezone.midnight(start)?)?),
+                Some(epoch_ms(timezone.midnight(end)?)?),
+            )
+        } else {
+            (
+                args.since
+                    .as_deref()
+                    .map(|text| parse_bound(text, &timezone))
+                    .transpose()?,
+                args.until
+                    .as_deref()
+                    .map(|text| parse_bound(text, &timezone))
+                    .transpose()?,
+            )
+        };
         if let (Some(since), Some(until)) = (since, until)
             && since >= until
         {
@@ -126,6 +282,7 @@ impl Query {
             sources,
             since,
             until,
+            timezone,
         })
     }
 
@@ -144,20 +301,65 @@ impl Query {
     }
 }
 
-fn parse_bound(text: &str) -> Result<u64> {
+fn epoch_ms(timestamp: DateTime<Utc>) -> Result<u64> {
+    u64::try_from(timestamp.timestamp_millis())
+        .context("usage dates must be at or after 1970-01-01")
+}
+
+fn parse_bound(text: &str, timezone: &QueryTimezone) -> Result<u64> {
     let timestamp = if text.len() == 10 {
         let date = NaiveDate::parse_from_str(text, "%Y-%m-%d")
             .context("expected a valid YYYY-MM-DD date")?;
-        date.and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc()
-            .timestamp_millis()
+        timezone.midnight(date)?
     } else {
         DateTime::parse_from_rfc3339(text)
-            .context("expected RFC3339 or YYYY-MM-DD (UTC)")?
-            .timestamp_millis()
+            .context("expected RFC3339 or a valid YYYY-MM-DD date in --timezone")?
+            .with_timezone(&Utc)
     };
-    u64::try_from(timestamp).context("usage dates must be at or after 1970-01-01")
+    epoch_ms(timestamp)
+}
+
+fn calendar_dates(today: NaiveDate, window: CalendarWindow) -> Result<(NaiveDate, NaiveDate)> {
+    let (start, end) = match window {
+        CalendarWindow::Weekly => {
+            let start = today
+                .checked_sub_days(Days::new(u64::from(today.weekday().num_days_from_monday())))
+                .context("calendar week start is out of range")?;
+            let end = start
+                .checked_add_days(Days::new(7))
+                .context("calendar week end is out of range")?;
+            (start, end)
+        }
+        CalendarWindow::Monthly => {
+            let start = today.with_day(1).context("invalid calendar month")?;
+            let (year, month) = if today.month() == 12 {
+                (
+                    today
+                        .year()
+                        .checked_add(1)
+                        .context("calendar year is out of range")?,
+                    1,
+                )
+            } else {
+                (today.year(), today.month() + 1)
+            };
+            let end = NaiveDate::from_ymd_opt(year, month, 1)
+                .context("calendar month end is out of range")?;
+            (start, end)
+        }
+        CalendarWindow::Yearly => {
+            let start =
+                NaiveDate::from_ymd_opt(today.year(), 1, 1).context("invalid calendar year")?;
+            let year = today
+                .year()
+                .checked_add(1)
+                .context("calendar year is out of range")?;
+            let end =
+                NaiveDate::from_ymd_opt(year, 1, 1).context("calendar year end is out of range")?;
+            (start, end)
+        }
+    };
+    Ok((start, end))
 }
 
 fn roots(config: &Config, args: &QueryArgs, claude: bool) -> Vec<PathBuf> {
@@ -259,7 +461,14 @@ fn reconcile(mut records: Vec<UsageRecord>) -> Vec<Reconciled> {
         }
     }
     let mut result: Vec<_> = groups.into_values().collect();
-    let agents = result.iter().fold(
+    recompute_overlap(&mut result);
+    result
+}
+
+fn overlap_sources<'a>(
+    rows: impl Iterator<Item = &'a Reconciled>,
+) -> BTreeMap<Agent, BTreeSet<Source>> {
+    rows.fold(
         BTreeMap::<Agent, BTreeSet<Source>>::new(),
         |mut map, row| {
             map.entry(row.record.agent)
@@ -267,15 +476,22 @@ fn reconcile(mut records: Vec<UsageRecord>) -> Vec<Reconciled> {
                 .extend(&row.provenance);
             map
         },
-    );
-    for row in &mut result {
-        if let Some(sources) = agents.get(&row.record.agent) {
-            // A group missing a source cannot be proved distinct from that
-            // source's other records, even if a different group did join.
-            row.possible_overlap = !sources.is_subset(&row.provenance);
-        }
+    )
+}
+
+fn has_overlap(row: &Reconciled, sources: &BTreeMap<Agent, BTreeSet<Source>>) -> bool {
+    sources
+        .get(&row.record.agent)
+        .is_some_and(|sources| !sources.is_subset(&row.provenance))
+}
+
+fn recompute_overlap(rows: &mut [Reconciled]) {
+    let sources = overlap_sources(rows.iter());
+    for row in rows {
+        // Recompute after selection: a source seen only outside the requested
+        // range/profile/model is not evidence of overlap within that selection.
+        row.possible_overlap = has_overlap(row, &sources);
     }
-    result
 }
 
 fn read(config_dir: &Path, config: &Config, args: &QueryArgs, query: &Query) -> ReadResult {
@@ -299,9 +515,19 @@ fn read(config_dir: &Path, config: &Config, args: &QueryArgs, query: &Query) -> 
 #[derive(Debug, Serialize)]
 pub(crate) struct Statistics {
     pub schema_version: u32,
-    pub timezone: &'static str,
+    pub timezone: String,
+    pub range: QueryRange,
+    pub window: Option<CalendarWindow>,
     pub pricing_snapshot: String,
     pub rows: Vec<UsageRow>,
+    #[serde(rename = "daily_rollups")]
+    pub daily: Vec<DailyRollup>,
+    pub input_tokens: Option<u64>,
+    pub uncached_input_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost_components: CostComponents,
     pub known_subtotal_usd: Option<String>,
     /// None if pricing or reconciliation is incomplete.
     pub total_usd: Option<String>,
@@ -311,8 +537,39 @@ pub(crate) struct Statistics {
     pub unpriced_records: u64,
     pub deduplicated_records: u64,
     pub possible_overlap: bool,
+    pub coverage_incomplete: bool,
     pub sources: Vec<SourceDiagnostics>,
     pub warnings: Vec<String>,
+    #[serde(skip)]
+    pub(crate) subtotal: Option<Money>,
+    #[serde(skip)]
+    pub(crate) total: Option<Money>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct DailyRollup {
+    pub period: String,
+    pub records: u64,
+    pub requests: Option<u64>,
+    pub known_requests: u64,
+    /// The schema-1 gross input view; don't stack this with cached input.
+    pub input_tokens: Option<u64>,
+    pub uncached_input_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost_components: CostComponents,
+    pub known_subtotal_usd: Option<String>,
+    pub total_usd: Option<String>,
+    pub priced_records: u64,
+    pub partial_records: u64,
+    pub unpriced_records: u64,
+    pub possible_overlap: bool,
+    pub coverage_incomplete: bool,
+    #[serde(skip)]
+    pub(crate) subtotal: Option<Money>,
+    #[serde(skip)]
+    pub(crate) total: Option<Money>,
 }
 
 #[derive(Debug, Serialize)]
@@ -329,9 +586,11 @@ pub(crate) struct UsageRow {
     pub requests: Option<u64>,
     pub known_requests: u64,
     pub input_tokens: Option<u64>,
+    pub uncached_input_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub cache_write_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    pub cost_components: CostComponents,
     pub known_subtotal_usd: String,
     pub total_usd: Option<String>,
     pub priced_records: u64,
@@ -346,14 +605,267 @@ pub(crate) struct UsageRow {
     pub billing_meaning: String,
     pub assumptions: BTreeSet<String>,
     pub reasons: BTreeSet<String>,
-    #[serde(skip)]
-    subtotal: Money,
-    #[serde(skip)]
-    total: Option<Money>,
 }
 
 fn add(total: Option<u64>, value: Option<u64>) -> Option<u64> {
     total?.checked_add(value?)
+}
+
+#[derive(Debug)]
+struct TokenTotals {
+    input: Option<u64>,
+    uncached_input: Option<u64>,
+    cache_read: Option<u64>,
+    cache_write: Option<u64>,
+    output: Option<u64>,
+}
+
+impl Default for TokenTotals {
+    fn default() -> Self {
+        Self {
+            input: Some(0),
+            uncached_input: Some(0),
+            cache_read: Some(0),
+            cache_write: Some(0),
+            output: Some(0),
+        }
+    }
+}
+
+impl TokenTotals {
+    fn push(&mut self, tokens: &TokenCounts) {
+        self.input = add(self.input, tokens.gross_input());
+        self.uncached_input = add(self.uncached_input, tokens.uncached_input());
+        self.cache_read = add(self.cache_read, tokens.cache_read_tokens);
+        self.cache_write = add(self.cache_write, tokens.cache_write_tokens);
+        self.output = add(self.output, tokens.output_tokens);
+    }
+
+    fn suppress(&mut self) {
+        self.input = None;
+        self.uncached_input = None;
+        self.cache_read = None;
+        self.cache_write = None;
+        self.output = None;
+    }
+}
+
+#[derive(Debug)]
+struct Tally {
+    records: u64,
+    requests: Option<u64>,
+    known_requests: u64,
+    tokens: TokenTotals,
+    cost_components: CostComponents,
+    subtotal: Money,
+    total: Option<Money>,
+    priced_records: u64,
+    partial_records: u64,
+    unpriced_records: u64,
+    possible_overlap: bool,
+}
+
+impl Default for Tally {
+    fn default() -> Self {
+        Self {
+            records: 0,
+            requests: Some(0),
+            known_requests: 0,
+            tokens: TokenTotals::default(),
+            cost_components: CostComponents::zero(),
+            subtotal: Money::ZERO,
+            total: Some(Money::ZERO),
+            priced_records: 0,
+            partial_records: 0,
+            unpriced_records: 0,
+            possible_overlap: false,
+        }
+    }
+}
+
+impl Tally {
+    fn push(
+        &mut self,
+        record: &UsageRecord,
+        estimate: &CostEstimate,
+        possible_overlap: bool,
+    ) -> Result<()> {
+        self.records += 1;
+        if record.granularity == Granularity::Request {
+            self.known_requests += 1;
+            self.requests = add(self.requests, Some(1));
+        } else {
+            self.requests = None;
+        }
+        // estimate.effective_tokens is also unknown for checkpoints, so no
+        // checkpoint counters can leak into either token sums or chart stacks.
+        self.tokens.push(&estimate.effective_tokens);
+        self.possible_overlap |= possible_overlap;
+        self.subtotal = self
+            .subtotal
+            .checked_add(estimate.known_subtotal)
+            .context("estimated cost overflow")?;
+        self.total = match (self.total, estimate.total) {
+            (Some(total), Some(cost)) => {
+                Some(total.checked_add(cost).context("estimated cost overflow")?)
+            }
+            _ => None,
+        };
+        self.cost_components.checked_add(estimate.cost_components)?;
+        match estimate.status {
+            CostStatus::Complete => self.priced_records += 1,
+            CostStatus::Partial => {
+                self.partial_records += 1;
+                self.unpriced_records += 1;
+            }
+            CostStatus::Unknown => self.unpriced_records += 1,
+        }
+        Ok(())
+    }
+
+    fn cost_status(&self) -> CostStatus {
+        if self.total.is_some() {
+            CostStatus::Complete
+        } else if self.priced_records > 0 || self.partial_records > 0 {
+            CostStatus::Partial
+        } else {
+            CostStatus::Unknown
+        }
+    }
+
+    fn daily(mut self, period: String, coverage_incomplete: bool) -> DailyRollup {
+        let subtotal = (!self.possible_overlap).then_some(self.subtotal);
+        let total = (!self.possible_overlap && !coverage_incomplete)
+            .then_some(self.total)
+            .flatten();
+        if self.possible_overlap {
+            self.tokens.suppress();
+            self.requests = None;
+            self.cost_components.suppress_overlap();
+        } else if coverage_incomplete {
+            suppress_component_totals(&mut self.cost_components);
+        }
+        DailyRollup {
+            period,
+            records: self.records,
+            requests: self.requests,
+            known_requests: self.known_requests,
+            input_tokens: self.tokens.input,
+            uncached_input_tokens: self.tokens.uncached_input,
+            cache_read_tokens: self.tokens.cache_read,
+            cache_write_tokens: self.tokens.cache_write,
+            output_tokens: self.tokens.output,
+            cost_components: self.cost_components,
+            known_subtotal_usd: subtotal.map(Money::to_usd_string),
+            total_usd: total.map(Money::to_usd_string),
+            priced_records: self.priced_records,
+            partial_records: self.partial_records,
+            unpriced_records: self.unpriced_records,
+            possible_overlap: self.possible_overlap,
+            coverage_incomplete,
+            subtotal,
+            total,
+        }
+    }
+}
+
+fn suppress_component_totals(components: &mut CostComponents) {
+    components.uncached_input.total_usd = None;
+    components.cache_read.total_usd = None;
+    components.cache_write.total_usd = None;
+    components.output.total_usd = None;
+}
+
+#[derive(Default)]
+struct UsageGroup {
+    tally: Tally,
+    reference_providers: BTreeSet<String>,
+    reference_models: BTreeSet<String>,
+    price_sources: Vec<PriceSource>,
+    provenance: BTreeSet<Source>,
+    api_equivalent: bool,
+    assumptions: BTreeSet<String>,
+    reasons: BTreeSet<String>,
+}
+
+type GroupKey = (
+    String,
+    Source,
+    Option<String>,
+    Option<String>,
+    Agent,
+    Option<String>,
+    Granularity,
+);
+
+impl UsageGroup {
+    fn push(&mut self, row: &Reconciled, estimate: &CostEstimate) -> Result<()> {
+        self.tally
+            .push(&row.record, estimate, row.possible_overlap)?;
+        self.api_equivalent |= row.record.billing != super::records::Billing::Api;
+        if let Some(provider) = &estimate.reference_provider {
+            self.reference_providers.insert(provider.clone());
+        }
+        if let Some(model) = &estimate.reference_model {
+            self.reference_models.insert(model.clone());
+        }
+        if let Some(source) = &estimate.price_source
+            && !self
+                .price_sources
+                .iter()
+                .any(|existing| existing.id == source.id && existing.sha256 == source.sha256)
+        {
+            self.price_sources.push(source.clone());
+        }
+        self.provenance.extend(&row.provenance);
+        self.assumptions
+            .extend(estimate.assumptions.iter().cloned());
+        self.reasons.extend(estimate.reasons.iter().cloned());
+        self.reasons.extend(row.record.warnings.iter().cloned());
+        Ok(())
+    }
+
+    fn finish(self, key: GroupKey) -> UsageRow {
+        let (period, source, profile, provider, agent, model, granularity) = key;
+        let cost_status = self.tally.cost_status();
+        UsageRow {
+            period,
+            source,
+            profile,
+            provider,
+            agent,
+            model,
+            granularity,
+            records: self.tally.records,
+            requests: self.tally.requests,
+            known_requests: self.tally.known_requests,
+            input_tokens: self.tally.tokens.input,
+            uncached_input_tokens: self.tally.tokens.uncached_input,
+            cache_read_tokens: self.tally.tokens.cache_read,
+            cache_write_tokens: self.tally.tokens.cache_write,
+            output_tokens: self.tally.tokens.output,
+            cost_components: self.tally.cost_components,
+            known_subtotal_usd: self.tally.subtotal.to_usd_string(),
+            total_usd: self.tally.total.map(Money::to_usd_string),
+            priced_records: self.tally.priced_records,
+            partial_records: self.tally.partial_records,
+            unpriced_records: self.tally.unpriced_records,
+            cost_status,
+            reference_providers: self.reference_providers,
+            reference_models: self.reference_models,
+            price_sources: self.price_sources,
+            provenance: self.provenance,
+            possible_overlap: self.tally.possible_overlap,
+            billing_meaning: if self.api_equivalent {
+                "API-equivalent estimate, not a bill"
+            } else {
+                "API token-rate estimate"
+            }
+            .to_owned(),
+            assumptions: self.assumptions,
+            reasons: self.reasons,
+        }
+    }
 }
 
 pub(crate) fn statistics(
@@ -361,25 +873,60 @@ pub(crate) fn statistics(
     config: &Config,
     options: &UsageOptions,
 ) -> Result<Statistics> {
-    let query = Query::new(&options.query, true)?;
+    statistics_at(config_dir, config, options, Utc::now())
+}
+
+fn statistics_at(
+    config_dir: &Path,
+    config: &Config,
+    options: &UsageOptions,
+    now: DateTime<Utc>,
+) -> Result<Statistics> {
+    if options.window.is_some() && (options.daily || options.monthly) {
+        bail!("calendar window cannot be used with --daily or --monthly grouping");
+    }
+    let query = Query::new(&options.query, true, options.window, now)?;
     let read = read(config_dir, config, &options.query, &query);
     let before = read.records.len();
+    // Fold native cumulative baselines and join exact identities across all
+    // history, before date/profile/model selection changes the visible scope.
     let records = reconcile(read.records);
     let deduplicated_records = before.saturating_sub(records.len()) as u64;
-    let book = PriceBook::load(config_dir, options.pricing_file.as_deref())?;
-    let mut rows = BTreeMap::new();
-    let mut count = 0;
-    let mut possible_overlap = false;
-    for row in records
+    let mut records: Vec<_> = records
         .into_iter()
         .filter(|row| query.matches(&row.record, &options.query))
-    {
-        count += 1;
-        possible_overlap |= row.possible_overlap;
+        .collect();
+    recompute_overlap(&mut records);
+    let mut day_sources = BTreeMap::<String, BTreeMap<Agent, BTreeSet<Source>>>::new();
+    for row in &records {
+        day_sources
+            .entry(query.timezone.period(row.record.timestamp_ms, false))
+            .or_default()
+            .entry(row.record.agent)
+            .or_default()
+            .extend(&row.provenance);
+    }
+    let book = PriceBook::load(config_dir, options.pricing_file.as_deref())?;
+    let mut groups = BTreeMap::<GroupKey, UsageGroup>::new();
+    let mut days = BTreeMap::<String, Tally>::new();
+    let mut overall = Tally::default();
+    for row in &records {
         let estimate = book.estimate(&row.record);
-        let period = period(row.record.timestamp_ms, options);
+        let day = query.timezone.period(row.record.timestamp_ms, false);
+        let daily_overlap = has_overlap(row, &day_sources[&day]);
+        days.entry(day)
+            .or_default()
+            .push(&row.record, &estimate, daily_overlap)?;
+        overall.push(&row.record, &estimate, row.possible_overlap)?;
+        let period = if options.daily || options.window.is_some() {
+            query.timezone.period(row.record.timestamp_ms, false)
+        } else if options.monthly {
+            query.timezone.period(row.record.timestamp_ms, true)
+        } else {
+            "all-time".to_owned()
+        };
         let key = (
-            period.clone(),
+            period,
             row.record.source,
             row.record.profile.clone(),
             row.record.provider.clone(),
@@ -387,238 +934,268 @@ pub(crate) fn statistics(
             row.record.model.clone(),
             row.record.granularity,
         );
-        let aggregate = rows.entry(key).or_insert_with(|| UsageRow {
-            period,
-            source: row.record.source,
-            profile: row.record.profile.clone(),
-            provider: row.record.provider.clone(),
-            agent: row.record.agent,
-            model: row.record.model.clone(),
-            granularity: row.record.granularity,
-            records: 0,
-            requests: Some(0),
-            known_requests: 0,
-            input_tokens: Some(0),
-            cache_read_tokens: Some(0),
-            cache_write_tokens: Some(0),
-            output_tokens: Some(0),
-            known_subtotal_usd: "0".to_owned(),
-            total_usd: Some("0".to_owned()),
-            priced_records: 0,
-            partial_records: 0,
-            unpriced_records: 0,
-            cost_status: CostStatus::Unknown,
-            reference_providers: BTreeSet::new(),
-            reference_models: BTreeSet::new(),
-            price_sources: Vec::new(),
-            provenance: BTreeSet::new(),
-            possible_overlap: false,
-            billing_meaning: match row.record.billing {
-                super::records::Billing::Api => "API token-rate estimate",
-                _ => "API-equivalent estimate, not a bill",
-            }
-            .to_owned(),
-            assumptions: BTreeSet::new(),
-            reasons: BTreeSet::new(),
-            subtotal: Money::ZERO,
-            total: Some(Money::ZERO),
-        });
-        aggregate.records += 1;
-        if row.record.granularity == Granularity::Request {
-            aggregate.known_requests += 1;
-            aggregate.requests = aggregate
-                .requests
-                .and_then(|requests| requests.checked_add(1));
-        } else {
-            aggregate.requests = None;
-        }
-        if row.record.granularity == Granularity::Checkpoint {
-            aggregate.input_tokens = None;
-            aggregate.cache_read_tokens = None;
-            aggregate.cache_write_tokens = None;
-            aggregate.output_tokens = None;
-        } else {
-            aggregate.input_tokens = add(aggregate.input_tokens, row.record.tokens.gross_input());
-            aggregate.cache_read_tokens = add(
-                aggregate.cache_read_tokens,
-                row.record.tokens.cache_read_tokens,
-            );
-            aggregate.cache_write_tokens = add(
-                aggregate.cache_write_tokens,
-                row.record.tokens.cache_write_tokens,
-            );
-            aggregate.output_tokens = add(aggregate.output_tokens, row.record.tokens.output_tokens);
-        }
-        aggregate.possible_overlap |= row.possible_overlap;
-        aggregate.subtotal = aggregate
-            .subtotal
-            .checked_add(estimate.known_subtotal)
-            .context("estimated cost overflow")?;
-        aggregate.total = match (aggregate.total, estimate.total) {
-            (Some(total), Some(cost)) => {
-                Some(total.checked_add(cost).context("estimated cost overflow")?)
-            }
-            _ => None,
-        };
-        match estimate.status {
-            CostStatus::Complete => aggregate.priced_records += 1,
-            CostStatus::Partial => {
-                aggregate.partial_records += 1;
-                aggregate.unpriced_records += 1;
-            }
-            CostStatus::Unknown => aggregate.unpriced_records += 1,
-        }
-        if let Some(provider) = estimate.reference_provider {
-            aggregate.reference_providers.insert(provider);
-        }
-        if let Some(model) = estimate.reference_model {
-            aggregate.reference_models.insert(model);
-        }
-        if let Some(source) = estimate.price_source
-            && !aggregate
-                .price_sources
-                .iter()
-                .any(|existing| existing.id == source.id && existing.sha256 == source.sha256)
-        {
-            aggregate.price_sources.push(source);
-        }
-        aggregate.provenance.extend(row.provenance);
-        aggregate.assumptions.extend(estimate.assumptions);
-        aggregate.reasons.extend(estimate.reasons);
-    }
-    let mut subtotal = Money::ZERO;
-    let mut total = Some(Money::ZERO);
-    let mut priced = 0;
-    let mut unpriced = 0;
-    let mut rows: Vec<_> = rows.into_values().collect();
-    for row in &mut rows {
-        row.known_subtotal_usd = row.subtotal.to_usd_string();
-        row.total_usd = row.total.map(Money::to_usd_string);
-        row.cost_status = if row.total.is_some() {
-            CostStatus::Complete
-        } else if row.priced_records > 0 || row.partial_records > 0 {
-            CostStatus::Partial
-        } else {
-            CostStatus::Unknown
-        };
-        subtotal = subtotal
-            .checked_add(row.subtotal)
-            .context("estimated cost overflow")?;
-        total = match (total, row.total) {
-            (Some(total), Some(cost)) => {
-                Some(total.checked_add(cost).context("estimated cost overflow")?)
-            }
-            _ => None,
-        };
-        priced += row.priced_records;
-        unpriced += row.unpriced_records;
+        groups.entry(key).or_default().push(row, &estimate)?;
     }
     let mut warnings = vec!["Token-price estimates exclude taxes, discounts and unrecorded tool charges; historical usage is repriced with the named snapshot.".to_owned()];
-    if count == 0 {
-        total = None;
+    let coverage_incomplete = read.diagnostics.iter().any(|source| {
+        source.skipped_lines > 0
+            || source.unsupported_records > 0
+            || source.ambiguous_records > 0
+            || !source.warnings.is_empty()
+    });
+    if overall.records == 0 {
+        overall.total = None;
+        overall.tokens.suppress();
+        suppress_component_totals(&mut overall.cost_components);
         warnings.push(
             "No matching token records were observed; this is not evidence of zero API spend."
                 .to_owned(),
         );
     }
-    if possible_overlap {
-        total = None;
+    let subtotal = (!overall.possible_overlap).then_some(overall.subtotal);
+    if overall.possible_overlap {
+        overall.total = None;
+        overall.tokens.suppress();
+        overall.cost_components.suppress_overlap();
         warnings.push("Uncorrelated history sources may overlap. Source subtotals are not an additive grand total.".to_owned());
     }
-    if read.diagnostics.iter().any(|source| {
-        source.skipped_lines > 0
-            || source.unsupported_records > 0
-            || source.ambiguous_records > 0
-            || !source.warnings.is_empty()
-    }) {
-        total = None;
+    if coverage_incomplete {
+        overall.total = None;
+        suppress_component_totals(&mut overall.cost_components);
         warnings.push(
             "Source coverage is incomplete; skipped or ambiguous records are not zero usage."
                 .to_owned(),
         );
     }
+    if records
+        .iter()
+        .any(|row| row.record.granularity == Granularity::CumulativeDelta)
+    {
+        warnings.push("Cumulative deltas are assigned to the later checkpoint's date; activity between checkpoints cannot be reconstructed into original daily usage.".to_owned());
+    }
     Ok(Statistics {
         schema_version: 1,
-        timezone: "UTC",
+        timezone: query.timezone.name(),
+        range: QueryRange {
+            start: query.since.and_then(|since| query.timezone.label(since)),
+            end: query.until.and_then(|until| query.timezone.label(until)),
+        },
+        window: options.window,
         pricing_snapshot: book.snapshot_id().to_owned(),
-        rows,
-        known_subtotal_usd: (!possible_overlap).then(|| subtotal.to_usd_string()),
-        total_usd: total.map(Money::to_usd_string),
+        rows: groups
+            .into_iter()
+            .map(|(key, group)| group.finish(key))
+            .collect(),
+        daily: days
+            .into_iter()
+            .map(|(day, tally)| tally.daily(day, coverage_incomplete))
+            .collect(),
+        input_tokens: overall.tokens.input,
+        uncached_input_tokens: overall.tokens.uncached_input,
+        cache_read_tokens: overall.tokens.cache_read,
+        cache_write_tokens: overall.tokens.cache_write,
+        output_tokens: overall.tokens.output,
+        cost_components: overall.cost_components,
+        known_subtotal_usd: subtotal.map(Money::to_usd_string),
+        total_usd: overall.total.map(Money::to_usd_string),
         currency: "USD",
-        records: count,
-        priced_records: priced,
-        unpriced_records: unpriced,
+        records: overall.records,
+        priced_records: overall.priced_records,
+        unpriced_records: overall.unpriced_records,
         deduplicated_records,
-        possible_overlap,
+        possible_overlap: overall.possible_overlap,
+        coverage_incomplete,
         sources: read.diagnostics,
         warnings,
+        subtotal,
+        total: overall.total,
     })
 }
 
-fn period(timestamp_ms: u64, options: &UsageOptions) -> String {
-    if !options.daily && !options.monthly {
-        return "all-time".to_owned();
+/// Complete integer counts with separators; no floating point or abbreviated suffixes.
+pub(crate) fn format_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.bytes().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(char::from(digit));
     }
-    let date = i64::try_from(timestamp_ms)
-        .ok()
-        .and_then(DateTime::<Utc>::from_timestamp_millis);
-    date.map(|date| {
-        date.format(if options.daily { "%Y-%m-%d" } else { "%Y-%m" })
-            .to_string()
-    })
-    .unwrap_or_else(|| "unknown-date".to_owned())
+    out
+}
+
+fn token_text(value: Option<u64>) -> String {
+    value.map(format_count).unwrap_or_else(|| "N/A".to_owned())
+}
+
+fn usd_text(subtotal: Option<&str>, total: Option<&str>) -> String {
+    match (subtotal, total) {
+        (_, Some(total)) => format!("${total}"),
+        (Some(subtotal), None) => format!("${subtotal} + ?"),
+        (None, None) => "N/A".to_owned(),
+    }
+}
+
+fn component_text(component: super::pricing::CostComponent) -> String {
+    usd_text(
+        component
+            .known_subtotal_usd
+            .map(Money::to_usd_string)
+            .as_deref(),
+        component.total_usd.map(Money::to_usd_string).as_deref(),
+    )
+}
+
+fn daily_cells(
+    period: &str,
+    records: u64,
+    tokens: [Option<u64>; 4],
+    components: CostComponents,
+    subtotal: Option<&str>,
+    total: Option<&str>,
+) -> Vec<Cell> {
+    let mut cells = vec![
+        Cell::left(period, Tone::Plain),
+        Cell::right(format_count(records), Tone::Plain),
+    ];
+    cells.extend(tokens.map(|tokens| Cell::right(token_text(tokens), Tone::Plain)));
+    cells.extend(
+        [
+            components.uncached_input,
+            components.cache_read,
+            components.cache_write,
+            components.output,
+        ]
+        .map(|component| Cell::right(component_text(component), Tone::Plain)),
+    );
+    cells.push(Cell::right(usd_text(subtotal, total), Tone::Plain));
+    cells
+}
+
+fn append_table(out: &mut String, table: &Table, theme: &Theme) {
+    for line in table.render(theme) {
+        out.push_str(&format!("{INDENT}{line}\n"));
+    }
 }
 
 pub(crate) fn render_statistics(report: &Statistics, theme: &Theme) -> String {
     let mut out = heading_text(theme, "Token usage and estimated cost (USD)");
+    out.push_str(&format!(
+        "{INDENT}Daily totals (mutually exclusive token and fee categories)\n"
+    ));
+    let mut daily = Table::new(vec![
+        "DATE",
+        "RECORDS",
+        "UNCACHED INPUT",
+        "CACHE READ",
+        "CACHE WRITE",
+        "OUTPUT",
+        "UNCACHED USD",
+        "CACHE READ USD",
+        "CACHE WRITE USD",
+        "OUTPUT USD",
+        "EST. USD",
+    ]);
+    for row in &report.daily {
+        daily.push(daily_cells(
+            &row.period,
+            row.records,
+            [
+                row.uncached_input_tokens,
+                row.cache_read_tokens,
+                row.cache_write_tokens,
+                row.output_tokens,
+            ],
+            row.cost_components,
+            row.known_subtotal_usd.as_deref(),
+            row.total_usd.as_deref(),
+        ));
+    }
+    if !report.daily.is_empty() {
+        daily.push(daily_cells(
+            "TOTAL",
+            report.records,
+            [
+                report.uncached_input_tokens,
+                report.cache_read_tokens,
+                report.cache_write_tokens,
+                report.output_tokens,
+            ],
+            report.cost_components,
+            report.known_subtotal_usd.as_deref(),
+            report.total_usd.as_deref(),
+        ));
+    }
+    append_table(&mut out, &daily, theme);
+    out.push_str(&heading_text(
+        theme,
+        "Model / source details (gross input includes cache)",
+    ));
     let mut table = Table::new(vec![
         "PERIOD",
         "SOURCE",
         "PROFILE",
+        "PROVIDER",
         "AGENT",
         "MODEL",
-        "INPUT",
+        "GRANULARITY",
+        "GROSS INPUT",
+        "UNCACHED INPUT",
         "CACHE READ",
         "CACHE WRITE",
         "OUTPUT",
         "EST. USD",
     ]);
-    let value = |tokens: Option<u64>| {
-        tokens
-            .map(super::compact_count)
-            .unwrap_or_else(|| "N/A".to_owned())
-    };
     for row in &report.rows {
-        let cost = match &row.total_usd {
-            Some(total) => format!("${total}"),
-            None if row.priced_records > 0 || row.known_subtotal_usd != "0" => {
-                format!("${} + ?", row.known_subtotal_usd)
-            }
-            None => "N/A".to_owned(),
-        };
         table.push(vec![
-            Cell::left(row.period.clone(), Tone::Plain),
+            Cell::left(&row.period, Tone::Plain),
             Cell::left(row.source.as_str(), Tone::Plain),
             Cell::left(row.profile.as_deref().unwrap_or("unknown"), Tone::Plain),
+            Cell::left(row.provider.as_deref().unwrap_or("unknown"), Tone::Plain),
             Cell::left(row.agent.to_string(), Tone::Plain),
             Cell::left(row.model.as_deref().unwrap_or("unknown"), Tone::Plain),
-            Cell::left(value(row.input_tokens), Tone::Plain),
-            Cell::left(value(row.cache_read_tokens), Tone::Plain),
-            Cell::left(value(row.cache_write_tokens), Tone::Plain),
-            Cell::left(value(row.output_tokens), Tone::Plain),
-            Cell::left(cost, Tone::Plain),
+            Cell::left(
+                match row.granularity {
+                    Granularity::Request => "request",
+                    Granularity::CumulativeDelta => "cumulative-delta",
+                    Granularity::Checkpoint => "checkpoint",
+                },
+                Tone::Plain,
+            ),
+            Cell::right(token_text(row.input_tokens), Tone::Plain),
+            Cell::right(token_text(row.uncached_input_tokens), Tone::Plain),
+            Cell::right(token_text(row.cache_read_tokens), Tone::Plain),
+            Cell::right(token_text(row.cache_write_tokens), Tone::Plain),
+            Cell::right(token_text(row.output_tokens), Tone::Plain),
+            Cell::right(
+                usd_text(Some(&row.known_subtotal_usd), row.total_usd.as_deref()),
+                Tone::Plain,
+            ),
         ]);
     }
-    for line in table.render(theme) {
-        out.push_str(&format!("{INDENT}{line}\n"));
-    }
+    append_table(&mut out, &table, theme);
     if report.rows.is_empty() {
         out.push_str(&format!("{INDENT}no matching usage records\n"));
     }
     out.push_str(&format!(
-        "{INDENT}priced: {}/{} records; snapshot: {}; timezone: UTC\n",
-        report.priced_records, report.records, report.pricing_snapshot
+        "{INDENT}priced: {}/{} records; snapshot: {}; timezone: {}\n",
+        format_count(report.priced_records),
+        format_count(report.records),
+        report.pricing_snapshot,
+        report.timezone,
     ));
+    if report.range.start.is_some() || report.range.end.is_some() {
+        out.push_str(&format!(
+            "{INDENT}range: {} <= timestamp < {}\n",
+            report.range.start.as_deref().unwrap_or("unbounded"),
+            report.range.end.as_deref().unwrap_or("unbounded")
+        ));
+    } else {
+        out.push_str(&format!(
+            "{INDENT}range: all history (no implicit date window)\n"
+        ));
+    }
     if let Some(total) = &report.total_usd {
         out.push_str(&format!("{INDENT}estimated total: ${total}\n"));
     } else if !report.possible_overlap {
@@ -660,9 +1237,9 @@ pub(crate) fn render_statistics(report: &Statistics, theme: &Theme) -> String {
             out.push_str(&format!(
                 "{INDENT}{} coverage: {} skipped, {} unsupported, {} ambiguous; {}\n",
                 source.source.as_str(),
-                source.skipped_lines,
-                source.unsupported_records,
-                source.ambiguous_records,
+                format_count(source.skipped_lines),
+                format_count(source.unsupported_records),
+                format_count(source.ambiguous_records),
                 source.warnings.join("; ")
             ));
         }
@@ -677,9 +1254,26 @@ pub(crate) fn render_statistics(report: &Statistics, theme: &Theme) -> String {
 struct TpsReport {
     schema_version: u32,
     measurement: &'static str,
+    timezone: String,
+    range: QueryRange,
     rows: Vec<TpsRow>,
     summary: TpsSummary,
+    coverage: TpsCoverage,
     sources: Vec<SourceDiagnostics>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct TpsCoverage {
+    matching_records: usize,
+    measured_requests: usize,
+    /// Disjoint excluded categories, evaluated before sort/limit.
+    excluded_legacy_records: usize,
+    excluded_unmeasured_records: usize,
+    excluded_nonrequest_records: usize,
+    eligible_records: usize,
+    returned_records: usize,
+    limited_records: usize,
+    include_unmeasured: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -705,30 +1299,78 @@ struct TpsSummary {
     weighted_e2e_tps: Option<f64>,
 }
 
+fn select_tps(
+    records: Vec<Reconciled>,
+    include_unmeasured: bool,
+    limit: u32,
+) -> (Vec<TpsRow>, TpsCoverage) {
+    let mut coverage = TpsCoverage {
+        matching_records: records.len(),
+        include_unmeasured,
+        ..TpsCoverage::default()
+    };
+    let mut rows = Vec::new();
+    for row in records {
+        let category = if row.record.granularity != Granularity::Request {
+            1
+        } else if row.record.timing.is_none() {
+            if row
+                .record
+                .warnings
+                .iter()
+                .any(|warning| warning == "legacy request has no timing or correlation IDs")
+            {
+                2
+            } else {
+                3
+            }
+        } else {
+            coverage.measured_requests += 1;
+            0
+        };
+        if !include_unmeasured && category != 0 {
+            match category {
+                1 => coverage.excluded_nonrequest_records += 1,
+                2 => coverage.excluded_legacy_records += 1,
+                _ => coverage.excluded_unmeasured_records += 1,
+            }
+            continue;
+        }
+        // Timing presence, not success or usage presence, defines an observed
+        // request. Failures/cancellations and missing usage stay visible.
+        let metrics = row.record.metrics();
+        rows.push(TpsRow {
+            record: row.record,
+            provenance: row.provenance,
+            metrics,
+        });
+    }
+    coverage.eligible_records = rows.len();
+    rows.sort_by_key(|row| std::cmp::Reverse(row.record.timestamp_ms));
+    rows.truncate(limit as usize);
+    coverage.returned_records = rows.len();
+    coverage.limited_records = coverage.eligible_records - coverage.returned_records;
+    (rows, coverage)
+}
+
 pub(crate) fn run_tps(config_dir: &Path, config: &Config, options: &TpsOptions) -> Result<u8> {
-    let query = Query::new(&options.query, false)?;
+    let query = Query::new(&options.query, false, None, Utc::now())?;
     let read = read(config_dir, config, &options.query, &query);
-    let mut rows = reconcile(read.records)
+    let rows = reconcile(read.records)
         .into_iter()
         .filter(|row| query.matches(&row.record, &options.query))
         .collect::<Vec<_>>();
-    rows.sort_by_key(|row| std::cmp::Reverse(row.record.timestamp_ms));
-    rows.truncate(options.limit as usize);
-    let rows: Vec<_> = rows
-        .into_iter()
-        .map(|row| {
-            let metrics = row.record.metrics();
-            TpsRow {
-                record: row.record,
-                provenance: row.provenance,
-                metrics,
-            }
-        })
-        .collect();
+    let (rows, coverage) = select_tps(rows, options.include_unmeasured, options.limit);
     let report = TpsReport {
         schema_version: 1,
         measurement: "client-observed; stream estimate excludes first token; E2E includes queue/network/reasoning, not server decode speed",
+        timezone: query.timezone.name(),
+        range: QueryRange {
+            start: query.since.and_then(|since| query.timezone.label(since)),
+            end: query.until.and_then(|until| query.timezone.label(until)),
+        },
         summary: tps_summary(&rows),
+        coverage,
         rows,
         sources: read.diagnostics,
     };
@@ -820,8 +1462,8 @@ fn render_tps(report: &TpsReport, theme: &Theme) -> String {
                 Tone::Plain,
             ),
             Cell::left(outcome, Tone::Plain),
-            Cell::left(value(row.metrics.ttft_ms), Tone::Plain),
-            Cell::left(value(row.metrics.stream_tps), Tone::Plain),
+            Cell::right(value(row.metrics.ttft_ms), Tone::Plain),
+            Cell::right(value(row.metrics.stream_tps), Tone::Plain),
             Cell::left(
                 match row.metrics.stream_output_basis {
                     OutputBasis::Gross => "gross",
@@ -830,7 +1472,7 @@ fn render_tps(report: &TpsReport, theme: &Theme) -> String {
                 },
                 Tone::Plain,
             ),
-            Cell::left(value(row.metrics.e2e_tps), Tone::Plain),
+            Cell::right(value(row.metrics.e2e_tps), Tone::Plain),
         ]);
     }
     for line in table.render(theme) {
@@ -840,6 +1482,37 @@ fn render_tps(report: &TpsReport, theme: &Theme) -> String {
         out.push_str(&format!(
             "{INDENT}no matching measured requests; use a Codex bridge or `alc --metrics <agent>`\n"
         ));
+    }
+    out.push_str(&format!(
+        "{INDENT}coverage: {} matching records; {} measured requests; excluded {} legacy, {} unmeasured, {} non-request; {} shown, {} limited; timezone: {}\n",
+        report.coverage.matching_records, report.coverage.measured_requests,
+        report.coverage.excluded_legacy_records, report.coverage.excluded_unmeasured_records,
+        report.coverage.excluded_nonrequest_records, report.coverage.returned_records,
+        report.coverage.limited_records, report.timezone,
+    ));
+    if !report.coverage.include_unmeasured
+        && report.coverage.excluded_legacy_records
+            + report.coverage.excluded_unmeasured_records
+            + report.coverage.excluded_nonrequest_records
+            > 0
+    {
+        out.push_str(&format!("{INDENT}Use --include-unmeasured to inspect excluded history; missing timing remains N/A.\n"));
+    }
+    for source in &report.sources {
+        if source.skipped_lines > 0
+            || source.unsupported_records > 0
+            || source.ambiguous_records > 0
+            || !source.warnings.is_empty()
+        {
+            out.push_str(&format!(
+                "{INDENT}{} coverage: {} skipped, {} unsupported, {} ambiguous; {}\n",
+                source.source.as_str(),
+                source.skipped_lines,
+                source.unsupported_records,
+                source.ambiguous_records,
+                source.warnings.join("; ")
+            ));
+        }
     }
     out.push_str(&format!(
         "{INDENT}TTFT: {} valid samples; mean {} ms, p50 {} ms, p95 {} ms\n",
@@ -870,11 +1543,268 @@ mod tests {
     #[test]
     fn dates_are_strict_and_offsets_normalized() {
         assert_eq!(
-            parse_bound("2026-10-01").unwrap(),
-            parse_bound("2026-10-01T08:00:00+08:00").unwrap()
+            parse_bound("2026-10-01", &QueryTimezone::Utc).unwrap(),
+            parse_bound("2026-10-01T08:00:00+08:00", &QueryTimezone::Utc).unwrap()
         );
-        assert!(parse_bound("2026-02-30").is_err());
-        assert!(parse_bound("2026-13-01").is_err());
+        assert!(parse_bound("2026-02-30", &QueryTimezone::Utc).is_err());
+        assert!(parse_bound("2026-13-01", &QueryTimezone::Utc).is_err());
+    }
+
+    #[test]
+    fn exact_counts_and_calendar_windows_do_not_use_rolling_durations() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(1_234_567), "1,234,567");
+        assert_eq!(format_count(u64::MAX), "18,446,744,073,709,551,615");
+        let date = |text| NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap();
+        assert_eq!(
+            calendar_dates(date("2021-01-01"), CalendarWindow::Weekly).unwrap(),
+            (date("2020-12-28"), date("2021-01-04"))
+        );
+        assert_eq!(
+            calendar_dates(date("2024-02-29"), CalendarWindow::Monthly).unwrap(),
+            (date("2024-02-01"), date("2024-03-01"))
+        );
+        assert_eq!(
+            calendar_dates(date("2024-12-31"), CalendarWindow::Monthly).unwrap(),
+            (date("2024-12-01"), date("2025-01-01"))
+        );
+        assert_eq!(
+            calendar_dates(date("2024-02-29"), CalendarWindow::Yearly).unwrap(),
+            (date("2024-01-01"), date("2025-01-01"))
+        );
+        let args = QueryArgs::default();
+        let now = DateTime::parse_from_rfc3339("2021-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let all = Query::new(&args, true, None, now).unwrap();
+        assert!(all.since.is_none() && all.until.is_none());
+        let week = Query::new(&args, true, Some(CalendarWindow::Weekly), now).unwrap();
+        assert_eq!(
+            week.since,
+            Some(parse_bound("2020-12-28", &QueryTimezone::Utc).unwrap())
+        );
+        assert_eq!(
+            week.until,
+            Some(parse_bound("2021-01-04", &QueryTimezone::Utc).unwrap())
+        );
+    }
+
+    #[test]
+    fn timezone_midnight_and_daily_buckets_follow_dst_and_offsets() {
+        let zone = QueryTimezone::parse("America/New_York").unwrap();
+        let start = parse_bound("2024-03-10", &zone).unwrap();
+        let end = parse_bound("2024-03-11", &zone).unwrap();
+        assert_eq!(end - start, 23 * 60 * 60 * 1000);
+        assert_eq!(zone.period(start - 1, false), "2024-03-09");
+        assert_eq!(zone.period(start, false), "2024-03-10");
+        assert_eq!(zone.period(end - 1, false), "2024-03-10");
+        assert_eq!(
+            zone.label(start).as_deref(),
+            Some("2024-03-10T00:00:00-05:00")
+        );
+        assert_eq!(
+            zone.label(end).as_deref(),
+            Some("2024-03-11T00:00:00-04:00")
+        );
+        let fall =
+            parse_bound("2024-11-04", &zone).unwrap() - parse_bound("2024-11-03", &zone).unwrap();
+        assert_eq!(fall, 25 * 60 * 60 * 1000);
+        let mut args = QueryArgs {
+            timezone: "America/New_York".to_owned(),
+            ..QueryArgs::default()
+        };
+        let now = DateTime::parse_from_rfc3339("2024-03-10T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let week = Query::new(&args, true, Some(CalendarWindow::Weekly), now).unwrap();
+        assert_eq!(
+            week.until.unwrap() - week.since.unwrap(),
+            167 * 60 * 60 * 1000
+        );
+        args.timezone = "Asia/Taipei".to_owned();
+        let now = DateTime::parse_from_rfc3339("2023-12-31T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let year = Query::new(&args, true, Some(CalendarWindow::Yearly), now).unwrap();
+        assert_eq!(
+            year.timezone.label(year.since.unwrap()).as_deref(),
+            Some("2024-01-01T00:00:00+08:00")
+        );
+        assert!(QueryTimezone::parse("Not/A_Zone").is_err());
+        let skipped = QueryTimezone::parse("Pacific/Apia").unwrap();
+        assert!(parse_bound("2011-12-30", &skipped).is_err());
+    }
+
+    #[test]
+    fn clap_presets_conflict_but_chart_accepts_an_empty_missing_path() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            options: UsageOptions,
+        }
+        use clap::Parser;
+        let bare = Cli::try_parse_from(["usage", "--chart"]).unwrap();
+        assert_eq!(bare.options.chart, Some(PathBuf::new()));
+        let explicit = Cli::try_parse_from(["usage", "--chart=fixture.png"]).unwrap();
+        assert_eq!(explicit.options.chart, Some(PathBuf::from("fixture.png")));
+        assert!(Cli::try_parse_from(["usage", "--chart", "fixture.png"]).is_err());
+        for args in [
+            vec!["usage", "weekly", "--since", "2024-01-01"],
+            vec!["usage", "monthly", "--until", "2024-02-01"],
+            vec!["usage", "yearly", "--daily"],
+            vec!["usage", "weekly", "--monthly"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        let options = Cli::try_parse_from(["usage", "monthly", "--offline"])
+            .unwrap()
+            .options;
+        assert_eq!(options.window, Some(CalendarWindow::Monthly));
+        assert_eq!(options.query.timezone, "UTC");
+    }
+
+    #[test]
+    fn injected_clock_presets_retain_daily_details_and_all_history_stays_unbounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let parse = |text| {
+            DateTime::parse_from_rfc3339(text)
+                .unwrap()
+                .with_timezone(&Utc)
+        };
+        let mut lines = String::new();
+        for text in [
+            "2020-12-27T00:00:00Z",
+            "2020-12-28T00:00:00Z",
+            "2021-01-01T00:00:00Z",
+            "2021-01-04T00:00:00Z",
+        ] {
+            let mut record =
+                UsageRecord::new(Source::Alc, Agent::Codex, epoch_ms(parse(text)).unwrap());
+            record.provider = Some("openai".to_owned());
+            record.model = Some("gpt-4.1".to_owned());
+            record.billing = super::super::records::Billing::Api;
+            record.tokens = TokenCounts {
+                input_tokens: Some(100),
+                cache_read_tokens: Some(20),
+                output_tokens: Some(10),
+                ..TokenCounts::default()
+            };
+            let entry = serde_json::json!({ "t": "request", "v": 3, "record": record });
+            lines.push_str(&format!("{entry}\n"));
+        }
+        std::fs::write(dir.path().join("usage.jsonl"), lines).unwrap();
+        let mut options = UsageOptions::default();
+        options.query.source = vec!["alc".to_owned()];
+        options.window = Some(CalendarWindow::Weekly);
+        let report = statistics_at(
+            dir.path(),
+            &Config::default(),
+            &options,
+            parse("2021-01-01T12:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(report.records, 2);
+        assert_eq!(
+            report.range.start.as_deref(),
+            Some("2020-12-28T00:00:00+00:00")
+        );
+        assert_eq!(
+            report.range.end.as_deref(),
+            Some("2021-01-04T00:00:00+00:00")
+        );
+        assert_eq!(
+            report
+                .rows
+                .iter()
+                .map(|row| row.period.as_str())
+                .collect::<Vec<_>>(),
+            ["2020-12-28", "2021-01-01"]
+        );
+        assert_eq!(
+            report
+                .daily
+                .iter()
+                .map(|row| row.period.as_str())
+                .collect::<Vec<_>>(),
+            ["2020-12-28", "2021-01-01"]
+        );
+        assert_eq!(report.uncached_input_tokens, Some(160));
+        assert_eq!(report.cache_write_tokens, Some(0));
+        assert!(report.total.is_some());
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(json["daily_rollups"].as_array().is_some());
+        assert!(json.get("subtotal").is_none() && json.get("total").is_none());
+        options.window = None;
+        let all = statistics_at(
+            dir.path(),
+            &Config::default(),
+            &options,
+            parse("2021-01-01T12:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(all.records, 4);
+        assert_eq!(all.rows.len(), 1);
+        assert_eq!(all.rows[0].period, "all-time");
+        assert_eq!(all.daily.len(), 4);
+        assert!(all.range.start.is_none() && all.range.end.is_none());
+    }
+
+    #[test]
+    fn overlap_is_recomputed_within_filtered_scope_and_each_day() {
+        let alc = UsageRecord::new(Source::Alc, Agent::Claude, 1);
+        let claude = UsageRecord::new(Source::Claude, Agent::Claude, 2);
+        let mut rows = reconcile(vec![alc, claude]);
+        assert!(rows.iter().all(|row| row.possible_overlap));
+        rows.retain(|row| row.record.timestamp_ms == 1);
+        recompute_overlap(&mut rows);
+        assert!(!rows[0].possible_overlap);
+        let alc = UsageRecord::new(Source::Alc, Agent::Claude, 1);
+        let claude = UsageRecord::new(Source::Claude, Agent::Claude, 2);
+        let rows = reconcile(vec![alc, claude]);
+        let first_day_sources =
+            overlap_sources(rows.iter().filter(|row| row.record.timestamp_ms == 1));
+        assert!(!has_overlap(&rows[0], &first_day_sources));
+        let same_day_sources = overlap_sources(rows.iter());
+        assert!(has_overlap(&rows[0], &same_day_sources));
+    }
+
+    #[test]
+    fn timed_requests_survive_newer_unmeasured_history_before_limit() {
+        let mut timed = UsageRecord::new(Source::Alc, Agent::Claude, 1);
+        timed.outcome = Outcome::Cancelled;
+        timed.timing = Some(Timing::default());
+        let mut records = vec![timed];
+        for time in 2..30 {
+            let mut legacy = UsageRecord::new(Source::Alc, Agent::Claude, time);
+            legacy
+                .warnings
+                .push("legacy request has no timing or correlation IDs".to_owned());
+            records.push(legacy);
+        }
+        let mut unmeasured = UsageRecord::new(Source::Alc, Agent::Claude, 30);
+        unmeasured.tokens = TokenCounts::default();
+        records.push(unmeasured);
+        let mut checkpoint = UsageRecord::new(Source::Alc, Agent::Claude, 31);
+        checkpoint.granularity = Granularity::Checkpoint;
+        records.push(checkpoint);
+        let (rows, coverage) = select_tps(reconcile(records.clone()), false, 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].record.timestamp_ms, 1);
+        assert_eq!(rows[0].record.outcome, Outcome::Cancelled);
+        assert_eq!(coverage.measured_requests, 1);
+        assert_eq!(coverage.excluded_legacy_records, 28);
+        assert_eq!(coverage.excluded_unmeasured_records, 1);
+        assert_eq!(coverage.excluded_nonrequest_records, 1);
+        assert_eq!(coverage.limited_records, 0);
+        let (rows, coverage) = select_tps(reconcile(records), true, 1);
+        assert_eq!(rows[0].record.timestamp_ms, 31);
+        assert_eq!(
+            coverage.excluded_legacy_records
+                + coverage.excluded_unmeasured_records
+                + coverage.excluded_nonrequest_records,
+            0
+        );
+        assert_eq!(coverage.limited_records, 30);
     }
 
     #[test]
@@ -970,6 +1900,12 @@ mod tests {
         let report = TpsReport {
             schema_version: 1,
             measurement: "client-observed",
+            timezone: "UTC".to_owned(),
+            range: QueryRange {
+                start: None,
+                end: None,
+            },
+            coverage: TpsCoverage::default(),
             summary: tps_summary(&rows),
             rows,
             sources: Vec::new(),

@@ -31,9 +31,10 @@ provider 清單，翻譯成你正要啟動的那個 agent 聽得懂的樣子。�
 `claude` —— [安裝](https://code.claude.com/docs/en/setup) · 支援 Anthropic
 相容端點。
 
-Claude Code 拿到的是一份設定檔（`--settings`），裡面放的是端點、模型相關變數
-與選單，憑證則透過 `apiKeyHelper` 向 `alc claude-credential` 取得；用 Claude
-Code 自己的登入時，由那個登入來回答，檔案裡只放端點與模型。見[背景
+Claude Code 拿到的是一份設定檔（`--settings`），裡面放端點、模型相關變數與
+選單，憑證透過 `apiKeyHelper` 向雜湊釘住的 alc 執行檔取得，帶有
+`--runtime <id> claude-credential`。舊的未指定 scope 的 helper 仍走 legacy。
+用 Claude Code 自己的登入時，由那個登入來回答，檔案裡只放端點與模型。見[背景
 session](./background-sessions.md)。Ollama profile 拿到的還更多 ——
 見[本機模型](./local-models.md)。
 
@@ -184,10 +185,11 @@ helper 憑證，不是原始服務商金鑰。不加旗標的一般直接啟動�
 原生 OAuth／登入，以及超出這些設定位置的明確端點／helper／config／provider
 覆寫，不會被偷偷攔截；明確要求 `--metrics` 卻不安全或不支援時，會說明原因並
 失敗。`--dry-run` 只描述計畫，不啟動 listener，也不寫入任何東西。Claude helper
-用只有擁有者可讀的 `run/bridge.observer-key` 驗證 host，只註冊摘要，並密封本機
-憑證；host 只有在派送到固定端點時才還原上游金鑰／header。host 重啟後舊替代憑證
-收到 401；請重新執行 helper。`forward-observer-v2` 能力會拒絕舊 daemon，即使
-版本相同。
+用 runtime 裡只有擁有者可讀的 `bridge.observer-key` 驗證 host，只註冊摘要，
+並密封本機憑證；host 只有在派送到固定端點時才還原上游金鑰／header。
+Host 重啟後舊替代憑證收到 401，請重新執行 helper。`forward-observer-v2` 驗證
+實際 host 能力，不是版本字串。新啟動用自己的世代 host，舊 host 繼續服務舊
+session，不需要停止再重啟那些 session。
 
 本機請求仍用 loopback HTTP，不是 TLS。需信任本機行程：Claude 替代憑證保護
 原始金鑰，不保護遭劫持 port 上的明文請求內容。其他 agent 的短命 route 不保證

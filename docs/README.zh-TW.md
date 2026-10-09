@@ -24,8 +24,8 @@ Windows PowerShell：`irm https://raw.githubusercontent.com/treeleaves30760/all-
 
 **沒有設定這個步驟。** 不用 `alc config init`，也沒有檔案要編輯。初始設定
 編在執行檔裡，本來就帶著一組 Codex profile；`alc --codex claude` 在記憶體
-裡讀它，不會寫出自己的設定檔。它唯一留在 `~/.config/alc` 的東西是 Codex
-的模型清單快取，每天最多重新抓一次。
+裡讀它，不會寫出 `config.toml`。它會留下模型清單快取、純中繼資料用量紀錄，
+以及讓背景 session 持續運作的 runtime 與設定檔。
 
 **它要的**是 `codex login` 寫下的 `auth.json`，以及 PATH 上的 `claude` ——
 alc 負責啟動 coding agent，本身不附帶它們。**它不要的**是 API key、alc 的
@@ -139,8 +139,9 @@ alc attach 7QK2            # 從任何終端機接回去
 alc kill 7QK2
 ```
 
-Id 可以只給任何不會有歧義的前綴，就像 git 的短雜湊那樣。`alc sessions` 把
-連結放在最前面，因為 `--share` 印出的那個，在 agent 畫出自己的介面時就捲走了。
+Id 可以只給任何不會有歧義的前綴，就像 git 的短雜湊那樣。`alc sessions` 會列出
+legacy 與各保留世代的 owner，以及各自的頁面連結；`attach`、`kill`、`rename`
+會找到 session 真正的 owner。前綴有歧義時直接拒絕，不會送到錯的 hub。
 
 **這個連結能做什麼。** 被共享的 Claude Code、Codex 或 OpenCode session 會以
 **ask** 模式啟動 —— 旗標是 alc 自己傳的，所以連結不會把一個全自主的 agent
@@ -171,14 +172,18 @@ alc --codex claude                            # 在空提示列上按 ←：一�
 由那個登入來回答，檔案裡只放端點與模型。
 
 **Codex 橋接現在自己獨立跑了。** 背景 session 活得比啟動它的那個 `alc` 還久，
-所以轉接器也必須一樣：一個小小的 alc 行程，綁在一個它會一直留著的 loopback
-port 上，只回答帶著它 token 的請求。需要它的 session 會把它叫起來，而它閒著
-一小時沒事做就會停掉。
+所以轉接器也必須一樣：每個 runtime 世代各有一個小小的 alc 行程，綁在它會留著
+的 loopback port 上，只回答帶著它 token 的請求。需要它的 session 會把它叫起來，
+閒著一小時沒事做就會停掉。更新後舊 host 繼續服務既有 session，新啟動則用新世代。
 
 ```sh
-alc bridge          # 在不在跑，以及在哪裡
-alc bridge stop     # 現在就停掉；下一個需要它的 session 會再把它叫起來
+alc bridge                         # 在不在跑，以及在哪裡
+alc --runtime legacy bridge stop   # 明確停掉 legacy owner
 ```
+
+新設定會釘住 helper 執行檔並傳入 `--runtime` 身分。舊的、未指定 scope 的
+`claude-credential` 仍走 legacy。多個 owner 執行中時，`bridge stop` 必須指定
+`--runtime <id|legacy>`；停止可能中斷它正在處理的請求，不是更新的必要步驟。
 
 **每一個 Claude 模型都變成 Codex 模型。** 在 `alc --codex claude` 底下，沒有
 任何一個請求會送到 Claude 模型。`/model` 選單只列出 Codex 模型；所有別名
@@ -196,7 +201,7 @@ Code，普通的 `claude attach` 也一樣：那個 session 本來就帶著它�
 
 **API-key 量測也能跨背景重啟。** 支援的 `alc --openrouter --metrics claude`
 啟動，使用同一個持續 host 上的原生協定轉送 route。設定裡放 loopback 端點與 alc
-helper，不放金鑰。helper 用獨立、只有擁有者可讀的 `run/bridge.observer-key`
+helper，不放金鑰。helper 用 runtime 裡獨立、只有擁有者可讀的 `bridge.observer-key`
 驗證 host、只註冊摘要，再回傳綁定固定 route／本次 host instance 的 AEAD 密封
 替代憑證 —— 不透過本機 HTTP 傳服務商金鑰。host 只有在派送時才還原上游驗證。
 host 重啟後舊替代憑證收到 HTTP 401；請重新執行 helper。只在 shell 裡的 key
@@ -242,16 +247,16 @@ OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本�
 | `alc config` | 設定用的 TUI；另有 `init`、`show`、`path`、`upsert`、`key`、`set-default`、`remove` |
 | `alc doctor` | 執行檔、憑證、相容性、預設值，以及橋接與遠端狀態 |
 | `alc models` | Codex 橋接提供的 GPT 模型；`--refresh`、`--json` |
-| `alc usage` | 帳號／額度、相容帳本與 token／成本統計；`--daily`、`--monthly`、`--offline`、`--pricing-file`、`--json` |
-| `alc tps` | 用戶端觀測的 TTFT 與估算／E2E 每秒 token 數；預設最新 20 筆 alc 請求紀錄，`--limit`、`--json` |
-| `alc update` | 就地更新 `alc`；`--check`、`--force` |
+| `alc usage [weekly\|monthly\|yearly]` | 帳號／額度、相容帳本與每日 token／成本統計；`--timezone`、`--chart[=PATH]`、`--daily`、`--monthly`、`--offline`、`--pricing-file`、`--json` |
+| `alc tps` | 用戶端觀測的 TTFT 與估算／E2E 每秒 token 數；預設最新 20 筆有 timing 的請求，`--include-unmeasured`、`--limit`、`--json` |
+| `alc update` | 驗證並啟用不可變的 alc 世代；`--check`、`--force`、`--download-only`、`--from ... --offline`、`--rollback` |
 | `alc share <agent>` | 啟動 agent，並把 session 鏡像到網頁 |
-| `alc sessions` | 先是頁面連結，然後是共享中的 session（tmux 的會標示出來） |
+| `alc sessions` | 跨世代與 legacy 的共享 session，以及各 owner 的頁面連結 |
 | `alc attach <id>` | 把這個終端機接回某個共享的 session |
 | `alc rename <id> <name>` | 替頁面上某個 session 的卡片改名 |
 | `alc kill <id>` | 停掉一個共享的 session |
-| `alc hub` | 對擁有 session 的那個行程下 `status`、`start`、`stop --drain` |
-| `alc bridge` | Claude 的 Codex 協定轉譯與選擇啟用的 API-key 觀測共用的持續背景 host；`status`、`stop` |
+| `alc hub` | `status`、`start`、`stop --drain`；多個 owner 時停止須指定 `--runtime <id\|legacy>` |
+| `alc bridge` | Claude 的持續 Codex／量測 host；`status`、`stop`；多個 owner 時停止須指定 `--runtime <id\|legacy>` |
 | `alc remote` | `status`、`url`、`on`/`off`、`auto-share`、`allow-host`、`token --rotate` |
 | `alc confirm <ticket>` | 核准某個共享 session 提出的權限變更 |
 
@@ -272,7 +277,7 @@ alc --ollama opencode run "fix the failing test"
 `alc claude -- --model sonnet`。你自己傳的 `--settings` 會被合併進 alc 那
 一份，衝突時以你的為準，因為 Claude Code 只讀一份。
 
-alc 自己的旗標 —— `--metrics`、`--share`、`--no-share`、`--bind-lan`、`--name`、
+alc 自己的旗標 —— `--metrics`、`--runtime`、`--share`、`--no-share`、`--bind-lan`、`--name`、
 `--permission`、`--tmux`、`-t` —— 必須放在 agent 名稱**之前**。放在後面
 的話，它們會被當成 prompt 文字交給 agent，所以 alc 會就此停下來，並直接
 告訴你 —— 除非你在 agent 名稱後面緊接著寫上 `--`，那就表示你指的是 agent
@@ -322,9 +327,9 @@ Accounts
   ·  openrouter  —                        —     no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
-  codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
-  ollama    opencode  1         —      —      —        —       —       12m ago
+  PROVIDER  AGENT     LAUNCHES  TURNS   INPUT  CACHED  CACHE %  OUTPUT  LAST
+  codex     claude           1      1  20,800  15,400      74%      35  7m ago
+  ollama    opencode         1      —       —       —        —       —  12m ago
   source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
 
 ✓ ready
@@ -360,19 +365,37 @@ alc --provider codex-work claude
 ### TTFT、TPS 與估算成本
 
 ```sh
-alc tps                         # 最新 20 筆符合條件的 alc 請求紀錄
-alc tps --limit 50 --json
+alc tps                         # 最新 20 筆符合條件且有 timing 的請求
+alc tps --include-unmeasured --limit 50 --json
+alc usage weekly --offline --timezone Asia/Taipei --chart
+alc usage monthly --offline --chart="$HOME/ai-usage-month.png" --json
+alc usage yearly --offline
 alc usage --offline --daily --since 2026-10-01 --until 2026-10-08
 alc usage --offline --monthly --source claude,codex --json
 alc usage --offline --source alc --filter-profile work --filter-agent claude
 ```
 
+**曆法視窗，不是往回滾動的期間。** 位置參數 `weekly`、`monthly`、`yearly` 選取
+本週（星期一開始）、本月或本年，保留每日明細；不能與 `--since`、`--until`、
+`--daily`、`--monthly` 共用。不指定視窗或日期界線仍查全部歷史；既有的
+`--daily`／`--monthly` 旗標只把選取的歷史分組。
+
 兩種查詢都接受 `--source all|alc|claude|codex`（也可用逗號分隔清單）、含起點的
-`--since` 與不含終點的 `--until`（UTC 午夜的 `YYYY-MM-DD` 或 RFC3339），以及
-精確的 `--filter-profile`、`--filter-agent` 與 `--filter-model`。Usage 預設所有
-來源；TPS 預設 `alc`，`--limit` 接受 1–10000。`--daily`／`--monthly` 是互斥的
-UTC 分桶。`alc usage --offline` 只讀本機設定、歷史與價格：不讀憑證／鑰匙圈、
-不查額度、不更新登入、不連網。`alc tps` 也只讀本機、不讀憑證。
+`--since`、不含終點的 `--until`，以及精確的 `--filter-profile`、`--filter-agent`
+與 `--filter-model`。`--timezone UTC|local|<IANA>` 預設 UTC，用於只有日期的
+`YYYY-MM-DD` 界線、曆法視窗與日期分桶；RFC3339 界線仍是其時區偏移指定的確切
+時刻。Usage 預設所有來源；TPS 預設 `alc`，`--limit` 接受 1–10000。
+`alc usage --offline` 只讀本機設定、歷史與價格：不讀憑證／鑰匙圈、不查額度、
+不更新登入、不連網。`alc tps` 也只讀本機、不讀憑證，不探測執行中的 daemon。
+
+統計主表提供每日總計，使用完整整數、千分位與靠右對齊的數字；模型／來源明細
+另列。`--chart[=PATH]` 才會產生離線 PNG，三區分別為日期 token 長條、日期 USD
+長條，以及未快取輸入／快取／輸出的 token 圓餅。預設寫到 home 目錄的
+`ai-usage.png`。繪圖用 Rust 與內嵌字型，不依賴 Python 或系統字型。圖與報告
+使用相同的選取範圍與時區；較長期間的圖會標示較粗的分桶，CLI 仍保留每日明細。
+未知或缺日不是零，部分費用是已知小計；來源重疊會停用不安全的合併總計與圓餅。
+只要選取來源可能重疊，較粗的圖表長條就保守停用，安全的每日明細仍保留。
+`--json --chart` 的 stdout 只放 JSON，產物路徑寫到 stderr。
 
 可重複指定的 `--claude-dir /absolute/config-root` 讀底下的 `projects/`；
 `--codex-dir /absolute/codex-home` 讀 `sessions/` 與 `archived_sessions/`。
@@ -380,8 +403,10 @@ UTC 分桶。`alc usage --offline` 只讀本機設定、歷史與價格：不讀
 `~/.claude`／`~/.codex`。這些 JSONL 來源唯讀、只保留中繼資料，每行最多 4 MiB：
 不把 prompt、生成輸出、工具內容或金鑰複製進 alc 帳本或匯入快取。過去的原生用量
 不會歸到今天的 alc profile。只有完全相同、協定命名空間相符的 ID 才能證實重複；
-無法驗證的重疊保留各來源小計，**不提供可相加的總計**。Codex 的累計差值與
-checkpoint 不等於請求次數；checkpoint 不會累加為 token 用量。涵蓋診斷會揭露
+無法驗證的重疊保留各來源小計，**不提供可相加的總計**。先整併與去重，再篩選
+日期；之後分別檢查選取範圍與每日的重疊安全性。Codex 的累計差值與 checkpoint
+不等於請求次數；checkpoint 不會累加為 token 用量。跨日期的差值歸到較晚的
+checkpoint 日期，不代表還原了每天實際發生的流量。涵蓋診斷會揭露
 跳過或有歧義的紀錄，不把它們當成零。新統計把舊 v1/v2 turn 每個為零的輸入／
 輸出計數分別保留為未知；正值與相容帳本總數維持不變。
 
@@ -407,9 +432,10 @@ config／provider 覆寫都不被觀測；明確要求不安全／不支援的 `
 不會偷偷改道。一般沒加 metrics 的啟動不變。Dry-run 不啟動 listener，也不寫入
 任何東西。
 
-持續 Claude 的握手／控制 challenge 驗證 host，不公開 `bridge.observer-key`；
-`forward-observer-v2` 會拒絕舊 daemon，即使版本字串相同（先 `alc bridge stop`，
-再重新啟動）。持續 Claude 觀測檔案不寫入明文服務商金鑰。**本機資料平面仍是
+持續 Claude 的握手／控制 challenge 驗證 host，不公開 `bridge.observer-key`。
+新啟動的量測請求要求 `request-metrics-v3`，持續轉送要求 `forward-observer-v2`，
+使用自己世代的 host，不必停掉舊 host。舊 host 繼續服務舊 session；版本字串相同
+不代表能力相符。持續 Claude 觀測檔案不寫入明文服務商金鑰。**本機資料平面仍是
 loopback HTTP，不是 TLS**：需信任本機行程。Claude 替代憑證避免原始服務商金鑰外洩，不能避免
 被劫持的本機 port 攔截明文請求內容；其他 agent 的短命 route 不保證密封憑證。
 
@@ -421,10 +447,20 @@ E2E TPS 是總輸出除以請求開始到終止的時間，包含排隊／網路
 伺服器解碼速度**。非串流 TTFT 與舊帳本／原生歷史時間是 `N/A`。摘要提供有效
 樣本數與按時間加權的 TPS，不是把同時執行的請求速度相加。
 
+TPS 在**排序與套用 limit 之前**，先選出帶有 timing 物件的實際 `Request` 紀錄。
+已觀測的失敗、取消與沒有 usage 的請求仍列出；每種量測各自需要有效證據。
+涵蓋計數說明被排除的 legacy、未量測與非請求紀錄；`--include-unmeasured`
+恢復歷史檢視，不可用的量測仍保留未知。舊報告全部 `N/A`，可能只是重用舊橋接
+產生的 v1/v2 turn，不是效能為零。alc 無法還原過去的 TTFT/TPS；在新世代開新
+session 才能取得後續量測，不必停止舊 session。
+
 **美元代表什麼。** USD API-token／API-equivalent 快照估算，不是發票或訂閱
 帳單；不含稅、折扣、工具與非 token 費用。缺少計數或精確費率時，保留未知／部分
-成本、原因與可為 `null` 的總額。推理是輸出子集，不重複計費；快取讀寫與 TTL
-保留各自語意。價格是日期為 2026-10-08 的離線精選 LiteLLM 子集，固定在 commit
+成本、原因與可為 `null` 的總額。每筆先依自己的 tier、context 與快取 TTL 計價，
+再相加。JSON 保留總輸入 `input_tokens`，新增 `uncached_input_tokens` 與
+`cost_components`，分開未快取輸入、快取讀取、快取寫入與輸出。金額用精確的
+pico-dollar 運算與十進位 USD 字串，不用浮點總數。推理是輸出子集，不重複計費；
+快取讀寫與 TTL 保留各自語意。價格是日期為 2026-10-08 的離線精選 LiteLLM 子集，固定在 commit
 `33d908e0ae2c0a257eeb5d546df08527d348a670` 並附 SHA-256／MIT 來源，不是即時價格。
 精確的本機／自訂費率放在獨立的設定目錄 `pricing.toml`，或用
 `alc usage --pricing-file PATH`；找不到價格不等於免費，免費費率要明寫 `"0"`
@@ -579,7 +615,8 @@ Claude 的通用預設值。
 獨立的背景行程，綁在一個它會一直留著的 loopback port 上（`alc bridge`）；其他
 每一個 agent 則是跑在 `alc` 行程內、綁在隨機的 port 上，並在該 session 結束時
 關閉。它會讀取並可能更新 `~/.codex/auth.json`；憑證不會被複製到 `alc` 的設定
-裡。
+裡。新版 alc-managed runtime 會用正規 auth 路徑的跨行程鎖協調更新，鎖定後再讀
+一次。舊 host 與外部 Codex CLI 不使用這把鎖；共用登入的 token 輪替仍可能影響它們。
 
 ## 本機模型
 
@@ -643,22 +680,26 @@ context 來自 llama.cpp 的 `/props` —— 每個 slot 的 `n_ctx`，也就是
 [從手機操作](#從手機操作)是短版，這裡是其餘的部分。
 
 ```sh
-alc sessions                 # 連結，然後是有哪些在跑（tmux session 會標示出來）
-alc attach 7QK2              # 任何不會有歧義的 id 前綴
+alc sessions                 # 跨 owner 的 session 與各自的頁面連結
+alc attach 7QK2              # 在所有 owner 間都沒有歧義的 id 前綴
 alc rename 7QK2 review
 alc kill 7QK2
 alc hub status               # 或直接 `alc hub`
-alc hub stop --drain
-alc remote url               # 連結捲走之後再拿一次
+alc --runtime legacy hub stop --drain # 明確停掉該 owner 與其 session
+alc remote url               # 選定 runtime 的連結
 alc remote status            # 開/關、綁定方式、上限、檔案位置
 alc remote auto-share on     # 每個 session 都共享，不必加 --share
 alc remote off               # 完全禁止共享
-alc remote token --rotate    # 讓已發出的連結全部失效
+alc remote token --rotate    # 讓選定 runtime 的連結失效
 ```
 
-Session 由背景的 hub 擁有，所以它們活得比啟動它們的終端機久，也因此全部出現在
-同一個頁面上；`ctrl-\` 然後 `d` 卸離。預設共享在 `alc config` 的
-**Sharing & remote** 畫面裡也能開。
+每個 runtime 世代各有一個背景 hub 擁有 session，所以它們活得比啟動它們的
+終端機久；`ctrl-\` 然後 `d` 卸離。各 owner 的網頁只列自己的 session，
+`alc sessions` 則跨 owner 彙整，包含 legacy。多個 owner 執行中時，`hub stop`
+或 `bridge stop` 必須明確指定全域 `--runtime <id|legacy>`。`hub stop --drain`
+會結束該 owner 的 session；兩種停止都不是零中斷，也不是更新的必要步驟。
+`remote.toml` 的共享政策仍由各世代共用，也能在 `alc config` 的
+**Sharing & remote** 畫面設定。
 
 ### 尺寸歸誰決定
 
@@ -717,7 +758,7 @@ session 卡片只會顯示 session 已結束，沒有結束狀態（macOS／Linu
 
 ```sh
 # 自己的 Wi-Fi —— 什麼都不用裝
-alc claude --share --bind-lan          # 印出 http://192.168.1.42:8787/#k=…
+alc --share --bind-lan claude          # 印出 owner 的 LAN 頁面連結
 
 # Tailscale —— alc 只綁 loopback，走 HTTPS，中間沒有第三方
 alc remote allow-host box.tail1a2b.ts.net
@@ -730,9 +771,11 @@ cloudflared tunnel --url http://127.0.0.1:8787
 
 alc 只回應你允許過的名字。Loopback 永遠在清單上，`--bind-lan` 會加上這台機器自己的
 位址；隧道的主機名用 `alc remote allow-host` 加，可以精確指定，也可以用
-`*.example.com` 涵蓋每次都改名的隧道。新加的允許主機要等執行中的 hub 重啟
-（`alc hub stop --drain`）才會生效。LAN 連結是純 HTTP，token 會以明文經過你的區域
-網路 —— 在家裡沒問題，在咖啡廳請改用隧道。
+`*.example.com` 涵蓋每次都改名的隧道。既有 hub 保留啟動時的 allowlist；等它的
+session 結束後，再明確停止／重啟該 owner 才會讀到新名字。Drain 會結束那些
+session，不是更新步驟。多個 owner 時，隧道請用目標 owner 連結中的 port，不一定
+是 8787。LAN 連結是純 HTTP，token 會以明文經過你的區域網路 —— 在家裡沒問題，
+在咖啡廳請改用隧道。
 
 ### 權限
 
@@ -782,7 +825,7 @@ ticket 五分鐘後過期，而 `alc confirm` 在沒有控制終端機的情況�
   的 token 碰不到 session 的建立。
 - 共享的 session 就是螢幕分享。alc 會遮蔽**它自己**放進環境變數的 API key，但 agent
   印出的其他任何東西，觀看者都看得到。
-- `alc remote token --rotate` 會讓已發出的連結全部失效。
+- `alc remote token --rotate` 會讓選定 runtime 的連結失效。
 - alc 不讀取工作目錄裡的任何設定，所以被 commit 進 repo 的檔案永遠無法開啟共享。
 
 `--share` 需要兩端都是真正的終端機，輸入或輸出被重導向時會拒絕，所以像
@@ -804,10 +847,13 @@ ticket 五分鐘後過期，而 `alc confirm` 在沒有控制終端機的情況�
 - `usage.jsonl`：啟動紀錄與 Codex 協定轉譯橋接、選擇啟用的 `--metrics` 觀測
   產生的純中繼資料請求。`alc usage`／`alc tps` 會讀取它；刪除只會重設 alc
   紀錄，不重設 Claude／Codex 原生歷史。
-- `run/bridge.observer-key`：獨立、只有擁有者可讀的本機觀測 secret（Unix 上為
-  `0600`），不是 API key。驗證 host／控制 challenge，並以 AEAD 把持續 Claude
-  量測憑證密封綁定到固定 route／本次 host instance；握手不公開它，也不送往
-  上游。它不提供 TLS 或本機請求內容的機密性。
+- Legacy 的 `run/`、新世代的 `run/g/<shortid>/`：host socket、port、token
+  與固定 route。provider 設定、憑證與 `usage.jsonl` 仍共用真實設定目錄；
+  `remote.toml` 仍是共用政策，不是各世代獨立副本。
+- Runtime 裡的 `bridge.observer-key`：獨立、只有擁有者可讀的本機觀測 secret
+  （Unix 上為 `0600`），不是 API key。驗證 host／控制 challenge，並以 AEAD
+  把持續 Claude 量測憑證密封綁定到固定 route／本次 host instance；握手不公開它，
+  也不送往上游。它不提供 TLS 或本機請求內容的機密性。
 - `pricing.toml`：選用的精確 token 費率覆寫，獨立於 `config.toml`：
   `version = 1`、`currency = "USD"`、`units = "USD-per-million-tokens"`，
   加上必填 `provider`／`model` 的 `[[models]]`。選用條件是 `profile`、
@@ -868,6 +914,11 @@ Linux 請重開終端機，或 `source` 安裝器提示的設定檔；PowerShell
 Linux 上，自訂目錄永遠不會自動幫你加進 PATH；在 Windows 上則會像預設目錄
 一樣加進你的 User PATH。Windows 安裝器支援 Windows PowerShell 5.1 與
 PowerShell 7，包含 64 位元 Windows 上執行的 32 位元 PowerShell。
+
+驗證過的 payload 透過 alc 內部安裝交易發布。`alc` 仍是完整執行檔的穩定入口，
+不是另外一個 launcher 執行檔；旁邊的 `.alc/active.json` 選定
+`.alc/generations/<digest>/alc`（Windows 為 `alc.exe`）。完成首次遷移後，
+啟用只切換 manifest，不替換 Windows 鎖住的入口。請保留旁邊的 `.alc` 目錄。
 
 ### 選用的 tmux 補裝
 
@@ -932,16 +983,42 @@ Remove-Item Env:ALC_NO_TMUX_INSTALL, Env:ALC_NO_PATH_UPDATE
 ```sh
 alc update --check
 alc update
+alc update --download-only "$HOME/alc-bundle"
+alc update --from "$HOME/alc-bundle" --offline
+alc update --rollback previous --offline
 ```
 
-`alc update` 會挑選符合目前作業系統與 CPU 的發行包、用 Release 公布的
-SHA-256 核對壓縮檔、確認包內版本，再替換 `alc`。Linux 與 macOS 會立即完成
-替換。Windows 會先把驗證過的檔案放好，等執行中的 `alc.exe` 一結束就接著替
-換；稍候再用 `alc --version` 確認。`alc update --force` 可以重新安裝目前的
-最新版本。
+`alc update` 會挑選符合目前作業系統與 CPU 的發行包、核對公開 SHA-256 與包內
+執行檔版本、發布不可變世代，再以原子方式啟用。穩定入口讀取旁邊的
+`.alc/active.json`；新呼叫進入 `.alc/generations/<digest>/alc[.exe]`。已在某個
+世代的行程留在原世代，helper／daemon 執行檔則以雜湊釘住。既有 agent、host、
+route 與 session 不會被重啟或 drain。新 session 使用自己世代的 hub／橋接，
+不需要一律停止再重啟。舊世代保留，不自動回收。
 
-執行中的 session 會沿用啟動時的那個執行檔，所以更新後請重開所有由 alc 啟
-動的 agent，等它的 session 都結束之後再 `alc hub stop`。
+- `--check` 在線上檢查但不套用；`--force` 即使目前版本相同也重新安裝選定發行包。
+- `--download-only BUNDLE_DIR` 保存已驗證的發行 bundle，不套用；最新版本已安裝
+  時也一樣會下載。目標目錄須為新建或空目錄；各 bundle 分開保存。
+- `--from BUNDLE_DIR --offline` 從本機套用，**不查 GitHub、不連網**。啟用前以
+  有界驗證核對 bundle 中繼資料、壓縮檔檢查碼、平台與包內執行檔版本；請一起保留
+  完整 bundle。
+- `--rollback previous` 或 `--rollback <digest>` 啟用保留的世代；不回復設定、
+  憑證或共用用量帳本。
+
+Runtime 狀態與這些真實共用檔案分開：新 host 用 `<config>/run/g/<shortid>`，
+legacy host 保留 `<config>/run`。`alc sessions` 能找到兩者，各 owner 各有頁面
+連結。要明確停掉某個 owner，請用全域 `--runtime <id|legacy>`；停止可能中斷
+長請求，hub drain 會結束它的 session。
+
+**範圍與遷移限制。** `alc --codex update` 仍然更新 **alc**，不是 Codex CLI。
+Self-update 不會更新 Claude Code、其他 agent、tmux 或 PATH。共用憑證仍會輪替，
+舊 host 與外部 Codex 不使用新版的更新鎖；外部套件更新或驗證憑證輪替，不能保證
+對執行中的工作毫無影響。
+
+舊 2.0.0 updater 無法被它下載的 payload 追溯修復，尤其是 Windows 的退出後
+finalizer。首次遷移到穩定入口請用 2.0.1 以上的安裝器。Unix 可以一次原子替換舊入口；
+Windows 若鎖住入口，遷移會明確失敗，保留驗證過的 payload 供重試，不啟用、不殺
+行程，也不排程新的 finalizer。等舊行程自然結束後重試，或用另一個
+`ALC_INSTALL_DIR` 並排安裝，明確呼叫那個路徑。待處理的遷移不等於更新完成。
 
 ## 從原始碼建置
 
@@ -966,8 +1043,9 @@ cargo test --all-targets
 
 ## 解除安裝
 
-把 `alc` 從安裝目錄移除，需要的話再刪掉 `alc config path` 顯示的設定目
-錄。刪除設定目錄同時會刪掉本機儲存的 API key，且無法復原。
+等使用保留世代的 session 與 helper 都結束後，再移除 `alc` 及旁邊的 `.alc`
+安裝目錄。需要的話再刪掉 `alc config path` 顯示的設定目錄。刪除設定目錄同時
+會刪掉本機儲存的 API key，且無法復原。
 
 ## 授權
 

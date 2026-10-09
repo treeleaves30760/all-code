@@ -165,7 +165,10 @@ session，活得比啟動它的那個 `alc` 還久 —— 見[背景
 session](./background-sessions.md#背景橋接)。其他每一個 agent 則仍然跑在 `alc`
 行程內、綁在隨機的 port 上，只服務它啟動的那個 agent，並在該 session 結束時
 關閉。它會讀取、必要時更新 `~/.codex/auth.json`；憑證絕不會被複製進 alc 自己的
-設定裡。
+設定裡。新 helper 與 host 都釘住 runtime 世代；更新保留既有 host／session
+route，新啟動使用新世代。新版 alc-managed 更新會跨行程鎖住正規 auth 路徑，
+鎖定後再讀一次。舊 host 與外部 Codex CLI 不配合這把鎖，共用登入輪替仍可能
+影響它們。
 
 :::caution[這是第三方相容層]
 

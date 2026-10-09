@@ -32,8 +32,9 @@ Anthropic-compatible endpoint.
 
 Claude Code gets a settings file (`--settings`) holding the endpoint, the model
 variables and the picker, and fetches its credential through `apiKeyHelper` from
-`alc claude-credential`; on Claude Code's own login the login answers and the
-file carries the endpoint and the model. See [Background
+a hash-pinned alc executable with `--runtime <id> claude-credential`. Old unscoped
+helper calls retain legacy behavior. On Claude Code's own login the login answers
+and the file carries the endpoint and model. See [Background
 sessions](./background-sessions.md).
 An Ollama profile gets more — see [Local models](./local-models.md).
 
@@ -191,10 +192,12 @@ Native OAuth/login and explicit endpoint/helper/config/provider overrides
 outside these seams are not silently intercepted; explicit `--metrics` fails
 with a reason when unsafe or unsupported. `--dry-run` only describes the plan,
 starts no listener, and writes nothing. Claude's helper authenticates the host
-using owner-only `run/bridge.observer-key`, registers digests only, and seals the
+using the owner-only runtime `bridge.observer-key`, registers digests only, and seals the
 local credential; the host restores the upstream key/header only on fixed-endpoint
-dispatch. Old surrogates receive 401 after a restart; rerun the helper. The
-`forward-observer-v2` capability refuses older daemons even with the same version.
+dispatch. Old surrogates receive 401 after a restart; rerun the helper.
+`forward-observer-v2` verifies actual host capability, not a version string.
+New launches use their own generation host while old hosts continue serving
+old sessions; no stop/relaunch of those sessions is required.
 
 Local requests still use loopback HTTP, not TLS. Trust local processes: the
 Claude surrogate protects the raw key, not plaintext request bodies at a hijacked

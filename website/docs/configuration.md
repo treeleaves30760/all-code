@@ -29,9 +29,11 @@ Files:
   separate native Claude/Codex histories.
 - `pricing.toml`: optional exact USD token-rate overrides for usage estimates.
   This is a [separate sidecar](#pricing-sidecar), not a table in `config.toml`.
-- `claude/settings-*.json`: the settings documents alc hands Claude Code with
-  `--settings` — the endpoint, the model variables, the picker and the
-  `apiKeyHelper` line, and no key of any kind. Each is named after a hash of its
+- `claude/settings-*.json` (legacy) or
+  `run/g/<shortid>/claude/settings-*.json` (new generations): the settings
+  documents alc hands Claude Code with `--settings` — the endpoint, the model
+  variables, the picker, and the pinned `apiKeyHelper` line, with no key of any
+  kind. Each is named after a hash of its
   own contents, so every launch that resolves to the same document reuses the
   same file; each is written mode `0600` on Unix. alc never deletes them,
   because a [background session](./background-sessions.md) reads its file again
@@ -40,28 +42,43 @@ Files:
   until its next launch. One thing to know before you leave them there: a
   `--settings` of your own is merged into the document, so a credential you put
   in your file is in alc's copy too.
-- `run/bridge.port`, `run/bridge.token`: where the [background
+- `run/` (legacy) and `run/g/<shortid>/` (new generations): host namespaces.
+  The runtime artifacts below are relative to the selected namespace, not a
+  different config directory. Provider config, credentials, `usage.jsonl`, and
+  `remote.toml` sharing policy stay shared; legacy files are not migrated away.
+- Runtime `bridge.port`, `bridge.token`: where the [background
   bridge](./background-sessions.md#the-background-bridge) is listening, and its
   control/translation token; the token is not sent to the API vendor. Durable
   Claude API observation uses a sealed surrogate on the local request hop.
-- `run/bridge.observer-key`: an independent owner-only local observer secret
+- Runtime `bridge.observer-key`: an independent owner-only local observer secret
   (`0600` on Unix), not a vendor API key. It authenticates fresh host/control
   challenges and seals Claude metrics credentials to a frozen route/current host
   instance. It is never published by the handshake or sent upstream. The data
   plane remains loopback HTTP; this secret does not provide TLS or hide plaintext
   request bodies from a hijacked local port.
-- `run/bridge/routes/`: one file per Codex translation route — the provider
-  profile it spends, the Codex `auth.json` its requests are signed with, and
-  where Claude Code's own model ids land.
-- `run/bridge/forward/`: durable Claude API-key observation routes used by
-  `--metrics`; frozen profile/kind/upstream metadata only, no API key. The
+- Runtime `bridge/routes/`: content-addressed immutable Codex translation routes,
+  including the provider profile, Codex auth path, and full effective
+  model-tier mapping. A later launch cannot overwrite an old session's route.
+- Runtime `bridge/forward/`: durable Claude API-key observation routes used by
+  `--metrics`; frozen profile/kind/upstream metadata only, no API key.
+  Key-digest allowlists are unioned for the same frozen identity, preserving keys
+  still used by other sessions. The
   [helper](./background-sessions.md#api-key-metrics-in-background-sessions)
   resolves the key, authenticates the host, registers only its digest in memory,
   and returns an AEAD-sealed local surrogate. The host restores upstream
   authentication only on dispatch; observation artifacts never store the plaintext
   vendor key. Host restarts invalidate old surrogates; rerun the helper.
 
-Override the directory with `ALC_CONFIG_DIR`.
+Override the real configuration directory with `ALC_CONFIG_DIR`. New helpers
+pin their executable and pass explicit `--runtime <id>`; old unscoped
+`claude-credential` calls still use legacy. `--runtime <id|legacy>` is also the
+global owner selector for host management, not an account/config override.
+
+The install directory is separate: its full-binary `alc` entry point reads
+adjacent `.alc/active.json` and dispatches to `.alc/generations/<digest>/alc`
+(`alc.exe` on Windows). Generations are retained; do not remove payloads or
+settings a background session still needs. [Updating](./getting-started.md#update)
+explains local bundles, rollback, and one-time migration.
 
 ## The configuration TUI
 

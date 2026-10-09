@@ -532,7 +532,18 @@ fn needs_an_adapter_and_has_one(spec: &LaunchSpec) -> Result<()> {
 /// it, so a dry run still takes no snapshot, writes no settings file and
 /// starts no bridge.
 pub(crate) fn prepare(mut spec: LaunchSpec, config_dir: &Path) -> Result<Prepared> {
+    crate::runtime::require_own_generation()?;
     needs_an_adapter_and_has_one(&spec)?;
+    crate::runtime::claim_namespace(config_dir)?;
+    if spec
+        .settings_plan
+        .as_ref()
+        .is_some_and(|plan| plan.document.get("apiKeyHelper").is_some())
+    {
+        // Planning, including --dry-run, only names the immutable helper. The
+        // real spawn path is the first place its executable may be published.
+        crate::runtime::materialize_exe(config_dir)?;
+    }
 
     // Before the agent starts, so what is read is what the user had.
     // `claude_settings_file` is only set for a bridged Claude launch, and the

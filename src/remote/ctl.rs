@@ -24,6 +24,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::remote::wire::SessionCard;
 
+/// The generation-aware launch contract, independent of the release version.
+pub(crate) const PROTOCOL: u32 = 1;
+pub(crate) const REQUEST_METRICS_CAPABILITY: &str = "request-metrics-v3";
+
 /// A control connection, whatever it is made of on this platform.
 #[cfg(unix)]
 pub(crate) type CtlStream = std::os::unix::net::UnixStream;
@@ -91,6 +95,12 @@ pub(crate) struct CreateRequest {
     /// is itself a mismatch and refused the same way.
     #[serde(default)]
     pub alc: String,
+    /// Missing from legacy callers. A generation hub accepts only its own
+    /// immutable executable identity, not a caller's release-version claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
+    #[serde(default)]
+    pub protocol: u32,
     pub spec: WireSpec,
     pub cwd: String,
     pub environ: Vec<(String, String)>,
@@ -190,6 +200,10 @@ pub(crate) enum CtlReply {
         instance: String,
         port: u16,
         pid: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generation: Option<String>,
+        #[serde(default)]
+        protocol: u32,
         #[serde(default)]
         capabilities: Vec<String>,
     },
@@ -212,12 +226,20 @@ pub(crate) enum CtlReply {
 /// Where the control socket lives. Inside the 0700 run directory, so on unix
 /// the directory's own mode is the first gate.
 pub(crate) fn socket_path(config_dir: &Path) -> PathBuf {
-    crate::remote::settings::Secrets::run_dir(config_dir).join("ctl.sock")
+    socket_path_at(&crate::runtime::run_dir(config_dir))
+}
+
+pub(crate) fn socket_path_at(run_dir: &Path) -> PathBuf {
+    run_dir.join("ctl.sock")
 }
 
 /// Where the hub records what it is, for a client deciding whether to join.
 pub(crate) fn hub_record_path(config_dir: &Path) -> PathBuf {
-    crate::remote::settings::Secrets::run_dir(config_dir).join("hub.json")
+    hub_record_path_at(&crate::runtime::run_dir(config_dir))
+}
+
+pub(crate) fn hub_record_path_at(run_dir: &Path) -> PathBuf {
+    run_dir.join("hub.json")
 }
 
 /// What a running hub publishes about itself. Token *values* are never in
@@ -228,6 +250,10 @@ pub(crate) struct HubRecord {
     pub port: u16,
     pub instance: String,
     pub alc: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
+    #[serde(default)]
+    pub protocol: u32,
     /// Whether the listener is on the network rather than loopback, so a
     /// later `alc sessions` can print the address a phone actually opens.
     #[serde(default)]
@@ -243,7 +269,14 @@ pub(crate) struct HubRecord {
 
 /// Sends one request and reads one reply.
 pub(crate) fn request(config_dir: &Path, secret: &str, body: &CtlRequest) -> Result<CtlReply> {
-    let mut stream = connect(config_dir)?;
+    request_at(&crate::runtime::run_dir(config_dir), secret, body)
+}
+
+/// Talks to the explicit owner of a session, without changing process scope.
+pub(crate) fn request_at(run_dir: &Path, secret: &str, body: &CtlRequest) -> Result<CtlReply> {
+    let mut stream = connect_at(run_dir)?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
     let envelope = serde_json::json!({ "secret": secret, "request": body });
     let mut line = serde_json::to_string(&envelope)?;
     line.push('\n');
@@ -265,9 +298,13 @@ pub(crate) fn request(config_dir: &Path, secret: &str, body: &CtlRequest) -> Res
     Ok(reply)
 }
 
-#[cfg(unix)]
 pub(crate) fn connect(config_dir: &Path) -> Result<CtlStream> {
-    let path = socket_path(config_dir);
+    connect_at(&crate::runtime::run_dir(config_dir))
+}
+
+#[cfg(unix)]
+pub(crate) fn connect_at(run_dir: &Path) -> Result<CtlStream> {
+    let path = socket_path_at(run_dir);
     CtlStream::connect(&path).with_context(|| {
         format!(
             "no hub is listening at {}; start one with `alc hub start`",
@@ -277,11 +314,14 @@ pub(crate) fn connect(config_dir: &Path) -> Result<CtlStream> {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn connect(config_dir: &Path) -> Result<CtlStream> {
-    let record = read_hub_record(config_dir)?
+pub(crate) fn connect_at(run_dir: &Path) -> Result<CtlStream> {
+    let record = read_hub_record_at(run_dir)?
         .context("no hub is running; start one with `alc hub start`")?;
-    CtlStream::connect(("127.0.0.1", record.ctl_port))
-        .context("no hub is listening; start one with `alc hub start`")
+    CtlStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], record.ctl_port)),
+        std::time::Duration::from_secs(2),
+    )
+    .context("no hub is listening; start one with `alc hub start`")
 }
 
 /// Binds the control socket, replacing a stale one left by a hub that died.
@@ -387,7 +427,11 @@ fn read_envelope(envelope: &serde_json::Value, secret: &str) -> Result<CtlReques
 }
 
 pub(crate) fn read_hub_record(config_dir: &Path) -> Result<Option<HubRecord>> {
-    let path = hub_record_path(config_dir);
+    read_hub_record_at(&crate::runtime::run_dir(config_dir))
+}
+
+pub(crate) fn read_hub_record_at(run_dir: &Path) -> Result<Option<HubRecord>> {
+    let path = hub_record_path_at(run_dir);
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(serde_json::from_str(&text).ok()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),

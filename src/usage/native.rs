@@ -349,8 +349,11 @@ fn checkpoint(record: &mut UsageRecord, message: &str) {
 fn validate_tokens(record: &mut UsageRecord) {
     let before = record.tokens.clone();
     record.tokens.validate();
-    if before != record.tokens {
+    if record.tokens.cache_counters_differ(&before) {
         record_warn(record, "invalid native token subsets were left unknown");
+    }
+    if record.tokens.reasoning_tokens != before.reasoning_tokens {
+        record_warn(record, "invalid native reasoning counter was left unknown");
     }
 }
 
@@ -1211,6 +1214,66 @@ mod tests {
         })
         .to_string()
             + "\n"
+    }
+
+    #[test]
+    fn codex_invalid_reasoning_preserves_verified_cache_prices() {
+        let temp = tempfile::tempdir().unwrap();
+        let rows = [
+            serde_json::json!({"type":"session_meta", "timestamp":"2026-01-01T00:00:00Z",
+                "payload":{"id":"reasoning-session", "model_provider":"openai"}}),
+            serde_json::json!({"type":"turn_context", "timestamp":"2026-01-01T00:00:01Z",
+                "payload":{"turn_id":"reasoning-turn", "model":"gpt-4.1"}}),
+            serde_json::json!({"type":"token_usage_record", "timestamp":"2026-01-01T00:00:02Z",
+            "payload":{"thread_id":"reasoning-session", "turn_id":"reasoning-turn",
+                "response_id":"reasoning-response", "usage":{
+                    "input_tokens":100, "cached_input_tokens":20,
+                    "output_tokens":10, "reasoning_output_tokens":11
+                }}}),
+        ];
+        let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
+        write_fixture(temp.path(), "reasoning.jsonl", &body);
+        let record = read_codex(&[temp.path().into()]).records.remove(0);
+        assert_eq!(record.granularity, Granularity::Request);
+        assert_eq!(record.tokens.reasoning_tokens, None);
+        assert_eq!(
+            record.warnings,
+            ["invalid native reasoning counter was left unknown"]
+        );
+        let effective = record.effective_tokens();
+        assert!(!effective.invalid_cache);
+        assert_eq!(effective.counts.cache_write_tokens, Some(0));
+        assert_eq!(effective.counts.uncached_input(), Some(80));
+        let cost = crate::usage::pricing::PriceBook::load(temp.path(), None)
+            .unwrap()
+            .estimate(&record);
+        assert_eq!(cost.total_usd.as_deref(), Some("0.00025"));
+    }
+
+    #[test]
+    fn native_cache_invalidity_still_prevents_verified_absent_write_zeroes() {
+        let mut record = UsageRecord::new(Source::Codex, Agent::Codex, 1);
+        record.model = Some("gpt-4.1".to_owned());
+        record.tokens = TokenCounts {
+            input_tokens: Some(100),
+            output_tokens: Some(10),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(110),
+            cache_write_5m_tokens: Some(4),
+            cache_write_1h_tokens: Some(6),
+            ..TokenCounts::default()
+        };
+        validate_tokens(&mut record);
+        assert_eq!(
+            record.warnings,
+            ["invalid native token subsets were left unknown"]
+        );
+        assert_eq!(record.tokens.cache_write_5m_tokens, None);
+        assert_eq!(record.tokens.cache_write_1h_tokens, None);
+        let effective = record.effective_tokens();
+        assert!(effective.invalid_cache);
+        assert_eq!(effective.counts.cache_write_tokens, None);
+        assert_eq!(effective.counts.uncached_input(), None);
     }
 
     #[test]

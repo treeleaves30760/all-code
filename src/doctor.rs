@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::Result;
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::{Agent, AuthStyle, Provider, ProviderKind, ReasoningEffort, Store};
 use crate::model_catalog::{CodexSource, ModelCatalog};
@@ -1083,6 +1084,7 @@ fn unicode_supported() -> bool {
 pub(crate) enum Align {
     Left,
     Center,
+    Right,
 }
 
 pub(crate) struct Cell {
@@ -1097,6 +1099,14 @@ impl Cell {
             text: text.into(),
             tone,
             align: Align::Left,
+        }
+    }
+
+    pub(crate) fn right(text: impl Into<String>, tone: Tone) -> Self {
+        Self {
+            text: text.into(),
+            tone,
+            align: Align::Right,
         }
     }
 
@@ -1184,7 +1194,7 @@ fn trim_last(text: String, column: usize, last: usize) -> String {
 }
 
 pub(crate) fn width(value: &str) -> usize {
-    value.chars().count()
+    UnicodeWidthStr::width(value)
 }
 
 fn pad(value: &str, to: usize, align: Align) -> String {
@@ -1195,6 +1205,7 @@ fn pad(value: &str, to: usize, align: Align) -> String {
     let missing = to - current;
     match align {
         Align::Left => format!("{value}{}", " ".repeat(missing)),
+        Align::Right => format!("{}{value}", " ".repeat(missing)),
         Align::Center => {
             let left = missing / 2;
             format!("{}{value}{}", " ".repeat(left), " ".repeat(missing - left))
@@ -1268,6 +1279,48 @@ mod tests {
         assert_eq!(pad("ab", 5, Align::Left), "ab   ");
         assert_eq!(pad("ab", 5, Align::Center), " ab  ");
         assert_eq!(pad("✓", 5, Align::Center), "  ✓  ");
+    }
+
+    #[test]
+    fn right_aligned_counts_use_unicode_display_columns_and_survive_colour() {
+        assert_eq!(width("模型"), 4);
+        assert_eq!(width("e\u{301}"), 1);
+        assert_eq!(pad("模型", 7, Align::Right), "   模型");
+        let build = || {
+            let mut table = Table::new(vec!["NAME", "COUNT", "USD"]);
+            table.push(vec![
+                Cell::left("模型", Tone::Plain),
+                Cell::right("1,234,567", Tone::Good),
+                Cell::right("0.000000000001", Tone::Plain),
+            ]);
+            table.push(vec![
+                Cell::left("e\u{301}", Tone::Plain),
+                Cell::right("7", Tone::Good),
+                Cell::right("1", Tone::Plain),
+            ]);
+            table
+        };
+        let plain_lines = build().render(&plain());
+        let starts = [
+            plain_lines[1].rfind("1,234,567").unwrap(),
+            plain_lines[2].rfind('7').unwrap(),
+        ];
+        assert_eq!(
+            width(&plain_lines[1][..starts[0]]) + 9,
+            width(&plain_lines[2][..starts[1]]) + 1
+        );
+        let colored = build().render(&Theme {
+            color: true,
+            unicode: true,
+        });
+        assert_eq!(
+            colored
+                .iter()
+                .map(|line| strip_ansi(line))
+                .collect::<Vec<_>>(),
+            plain_lines
+        );
+        assert!(plain_lines.iter().all(|line| line == line.trim_end()));
     }
 
     #[test]

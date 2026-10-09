@@ -307,13 +307,25 @@ pub(crate) struct Found {
     /// alc itself, as a tmux for Windows pane can start it: the pane runs
     /// alc's launcher rather than the agent (see `pane`), and the port
     /// cannot start a program whose path is not plain ASCII.
+    /// The planned pinned launcher, resolved without writes by `find_for`.
     #[cfg(windows)]
-    pub launcher: PathBuf,
+    launcher: PathBuf,
 }
 
 impl Found {
     pub(crate) fn label(&self) -> String {
         format!("tmux {}.{}", self.version.0, self.version.1)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn materialized_launcher(&self, config_dir: &Path) -> Result<PathBuf> {
+        let launcher = crate::runtime::materialize_exe(config_dir)?;
+        if launcher != self.launcher {
+            bail!("the pinned tmux launcher changed after planning; retry the launch");
+        }
+        // A first standalone launch has no pinned leaf during planning. Resolve
+        // its Windows short spelling only after publishing the immutable copy.
+        pane_launcher(&launcher)
     }
 }
 
@@ -345,10 +357,37 @@ pub(crate) fn find() -> Result<Found> {
 /// works rather than a refusal over the one that happens to come first.
 #[cfg(windows)]
 pub(crate) fn find() -> Result<Found> {
-    const INSTALL: &str = "`winget install arndawg.tmux-windows`";
+    let exe = std::env::current_exe().context("failed to find alc's own path")?;
+    let found = find_with_launcher(&exe)?;
+    pane_launcher(&exe)?;
+    Ok(found)
+}
+
+/// Read-only resolution, including the immutable launcher a real spawn will
+/// publish. Dry-run must never materialize a copy just to print its path.
+pub(crate) fn find_for(config_dir: &Path) -> Result<Found> {
+    #[cfg(unix)]
+    {
+        let _ = config_dir;
+        find()
+    }
+    #[cfg(windows)]
+    {
+        find_with_launcher(&crate::runtime::planned_exe(config_dir)?)
+    }
+}
+
+#[cfg(windows)]
+fn find_with_launcher(exe: &Path) -> Result<Found> {
     let candidates: Vec<PathBuf> = which::which_all("tmux")
         .map(Iterator::collect)
         .unwrap_or_default();
+    find_from_candidates(exe, candidates)
+}
+
+#[cfg(windows)]
+fn find_from_candidates(exe: &Path, candidates: Vec<PathBuf>) -> Result<Found> {
+    const INSTALL: &str = "`winget install arndawg.tmux-windows`";
     let mut refused = None;
     for binary in candidates {
         let text = read_version(&binary)?;
@@ -358,11 +397,10 @@ pub(crate) fn find() -> Result<Found> {
                     format!("could not read a version out of `{} -V`", binary.display())
                 })?;
                 require_floor(version)?;
-                let launcher = pane_launcher()?;
                 return Ok(Found {
                     binary,
                     version,
-                    launcher,
+                    launcher: exe.to_owned(),
                 });
             }
             port => {
@@ -442,12 +480,11 @@ fn windows_port(version_text: &str) -> Port {
 /// installs are plain ASCII already; for one that is not, the 8.3 short form
 /// is, where the volume keeps them.
 #[cfg(windows)]
-fn pane_launcher() -> Result<PathBuf> {
-    let exe = std::env::current_exe().context("failed to find alc's own path")?;
+fn pane_launcher(exe: &Path) -> Result<PathBuf> {
     if exe.to_str().is_some_and(str::is_ascii) {
-        return Ok(exe);
+        return Ok(exe.to_owned());
     }
-    match crate::remote::win::short_path(&exe) {
+    match crate::remote::win::short_path(exe) {
         Ok(short) if short.to_str().is_some_and(str::is_ascii) => Ok(short),
         _ => bail!(
             "alc is installed at {}, and tmux for Windows cannot start a program whose path is \
@@ -550,6 +587,8 @@ impl PaneCommand {
     pub(crate) fn launcher(launcher: &Path, port: u16, token: &str) -> Self {
         let argv = [
             launcher.to_string_lossy().as_ref(),
+            "--runtime",
+            crate::runtime::scope().identity(),
             crate::remote::pane::SUBCOMMAND,
             &port.to_string(),
             token,
@@ -587,7 +626,14 @@ impl Tmux {
     /// because a name derived from anything reusable is what makes a second
     /// launch attach to the first one's agent.
     pub(crate) fn for_session(id: &str) -> Result<Self> {
-        let label = format!("alc-{}", id.to_ascii_lowercase());
+        Self::for_session_in(id, crate::runtime::scope())
+    }
+
+    fn for_session_in(id: &str, scope: &crate::runtime::RuntimeScope) -> Result<Self> {
+        let label = match scope {
+            crate::runtime::RuntimeScope::Legacy => format!("alc-{}", id.to_ascii_lowercase()),
+            scope => format!("alc-{}-{}", scope.identity(), id.to_ascii_lowercase()),
+        };
         if !label
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
@@ -1716,6 +1762,19 @@ mod tests {
     }
 
     #[test]
+    fn generations_get_distinct_socket_labels_and_legacy_keeps_its_name() {
+        let first = crate::runtime::RuntimeScope::parse("0123456789ab").unwrap();
+        let second = crate::runtime::RuntimeScope::parse("fedcba987654").unwrap();
+        let one = Tmux::for_session_in("claude-ABCDEFGHJK", &first).unwrap();
+        let two = Tmux::for_session_in("claude-ABCDEFGHJK", &second).unwrap();
+        let old = Tmux::for_session_in("claude-ABCDEFGHJK", &crate::runtime::RuntimeScope::Legacy)
+            .unwrap();
+        assert_eq!(one.label, "alc-0123456789ab-claude-abcdefghjk");
+        assert_ne!(one.label, two.label);
+        assert_eq!(old.label, "alc-claude-abcdefghjk");
+    }
+
+    #[test]
     fn a_socket_label_can_never_carry_a_path_separator() {
         // A label is pasted into `$TMUX_TMPDIR/tmux-<uid>/<label>`, so one
         // with a separator in it puts the socket somewhere else entirely -
@@ -1765,6 +1824,25 @@ mod tests {
             strings(tmux.mirror_argv()),
             vec!["-L", "alc-claude-abcdefghjk", "attach-session", "-t", "alc"]
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_launcher_is_not_shortened_before_its_immutable_copy_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake_tmux = directory.path().join("tmux.cmd");
+        std::fs::write(&fake_tmux, "@echo off\r\necho tmux 3.6a-win32\r\n").unwrap();
+        let planned = directory
+            .path()
+            .join("尚未建立")
+            .join(".alc")
+            .join("generations")
+            .join("0123456789ab")
+            .join("alc.exe");
+        assert!(!planned.exists());
+        let found = find_from_candidates(&planned, vec![fake_tmux]).unwrap();
+        assert_eq!(found.launcher, planned);
+        assert!(!directory.path().join("尚未建立").exists());
     }
 
     /// tmux for Windows reads the basename of a `-S` path as a label of its
@@ -1832,6 +1910,8 @@ mod tests {
             strings(pane.argv),
             [
                 "\"C:\\Program Files\\alc\\alc.exe\"",
+                "--runtime",
+                "legacy",
                 "__tmux-pane",
                 "51234",
                 "00ff"

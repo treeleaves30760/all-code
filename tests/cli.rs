@@ -14,6 +14,9 @@ const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 fn alc(temp: &tempfile::TempDir) -> Command {
     let mut command = Command::cargo_bin("alc").expect("alc binary");
     command.env("ALC_CONFIG_DIR", temp.path());
+    // These compatibility fixtures exercise the original singleton paths.
+    // Mixed-generation ownership is covered by runtime_hosts.rs.
+    command.args(["--runtime", "legacy"]);
     // Reports can read native histories. Never discover a developer's sessions.
     command.env("CLAUDE_CONFIG_DIR", temp.path().join("claude-history"));
     command.env("CODEX_HOME", temp.path().join("codex-history"));
@@ -845,7 +848,7 @@ fn concurrent_starts_produce_exactly_one_hub() {
                     .expect("alc binary")
                     .env("ALC_CONFIG_DIR", &dir)
                     .timeout(COMMAND_TIMEOUT)
-                    .args(["hub", "start"])
+                    .args(["--runtime", "legacy", "hub", "start"])
                     .assert()
                     .success();
             })
@@ -1781,7 +1784,14 @@ fn usage_reports_cache_reads_and_distinguishes_zero_from_unknown() {
         .expect("run usage");
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("utf-8 output");
-    assert!(stdout.contains("INPUT  CACHED  CACHE %"), "{stdout}");
+    assert!(
+        stdout.lines().any(|line| line
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .windows(4)
+            .any(|words| words == ["INPUT", "CACHED", "CACHE", "%"])),
+        "{stdout}"
+    );
     let row = |provider: &str| {
         stdout
             .lines()
@@ -1789,9 +1799,10 @@ fn usage_reports_cache_reads_and_distinguishes_zero_from_unknown() {
             .unwrap_or_else(|| panic!("no {provider} row in {stdout}"))
     };
     assert!(row("codex-hit").contains("67%"), "{stdout}");
-    assert!(row("codex-miss").contains("  0       0%"), "{stdout}");
-    let unknown = row("codex-unknown");
-    assert!(unknown.contains("100    -       -"), "{unknown}");
+    let missed = row("codex-miss").split_whitespace().collect::<Vec<_>>();
+    assert_eq!(&missed[4..8], &["100", "0", "0%", "10"], "{stdout}");
+    let unknown = row("codex-unknown").split_whitespace().collect::<Vec<_>>();
+    assert_eq!(&unknown[4..8], &["100", "-", "-", "10"], "{stdout}");
 }
 
 #[test]

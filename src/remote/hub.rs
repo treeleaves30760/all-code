@@ -107,8 +107,17 @@ pub(crate) struct Hub {
 impl Hub {
     /// Runs the hub in this process until it is told to stop.
     pub(crate) fn run(config_dir: &Path, bind_lan: bool) -> Result<u8> {
+        require_spawn_scope()?;
         let settings = RemoteSettings::load(config_dir)?;
         let secrets = Secrets::load_or_create(config_dir)?;
+        // Even a foreground start must own this namespace before looking at
+        // orphan records. The lock lives for the whole hub, not just startup.
+        let owner_lock = Secrets::run_dir(config_dir).join("hub.owner.lock");
+        let _owner = crate::file_lock::FileLock::acquire_timeout(&owner_lock, Duration::ZERO)
+            .context("a hub already owns this runtime; use `alc sessions` to find it")?;
+        if probe(config_dir, &secrets).is_some() || ctl::connect(config_dir).is_ok() {
+            bail!("a hub is already listening in this runtime; its sessions were left untouched");
+        }
         let instance = id::generate(Agent::Claude)?
             .split('-')
             .next_back()
@@ -132,6 +141,8 @@ impl Hub {
             port,
             instance: instance.clone(),
             alc: env!("CARGO_PKG_VERSION").to_owned(),
+            generation: generation_identity(),
+            protocol: ctl::PROTOCOL,
             lan: server_address.ip().is_unspecified(),
             #[cfg(not(unix))]
             ctl_port,
@@ -223,7 +234,12 @@ impl Hub {
                         instance: self.instance.clone(),
                         port: self.port,
                         pid: std::process::id(),
-                        capabilities: vec![crate::bridge_host::FORWARD_CAPABILITY.to_owned()],
+                        generation: generation_identity(),
+                        protocol: ctl::PROTOCOL,
+                        capabilities: vec![
+                            crate::bridge_host::FORWARD_CAPABILITY.to_owned(),
+                            ctl::REQUEST_METRICS_CAPABILITY.to_owned(),
+                        ],
                     },
                 );
             }
@@ -443,6 +459,8 @@ impl Hub {
     fn create(&self, request: CreateRequest) -> Result<String> {
         let CreateRequest {
             alc,
+            generation,
+            protocol,
             spec,
             cwd,
             environ,
@@ -453,11 +471,10 @@ impl Hub {
             permission,
             tmux: wants_tmux,
         } = request;
-        // Refused rather than served on a best-effort basis: a spec this hub
-        // and that client do not describe identically is one where a field
-        // either side has never heard of is dropped in silence, and a
-        // launch missing a field it needed is how a Codex session came to
-        // run with no adapter in front of it.
+        validate_create_identity(crate::runtime::scope(), generation.as_deref(), protocol)?;
+        // The release check still protects the explicitly selected legacy
+        // namespace. Generation identity above is stronger: two builds bearing
+        // the same version cannot accidentally share a launch contract.
         if alc != env!("CARGO_PKG_VERSION") {
             let named = if alc.is_empty() {
                 "an alc too old to say which".to_owned()
@@ -544,7 +561,7 @@ impl Hub {
         let mut uncollected: Option<String> = None;
         let (command, tmux) = match wants_tmux {
             true => {
-                let found = tmux::find()?;
+                let found = tmux::find_for(&self.config_dir)?;
                 let mut session = tmux::Tmux::for_session(&id)?;
                 let (pane, token) = self.pane_command(&found, &prepared, &cwd)?;
                 uncollected = token.clone();
@@ -645,8 +662,9 @@ impl Hub {
             let launch =
                 crate::remote::pane::PaneLaunch::resolve(&prepared.program, &prepared.spec, cwd)?;
             let token = self.panes.hold(launch)?;
+            let launcher = found.materialized_launcher(&self.config_dir)?;
             Ok((
-                tmux::PaneCommand::launcher(&found.launcher, self.ctl_port, &token),
+                tmux::PaneCommand::launcher(&launcher, self.ctl_port, &token),
                 Some(token),
             ))
         }
@@ -896,53 +914,68 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
     })
 }
 
-/// Returns a running hub, starting one if there is not already a matching
-/// one listening.
-///
-/// The probe and the spawn are separated by a lock file taken with
-/// `create_new`, because two `alc --share` invocations racing here would
-/// otherwise both find nothing and both start a hub - and the loser's would
-/// fail to bind, leaving the user with an error for no reason.
+/// A selector chooses an owner for management; it never changes the build
+/// used to create a session. An older pinned executable keeps using itself.
+pub(crate) fn require_spawn_scope() -> Result<()> {
+    crate::runtime::require_own_generation()
+}
+
+pub(crate) fn generation_identity() -> Option<String> {
+    match crate::runtime::scope() {
+        crate::runtime::RuntimeScope::Legacy => None,
+        scope => Some(scope.identity().to_owned()),
+    }
+}
+
+fn validate_create_identity(
+    scope: &crate::runtime::RuntimeScope,
+    generation: Option<&str>,
+    protocol: u32,
+) -> Result<()> {
+    match scope {
+        crate::runtime::RuntimeScope::Legacy if generation.is_some() => {
+            bail!("a generation launch cannot be created in the legacy hub")
+        }
+        crate::runtime::RuntimeScope::Legacy => Ok(()),
+        scope if generation == Some(scope.identity()) && protocol == ctl::PROTOCOL => Ok(()),
+        scope => bail!(
+            "this hub owns runtime {scope} and protocol {}; the launch named a different runtime or protocol",
+            ctl::PROTOCOL
+        ),
+    }
+}
+
+/// Returns a running hub, starting one only inside this build's namespace.
+/// A process lock serialises starters, while `Hub::run` separately holds the
+/// lifetime ownership lock before any orphan cleanup.
 pub(crate) fn spawn_or_join(
     config_dir: &Path,
     secrets: &Secrets,
     bind_lan: bool,
 ) -> Result<HubRecord> {
+    require_spawn_scope()?;
+    crate::runtime::claim_namespace(config_dir)?;
     if let Some(record) = probe(config_dir, secrets) {
         return Ok(record);
     }
-
-    let lock = Secrets::run_dir(config_dir).join("hub.lock");
-    let taken = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock);
-    if taken.is_err() {
-        // Somebody else is starting one. Wait for it rather than racing.
-        let deadline = Instant::now() + STARTUP_TIMEOUT;
-        while Instant::now() < deadline {
-            if let Some(record) = probe(config_dir, secrets) {
-                return Ok(record);
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        let _ = std::fs::remove_file(&lock);
-        bail!("timed out waiting for a hub to start; try `alc hub status`");
+    let lock = Secrets::run_dir(config_dir).join("hub.start.lock");
+    let _starting = crate::file_lock::FileLock::acquire_timeout(&lock, STARTUP_TIMEOUT)?;
+    // Another starter may have published while this one waited for the lock.
+    if let Some(record) = probe(config_dir, secrets) {
+        return Ok(record);
     }
-
-    let started = start_detached(config_dir, bind_lan);
+    start_detached(config_dir, bind_lan)?;
     let deadline = Instant::now() + STARTUP_TIMEOUT;
-    let mut outcome = None;
     while Instant::now() < deadline {
         if let Some(record) = probe(config_dir, secrets) {
-            outcome = Some(record);
-            break;
+            return Ok(record);
         }
         thread::sleep(Duration::from_millis(100));
     }
-    let _ = std::fs::remove_file(&lock);
-    started?;
-    outcome.context("the hub did not come up; run `alc hub start --foreground` to see why")
+    bail!(
+        "the hub did not come up; run `alc hub start --foreground --runtime {}` to see why",
+        crate::runtime::scope()
+    )
 }
 
 /// Asks whatever is listening whether it is a hub, and whether it is the one
@@ -959,13 +992,48 @@ fn probe(config_dir: &Path, secrets: &Secrets) -> Option<HubRecord> {
             alc,
             instance,
             port,
+            generation,
+            protocol,
+            capabilities,
             ..
-        }) if instance == record.instance => Some(HubRecord {
-            port,
-            alc,
-            ..record
-        }),
+        }) if instance == record.instance
+            && hello_matches_scope(
+                crate::runtime::scope(),
+                generation.as_deref(),
+                protocol,
+                &capabilities,
+            ) =>
+        {
+            Some(HubRecord {
+                port,
+                alc,
+                generation,
+                protocol,
+                ..record
+            })
+        }
         _ => None,
+    }
+}
+
+pub(crate) fn hello_matches_scope(
+    scope: &crate::runtime::RuntimeScope,
+    generation: Option<&str>,
+    protocol: u32,
+    capabilities: &[String],
+) -> bool {
+    match scope {
+        crate::runtime::RuntimeScope::Legacy => generation.is_none(),
+        scope => {
+            generation == Some(scope.identity())
+                && protocol == ctl::PROTOCOL
+                && capabilities
+                    .iter()
+                    .any(|value| value == ctl::REQUEST_METRICS_CAPABILITY)
+                && capabilities
+                    .iter()
+                    .any(|value| value == crate::bridge_host::FORWARD_CAPABILITY)
+        }
     }
 }
 
@@ -1009,11 +1077,12 @@ pub(crate) fn hub_cannot_carry(hub_alc: &str, hub_pid: u32, spec: &LaunchSpec) -
 
 /// Starts a hub that outlives this process.
 fn start_detached(config_dir: &Path, bind_lan: bool) -> Result<()> {
-    let alc = std::env::current_exe().context("failed to find alc's own path")?;
+    let alc = crate::runtime::materialize_exe(config_dir)?;
     let mut command = Command::new(alc);
     command
         .arg("--config-dir")
         .arg(config_dir)
+        .args(["--runtime", crate::runtime::scope().identity()])
         .args(["hub", "start", "--foreground"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1045,14 +1114,14 @@ fn start_detached(config_dir: &Path, bind_lan: bool) -> Result<()> {
 /// After the request is accepted the connection stops being line-delimited
 /// JSON and becomes a raw byte relay in both directions - the same bytes the
 /// pty produces and consumes, so nothing has to be re-encoded.
-pub(crate) fn attach_stream(
-    config_dir: &Path,
+pub(crate) fn attach_stream_at(
+    run_dir: &Path,
     secret: &str,
     id: &str,
     cols: u16,
     rows: u16,
 ) -> Result<CtlStream> {
-    let mut stream = ctl::connect(config_dir)?;
+    let mut stream = ctl::connect_at(run_dir)?;
     let envelope = serde_json::json!({
         "secret": secret,
         "request": { "op": "attach", "id": id, "cols": cols, "rows": rows },
@@ -1111,6 +1180,57 @@ pub(crate) fn relay<R: Read, W: Write>(mut from: R, mut to: W) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_identity_not_release_text_gates_a_create() {
+        let own = crate::runtime::RuntimeScope::parse("0123456789ab").unwrap();
+        assert!(validate_create_identity(&own, Some("0123456789ab"), ctl::PROTOCOL).is_ok());
+        assert!(validate_create_identity(&own, None, ctl::PROTOCOL).is_err());
+        assert!(validate_create_identity(&own, Some("fedcba987654"), ctl::PROTOCOL).is_err());
+        assert!(validate_create_identity(&own, Some("0123456789ab"), 0).is_err());
+        assert!(validate_create_identity(&crate::runtime::RuntimeScope::Legacy, None, 0).is_ok());
+        assert!(
+            validate_create_identity(
+                &crate::runtime::RuntimeScope::Legacy,
+                Some("0123456789ab"),
+                ctl::PROTOCOL
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn generation_hello_requires_measured_request_and_forward_capabilities() {
+        let own = crate::runtime::RuntimeScope::parse("0123456789ab").unwrap();
+        let capabilities = vec![
+            ctl::REQUEST_METRICS_CAPABILITY.to_owned(),
+            crate::bridge_host::FORWARD_CAPABILITY.to_owned(),
+        ];
+        assert!(hello_matches_scope(
+            &own,
+            Some(own.identity()),
+            ctl::PROTOCOL,
+            &capabilities
+        ));
+        assert!(!hello_matches_scope(
+            &own,
+            Some(own.identity()),
+            ctl::PROTOCOL,
+            &[]
+        ));
+        assert!(!hello_matches_scope(
+            &own,
+            None,
+            ctl::PROTOCOL,
+            &capabilities
+        ));
+        assert!(hello_matches_scope(
+            &crate::runtime::RuntimeScope::Legacy,
+            None,
+            0,
+            &[]
+        ));
+    }
 
     /// The screen follows the reply on the same connection, and has to be
     /// left there for the relay: a terminal that reattached used to start

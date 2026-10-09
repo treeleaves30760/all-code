@@ -152,15 +152,21 @@ reaches the provider you asked for or says it could not.
 
 ## A background session cannot connect after the bridge moved
 
-The bridge keeps the port it picked, but it can lose it — another program takes
-the port while the bridge is down, and the bridge comes back on a new one.
-Sessions still running against the old port find nothing there. Restart them
-and they pick the new port up:
+A generation bridge's remembered port is part of its frozen settings/origin.
+If an unrelated program occupies it while the host is down, alc fails rather
+than rotating the token or rewriting that origin. Resolve the conflicting
+listener; do not stop another active alc generation just to update. Initial
+allocation can use an ephemeral port, and `alc sessions` shows separate owners
+and their links.
+
+Legacy keeps its older port-migration behavior. If a legacy bridge returns on a
+new port, only its affected legacy sessions need to pick it up:
 
 ```sh
 claude respawn <id>
-claude respawn --all
 ```
+
+An alc update itself neither moves old sessions nor requires their restart.
 
 ## Sessions I dispatched answer from Anthropic, not Codex
 
@@ -225,7 +231,57 @@ waiting for your next turn.
 ## `alc update` cannot find the release archive
 
 An installation from before 1.4.0 looks for a second binary that no longer
-ships. Run the installer again; it replaces the whole installation.
+ships. Use a 2.0.1-or-newer installer for the stable-front migration; if Windows
+has the old executable locked, defer or install side-by-side rather than
+stopping active work. See [one-time migration](./getting-started.md#one-time-migration-from-older-alc).
+
+## `alc tps` has no measured rows, or old rows are all `N/A`
+
+Older v1/v2 turns, launches, native-history records, and cumulative checkpoints
+have no observed request timing. They are not zero-speed requests, and alc
+cannot reconstruct past TTFT/TPS. A reused older bridge may keep writing such
+turns after the CLI was updated.
+
+The default report selects timed `Request` records before sorting/limiting;
+coverage counts explain excluded history. Inspect it with:
+
+```sh
+alc tps --include-unmeasured --source all --json
+```
+
+For future measurements, start a new session on the new generation; its host
+must advertise `request-metrics-v3`. Existing older hosts/sessions can keep
+running. Even measured failed/cancelled requests or requests without usage can
+still have unavailable individual metrics; see [timing definitions](./usage.md#ttft-and-tokens-per-second).
+
+## A Windows migration is pending, not complete
+
+Old 2.0.0 self-update used an exit-time finalizer. The new payload cannot
+retroactively change that old updater. Use a 2.0.1-or-newer installer to bootstrap
+the stable front. A locked old entry point causes an explicit error with the
+verified payload retained for retry; no new finalizer, process kill, or active
+switch is performed. Wait until the old processes exit naturally, or choose
+another `ALC_INSTALL_DIR` and invoke that side-by-side path explicitly. After
+bootstrap, updates activate a manifest without replacing the front.
+
+## A local update bundle fails verification
+
+Keep the complete directory produced by `alc update --download-only BUNDLE_DIR`;
+the destination must be new or empty. Keep separate bundles in separate directories.
+`alc update --from BUNDLE_DIR --offline` makes no GitHub/network lookup and checks
+bounded metadata, archive checksum, platform, and packaged binary version before
+activation. Do not bypass a mismatch or run scripts from the bundle; obtain a
+fresh verified bundle for this platform. A failed verification leaves the
+active generation unchanged. Rollback requires a retained generation and does
+not roll back config/credentials or restart hosts.
+
+## A host stop or session prefix is ambiguous
+
+`alc sessions` lists owners and their page URLs across legacy and generations.
+Use a full session ID or global `--runtime <id|legacy>` for the intended owner.
+When several owners run, `hub stop` and `bridge stop` require an explicit target.
+Stopping a bridge can interrupt long requests; `hub stop --drain` ends its
+sessions. Do not use either merely as an update step.
 
 ## I cannot find the sharing setting in `alc config`
 

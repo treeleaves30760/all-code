@@ -53,6 +53,7 @@ mod wire;
 
 use std::env;
 use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -92,18 +93,6 @@ pub enum RemoteCommand {
     DryRun,
 }
 
-/// The pid and alc version of a hub currently listening for `config_dir`.
-///
-/// Read from the record the hub writes at startup rather than by asking it,
-/// so a caller that only wants to mention the hub in passing - `alc update`,
-/// say - does not open a socket to do it.
-pub fn running_hub(config_dir: &std::path::Path) -> Option<(u32, String)> {
-    ctl::read_hub_record(config_dir)
-        .ok()
-        .flatten()
-        .map(|record| (record.pid, record.alc))
-}
-
 /// Runs the agent under a pty, mirrors it to this terminal and to a loopback
 /// web server, and returns the agent's exit code.
 ///
@@ -137,7 +126,7 @@ pub fn share(
     // machine answering, and they should hear it from the command they
     // typed rather than as a failure relayed back over a control socket
     // from a daemon they did not know they had started.
-    let tmux = wants_tmux.then(tmux::find).transpose()?;
+    let tmux = wants_tmux.then(|| tmux::find_for(&store.dir)).transpose()?;
 
     let permission = permission::arm_at_launch(&mut spec, requested);
     let secrets = Secrets::load_or_create(&store.dir)?;
@@ -169,6 +158,8 @@ pub fn share(
     }
     let create = ctl::CreateRequest {
         alc: env!("CARGO_PKG_VERSION").to_owned(),
+        generation: hub::generation_identity(),
+        protocol: ctl::PROTOCOL,
         spec: hub::to_wire(&spec)?,
         cwd: cwd.display().to_string(),
         // The agent must run in the environment of the shell that asked for
@@ -227,7 +218,13 @@ pub fn share(
     }
     std::io::stdout().flush().ok();
 
-    attach(store, &secrets, &session_id, cols, rows)
+    attach(
+        &Secrets::run_dir(&store.dir),
+        &secrets.ctl,
+        &session_id,
+        cols,
+        rows,
+    )
 }
 
 /// Puts this terminal on a session the hub owns.
@@ -241,8 +238,8 @@ pub fn share(
 /// there. The page draws that grid scaled to fit its window rather than
 /// resizing it, so the two no longer take turns.
 pub(crate) fn attach(
-    store: &Store,
-    secrets: &Secrets,
+    run_dir: &Path,
+    ctl_secret: &str,
     session_id: &str,
     cols: u16,
     rows: u16,
@@ -258,13 +255,13 @@ pub(crate) fn attach(
     // terminal in charge of the page's window - but it would put this
     // terminal on the mirror's byte stream, which is not what `--tmux`
     // promised either.
-    if let Some(card) = card_for(store, secrets, session_id)
+    if let Some(card) = card_for(run_dir, ctl_secret, session_id)
         && let Some(host) = card.tmux
     {
-        return attach_tmux(store, secrets, session_id, &host);
+        return attach_tmux(run_dir, ctl_secret, session_id, &host);
     }
 
-    let stream = hub::attach_stream(&store.dir, &secrets.ctl, session_id, cols, rows)?;
+    let stream = hub::attach_stream_at(run_dir, ctl_secret, session_id, cols, rows)?;
     let terminal = local::TerminalGuard::acquire()?;
 
     let detached = Arc::new(AtomicBool::new(false));
@@ -289,14 +286,15 @@ pub(crate) fn attach(
         },
     );
 
-    let config_dir = store.dir.clone();
-    let ctl_secret = secrets.ctl.clone();
+    let owner_run_dir = run_dir.to_owned();
+    let resize_secret = ctl_secret.to_owned();
     let id = session_id.to_owned();
     local::watch_resize(Arc::clone(&finished), move |cols, rows| {
-        // Out of band: the relay itself carries only terminal bytes.
-        let _ = ctl::request(
-            &config_dir,
-            &ctl_secret,
+        // The relay's owner is captured explicitly; this thread must not look
+        // up whichever runtime the managing executable happens to belong to.
+        let _ = ctl::request_at(
+            &owner_run_dir,
+            &resize_secret,
             &ctl::CtlRequest::Resize {
                 id: id.clone(),
                 cols,
@@ -321,7 +319,7 @@ pub(crate) fn attach(
     }
 
     // The relay ended because the agent did. Ask what it exited with.
-    let code = match ctl::request(&store.dir, &secrets.ctl, &ctl::CtlRequest::List) {
+    let code = match ctl::request_at(run_dir, ctl_secret, &ctl::CtlRequest::List) {
         Ok(ctl::CtlReply::Sessions { sessions }) => sessions
             .iter()
             .find(|card| card.id == session_id)
@@ -348,8 +346,8 @@ pub(crate) fn attach(
 /// the relay path reads it there - tmux's own client exits 0 whether the
 /// agent finished or failed, so asking the hub is the only honest answer.
 fn attach_tmux(
-    store: &Store,
-    secrets: &Secrets,
+    run_dir: &Path,
+    ctl_secret: &str,
     session_id: &str,
     host: &tmux::Tmux,
 ) -> Result<u8> {
@@ -393,7 +391,7 @@ fn attach_tmux(
     // the client's status is only consulted for the case the hub cannot
     // describe: the session is still there and this terminal never got on
     // it.
-    match card_for(store, secrets, session_id) {
+    match card_for(run_dir, ctl_secret, session_id) {
         Some(card) => match card.exit.as_ref() {
             Some(exit) => Ok(exit_code(exit)),
             None if status.success() => {
@@ -416,8 +414,8 @@ fn attach_tmux(
 /// question they have a sensible answer for either way - "is this a tmux
 /// session" and "did the agent exit" - and a hub that has gone away between
 /// the attach and this call should not turn a clean detach into a failure.
-fn card_for(store: &Store, secrets: &Secrets, session_id: &str) -> Option<wire::SessionCard> {
-    list(store, secrets)
+fn card_for(run_dir: &Path, ctl_secret: &str, session_id: &str) -> Option<wire::SessionCard> {
+    list_at(run_dir, ctl_secret)
         .ok()?
         .into_iter()
         .find(|card| card.id == session_id)
@@ -447,8 +445,8 @@ pub fn run_pane(port: u16, token: &str) -> ! {
 /// Exists for `--dry-run`, which has to be able to admit that the launch it
 /// is describing would be refused - the same promise the adapter check makes
 /// a few lines above it.
-pub fn tmux_status() -> Result<String> {
-    tmux::find().map(|found| found.label())
+pub fn tmux_status(config_dir: &Path) -> Result<String> {
+    tmux::find_for(config_dir).map(|found| found.label())
 }
 
 /// Whether the user has asked for every session to be shared.
@@ -538,8 +536,7 @@ pub fn run_command(store: &Store, command: RemoteCommand) -> Result<u8> {
             Ok(0)
         }
         RemoteCommand::Url => {
-            let secrets = Secrets::load_or_create(&store.dir)?;
-            for url in page_urls(store, &secrets)? {
+            for url in page_urls(store)? {
                 println!("{url}");
             }
             Ok(0)
@@ -615,7 +612,6 @@ pub enum HubCommand {
 }
 
 pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
-    let secrets = Secrets::load_or_create(&store.dir)?;
     match command {
         HubCommand::Start {
             foreground: true,
@@ -625,71 +621,85 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
             foreground: false,
             bind_lan,
         } => {
+            let secrets = Secrets::load_or_create(&store.dir)?;
             let record = hub::spawn_or_join(&store.dir, &secrets, bind_lan)?;
             println!(
-                "hub running on 127.0.0.1:{} (pid {})",
-                record.port, record.pid
+                "hub running on 127.0.0.1:{} (pid {}, runtime {})",
+                record.port,
+                record.pid,
+                crate::runtime::scope()
             );
             Ok(0)
         }
         HubCommand::Stop { drain } => {
-            ctl::request(
-                &store.dir,
-                &secrets.ctl,
+            let owners = owners(store)?;
+            let owner = stop_owner(&owners)?;
+            ctl::request_at(
+                &owner.run_dir,
+                &owner.ctl,
                 &ctl::CtlRequest::Shutdown { drain },
             )?;
-            println!("hub stopped");
+            println!("hub stopped (runtime {})", owner.scope);
             Ok(0)
         }
-        HubCommand::Status => match ctl::read_hub_record(&store.dir)? {
-            Some(record) => {
-                match ctl::request(&store.dir, &secrets.ctl, &ctl::CtlRequest::Hello) {
-                    Ok(ctl::CtlReply::Hello { alc, port, pid, .. }) => {
-                        println!("hub:      running (pid {pid}, alc {alc})");
-                        println!("page:     http://127.0.0.1:{port}/");
-                        println!("sessions: {}", session_count(store, &secrets));
-                        Ok(0)
-                    }
-                    // A record with nothing behind it: the hub was killed
-                    // outright. Say so rather than reporting it as running.
-                    _ => {
-                        println!(
-                            "hub:      not running (a stale record names pid {})",
-                            record.pid
-                        );
-                        Ok(1)
-                    }
+        HubCommand::Status => {
+            let owners = owners(store)?;
+            if owners.is_empty() {
+                if let Some(record) = ctl::read_hub_record(&store.dir)? {
+                    println!(
+                        "hub:      not running (a stale record names pid {})",
+                        record.pid
+                    );
+                } else {
+                    println!("hub:      not running");
                 }
+                return Ok(1);
             }
-            None => {
-                println!("hub:      not running");
-                Ok(1)
+            for owner in owners {
+                println!("runtime:  {}", owner.scope);
+                println!(
+                    "hub:      running (pid {}, alc {})",
+                    owner.record.pid, owner.record.alc
+                );
+                for url in owner.page_urls(&RemoteSettings::load(&store.dir)?) {
+                    println!("page:     {url}");
+                }
+                println!("sessions: {}", list_at(&owner.run_dir, &owner.ctl)?.len());
             }
-        },
+            Ok(0)
+        }
         HubCommand::List { json } => {
-            let sessions = list(store, &secrets)?;
+            let owners = owners(store)?;
+            if owners.is_empty() && crate::runtime::scope_is_explicit() {
+                bail!(
+                    "no hub is running in runtime {}; start one with `alc hub start`",
+                    crate::runtime::scope()
+                );
+            }
+            let sessions = owned_sessions(&owners)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&sessions)?);
                 return Ok(0);
             }
-            // Printed first and always, because the link `alc <agent>
-            // --share` shows scrolls away the moment the agent draws its
-            // own interface, and this is where a user comes looking for it.
-            for (index, url) in page_urls(store, &secrets)?.iter().enumerate() {
-                println!("{:<6}{url}", if index == 0 { "page" } else { "" });
+            let settings = RemoteSettings::load(&store.dir)?;
+            for owner in &owners {
+                for url in owner.page_urls(&settings) {
+                    println!("page [{}] {url}", owner.scope);
+                }
             }
             println!();
             if sessions.is_empty() {
                 println!("no shared sessions; start one with `alc <agent> --share`");
                 return Ok(0);
             }
-            for card in &sessions {
+            for session in &sessions {
+                let card = &session.card;
                 let state = match card.state {
                     wire::SessionState::Running => "running",
                     wire::SessionState::Exited => "exited",
                 };
                 println!(
-                    "{:<22} {:<8} {:<9} {:<10} {:<6} {}",
+                    "{:<22} {:<8} {:<9} {:<10} {:<6} {:<12} {}",
                     card.id,
                     card.agent,
                     state,
@@ -697,10 +707,8 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
                         .rung
                         .map(|rung| rung.to_string())
                         .unwrap_or_else(|| "-".to_owned()),
-                    // Said here because it changes what `alc attach` does
-                    // and which key detaches, and a user should learn that
-                    // before they are inside the session rather than after.
                     if card.tmux.is_some() { "tmux" } else { "-" },
+                    session.runtime,
                     card.cwd
                 );
             }
@@ -708,25 +716,28 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
         }
         HubCommand::Attach { id } => {
             require_terminal()?;
-            let id = resolve(store, &secrets, &id)?;
+            let owners = owners(store)?;
+            let (owner, id) = resolve_owned(&owners, &id)?;
             let (cols, rows) = local::size();
-            attach(store, &secrets, &id, cols, rows)
+            attach(&owner.run_dir, &owner.ctl, &id, cols, rows)
         }
         HubCommand::Kill { id } => {
-            let id = resolve(store, &secrets, &id)?;
-            ctl::request(
-                &store.dir,
-                &secrets.ctl,
+            let owners = owners(store)?;
+            let (owner, id) = resolve_owned(&owners, &id)?;
+            ctl::request_at(
+                &owner.run_dir,
+                &owner.ctl,
                 &ctl::CtlRequest::Kill { id: id.clone() },
             )?;
             println!("stopped {id}");
             Ok(0)
         }
         HubCommand::Rename { id, name } => {
-            let id = resolve(store, &secrets, &id)?;
-            ctl::request(
-                &store.dir,
-                &secrets.ctl,
+            let owners = owners(store)?;
+            let (owner, id) = resolve_owned(&owners, &id)?;
+            ctl::request_at(
+                &owner.run_dir,
+                &owner.ctl,
                 &ctl::CtlRequest::Rename {
                     id: id.clone(),
                     name: name.clone(),
@@ -738,55 +749,163 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
     }
 }
 
-fn list(store: &Store, secrets: &Secrets) -> Result<Vec<wire::SessionCard>> {
-    match ctl::request(&store.dir, &secrets.ctl, &ctl::CtlRequest::List)? {
+struct Owner {
+    scope: crate::runtime::RuntimeScope,
+    run_dir: PathBuf,
+    record: ctl::HubRecord,
+    ctl: String,
+    operator: Option<String>,
+}
+
+impl Owner {
+    fn page_urls(&self, settings: &RemoteSettings) -> Vec<String> {
+        let Some(operator) = &self.operator else {
+            return Vec::new();
+        };
+        let mut urls = vec![server::page_url(
+            self.record.port,
+            operator,
+            self.record.lan,
+        )];
+        // Legacy keeps the tunnel links it has always advertised. A tunnel
+        // without a port cannot distinguish generations, so a generation only
+        // advertises names when it owns the configured listener.
+        if matches!(self.scope, crate::runtime::RuntimeScope::Legacy)
+            || self.record.port == settings.port
+        {
+            for host in &settings.allowed_hosts {
+                if !host.starts_with("*.") {
+                    urls.push(format!("https://{host}/#k={operator}"));
+                }
+            }
+        }
+        urls
+    }
+}
+
+/// A management lookup reads owners' existing state, never creates tokens in
+/// a dormant namespace. The explicit selector narrows a lookup; otherwise
+/// Legacy and all retained generations participate, including id ambiguity.
+fn owners(store: &Store) -> Result<Vec<Owner>> {
+    let scopes = if crate::runtime::scope_is_explicit() {
+        vec![crate::runtime::scope().clone()]
+    } else {
+        crate::runtime::discover_scopes(&store.dir)?
+    };
+    let mut owners = Vec::new();
+    for scope in scopes {
+        let run_dir = crate::runtime::run_dir_for(&store.dir, &scope);
+        let Some(record) = ctl::read_hub_record_at(&run_dir)? else {
+            continue;
+        };
+        let Ok(ctl_secret) = Secrets::read_ctl_at(&run_dir, &scope) else {
+            continue;
+        };
+        let Ok(ctl::CtlReply::Hello {
+            alc,
+            instance,
+            port,
+            pid,
+            generation,
+            protocol,
+            capabilities,
+        }) = ctl::request_at(&run_dir, &ctl_secret, &ctl::CtlRequest::Hello)
+        else {
+            continue;
+        };
+        if instance != record.instance
+            || !hub::hello_matches_scope(&scope, generation.as_deref(), protocol, &capabilities)
+        {
+            continue;
+        }
+        let operator = Secrets::read_operator_at(&run_dir, &scope).ok();
+        owners.push(Owner {
+            scope,
+            run_dir,
+            ctl: ctl_secret,
+            operator,
+            record: ctl::HubRecord {
+                alc,
+                port,
+                pid,
+                generation,
+                protocol,
+                ..record
+            },
+        });
+    }
+    Ok(owners)
+}
+
+fn stop_owner(owners: &[Owner]) -> Result<&Owner> {
+    match owners {
+        [owner] => Ok(owner),
+        [] => bail!("no hub is running; start one with `alc hub start`"),
+        _ => {
+            let names = owners
+                .iter()
+                .map(|owner| owner.scope.identity())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "more than one hub is running ({names}); choose one with --runtime <id|legacy>; none were stopped"
+            )
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct OwnedSession {
+    #[serde(flatten)]
+    card: wire::SessionCard,
+    runtime: String,
+}
+
+fn owned_sessions(owners: &[Owner]) -> Result<Vec<OwnedSession>> {
+    let mut sessions = Vec::new();
+    for owner in owners {
+        for card in list_at(&owner.run_dir, &owner.ctl)? {
+            sessions.push(OwnedSession {
+                card,
+                runtime: owner.scope.identity().to_owned(),
+            });
+        }
+    }
+    Ok(sessions)
+}
+
+fn list_at(run_dir: &Path, ctl_secret: &str) -> Result<Vec<wire::SessionCard>> {
+    match ctl::request_at(run_dir, ctl_secret, &ctl::CtlRequest::List)? {
         ctl::CtlReply::Sessions { sessions } => Ok(sessions),
         other => bail!("the hub answered a list with {other:?}"),
     }
 }
 
-fn session_count(store: &Store, secrets: &Secrets) -> usize {
-    list(store, secrets)
-        .map(|sessions| sessions.len())
-        .unwrap_or(0)
-}
-
-/// Every address the page can be opened at, most useful first.
-///
-/// This exists because the link `alc <agent> --share` prints scrolls away
-/// the instant the agent draws its own interface, and it is the one thing
-/// the user needs. `alc sessions` and `alc remote url` both print it.
-///
-/// The token is included, because a link without it is not a link. That
-/// does mean it lands in shell scrollback - which is the same place it was
-/// printed the first time, and a token that cannot be recovered is a
-/// feature nobody can use.
-pub(crate) fn page_urls(store: &Store, secrets: &Secrets) -> Result<Vec<String>> {
-    let record = ctl::read_hub_record(&store.dir)?
-        .context("no hub is running; start one with `alc <agent> --share`")?;
-    let settings = RemoteSettings::load(&store.dir)?;
-
-    let mut urls = vec![server::page_url(record.port, &secrets.operator, record.lan)];
-    // A tunnel's own name is the useful one when there is a tunnel, and it
-    // is always https: both `tailscale serve` and `cloudflared` terminate
-    // TLS themselves. A wildcard entry is skipped - alc knows the pattern,
-    // not the name the tunnel actually minted.
-    for host in &settings.allowed_hosts {
-        if host.starts_with("*.") {
-            continue;
-        }
-        urls.push(format!("https://{host}/#k={}", secrets.operator));
+/// Each page is paired with the token of its real owner.
+pub(crate) fn page_urls(store: &Store) -> Result<Vec<String>> {
+    let owners = owners(store)?;
+    if owners.is_empty() {
+        bail!("no hub is running; start one with `alc <agent> --share`");
     }
-    Ok(urls)
+    let settings = RemoteSettings::load(&store.dir)?;
+    Ok(owners
+        .iter()
+        .flat_map(|owner| owner.page_urls(&settings))
+        .collect())
 }
 
-/// Resolves an id prefix, the way git resolves a short hash. Typing ten
-/// random characters to stop a session is not a thing anyone should have to
-/// do.
-fn resolve(store: &Store, secrets: &Secrets, prefix: &str) -> Result<String> {
-    let sessions = list(store, secrets)?;
-    let ids: Vec<String> = sessions.into_iter().map(|card| card.id).collect();
-    id::resolve_prefix(ids.iter(), prefix)
+fn resolve_owned<'a>(owners: &'a [Owner], prefix: &str) -> Result<(&'a Owner, String)> {
+    let sessions = owned_sessions(owners)?;
+    let id = id::resolve_prefix(sessions.iter().map(|session| &session.card.id), prefix)?;
+    let session = sessions
+        .iter()
+        .find(|session| session.card.id == id)
+        .context("the session disappeared while looking up its owner")?;
+    let owner = owners
+        .iter()
+        .find(|owner| owner.scope.identity() == session.runtime)
+        .context("the session's owner disappeared")?;
+    Ok((owner, id))
 }
 
 /// What `alc doctor` should say about remote control.

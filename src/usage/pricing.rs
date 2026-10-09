@@ -19,7 +19,10 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
-use super::records::{Billing, Granularity, InputBasis, Source, TokenCounts, UsageRecord};
+use super::records::{
+    Billing, Granularity, Source, TokenCounts, UsageRecord, is_codex_endpoint,
+    official_endpoint_provider,
+};
 
 const BUNDLED: &str = include_str!("prices/bundled.toml");
 const SOURCE: &str = include_str!("prices/source.toml");
@@ -92,6 +95,87 @@ pub(crate) struct PriceSource {
     pub notes: Vec<String>,
 }
 
+/// A component can have a known subtotal without a complete total. Both are
+/// nullable when reconciliation makes even a pooled subtotal unsafe.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) struct CostComponent {
+    pub known_subtotal_usd: Option<Money>,
+    pub total_usd: Option<Money>,
+}
+
+impl Default for CostComponent {
+    fn default() -> Self {
+        Self {
+            known_subtotal_usd: Some(Money::ZERO),
+            total_usd: None,
+        }
+    }
+}
+
+impl CostComponent {
+    fn zero() -> Self {
+        Self {
+            known_subtotal_usd: Some(Money::ZERO),
+            total_usd: Some(Money::ZERO),
+        }
+    }
+
+    fn checked_add(&mut self, other: Self) -> Result<()> {
+        let sum = |a: Option<Money>, b: Option<Money>| -> Result<Option<Money>> {
+            match (a, b) {
+                (Some(a), Some(b)) => Ok(Some(
+                    a.checked_add(b)
+                        .context("estimated component cost overflow")?,
+                )),
+                _ => Ok(None),
+            }
+        };
+        self.known_subtotal_usd = sum(self.known_subtotal_usd, other.known_subtotal_usd)?;
+        self.total_usd = sum(self.total_usd, other.total_usd)?;
+        Ok(())
+    }
+}
+
+/// Mutually exclusive fees: TTL write buckets are included only in cache_write.
+/// Money serializes as the same exact USD strings used by schema-1 totals.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub(crate) struct CostComponents {
+    pub uncached_input: CostComponent,
+    pub cache_read: CostComponent,
+    pub cache_write: CostComponent,
+    pub output: CostComponent,
+}
+
+impl CostComponents {
+    pub(crate) fn zero() -> Self {
+        Self {
+            uncached_input: CostComponent::zero(),
+            cache_read: CostComponent::zero(),
+            cache_write: CostComponent::zero(),
+            output: CostComponent::zero(),
+        }
+    }
+
+    pub(crate) fn checked_add(&mut self, other: Self) -> Result<()> {
+        self.uncached_input.checked_add(other.uncached_input)?;
+        self.cache_read.checked_add(other.cache_read)?;
+        self.cache_write.checked_add(other.cache_write)?;
+        self.output.checked_add(other.output)
+    }
+
+    pub(crate) fn suppress_overlap(&mut self) {
+        for component in [
+            &mut self.uncached_input,
+            &mut self.cache_read,
+            &mut self.cache_write,
+            &mut self.output,
+        ] {
+            component.known_subtotal_usd = None;
+            component.total_usd = None;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CostEstimate {
     pub status: CostStatus,
@@ -100,6 +184,10 @@ pub(crate) struct CostEstimate {
     pub currency: &'static str,
     pub known_subtotal_usd: String,
     pub total_usd: Option<String>,
+    pub cost_components: CostComponents,
+    /// The identical provenance-aware view used for these fees and token sums.
+    #[serde(skip)]
+    pub effective_tokens: TokenCounts,
     /// Reference identity only; this never changes UsageRecord attribution.
     pub reference_provider: Option<String>,
     pub reference_model: Option<String>,
@@ -121,6 +209,8 @@ impl CostEstimate {
             currency: "USD",
             known_subtotal_usd: "0".to_owned(),
             total_usd: None,
+            cost_components: CostComponents::default(),
+            effective_tokens: TokenCounts::default(),
             reference_provider: None,
             reference_model: None,
             price_source: None,
@@ -390,7 +480,12 @@ impl PriceBook {
     }
 
     pub(crate) fn estimate(&self, record: &UsageRecord) -> CostEstimate {
+        let view = record.effective_tokens();
+        let invalid_cache = view.invalid_cache;
+        let tokens = view.counts;
         let mut estimate = CostEstimate::unknown();
+        estimate.effective_tokens = tokens.clone();
+        estimate.assumptions.extend(view.assumptions);
         let Some(model) = record.model.as_deref().filter(|model| !model.is_empty()) else {
             estimate
                 .reasons
@@ -475,39 +570,6 @@ impl PriceBook {
             );
             return estimate;
         }
-        let mut tokens = record.tokens.clone();
-        let mut invalid_cache = normalize_cache_write(&mut tokens, &mut estimate.assumptions);
-        let normalized = tokens.clone();
-        tokens.validate();
-        invalid_cache |= tokens.cache_read_tokens != normalized.cache_read_tokens
-            || tokens.cache_write_tokens != normalized.cache_write_tokens
-            || tokens.cache_write_5m_tokens != normalized.cache_write_5m_tokens
-            || tokens.cache_write_1h_tokens != normalized.cache_write_1h_tokens;
-        if normalized.cache_write_tokens.is_some() && tokens.cache_write_tokens.is_none() {
-            // A write aggregate rejected as an invalid inclusive subset cannot
-            // be resurrected by independently pricing its TTL buckets.
-            tokens.cache_write_5m_tokens = None;
-            tokens.cache_write_1h_tokens = None;
-        }
-        // The verified OpenAI schemas have no separately billed cache-write
-        // category. This exception requires first-party/reference provenance;
-        // absent cache reads and legacy unproven counters remain unknown.
-        if !reference.overridden
-            && !invalid_cache
-            && reference.provider == "openai"
-            && tokens.input_basis == InputBasis::Inclusive
-            && tokens.cache_write_tokens.is_none()
-            && tokens.cache_write_5m_tokens.is_none()
-            && tokens.cache_write_1h_tokens.is_none()
-            && (record.source == Source::Codex
-                || record.billing == Billing::Api
-                || (record.provider.as_deref() == Some("codex")
-                    && record.billing == Billing::ApiEquivalent)
-                || endpoint_provider == Some("openai"))
-        {
-            tokens.cache_write_tokens = Some(0);
-            estimate.assumptions.push("Verified OpenAI usage schema has no separately billed cache-write category; absent write counter treated as zero.".to_owned());
-        }
         let has_bands = tier_entries.iter().any(|entry| entry.has_context_band());
         let entry = if has_bands {
             if record.granularity != Granularity::Request {
@@ -539,24 +601,37 @@ impl PriceBook {
             }
             tier_entries[0]
         };
-        let mut accumulator = Accumulator::new();
-        if invalid_cache {
-            accumulator
-                .missing("invalid cache counters/subsets were left unknown rather than priced");
-        }
-        accumulator.price("uncached input", tokens.uncached_input(), entry.rates.input);
-        accumulator.price("output", tokens.output_tokens, entry.rates.output);
-        accumulator.price(
+        let mut input = Accumulator::new();
+        input.price("uncached input", tokens.uncached_input(), entry.rates.input);
+        let mut output = Accumulator::new();
+        output.price("output", tokens.output_tokens, entry.rates.output);
+        let mut cache_read = Accumulator::new();
+        cache_read.price(
             "cache read",
             tokens.cache_read_tokens,
             entry.rates.cache_read,
         );
+        let mut cache_write = Accumulator::new();
         price_cache_write(
             &tokens,
             &entry.rates,
-            &mut accumulator,
+            &mut cache_write,
             &mut estimate.assumptions,
         );
+        estimate.cost_components = CostComponents {
+            uncached_input: input.component(),
+            output: output.component(),
+            cache_read: cache_read.component(),
+            cache_write: cache_write.component(),
+        };
+        let mut accumulator = Accumulator::new();
+        for component in [input, output, cache_read, cache_write] {
+            accumulator.append(component);
+        }
+        if invalid_cache {
+            accumulator
+                .missing("invalid cache counters/subsets were left unknown rather than priced");
+        }
         if tokens.reasoning_tokens.is_some() {
             estimate.assumptions.push(
                 "Reasoning tokens are a subset of output and are not billed again.".to_owned(),
@@ -842,75 +917,6 @@ fn select_family<'a>(
     )
 }
 
-/// Exact HTTPS origins and known API paths; a lookalike host or arbitrary
-/// reverse-proxy path is not proof of first-party billing.
-fn official_endpoint_provider(endpoint: &str) -> Option<&'static str> {
-    let url = reqwest::Url::parse(endpoint).ok()?;
-    if url.scheme() != "https"
-        || url.port().is_some_and(|port| port != 443)
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return None;
-    }
-    match (url.host_str()?, url.path().trim_end_matches('/')) {
-        ("api.openai.com", "" | "/v1" | "/v1/responses" | "/v1/chat/completions") => Some("openai"),
-        ("api.anthropic.com", "" | "/v1" | "/v1/messages") => Some("anthropic"),
-        _ => None,
-    }
-}
-
-fn is_codex_endpoint(endpoint: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(endpoint) else {
-        return false;
-    };
-    url.scheme() == "https"
-        && url.host_str() == Some("chatgpt.com")
-        && url.port().is_none_or(|port| port == 443)
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
-        && matches!(
-            url.path().trim_end_matches('/'),
-            "/backend-api/codex" | "/backend-api/codex/responses"
-        )
-}
-
-fn normalize_cache_write(tokens: &mut TokenCounts, assumptions: &mut Vec<String>) -> bool {
-    if let Some(total) = tokens.cache_write_tokens {
-        if tokens
-            .cache_write_5m_tokens
-            .is_some_and(|short| short > total)
-            || tokens
-                .cache_write_1h_tokens
-                .is_some_and(|long| long > total)
-            || matches!((tokens.cache_write_5m_tokens, tokens.cache_write_1h_tokens), (Some(short), Some(long)) if short.checked_add(long) != Some(total))
-        {
-            tokens.cache_write_tokens = None;
-            tokens.cache_write_5m_tokens = None;
-            tokens.cache_write_1h_tokens = None;
-            return true;
-        }
-    } else if let (Some(short), Some(long)) =
-        (tokens.cache_write_5m_tokens, tokens.cache_write_1h_tokens)
-    {
-        if let Some(total) = short.checked_add(long) {
-            tokens.cache_write_tokens = Some(total);
-            assumptions.push(
-                "Aggregate cache-write count derived from the exact 5m + 1h bucket sum.".to_owned(),
-            );
-        } else {
-            tokens.cache_write_5m_tokens = None;
-            tokens.cache_write_1h_tokens = None;
-            return true;
-        }
-    }
-    false
-}
-
 struct Accumulator {
     subtotal: Money,
     known_components: usize,
@@ -925,6 +931,24 @@ impl Accumulator {
             known_components: 0,
             complete: true,
             reasons: Vec::new(),
+        }
+    }
+
+    fn component(&self) -> CostComponent {
+        CostComponent {
+            known_subtotal_usd: Some(self.subtotal),
+            total_usd: self.complete.then_some(self.subtotal),
+        }
+    }
+
+    fn append(&mut self, component: Self) {
+        self.complete &= component.complete;
+        self.reasons.extend(component.reasons);
+        if let Some(subtotal) = self.subtotal.checked_add(component.subtotal) {
+            self.subtotal = subtotal;
+            self.known_components += component.known_components;
+        } else {
+            self.missing("component subtotal exceeds fixed-point capacity");
         }
     }
 
@@ -1036,6 +1060,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::config::Agent;
+    use crate::usage::records::InputBasis;
 
     fn record(provider: Option<&str>, model: &str, basis: InputBasis) -> UsageRecord {
         let mut record = UsageRecord::new(Source::Alc, Agent::Claude, 0);
@@ -1095,6 +1120,86 @@ cache_write="0"
         assert_eq!(json["currency"], "USD");
         assert_eq!(json["known_subtotal_usd"], "0.000000000003");
         assert!(json.get("known_subtotal").is_none());
+    }
+
+    #[test]
+    fn price_components_use_the_same_effective_view_and_exact_ttl_subtotals() {
+        let (_dir, book) = overridden(&sidecar(
+            r#"
+[[models]]
+provider="custom"
+model="ttl"
+input="2"
+output="8"
+cache_read="0.5"
+cache_write_5m="3"
+cache_write_1h="6"
+"#,
+        ));
+        let mut record = record(Some("custom"), "ttl", InputBasis::Separate);
+        record.tokens.input_tokens = Some(30);
+        record.tokens.cache_read_tokens = Some(60);
+        record.tokens.cache_write_tokens = None;
+        record.tokens.cache_write_5m_tokens = Some(4);
+        record.tokens.cache_write_1h_tokens = Some(6);
+        record.tokens.output_tokens = Some(5);
+        let estimate = book.estimate(&record);
+        assert_eq!(estimate.effective_tokens.cache_write_tokens, Some(10));
+        assert_eq!(estimate.effective_tokens.gross_input(), Some(100));
+        let components = estimate.cost_components;
+        assert_eq!(
+            components.uncached_input.total_usd.unwrap().to_usd_string(),
+            "0.00006"
+        );
+        assert_eq!(
+            components.cache_read.total_usd.unwrap().to_usd_string(),
+            "0.00003"
+        );
+        assert_eq!(
+            components.cache_write.total_usd.unwrap().to_usd_string(),
+            "0.000048"
+        );
+        assert_eq!(
+            components.output.total_usd.unwrap().to_usd_string(),
+            "0.00004"
+        );
+        assert_eq!(estimate.total_usd.as_deref(), Some("0.000178"));
+        record.tokens.cache_write_tokens = Some(10);
+        record.tokens.cache_write_5m_tokens = None;
+        record.tokens.cache_write_1h_tokens = None;
+        let partial = book.estimate(&record);
+        assert_eq!(
+            partial.cost_components.cache_write.known_subtotal_usd,
+            Some(Money::ZERO)
+        );
+        assert_eq!(partial.cost_components.cache_write.total_usd, None);
+        assert_eq!(partial.known_subtotal_usd, "0.00013");
+        assert_eq!(partial.total, None);
+    }
+
+    #[test]
+    fn price_override_does_not_change_a_verified_effective_token_schema() {
+        let (_dir, book) = overridden(&sidecar(
+            r#"
+[[models]]
+provider="openai"
+model="gpt-4.1"
+input="2"
+output="8"
+cache_read="0.5"
+"#,
+        ));
+        let mut record = record(Some("openai"), "gpt-4.1", InputBasis::Inclusive);
+        record.tokens.input_tokens = Some(100);
+        record.tokens.cache_read_tokens = Some(20);
+        record.tokens.cache_write_tokens = None;
+        let estimate = book.estimate(&record);
+        assert_eq!(estimate.effective_tokens.cache_write_tokens, Some(0));
+        assert_eq!(estimate.total_usd.as_deref(), Some("0.00017"));
+        assert_eq!(
+            estimate.cost_components.cache_write.total_usd,
+            Some(Money::ZERO)
+        );
     }
 
     #[test]

@@ -22,9 +22,10 @@ keywords:
 What is left on each login, which agent used tokens, and how new requests performed.
 
 ```sh
-alc usage                   # Accounts, compatibility ledger, token/cost statistics
+alc usage                   # Accounts, compatibility ledger, daily token/cost statistics
 alc usage --offline         # local statistics only; no credentials or network
-alc tps                     # latest 20 matching alc request records
+alc usage weekly --offline --timezone Asia/Taipei --chart
+alc tps                     # latest 20 matching requests with recorded timing
 ```
 
 The normal usage report keeps **Accounts** and **Usage by provider and agent**, then
@@ -40,9 +41,9 @@ Accounts
   ·  openrouter  —                        —     no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
-  codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
-  ollama    opencode  1         —      —      —        —       —       12m ago
+  PROVIDER  AGENT     LAUNCHES  TURNS   INPUT  CACHED  CACHE %  OUTPUT  LAST
+  codex     claude           1      1  20,800  15,400      74%      35  7m ago
+  ollama    opencode         1      —       —       —        —       —  12m ago
   source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
 
 ✓ ready
@@ -154,15 +155,28 @@ history, not the separate Claude or Codex histories.
 ```sh
 alc tps
 alc tps --limit 50 --filter-profile work --filter-agent claude
-alc tps --since 2026-10-01 --until 2026-10-08 --json
+alc tps --since 2026-10-01 --until 2026-10-08 --timezone Asia/Taipei --json
+alc tps --include-unmeasured --source all --json
 ```
 
-`alc tps` reads local records without credentials, quota queries, or network
-access. It defaults to `--source alc --limit 20`, newest matching records first;
-`--limit` accepts 1–10000. A launch is not a performance sample: measurements
-start with new requests carried by the translation bridge or a supported
-`alc --metrics <agent>` launch. Old ledger entries and native histories have no
-observed request timing and show `N/A`.
+`alc tps` reads local records without credentials, quota queries, network access,
+or probing active daemons. It defaults to `--source alc --limit 20`. After the
+query filters, it selects **actual `Request` records with a timing object before
+sorting newest-first and applying the limit**. Newer historical turns cannot hide
+older measured requests. `--limit` accepts 1–10000.
+
+A launch is not a performance sample. Measurements start with requests carried
+by a capable translation bridge or a supported `alc --metrics <agent>` launch.
+Coverage counts identify excluded legacy, untimed, and non-request records.
+`--include-unmeasured` restores the historical view, including native deltas and
+checkpoints; unavailable metrics remain `N/A` rather than becoming zero.
+
+An old all-`N/A` report can contain v1/v2 turns from a reused older bridge that
+never recorded request timing. There is no historical TTFT/TPS to reconstruct.
+New launches use their generation's host and require `request-metrics-v3` for
+request measurement; older hosts keep serving older sessions. Start a new
+session after upgrading for future measurements, without stopping old work.
+A version string alone does not prove measurement capability.
 
 These are **client-observed measurements**, not a model-server benchmark:
 
@@ -174,9 +188,10 @@ These are **client-observed measurements**, not a model-server benchmark:
 | `TPS E2E` | Gross reported output tokens divided by request-start-to-terminal seconds. Includes queueing, network, prompt processing, and reasoning; **not server decode speed**. |
 
 Nonstreaming requests can have E2E TPS when output and a terminal time are known,
-but TTFT and streaming TPS are `N/A`. Failures, cancellations, timeouts, and
-truncated streams retain their outcomes; missing counters or a missing terminal
-are not fabricated as zero or successful timing.
+but TTFT and streaming TPS are `N/A`. Observed failures, cancellations, timeouts,
+truncated streams, and requests without usage remain rows in the default report.
+Their outcomes are retained; missing counters or a missing terminal are not
+fabricated as zero or successful timing.
 
 The summary shows valid sample counts separately for TTFT, streaming TPS, and
 E2E TPS. TTFT has a mean, p50, and p95. Weighted TPS divides summed valid token
@@ -227,15 +242,17 @@ sealed helper: save the key with `alc config key <profile>`, unset that exported
 variable, and relaunch; ordinary no-metrics auth behavior is unchanged.
 
 For **durable Claude API-key observation**, the helper authenticates the host
-with the independent owner-only `run/bridge.observer-key` and a fresh challenge,
+with the independent owner-only runtime `bridge.observer-key` and a fresh challenge,
 then returns an AEAD-sealed surrogate, not the vendor key. It is bound to the
 frozen route and current host instance; the host restores the original upstream
 key/header only when dispatching to the fixed endpoint. Registrations retain
 key digests only, and observation artifacts never write the plaintext vendor
 key. Old surrogates receive HTTP 401 after a host restart; rerun the helper to
-create a new one. The handshake/control challenges do not publish the secret;
-`forward-observer-v2` capability checks refuse older daemons even with the same
-version string. Stop the old host with `alc bridge stop`, then relaunch.
+create a new one. The handshake/control challenges do not publish the secret.
+`forward-observer-v2` checks require actual capability, not a matching version
+string. New launches use their own generation host; they do not require stopping
+an old host and interrupting its sessions. Runtime identity and helper binaries
+are pinned as described in [background sessions](./background-sessions.md).
 
 This is not TLS or full local data-plane confidentiality. Requests still cross
 loopback HTTP, and local processes remain trusted: the Claude surrogate avoids
@@ -246,6 +263,9 @@ credentials.
 ## Local history and token/cost statistics
 
 ```sh
+alc usage weekly --offline --timezone Asia/Taipei
+alc usage monthly --offline --chart
+alc usage yearly --offline --json
 alc usage --offline --daily --since 2026-10-01 --until 2026-10-08
 alc usage --offline --monthly --source claude,codex --json
 alc usage --offline --source alc --filter-profile work --filter-model example-model
@@ -256,8 +276,61 @@ alc usage --offline --claude-dir "$HOME/.claude-work" --codex-dir "$HOME/.codex-
 read API keys, login files, or the Keychain, refresh credentials, query quota,
 fetch prices, or otherwise access the network. Text output says `Accounts: not
 fetched (--offline)`; JSON has an empty `accounts` array and still includes the
-compatibility `ledger`. `--daily` and `--monthly` are mutually exclusive and
-bucket statistics in **UTC**; without either, the period is `all-time`.
+compatibility `ledger`.
+
+### Calendar windows and daily totals
+
+Positional `weekly`, `monthly`, and `yearly` mean the **current calendar week,
+month, or year**, not the last 7/30/365 days. Weeks start on Monday. Each window
+runs from its first midnight inclusive to the next window's first midnight
+exclusive and retains daily detail. It cannot be combined with `--since`,
+`--until`, `--daily`, or `--monthly`.
+
+Without a positional window or date bounds, alc still reads all history. The
+existing `--daily` and `--monthly` flags remain mutually exclusive grouping
+options for all selected history, with any explicit date/source/model filters;
+`--monthly` does **not** mean this month. The main table shows daily rollups with
+full integers, thousands separators, and right-aligned numeric columns. Separate
+model/source rows preserve provider and granularity distinctions.
+
+`--timezone UTC|local|<IANA>` defaults to UTC. Date-only bounds, calendar windows,
+and day/month buckets use that same zone. For example,
+`--since 2026-10-01 --until 2026-10-08 --timezone Asia/Taipei` includes October 1–7
+in Taipei. RFC3339 bounds are exact instants defined by their offsets; choosing
+a timezone does not reinterpret them.
+
+### Offline PNG export
+
+```sh
+alc usage weekly --offline --chart
+alc usage monthly --offline --timezone local --chart="$HOME/ai-usage-month.png"
+alc usage --offline --source alc --json --chart="$HOME/ai-usage.png" > usage.json
+```
+
+`--chart[=PATH]` is opt-in; normal reports write no image. With no path it writes
+`ai-usage.png` in your actual home directory. An explicit path uses the `=` form;
+its parent directory must exist, and write errors fail explicitly. Rust renders
+the PNG offline with a bundled licensed font, without Python, fontconfig, or
+system-font setup. It does not modify ledgers, native histories, or credentials.
+With `--json`, stdout remains JSON-only and the artifact path goes to stderr.
+
+The three panels use the report's selection, timezone, and sources:
+
+- **Date token bars:** uncached input, cache, and output are disjoint categories.
+  Gross input already contains cache and must not be stacked with it again.
+- **Date USD bars:** token-rate estimates on their own scale, not a token/USD
+  dual axis. Partial costs are labeled known subtotals; missing prices are not
+  plotted as free spending.
+- **Token composition pie:** uncached input, cache (reads plus writes), and
+  output. Read/write counters and fees remain separate in tables and JSON.
+
+Unsafe pooled buckets/totals and the pie remain unavailable when sources overlap;
+safe daily/source detail is retained. Missing dates/counters remain gaps, not zero.
+Empty, all-zero, or unmeasurable composition uses a no-data message rather than
+meaningless slices. Longer spans use labeled weekly, monthly, or yearly chart
+buckets to stay legible; the CLI/JSON daily detail remains exact. If any selected
+sources may overlap, those coarser pooled bars are conservatively unavailable;
+individually safe daily values do not prove cross-date sources are disjoint.
 
 ### Shared query options
 
@@ -267,8 +340,9 @@ Accounts or the compatibility ledger:
 | Option | Meaning |
 | --- | --- |
 | `--source all\|alc\|claude\|codex` | Comma-separated sources are accepted, for example `--source alc,claude`. Usage defaults to `all`; TPS defaults to `alc`. |
-| `--since DATE` | Inclusive start. `YYYY-MM-DD` means midnight UTC; RFC3339 offsets are accepted. |
-| `--until DATE` | Exclusive end, in the same formats. To include all of October 7 UTC, use `--until 2026-10-08`. |
+| `--since DATE` | Inclusive start. `YYYY-MM-DD` means midnight in `--timezone`; RFC3339 preserves the instant its offset specifies. |
+| `--until DATE` | Exclusive end, in the same formats. To include October 7 in the selected zone, use `--until 2026-10-08`. |
+| `--timezone ZONE` | `UTC` (default), `local`, or an IANA name such as `Asia/Taipei`; shared by date-only bounds, windows, and buckets. |
 | `--filter-profile PROFILE` | Exact recorded alc profile. Native records without a profile do not match. |
 | `--filter-agent AGENT` | Recorded coding agent: `claude`, `codex`, `opencode`, `pi`, `copilot`, `goose`, `qwen`, or `kimi`. |
 | `--filter-model MODEL` | Exact reported model ID, not a fuzzy alias search. |
@@ -295,15 +369,19 @@ requests. Older cumulative token counters are folded into defensible deltas;
 first nonzero baselines, counter resets, artificial context-window checkpoints,
 or unallocatable model changes remain checkpoints. **Cumulative deltas and
 checkpoints are not request counts**, and checkpoints are not summed as token
-usage. Neither has invented TTFT/TPS. If selected with `alc tps --source codex`,
-these usage records can appear as rows with `N/A` timing.
+usage. Neither has invented TTFT/TPS. To inspect these rows with `N/A` timing,
+use `alc tps --source codex --include-unmeasured`. A cumulative delta spanning
+several dates is attributed to the **later checkpoint's date** in the selected
+timezone; it cannot reconstruct the original daily traffic.
 
 Across sources, only exact, protocol-qualified request/message/response IDs for
 the same agent prove a duplicate; alc records take precedence for a proven
 match. Similar timestamps, token totals, or session names are not evidence.
 Unverified overlaps are retained, flagged `possible_overlap`, and shown as
-source subtotals **without an additive grand total**. A source warning or skipped
-record likewise makes overall coverage incomplete. For legacy v1/v2 alc turn
+source subtotals **without an additive grand total**. Native cumulative parsing
+and exact-ID reconciliation run before filters; overlap is then reassessed for
+the selected range and independently for each daily rollup. A source warning or
+skipped record likewise makes overall coverage incomplete. For legacy v1/v2 alc turn
 entries, each zero input/output counter is independently unknown in the new
 statistics because those rows lack field-presence evidence; positive counters
 are retained. The compatibility ledger's existing totals are unchanged.
@@ -317,11 +395,15 @@ reference is available. Native metadata is not relabeled with today's alc
 profile; reference pricing does not change unknown provider attribution.
 
 Input, cache reads, cache writes, and output remain separate cost components.
+The existing JSON `input_tokens` remains **gross input**; the additive
+`uncached_input_tokens` field is the disjoint remainder used in charts.
 OpenAI-style input includes cache subsets; Anthropic-style input is the uncached
 remainder, so gross input adds reads and writes. Reasoning is a subset of output,
 not an extra billable token count. Cache-write TTL buckets replace the aggregate,
 not add to it. Unknown TTL splits are not guessed when 5-minute and 1-hour rates
-differ.
+differ. Each record is priced with its own tier, context, and TTL before checked
+addition; summed tokens are never multiplied by one arbitrary rate. Arithmetic
+uses exact integer pico-dollars (10^-12 USD), not floating-point money.
 
 Missing counters or applicable exact rates, an unpriced recorded service tier,
 or unavailable per-request context for banded rates produce unknown/partial costs
@@ -346,7 +428,12 @@ in the main `config.toml`.
 
 - `alc usage --json`: existing top-level `schema_version: 1`, `generated_at`,
   `resolved_by`, `accounts`, and `ledger`, plus `statistics` (also schema version
-  1). Statistics expose UTC periods, source/profile/provider/agent/model rows,
+  1). Existing gross `input_tokens` semantics and decimal USD strings remain.
+  Additions include `timezone`, resolved `range`, selected `window`,
+  `daily_rollups`, `uncached_input_tokens`, and `cost_components` at total,
+  daily, and model/source levels. Components are `uncached_input`, `cache_read`,
+  `cache_write`, and `output`, each with nullable `known_subtotal_usd` and
+  `total_usd`. Statistics retain source/profile/provider/agent/model rows,
   `granularity`, nullable token totals, `records`, nullable `requests`,
   `known_requests`, `priced_records`, `unpriced_records`,
   `deduplicated_records`, `known_subtotal_usd`, nullable `total_usd`,
@@ -354,16 +441,21 @@ in the main `config.toml`.
   `cost_status` (`complete`, `partial`, or `unknown`), `partial_records`,
   `reference_providers`, `reference_models`, `price_sources`, `provenance`,
   assumptions, and reasons. USD amounts are decimal **strings**, not
-  floating-point JSON numbers. Overall `known_subtotal_usd` is also `null` when
-  sources may overlap.
-- `alc tps --json`: `schema_version: 1`, `measurement`, `rows`, `summary`, and
-  `sources`. Rows contain metadata records, `provenance`, raw `timing` offsets in
-  microseconds, token counters, outcome, and `metrics` (`ttft_ms`, `stream_tps`,
-  `e2e_tps`, `stream_output_basis`). The summary includes `records`,
-  `known_requests`, nullable `requests`, valid sample counts, `ttft_mean_ms`,
-  `ttft_p50_ms`, `ttft_p95_ms`, `weighted_stream_tps`, and `weighted_e2e_tps`;
-  unavailable metrics are `null`. `requests` is `null` when any selected row is
-  a cumulative delta or checkpoint, not a verified API request.
+  floating-point JSON numbers. Unsafe pooled totals/subtotals and their
+  components are `null` when sources may overlap; safe source rows remain.
+- `alc tps --json`: `schema_version: 1`, `measurement`, `timezone`, `range`,
+  `rows`, `summary`, `coverage`, and `sources`. Coverage includes
+  `matching_records`, `measured_requests`, `excluded_legacy_records`,
+  `excluded_unmeasured_records`, `excluded_nonrequest_records`, `eligible_records`,
+  `returned_records`, `limited_records`, and `include_unmeasured`. Exclusion
+  categories are disjoint and counted before sorting/limiting. Rows contain
+  metadata records, `provenance`, raw `timing` offsets in microseconds, token
+  counters, outcome, and `metrics` (`ttft_ms`, `stream_tps`, `e2e_tps`,
+  `stream_output_basis`). The summary includes `records`, `known_requests`,
+  nullable `requests`, valid sample counts, `ttft_mean_ms`, `ttft_p50_ms`,
+  `ttft_p95_ms`, `weighted_stream_tps`, and `weighted_e2e_tps`; unavailable
+  metrics are `null`. With `--include-unmeasured`, `requests` is `null` when a
+  selected row is a cumulative delta or checkpoint, not a verified API request.
 
 ## On the remote-control page
 

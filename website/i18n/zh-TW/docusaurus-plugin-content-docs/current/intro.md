@@ -76,8 +76,8 @@ MiniMax、Groq、xAI、Google，或你自己的端點。加一個旗標就能只
 
 [遠端控制](./remote-control.md)
 
-`alc --share claude` 把 session 鏡射到網頁，用手機就能操作。每個 agent
-都是同一個頁面；你的終端機照常運作。
+`alc --share claude` 把 session 鏡射到其 owner 的網頁，用手機操作。每個 agent
+介面相同；`alc sessions` 跨更新找到各 owner。你的終端機照常運作。
 
 </div>
 
@@ -85,8 +85,8 @@ MiniMax、Groq、xAI、Google，或你自己的端點。加一個旗標就能只
 
 [用量](./usage.md)
 
-`alc usage` 顯示你每個 Claude 與 Codex 登入還剩多少額度、每個 API key
-provider 還剩多少，以及是哪個 agent 用掉的。
+`alc usage` 顯示額度與精確的每日 token／成本總計。可選本週、本月或本年，或
+匯出離線 PNG；`alc tps` 顯示實際量測的請求時間。
 
 </div>
 

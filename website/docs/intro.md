@@ -77,8 +77,9 @@ a flag.
 
 [Remote control](./remote-control.md)
 
-`alc --share claude` mirrors the session to a web page you can drive from a
-phone. Same page for every agent; your terminal keeps working.
+`alc --share claude` mirrors the session to its owner's web page, driven from a
+phone. Same interface for every agent; `alc sessions` finds owners across updates.
+Your terminal keeps working.
 
 </div>
 
@@ -86,8 +87,8 @@ phone. Same page for every agent; your terminal keeps working.
 
 [Usage](./usage.md)
 
-`alc usage` shows what is left on every Claude and Codex login you have, what
-each API-key provider has left, and which agent spent it.
+`alc usage` shows quota and precise daily token/cost totals. Select this week,
+month, or year, or export an offline PNG; `alc tps` shows measured request timing.
 
 </div>
 

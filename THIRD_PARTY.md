@@ -20,6 +20,15 @@ restarts through its credential helper, and stops after an hour idle or with
 `alc bridge stop`. Model requests require local authentication; native Codex
 credentials are never copied into the alc configuration.
 
+# Bundled chart font
+
+`alc usage --chart` renders PNGs with the unmodified Noto Sans variable font,
+Copyright 2022 The Noto Project Authors, under SIL Open Font License 1.1.
+It is embedded in the binary for offline, cross-platform text rendering without
+system font libraries. The pinned upstream URL and SHA-256 digest are in
+`assets/fonts/README.md`; the notice and license are retained in
+`THIRD_PARTY_LICENSES/NotoSans-OFL.txt`, included in every release archive.
+
 # Bundled pricing data
 
 `alc usage` includes a curated, offline subset of LiteLLM's model pricing map

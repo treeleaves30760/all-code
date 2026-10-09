@@ -23,9 +23,10 @@ keywords:
 每個登入還剩多少、哪個 agent 用掉了 token，以及新請求的效能如何。
 
 ```sh
-alc usage                   # 帳號額度、相容帳本、token／成本統計
+alc usage                   # 帳號額度、相容帳本、每日 token／成本統計
 alc usage --offline         # 只讀本機統計；不讀憑證、不連網
-alc tps                     # 最新 20 筆符合條件的 alc 請求紀錄
+alc usage weekly --offline --timezone Asia/Taipei --chart
+alc tps                     # 最新 20 筆符合條件且有 timing 的請求
 ```
 
 一般用量報告保留 **Accounts** 與 **Usage by provider and agent**，接著新增
@@ -40,9 +41,9 @@ Accounts
   ·  openrouter  —                        —     no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS  INPUT  CACHED  CACHE %  OUTPUT  LAST
-  codex     claude    1         1      20.8K  15.4K   74%      35      7m ago
-  ollama    opencode  1         —      —      —        —       —       12m ago
+  PROVIDER  AGENT     LAUNCHES  TURNS   INPUT  CACHED  CACHE %  OUTPUT  LAST
+  codex     claude           1      1  20,800  15,400      74%      35  7m ago
+  ollama    opencode         1      —       —       —        —       —  12m ago
   source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
 
 ✓ ready
@@ -142,13 +143,24 @@ Anthropic 時是直接連線；加上 `--metrics` 才會在支援的情況下啟
 ```sh
 alc tps
 alc tps --limit 50 --filter-profile work --filter-agent claude
-alc tps --since 2026-10-01 --until 2026-10-08 --json
+alc tps --since 2026-10-01 --until 2026-10-08 --timezone Asia/Taipei --json
+alc tps --include-unmeasured --source all --json
 ```
 
-`alc tps` 只讀本機紀錄，不讀憑證、不查額度、不連網。預設為
-`--source alc --limit 20`，符合條件的最新紀錄在前；`--limit` 接受 1–10000。
-一次啟動不是效能樣本：只有轉譯橋接或支援的 `alc --metrics <agent>` 啟動承載的
-新請求才開始量測。舊帳本與原生歷史沒有實際觀測的請求時間，顯示 `N/A`。
+`alc tps` 只讀本機紀錄，不讀憑證、不查額度、不連網，也不探測執行中的 daemon。
+預設為 `--source alc --limit 20`。查詢篩選後，先選出**帶有 timing 物件的實際
+`Request` 紀錄，再按最新排序並套用 limit**，較新的歷史 turn 不會遮住較舊的
+量測請求。`--limit` 接受 1–10000。
+
+一次啟動不是效能樣本。只有具備量測能力的轉譯橋接或支援的
+`alc --metrics <agent>` 啟動承載請求，才開始量測。涵蓋計數列出被排除的
+legacy、未量測與非請求紀錄。`--include-unmeasured` 恢復歷史檢視，包含原生
+差值與 checkpoint；不可用的量測仍是 `N/A`，不會變成零。
+
+舊報告全部 `N/A`，可能包含重用舊橋接產生的 v1/v2 turn，當時根本沒記錄請求
+時間。沒有歷史 TTFT/TPS 可以還原。新啟動用自己世代的 host，量測請求要求
+`request-metrics-v3`；舊 host 繼續服務舊 session。升級後開新 session 才能取得
+後續量測，不必停止舊工作。只有版本字串不能證明有量測能力。
 
 這些是**用戶端觀測值**，不是模型伺服器的效能基準：
 
@@ -160,8 +172,8 @@ alc tps --since 2026-10-01 --until 2026-10-08 --json
 | `TPS E2E` | 上游回報的總輸出 token，除以請求開始到終止的秒數。包含排隊、網路、提示處理與推理時間；**不是伺服器解碼速度**。 |
 
 非串流請求在輸出與終止時間已知時可以有 E2E TPS，但 TTFT 與串流 TPS 為 `N/A`。
-失敗、取消、逾時與截斷串流會保留各自結果；缺少計數或終止時間，不會被編造成
-零或成功的量測。
+已觀測的失敗、取消、逾時、截斷串流與沒有 usage 的請求，仍列在預設報告裡。
+它們保留各自結果；缺少計數或終止時間，不會被編造成零或成功的量測。
 
 摘要分別列出 TTFT、串流 TPS 與 E2E TPS 的有效樣本數。TTFT 有平均值、p50 與 p95。
 加權 TPS 是有效樣本 token 分子的總和，除以對應時間的總和；不是各請求速度的
@@ -204,13 +216,14 @@ provider 覆寫，都保持原樣。明確要求 `--metrics` 卻無法安全觀�
 profile，因為用戶端會繞過密封 helper：請用 `alc config key <profile>` 存金鑰、
 取消匯出該變數，再重新啟動；一般沒加 metrics 的驗證行為不變。
 
-**持續 Claude API-key 觀測**的 helper 先用獨立、只有擁有者可讀的
-`run/bridge.observer-key` 與新的 challenge 驗證 host，再回傳 AEAD 密封替代憑證，
+**持續 Claude API-key 觀測**的 helper 先用 runtime 裡獨立、只有擁有者可讀的
+`bridge.observer-key` 與新的 challenge 驗證 host，再回傳 AEAD 密封替代憑證，
 不是服務商金鑰。它綁定固定 route 與本次 host instance；host 只有在派送到固定
 上游端點時才還原原始金鑰／header。註冊只保留金鑰摘要，觀測檔案不寫入明文
 服務商金鑰。host 重啟後，舊替代憑證收到 HTTP 401；重新執行 helper 即可產生新
-憑證。握手／控制 challenge 不會公開 secret；`forward-observer-v2` 能力檢查會
-拒絕舊 daemon，即使版本字串相同。先用 `alc bridge stop` 停舊 host，再重新啟動。
+憑證。握手／控制 challenge 不會公開 secret。`forward-observer-v2` 檢查要求
+實際能力，不是版本字串相同就好。新啟動使用自己世代的 host，不必停舊 host、
+中斷它的 session。Runtime 身分與 helper 執行檔都釘住，見[背景 session](./background-sessions.md)。
 
 這不是 TLS，也不保證完整的本機資料平面機密性。請求仍透過 loopback HTTP，仍需
 信任本機行程：Claude 替代憑證避免原始服務商金鑰外洩，但遭劫持的本機 port 可以
@@ -219,6 +232,9 @@ profile，因為用戶端會繞過密封 helper：請用 `alc config key <profil
 ## 本機歷史與 token／成本統計
 
 ```sh
+alc usage weekly --offline --timezone Asia/Taipei
+alc usage monthly --offline --chart
+alc usage yearly --offline --json
 alc usage --offline --daily --since 2026-10-01 --until 2026-10-08
 alc usage --offline --monthly --source claude,codex --json
 alc usage --offline --source alc --filter-profile work --filter-model example-model
@@ -228,8 +244,53 @@ alc usage --offline --claude-dir "$HOME/.claude-work" --codex-dir "$HOME/.codex-
 `--offline` 只讀本機設定、歷史與價格資料。不讀 API key、登入檔或鑰匙圈，不更新
 憑證、不查額度、不下載價格，也不做任何其他網路存取。文字輸出顯示
 `Accounts: not fetched (--offline)`；JSON 的 `accounts` 是空陣列，仍保留相容的
-`ledger`。`--daily` 與 `--monthly` 互斥，統計依 **UTC** 分桶；兩者都不加時，
-period 為 `all-time`。
+`ledger`。
+
+### 曆法視窗與每日總計
+
+位置參數 `weekly`、`monthly`、`yearly` 表示**本週、本月或本年**，不是過去
+7／30／365 天。星期一為週起點。各視窗從第一天午夜（包含）到下一個視窗的
+第一天午夜（不含），保留每日明細。不能與 `--since`、`--until`、`--daily` 或
+`--monthly` 共用。
+
+不指定位置視窗或日期界線，仍讀取全部歷史。既有 `--daily`、`--monthly` 仍是
+互斥的分組選項，將明確的日期／來源／模型篩選後的歷史分組；`--monthly`
+**不表示**本月。主表提供每日總計，使用完整整數、千分位與靠右對齊的數字。
+模型／來源列另外保留 provider 與 granularity 的區別。
+
+`--timezone UTC|local|<IANA>` 預設 UTC。只有日期的界線、曆法視窗與日／月桶都用
+相同時區。例如 `--since 2026-10-01 --until 2026-10-08 --timezone Asia/Taipei`
+包含台北的 10 月 1–7 日。RFC3339 界線是時區偏移指定的確切時刻，不會被選取的
+時區重新解讀。
+
+### 離線 PNG 匯出
+
+```sh
+alc usage weekly --offline --chart
+alc usage monthly --offline --timezone local --chart="$HOME/ai-usage-month.png"
+alc usage --offline --source alc --json --chart="$HOME/ai-usage.png" > usage.json
+```
+
+`--chart[=PATH]` 是選擇啟用；一般報告不寫圖片。不帶路徑時，寫到實際 home 目錄
+的 `ai-usage.png`。明確路徑須用 `=`，上層目錄必須存在，寫入錯誤會明確失敗。
+PNG 由 Rust 離線繪製，附帶已授權的內嵌字型，不依賴 Python、fontconfig 或系統
+字型設定。不修改帳本、原生歷史或憑證。搭配 `--json` 時，stdout 只放 JSON，
+產物路徑寫到 stderr。
+
+三個面板使用報告相同的選取範圍、時區與來源：
+
+- **日期 token 長條：**未快取輸入、快取、輸出互不重疊。總輸入已包含快取，
+  不能再與快取堆疊一次。
+- **日期 USD 長條：**token 費率估算有獨立刻度，不用 token／USD 雙軸。部分
+  費用標示為已知小計；找不到價格不會畫成免費用量。
+- **Token 組成圓餅：**未快取輸入、快取（讀取加寫入）、輸出。讀寫計數與費用
+  在表格及 JSON 仍分開。
+
+來源重疊時，不安全的合併桶／總計與圓餅保留不可用；安全的每日／來源明細仍保留。
+缺日或缺少計數保留為缺口，不是零。空資料、全零或無法量測的組成，顯示無資料訊息，不畫
+沒有意義的扇形。較長期間會標示按週、月或年彙整的圖桶，維持可讀性；CLI／JSON
+每日明細仍精確保留。只要選取來源可能重疊，較粗的合併長條就保守停用；
+各日安全不代表跨日期的來源也能證實互不重疊。
 
 ### 共用查詢選項
 
@@ -238,8 +299,9 @@ period 為 `all-time`。
 | 選項 | 意義 |
 | --- | --- |
 | `--source all\|alc\|claude\|codex` | 接受逗號分隔的來源，例如 `--source alc,claude`。Usage 預設 `all`；TPS 預設 `alc`。 |
-| `--since DATE` | 含起點。`YYYY-MM-DD` 表示 UTC 午夜；也接受 RFC3339 時區偏移。 |
-| `--until DATE` | 不含終點，格式相同。要包含 UTC 10 月 7 日整天，用 `--until 2026-10-08`。 |
+| `--since DATE` | 含起點。`YYYY-MM-DD` 表示 `--timezone` 的午夜；RFC3339 保留時區偏移指定的時刻。 |
+| `--until DATE` | 不含終點，格式相同。要包含選取時區的 10 月 7 日整天，用 `--until 2026-10-08`。 |
+| `--timezone ZONE` | `UTC`（預設）、`local` 或 `Asia/Taipei` 等 IANA 名稱；日期界線、視窗與分桶共用。 |
 | `--filter-profile PROFILE` | 精確比對有紀錄的 alc profile。沒有 profile 的原生紀錄不會符合。 |
 | `--filter-agent AGENT` | 有紀錄的 coding agent：`claude`、`codex`、`opencode`、`pi`、`copilot`、`goose`、`qwen` 或 `kimi`。 |
 | `--filter-model MODEL` | 精確比對回報的 model ID，不模糊搜尋別名。 |
@@ -262,13 +324,16 @@ UUID。有穩定 response ID 的 Codex 紀錄可以識別請求。較舊的累�
 有根據的差值；第一個非零基準、計數重設、人為的 context-window checkpoint，
 或無法分配的模型變更，仍保留為 checkpoint。**累計差值與 checkpoint 不等於
 請求次數**；checkpoint 不會累加為 token 用量，兩者也不會編造 TTFT/TPS。
-用 `alc tps --source codex` 選到時，這些用量紀錄可能列成時間為 `N/A` 的資料列。
+要查看這些時間為 `N/A` 的列，請用 `alc tps --source codex --include-unmeasured`。
+跨多日的累計差值，會依選取時區歸到**較晚 checkpoint 的日期**，無法還原原本
+每天實際發生的流量。
 
 跨來源只在同一個 agent 的 request／message／response ID 完全相同、且協定命名
 空間相符時，才認定重複；證實相符後優先採 alc 紀錄。相近的時間、token 總數或
 session 名稱不算證據。無法驗證的重疊會保留、標記 `possible_overlap`，並顯示
-各來源小計，**不提供可相加的總計**。來源警告或跳過紀錄，也表示整體涵蓋不完整。
-對舊 v1/v2 alc turn 紀錄，新統計會把
+各來源小計，**不提供可相加的總計**。原生累計解析與精確 ID 去重先於篩選；
+之後重新檢查選取範圍的重疊，也獨立檢查各每日總計。來源警告或跳過紀錄，
+同樣表示整體涵蓋不完整。對舊 v1/v2 alc turn 紀錄，新統計會把
 每個為零的輸入／輸出計數分別保留為未知，因為原格式沒有欄位是否存在的證據；
 正值仍會保留。相容帳本原有的總數不變。
 
@@ -279,10 +344,14 @@ session 名稱不算證據。無法驗證的重疊會保留、標記 `possible_o
 參考估算。原生中繼資料不會被重新標成今天的 alc profile；參考價格也不會改掉
 仍然未知的 provider 歸屬。
 
-輸入、快取讀取、快取寫入與輸出是分開的成本項目。OpenAI 格式的 input 已包含
-快取子集；Anthropic 格式的 input 是未快取的剩餘輸入，因此總輸入要加上讀取與
-寫入。推理是輸出的子集，不是額外計費的 token。快取寫入的 TTL 分桶取代總寫入
-計數，不再加一次。5 分鐘與 1 小時費率不同時，不會猜未知的 TTL 分配。
+輸入、快取讀取、快取寫入與輸出是分開的成本項目。既有 JSON `input_tokens`
+仍是**總輸入**；新增 `uncached_input_tokens` 是繪圖使用、互不重疊的剩餘輸入。
+OpenAI 格式的 input 已包含快取子集；Anthropic 格式的 input 是未快取的剩餘
+輸入，因此總輸入要加上讀取與寫入。推理是輸出的子集，不是額外計費的 token。
+快取寫入的 TTL 分桶取代總寫入計數，不再加一次。5 分鐘與 1 小時費率不同時，
+不會猜未知的 TTL 分配。每筆先依自己的 tier、context 與 TTL 計價，再以溢位檢查
+相加；不把總 token 乘上任意單一費率。金額運算用精確整數 pico-dollar
+（10^-12 USD），不用浮點數。
 
 缺少計數或適用的精確費率、有紀錄的服務層級沒有費率，或分級費率缺少逐請求
 context 資料時，會產生未知／部分成本並列出原因。未記錄服務層級時假設 standard；
@@ -303,22 +372,31 @@ JSON 的 `total_usd` 保留 `null`。
 
 - `alc usage --json`：既有頂層的 `schema_version: 1`、`generated_at`、
   `resolved_by`、`accounts` 與 `ledger`，另加 `statistics`（schema version
-  也是 1）。統計包含 UTC period、source/profile/provider/agent/model 資料列、
-  `granularity`、可為 `null` 的 token 總數、`records`、可為 `null` 的
-  `requests`、`known_requests`、`priced_records`、`unpriced_records`、
+  也是 1）。既有總輸入 `input_tokens` 語意與十進位 USD 字串不變。新增
+  `timezone`、解析後的 `range`、選取的 `window`、`daily_rollups`、
+  `uncached_input_tokens`，以及總計、每日與模型／來源層級的 `cost_components`。
+  分項為 `uncached_input`、`cache_read`、`cache_write`、`output`，各有可為
+  `null` 的 `known_subtotal_usd` 與 `total_usd`。統計保留 source/profile/provider/
+  agent/model 列、`granularity`、可為 `null` 的 token 總數、`records`、可為
+  `null` 的 `requests`、`known_requests`、`priced_records`、`unpriced_records`、
   `deduplicated_records`、`known_subtotal_usd`、可為 `null` 的 `total_usd`、
   `possible_overlap`、`pricing_snapshot` 與來源診斷。各列包含 `cost_status`
   （`complete`、`partial` 或 `unknown`）、`partial_records`、
   `reference_providers`、`reference_models`、`price_sources`、`provenance`、
   假設與原因。USD 金額是十進位**字串**，不是浮點 JSON 數值。來源可能重疊時，
-  整體 `known_subtotal_usd` 也是 `null`。
-- `alc tps --json`：`schema_version: 1`、`measurement`、`rows`、`summary` 與
-  `sources`。各列包含中繼資料紀錄、`provenance`、以微秒為單位的原始 `timing`
+  不安全的合併總計／小計與各分項都保留 `null`，安全的各來源列仍保留。
+- `alc tps --json`：`schema_version: 1`、`measurement`、`timezone`、`range`、
+  `rows`、`summary`、`coverage` 與 `sources`。Coverage 包含 `matching_records`、
+  `measured_requests`、`excluded_legacy_records`、`excluded_unmeasured_records`、
+  `excluded_nonrequest_records`、`eligible_records`、`returned_records`、
+  `limited_records` 與 `include_unmeasured`。排除分類互不重疊，先於排序／limit
+  計數。各列包含中繼資料紀錄、`provenance`、以微秒為單位的原始 `timing`
   偏移、token 計數、結果，以及 `metrics`（`ttft_ms`、`stream_tps`、`e2e_tps`、
   `stream_output_basis`）。摘要包含 `records`、`known_requests`、可為 `null` 的
   `requests`、有效樣本數、`ttft_mean_ms`、`ttft_p50_ms`、`ttft_p95_ms`、
-  `weighted_stream_tps` 與 `weighted_e2e_tps`；不可用的量測是 `null`。只要選取的
-  任何一列是累計差值或 checkpoint，而非可驗證的 API 請求，`requests` 就是 `null`。
+  `weighted_stream_tps` 與 `weighted_e2e_tps`；不可用的量測是 `null`。使用
+  `--include-unmeasured` 時，選取列若有累計差值或 checkpoint，而非可驗證的 API
+  請求，`requests` 就是 `null`。
 
 ## 在遠端控制頁面上
 
