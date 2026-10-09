@@ -35,12 +35,6 @@ impl GenerationId {
     }
 }
 
-impl fmt::Display for GenerationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuntimeScope {
     Legacy,
@@ -711,7 +705,7 @@ pub(crate) fn bytes_digest(bytes: &[u8]) -> String {
     hex_digest(&Sha256::digest(bytes))
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
+pub(crate) fn hex_digest(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         write!(&mut text, "{byte:02x}").expect("writing a String cannot fail");

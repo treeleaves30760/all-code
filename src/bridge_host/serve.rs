@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use axum::Router;
@@ -83,12 +83,6 @@ impl Activity {
     }
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
-}
-
 impl Host {
     fn new(config_dir: &Path, token: String, port: u16) -> Result<Self> {
         Ok(Self {
@@ -100,7 +94,7 @@ impl Host {
             routes: Mutex::default(),
             logins: Mutex::default(),
             forward: Mutex::default(),
-            activity: Activity::new(now_secs()),
+            activity: Activity::new(crate::usage::ledger::now_unix()),
             stop: Arc::new(tokio::sync::Notify::new()),
         })
     }
@@ -263,14 +257,19 @@ struct InFlight(Arc<Host>);
 impl InFlight {
     fn begin(host: Arc<Host>) -> Self {
         host.activity.in_flight.fetch_add(1, Ordering::SeqCst);
-        host.activity.last.store(now_secs(), Ordering::SeqCst);
+        host.activity
+            .last
+            .store(crate::usage::ledger::now_unix(), Ordering::SeqCst);
         Self(host)
     }
 }
 
 impl Drop for InFlight {
     fn drop(&mut self) {
-        self.0.activity.last.store(now_secs(), Ordering::SeqCst);
+        self.0
+            .activity
+            .last
+            .store(crate::usage::ledger::now_unix(), Ordering::SeqCst);
         self.0.activity.in_flight.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -421,7 +420,7 @@ fn register_forward_inner(host: &Host, registration: super::ForwardRegistration)
 
 async fn forward(
     State(host): State<Arc<Host>>,
-    UrlPath((route, suffix)): UrlPath<(String, String)>,
+    UrlPath((route, _)): UrlPath<(String, String)>,
     mut request: Request,
 ) -> Response {
     let expected_host = format!("127.0.0.1:{}", host.port);
@@ -503,7 +502,6 @@ async fn forward(
         return StatusCode::BAD_REQUEST.into_response();
     };
     let raw = raw.to_owned();
-    let _ = suffix;
     crate::usage::forward::relay(target, &raw, request).await
 }
 
@@ -538,7 +536,7 @@ async fn count_tokens(
 async fn watch_idle(host: Arc<Host>) {
     loop {
         tokio::time::sleep(IDLE_CHECK).await;
-        if host.activity.idle_for(now_secs()) >= IDLE_LIMIT {
+        if host.activity.idle_for(crate::usage::ledger::now_unix()) >= IDLE_LIMIT {
             host.stop.notify_one();
             return;
         }
@@ -1210,7 +1208,8 @@ mod tests {
             "the response has only begun"
         );
         assert_eq!(
-            host.activity.idle_for(now_secs() + 99_999),
+            host.activity
+                .idle_for(crate::usage::ledger::now_unix() + 99_999),
             Duration::ZERO,
             "a turn still streaming is not idleness, however long it takes"
         );
@@ -1220,7 +1219,11 @@ mod tests {
             .unwrap();
         assert_eq!(&body[..], b"onetwo");
         assert_eq!(host.activity.in_flight.load(Ordering::SeqCst), 0);
-        assert!(host.activity.idle_for(now_secs() + 3_600) >= IDLE_LIMIT);
+        assert!(
+            host.activity
+                .idle_for(crate::usage::ledger::now_unix() + 3_600)
+                >= IDLE_LIMIT
+        );
     }
 
     /// A client that disconnects mid-turn leaves a body nobody reads to the
@@ -1238,7 +1241,11 @@ mod tests {
             0,
             "an abandoned body is not a turn still running"
         );
-        assert!(host.activity.idle_for(now_secs() + 3_600) >= IDLE_LIMIT);
+        assert!(
+            host.activity
+                .idle_for(crate::usage::ledger::now_unix() + 3_600)
+                >= IDLE_LIMIT
+        );
     }
 
     /// A port that refuses to bind is asked more than once who holds it,

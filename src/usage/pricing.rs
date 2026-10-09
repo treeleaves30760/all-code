@@ -19,6 +19,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
+use crate::runtime::{bytes_digest, hex_digest};
+
 use super::records::{
     Billing, Granularity, Source, TokenCounts, UsageRecord, is_codex_endpoint,
     official_endpoint_provider,
@@ -414,7 +416,7 @@ impl PriceBook {
             id: metadata.id.clone(),
             date: Some(metadata.date),
             urls,
-            sha256: sha256(BUNDLED.as_bytes()),
+            sha256: bytes_digest(BUNDLED.as_bytes()),
             upstream_commit: Some(metadata.upstream_commit),
             upstream_sha256: Some(metadata.upstream_sha256),
             license: Some(metadata.license),
@@ -439,7 +441,7 @@ impl PriceBook {
             }
         };
         let overrides = if let Some(text) = &override_text {
-            let hash = sha256(text.as_bytes());
+            let hash = bytes_digest(text.as_bytes());
             let source = PriceSource {
                 kind: "override".to_owned(),
                 id: format!("pricing.toml:sha256:{hash}"),
@@ -1046,14 +1048,6 @@ fn price_cache_write(
     // The TTL buckets replace the aggregate; it is never charged again.
     accumulator.price("5m cache write", Some(short), rates.cache_write_5m);
     accumulator.price("1h cache write", Some(long), rates.cache_write_1h);
-}
-
-fn sha256(bytes: &[u8]) -> String {
-    hex_digest(&Sha256::digest(bytes))
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]

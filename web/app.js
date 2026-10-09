@@ -23,7 +23,7 @@
 
   const el = {};
   for (const id of [
-    'bar', 'back', 'railToggle', 'subtitle', 'grade', 'link', 'linkLabel',
+    'back', 'railToggle', 'subtitle', 'grade', 'link', 'linkLabel',
     'list', 'sessions', 'empty', 'emptyTitle', 'emptyHow', 'emptyCommand',
     'view', 'terminal', 'keys',
     'perm', 'permLabel', 'permPick', 'permCycle', 'permNote', 'permFlags', 'permCommand',

@@ -12,7 +12,7 @@ use plotters::coord::Shift;
 use plotters::prelude::*;
 
 use super::pricing::Money;
-use super::query::{DailyRollup, Statistics};
+use super::query::{DailyRollup, Statistics, format_count};
 
 const WIDTH: u32 = 1560;
 const HEIGHT: u32 = 1280;
@@ -519,7 +519,7 @@ fn draw_tokens(area: &Area<'_>, values: &[Bucket], scale: &str) -> Result<()> {
             y = top;
         }
         if bucket.token_total() == Some(max) {
-            text(area, &integer(max), (x - 18, y - 25), 14, INK)?;
+            text(area, &format_count(max), (x - 18, y - 25), 14, INK)?;
         }
     }
     date_labels(area, values, step, bottom, scale)?;
@@ -650,7 +650,7 @@ fn draw_composition(area: &Area<'_>, report: &Statistics) -> Result<()> {
             area,
             &format!(
                 "{}  ({:.1}%)",
-                integer(*value),
+                format_count(*value),
                 *value as f64 / total as f64 * 100.0
             ),
             (291, y + 25),
@@ -722,7 +722,7 @@ fn draw_table(area: &Area<'_>, report: &Statistics) -> Result<()> {
     for (index, (label, tokens, cost)) in rows.iter().enumerate() {
         let y = 73 + index as i32 * 39;
         text(area, label, (0, y), 16, INK)?;
-        let token = tokens.map(integer).unwrap_or_else(|| "N/A".to_owned());
+        let token = tokens.map(format_count).unwrap_or_else(|| "N/A".to_owned());
         let style = (FONT, 16)
             .into_font()
             .color(&INK)
@@ -742,10 +742,6 @@ fn draw_table(area: &Area<'_>, report: &Statistics) -> Result<()> {
         text(area, &format!("{known} / {complete}"), (455, y), 15, INK)?;
     }
     Ok(())
-}
-
-fn integer(value: u64) -> String {
-    super::query::format_count(value)
 }
 
 fn compact(value: f64) -> String {
@@ -924,7 +920,7 @@ mod tests {
 
     #[test]
     fn integers_are_exact_and_small_costs_do_not_look_free() {
-        assert_eq!(integer(12_345_678), "12,345,678");
+        assert_eq!(format_count(12_345_678), "12,345,678");
         assert_eq!(compact(0.00000001), "1.0e-8");
         assert_eq!(compact(0.0), "0");
         assert_eq!(compact(1.0851), "1.0851");
