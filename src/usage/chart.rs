@@ -785,8 +785,18 @@ mod tests {
             unpriced_records: 0,
             possible_overlap: false,
             coverage_incomplete: false,
+            known_tokens: super::super::query::KnownTokens {
+                uncached_input: 7,
+                cache_read: 2,
+                cache_write: 1,
+                output: 1,
+                incomplete: false,
+            },
+            agents: Default::default(),
+            models: Default::default(),
             subtotal: Some(Money::ZERO),
             total: Some(Money::ZERO),
+            known_cost: Money::ZERO,
         }
     }
 

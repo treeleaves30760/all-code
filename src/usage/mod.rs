@@ -25,6 +25,7 @@ pub(crate) mod pricing;
 pub(crate) mod query;
 pub(crate) mod quota;
 pub(crate) mod records;
+mod view;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -424,7 +425,14 @@ pub(crate) fn run_statistics(
         } else {
             print!("{}", render(&report, &theme));
         }
-        print!("{}", query::render_statistics(&statistics, &theme));
+        let view = view::View {
+            monthly: options.monthly,
+            width: view::terminal_width(),
+        };
+        print!("{}", view::render_statistics(&statistics, &theme, view));
+        if options.details {
+            print!("{}", query::render_details(&statistics, &theme));
+        }
     }
     Ok(code)
 }
@@ -436,7 +444,7 @@ pub(crate) fn render(report: &UsageReport, theme: &Theme) -> String {
     let mut issues = Vec::new();
 
     out.push_str(&heading_text(theme, "Accounts"));
-    let mut table = Table::new(vec!["", "PROFILE", "ACCOUNT", "PLAN", "REMAINING"]);
+    let mut table = Table::new(vec!["", "PROFILE", "ACCOUNT", "PLAN", "LEFT", "REMAINING"]);
     for account in &report.accounts {
         let status = account.state.status();
         table.push(vec![
@@ -456,6 +464,7 @@ pub(crate) fn render(report: &UsageReport, theme: &Theme) -> String {
                     .unwrap_or_else(|| theme.dash().to_owned()),
                 Tone::Dim,
             ),
+            Cell::left(quota_bar(account, theme), status.tone()),
             Cell::left(remaining_text(account, theme), status.tone()),
         ]);
         if account.state.is_actionable() {
@@ -485,50 +494,55 @@ pub(crate) fn render(report: &UsageReport, theme: &Theme) -> String {
         };
         out.push_str(&format!("{INDENT}{}\n", theme.paint(Tone::Dim, &note)));
     } else {
-        let mut table = Table::new(vec![
-            "PROVIDER", "AGENT", "LAUNCHES", "TURNS", "INPUT", "CACHED", "CACHE %", "OUTPUT",
-            "LAST",
-        ]);
-        for row in &report.ledger.rows {
-            let carried = row.turns > 0;
-            let count = |value: u64| {
-                if carried {
-                    query::format_count(value)
-                } else {
-                    theme.dash().to_owned()
-                }
-            };
-            let cached = row
-                .cached_tokens
-                .filter(|cached| carried && *cached <= row.input_tokens);
-            let cached_count = cached
-                .map(query::format_count)
-                .unwrap_or_else(|| theme.dash().to_owned());
-            let cache_percent = cached
-                .and_then(|cached| cache_read_percent(row.input_tokens, cached))
-                .map(|percent| format!("{percent}%"))
-                .unwrap_or_else(|| theme.dash().to_owned());
-            table.push(vec![
-                Cell::left(row.provider.clone(), Tone::Plain),
-                Cell::left(row.agent.to_string(), Tone::Plain),
-                Cell::right(query::format_count(row.launches), Tone::Plain),
-                Cell::right(count(row.turns), Tone::Plain),
-                Cell::right(count(row.input_tokens), Tone::Plain),
-                Cell::right(cached_count, Tone::Plain),
-                Cell::right(cache_percent, Tone::Plain),
-                Cell::right(count(row.output_tokens), Tone::Plain),
-                Cell::left(format_age(report.generated_at, row.last_at), Tone::Dim),
+        let width = view::terminal_width();
+        out.push_str(&view::fit(theme, width, |short| {
+            let mut table = view::BoxTable::new(vec![
+                view::Column::left("Provider"),
+                view::Column::left("Agent"),
+                view::Column::right("Launches"),
+                view::Column::right("Turns"),
+                view::Column::right("Input"),
+                view::Column::right("Cached").optional(1),
+                view::Column::right("Cache %").optional(2),
+                view::Column::right("Output"),
+                view::Column::left("Last").optional(3),
             ]);
-        }
-        for line in table.render(theme) {
-            out.push_str(&format!("{INDENT}{line}\n"));
-        }
+            for row in &report.ledger.rows {
+                let carried = row.turns > 0;
+                let dash = || view::Cell::toned(theme.dash(), Tone::Dim);
+                let count = |value: u64| {
+                    if carried {
+                        view::Cell::plain(view::count(value, short))
+                    } else {
+                        dash()
+                    }
+                };
+                let cached = row
+                    .cached_tokens
+                    .filter(|cached| carried && *cached <= row.input_tokens);
+                table.push(vec![
+                    view::Cell::plain(row.provider.clone()),
+                    view::Cell::plain(row.agent.to_string()),
+                    view::Cell::plain(view::count(row.launches, short)),
+                    count(row.turns),
+                    count(row.input_tokens),
+                    cached
+                        .map_or_else(dash, |cached| view::Cell::plain(view::count(cached, short))),
+                    cached
+                        .and_then(|cached| cache_read_percent(row.input_tokens, cached))
+                        .map_or_else(dash, |percent| view::Cell::plain(format!("{percent}%"))),
+                    count(row.output_tokens),
+                    view::Cell::toned(format_age(report.generated_at, row.last_at), Tone::Dim),
+                ]);
+            }
+            table
+        }));
         out.push_str(&format!(
             "{INDENT}{}\n",
             theme.paint(
                 Tone::Dim,
                 &format!(
-                    "source: {} {} tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)",
+                    "{} {} tokens count only where alc carries the traffic (opt in with --metrics)",
                     report.ledger.path,
                     theme.dash()
                 )
@@ -562,6 +576,26 @@ fn fix_for(account: &Account) -> Option<String> {
         ProviderKind::Anthropic => Some("claude".to_owned()),
         _ => Some(format!("alc config key {}", account.profile)),
     }
+}
+
+/// The `LEFT` column: the tightest plan window as a ten-step meter.
+fn quota_bar(account: &Account, theme: &Theme) -> String {
+    let Some(used) = account
+        .windows
+        .iter()
+        .filter(|window| window.scope.is_none())
+        .map(|window| quota::clamp_percent(window.used_percent))
+        .reduce(f64::max)
+    else {
+        return theme.dash().to_owned();
+    };
+    let filled = ((100.0 - used) / 10.0).round().clamp(0.0, 10.0) as usize;
+    let (on, off) = if theme.unicode() {
+        ("▰", "▱")
+    } else {
+        ("#", ".")
+    };
+    format!("{}{}", on.repeat(filled), off.repeat(10 - filled))
 }
 
 /// The `REMAINING` column: every window, then whatever balance there is, then
@@ -830,7 +864,7 @@ mod tests {
         assert!(text.contains("75%"), "{text}");
         assert!(text.contains("88,000"), "{text}");
         assert!(
-            text.contains("tokens are counted only where alc carries the traffic"),
+            text.contains("tokens count only where alc carries the traffic"),
             "{text}"
         );
         let ollama = text
