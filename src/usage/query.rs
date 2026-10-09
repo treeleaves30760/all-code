@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use clap::builder::TypedValueParser;
 use clap::{Args, ValueEnum};
@@ -96,6 +96,9 @@ pub(crate) struct UsageOptions {
     /// Write an offline PNG chart; without a path, use ~/ai-usage.png.
     #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "PATH", value_parser = clap::builder::OsStringValueParser::new().map(PathBuf::from))]
     pub chart: Option<PathBuf>,
+    /// Write a shareable PNG summary of every agent and provider; without a path, use ~/alc-wrapped.png.
+    #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "PATH", value_parser = clap::builder::OsStringValueParser::new().map(PathBuf::from))]
+    pub wrapped: Option<PathBuf>,
     /// Print the report as JSON.
     #[arg(long)]
     pub json: bool,
@@ -150,6 +153,14 @@ impl QueryTimezone {
             Self::Utc => timestamp.date_naive(),
             Self::Local => timestamp.with_timezone(&Local).date_naive(),
             Self::Named(zone) => timestamp.with_timezone(zone).date_naive(),
+        }
+    }
+
+    fn hour(&self, timestamp: DateTime<Utc>) -> u32 {
+        match self {
+            Self::Utc => timestamp.hour(),
+            Self::Local => timestamp.with_timezone(&Local).hour(),
+            Self::Named(zone) => timestamp.with_timezone(zone).hour(),
         }
     }
 
@@ -553,6 +564,51 @@ pub(crate) struct Statistics {
     /// Calendar months, built like `daily`, for `--monthly` and charts.
     #[serde(skip)]
     pub(crate) monthly: Vec<DailyRollup>,
+    #[serde(skip)]
+    pub(crate) activity: Activity,
+}
+
+/// When and where the selected usage happened, for the wrapped image. Token
+/// figures are known sums (see [`KnownTokens`]).
+#[derive(Debug, Default)]
+pub(crate) struct Activity {
+    pub sessions: u64,
+    /// Known tokens by hour of day in the selected timezone.
+    pub hours: [u64; 24],
+    /// Known tokens by recorded provider, or by the model's maker for native
+    /// histories that do not record one.
+    pub providers: BTreeMap<String, u64>,
+}
+
+/// A native history knows the model, not the route; its maker is the best
+/// provider label available.
+pub(crate) fn provider_label(provider: Option<&str>, model: Option<&str>) -> String {
+    if let Some(provider) = provider.filter(|provider| !provider.is_empty()) {
+        return provider.to_owned();
+    }
+    let Some(model) = model.map(str::to_ascii_lowercase) else {
+        return "unknown".to_owned();
+    };
+    let maker = [
+        (
+            &["claude", "opus", "sonnet", "haiku", "fable"][..],
+            "anthropic",
+        ),
+        (&["gpt", "o1", "o3", "o4", "codex", "chatgpt"], "openai"),
+        (&["gemini", "gemma"], "google"),
+        (&["qwen"], "qwen"),
+        (&["deepseek"], "deepseek"),
+        (&["kimi", "moonshot"], "moonshot"),
+        (&["glm"], "zai"),
+        (&["grok"], "xai"),
+        (&["mistral", "codestral", "devstral"], "mistral"),
+        (&["minimax"], "minimax"),
+        (&["llama"], "meta"),
+    ]
+    .into_iter()
+    .find(|(prefixes, _)| prefixes.iter().any(|prefix| model.starts_with(prefix)))
+    .map(|(_, maker)| maker);
+    maker.unwrap_or("other").to_owned()
 }
 
 #[derive(Debug, Serialize)]
@@ -996,6 +1052,8 @@ fn statistics_at(
     let mut days = BTreeMap::<String, Tally>::new();
     let mut months = BTreeMap::<String, Tally>::new();
     let mut overall = Tally::default();
+    let mut activity = Activity::default();
+    let mut sessions = BTreeSet::new();
     for row in &records {
         let estimate = book.estimate(&row.record);
         let day = query.timezone.period(row.record.timestamp_ms, false);
@@ -1010,6 +1068,23 @@ fn statistics_at(
             .or_default()
             .push(&row.record, &estimate, monthly_overlap)?;
         overall.push(&row.record, &estimate, row.possible_overlap)?;
+        let mut known = KnownTokens::default();
+        known.push(&estimate.effective_tokens);
+        if let Some(at) = timestamp(row.record.timestamp_ms) {
+            let hour = &mut activity.hours[query.timezone.hour(at) as usize];
+            *hour = hour.saturating_add(known.total());
+        }
+        let provider = activity
+            .providers
+            .entry(provider_label(
+                row.record.provider.as_deref(),
+                row.record.model.as_deref(),
+            ))
+            .or_default();
+        *provider = provider.saturating_add(known.total());
+        if let Some(session) = &row.record.session_id {
+            sessions.insert((row.record.agent, session.as_str()));
+        }
         let period = if options.daily || options.window.is_some() {
             query.timezone.period(row.record.timestamp_ms, false)
         } else if options.monthly {
@@ -1107,6 +1182,10 @@ fn statistics_at(
             .into_iter()
             .map(|(month, tally)| tally.daily(month, coverage_incomplete))
             .collect(),
+        activity: Activity {
+            sessions: sessions.len() as u64,
+            ..activity
+        },
     })
 }
 

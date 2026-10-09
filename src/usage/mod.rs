@@ -26,6 +26,7 @@ pub(crate) mod query;
 pub(crate) mod quota;
 pub(crate) mod records;
 mod view;
+mod wrapped;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -391,9 +392,19 @@ pub(crate) fn run_statistics(
 ) -> Result<u8> {
     let statistics = query::statistics(&store.dir, &store.config, options)?;
     if let Some(path) = options.chart.as_deref() {
-        let path = chart::destination(path)?;
+        let path = chart::destination(path, "ai-usage.png")?;
         chart::export(&statistics, &path)?;
         eprintln!("Usage chart: {}", path.display());
+    }
+    if let Some(path) = options.wrapped.as_deref() {
+        let path = chart::destination(path, "alc-wrapped.png")?;
+        wrapped::export(&statistics, &path, chrono::Local::now().date_naive())?;
+        eprintln!("Wrapped image: {}", path.display());
+        if !options.json {
+            // The image is the report; skip the quota lookups and tables.
+            wrapped::show_inline(&path);
+            return Ok(0);
+        }
     }
     let report = if options.offline {
         UsageReport {

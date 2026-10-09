@@ -176,3 +176,30 @@ fn export_refuses_a_symlink_destination() {
         .failure();
     assert_eq!(fs::read_to_string(target).unwrap(), "untouched");
 }
+
+#[test]
+fn wrapped_writes_one_image_and_skips_the_text_report() {
+    let fixture = Fixture::new();
+    fixture.seed();
+    let output = fixture
+        .command()
+        .args(["usage", "--offline", "--source", "alc", "--wrapped"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let image = fixture.temp.path().join("home/alc-wrapped.png");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Wrapped image:"));
+    assert!(
+        output.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let bytes = fs::read(&image).unwrap();
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 1600);
+    assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), 1440);
+}
