@@ -3,7 +3,7 @@ id: usage
 title: 用量
 sidebar_label: 用量
 sidebar_position: 6
-description: 查詢 Claude 與 Codex 額度、查看用戶端觀測的 TTFT 與每秒 token 數，並用離線價格表估算本機歷史紀錄的 token 成本。
+description: 查詢 Claude 與 Codex 額度、查看用戶端觀測的 TTFT 與每秒 token 數，並用內建與 LiteLLM 價格表估算本機歷史紀錄的 token 成本。
 keywords:
   - alc usage
   - alc tps
@@ -393,8 +393,8 @@ OpenAI 格式的 input 已包含快取子集；Anthropic 格式的 input 是未�
 
 缺少計數或適用的精確費率、有紀錄的服務層級沒有費率，或分級費率缺少逐請求
 context 資料時，會產生未知／部分成本並列出原因。未記錄服務層級時假設 standard；
-OpenAI 的 `default` 對應 standard。文字顯示 `N/A` 或已知小計加 `?`；
-JSON 的 `total_usd` 保留 `null`。
+OpenAI 的 `default` 對應 standard。預設畫面以 `+` 標示已知小計（完全沒有價格時顯示
+`—`）；`--details` 顯示 `N/A` 或已知小計加 `?`；JSON 的 `total_usd` 保留 `null`。
 已知的零計數不等於缺少計數，找不到模型價格**不代表免費**。本機／自訂端點需要
 精確覆寫，除非精確的官方端點能提供支援的參考；免費參考費率必須明寫 `"0"` 字串。
 

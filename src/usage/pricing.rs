@@ -653,6 +653,7 @@ impl PriceBook {
         }
         let has_bands = tier_entries.iter().any(|entry| entry.has_context_band());
         let mut band_from_lower_bound = false;
+        let mut band_uncertain = false;
         let entry = if has_bands {
             if record.granularity != Granularity::Request {
                 estimate.status = CostStatus::Partial;
@@ -676,13 +677,28 @@ impl PriceBook {
                 return estimate;
             };
             let Some(entry) = tier_entries
-                .into_iter()
+                .iter()
+                .copied()
                 .find(|entry| entry.contains_context(gross))
             else {
                 estimate.status = CostStatus::Partial;
                 estimate.reasons.push("gross request input has no verified context band; flat rates were not substituted".to_owned());
                 return estimate;
             };
+            // A lower bound below the top band could still belong higher up;
+            // that is only a lower-bound price if no higher band is cheaper.
+            if band_from_lower_bound
+                && let Some(max) = entry.context_max
+                && tier_entries
+                    .iter()
+                    .filter(|other| other.context_min.is_some_and(|min| min > max))
+                    .any(|other| !entry.rates.never_above(&other.rates))
+            {
+                estimate.status = CostStatus::Partial;
+                estimate.reasons.push("gross request input is only a lower bound and a higher context band is cheaper; no band was selected".to_owned());
+                return estimate;
+            }
+            band_uncertain = band_from_lower_bound && entry.context_max.is_some();
             estimate.assumptions.push("Context band selected from gross input of this request; its rates apply to all request tokens.".to_owned());
             entry
         } else {
@@ -708,6 +724,12 @@ impl PriceBook {
             &mut cache_write,
             &mut estimate.assumptions,
         );
+        if band_uncertain {
+            // Every component used the lower band's rates, so none is exact.
+            for component in [&mut input, &mut output, &mut cache_read, &mut cache_write] {
+                component.missing("context band chosen from a lower bound of gross input");
+            }
+        }
         estimate.cost_components = CostComponents {
             uncached_input: input.component(),
             output: output.component(),
@@ -722,7 +744,7 @@ impl PriceBook {
             accumulator
                 .missing("invalid cache counters/subsets were left unknown rather than priced");
         }
-        if band_from_lower_bound {
+        if band_uncertain {
             accumulator.missing("an unknown cache counter left gross input as a lower bound; the context band it selects gives a lower-bound cost");
         }
         if tokens.reasoning_tokens.is_some() {
@@ -1085,6 +1107,25 @@ impl Accumulator {
         };
         self.subtotal = subtotal;
         self.known_components += 1;
+    }
+}
+
+impl Rates {
+    /// No rate here exceeds the matching rate in `higher`, where both exist.
+    fn never_above(&self, higher: &Self) -> bool {
+        [
+            (self.input, higher.input),
+            (self.output, higher.output),
+            (self.cache_read, higher.cache_read),
+            (self.cache_write, higher.cache_write),
+            (self.cache_write_5m, higher.cache_write_5m),
+            (self.cache_write_1h, higher.cache_write_1h),
+        ]
+        .into_iter()
+        .all(|pair| match pair {
+            (Some(low), Some(high)) => low.0 <= high.0,
+            _ => true,
+        })
     }
 }
 
@@ -1573,6 +1614,9 @@ cache_write="3"
         assert_eq!(lower.total_usd, None);
         assert_eq!(lower.status, CostStatus::Partial);
         assert_eq!(lower.known_subtotal.to_usd_string(), "0.00005");
+        // No component is exact either: a higher band could still apply.
+        assert_eq!(lower.cost_components.uncached_input.total_usd, None);
+        assert_eq!(lower.cost_components.output.total_usd, None);
         request.tokens.input_tokens = None;
         assert_eq!(book.estimate(&request).known_subtotal, Money::ZERO);
         request.tokens.input_tokens = Some(50);
@@ -1583,6 +1627,50 @@ cache_write="3"
         assert_eq!(
             book.estimate(&request).total_usd.as_deref(),
             Some("0.000303")
+        );
+    }
+
+    #[test]
+    fn a_lower_bound_never_selects_a_band_when_a_higher_one_is_cheaper() {
+        let (_dir, book) = overridden(&sidecar(
+            r#"
+[[models]]
+provider="custom"
+model="odd"
+context_max_tokens=100
+input="3"
+output="3"
+[[models]]
+provider="custom"
+model="odd"
+context_min_tokens=101
+input="1"
+output="3"
+"#,
+        ));
+        let mut request = record(Some("custom"), "odd", InputBasis::Separate);
+        request.tokens.input_tokens = Some(50);
+        request.tokens.cache_read_tokens = None;
+        let estimate = book.estimate(&request);
+        assert_eq!(estimate.status, CostStatus::Partial);
+        assert_eq!(estimate.known_subtotal, Money::ZERO);
+        assert!(
+            estimate
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("cheaper"))
+        );
+        // In the top band the lower bound is exact about the band itself.
+        request.tokens.input_tokens = Some(150);
+        let top = book.estimate(&request);
+        assert_eq!(top.known_subtotal.to_usd_string(), "0.00015");
+        assert_eq!(
+            top.cost_components
+                .uncached_input
+                .total_usd
+                .unwrap()
+                .to_usd_string(),
+            "0.00015"
         );
     }
 

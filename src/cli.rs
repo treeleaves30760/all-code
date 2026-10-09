@@ -245,6 +245,11 @@ struct ClaudeArgs {
     #[arg(long, value_name = "LEVEL")]
     effort: Option<ReasoningEffort>,
 
+    /// Deprecated and ignored; Claude Code now picks the model in-session.
+    /// Kept so old scripts do not forward it to Claude Code, which rejects it.
+    #[arg(long, hide = true)]
+    no_picker: bool,
+
     /// Save this run's model and effort as the provider's defaults.
     #[arg(long)]
     save: bool,
@@ -683,6 +688,7 @@ pub fn run() -> Result<u8> {
                     ClaudeArgs {
                         model: None,
                         effort: None,
+                        no_picker: false,
                         save: false,
                         args: args.args,
                     },

@@ -25,15 +25,15 @@ pub(crate) struct View {
 }
 
 pub(crate) fn terminal_width() -> Option<usize> {
+    if !io::stdout().is_terminal() {
+        return None;
+    }
     if let Some(columns) = env::var("COLUMNS")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|columns| *columns >= 40)
     {
         return Some(columns);
-    }
-    if !io::stdout().is_terminal() {
-        return None;
     }
     crossterm::terminal::size()
         .ok()

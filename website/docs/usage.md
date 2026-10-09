@@ -3,7 +3,7 @@ id: usage
 title: Usage
 sidebar_label: Usage
 sidebar_position: 6
-description: Check Claude and Codex quota, inspect client-observed TTFT and tokens per second, and estimate token costs from local histories with offline pricing.
+description: Check Claude and Codex quota, inspect client-observed TTFT and tokens per second, and estimate token costs from local histories with bundled and LiteLLM pricing.
 keywords:
   - alc usage
   - alc tps
@@ -448,8 +448,9 @@ uses exact integer pico-dollars (10^-12 USD), not floating-point money.
 Missing counters or applicable exact rates, an unpriced recorded service tier,
 or unavailable per-request context for banded rates produce unknown/partial costs
 with reasons. Absent service-tier metadata assumes standard; OpenAI's `default`
-maps to standard. Text shows `N/A` or a known subtotal
-plus `?`; JSON leaves `total_usd` as `null`. A known zero count is not an absent
+maps to standard. The default view marks a known subtotal `+` (or shows `—`
+when nothing is priced); `--details` shows `N/A` or a known subtotal plus `?`;
+JSON leaves `total_usd` as `null`. A known zero count is not an absent
 count, and a missing model price is **not free**. Local/custom endpoints need an
 exact override unless an exact official endpoint supplies a supported reference;
 free reference rates must be explicit `"0"` strings.

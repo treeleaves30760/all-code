@@ -19,6 +19,9 @@ use serde_json::Value;
 pub(crate) const URL: &str =
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const CACHE_FILE: &str = "litellm-prices.json";
+/// Touched after a failed refresh, so an offline or blocked machine waits a
+/// day before trying again instead of paying the timeout on every report.
+const FAILED_FILE: &str = ".litellm-prices.failed";
 const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// The map is about 3 MiB today; the bound only stops a runaway response.
 const LIMIT: u64 = 32 * 1024 * 1024;
@@ -59,18 +62,30 @@ pub(crate) fn load(config_dir: &Path, network: bool) -> Option<Snapshot> {
             .duration_since(snapshot.fetched)
             .is_ok_and(|age| age < MAX_AGE)
     });
-    if fresh.is_some() || !network {
+    let failed = config_dir.join(FAILED_FILE);
+    let recently_failed = fs::metadata(&failed)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|at| SystemTime::now().duration_since(at).ok())
+        .is_some_and(|age| age < MAX_AGE);
+    if fresh.is_some() || !network || recently_failed {
         return fresh.or_else(cached);
     }
     let Some(url) = url() else {
         return cached();
     };
     match download(&url).and_then(|text| store(config_dir, &text).map(|()| text)) {
-        Ok(text) => Some(Snapshot {
-            text,
-            fetched: SystemTime::now(),
-        }),
-        Err(_) => cached(),
+        Ok(text) => {
+            let _ = fs::remove_file(&failed);
+            Some(Snapshot {
+                text,
+                fetched: SystemTime::now(),
+            })
+        }
+        Err(_) => {
+            let _ = fs::write(&failed, b"");
+            cached()
+        }
     }
 }
 
@@ -157,6 +172,16 @@ pub(crate) fn prices(text: &str) -> Vec<Price> {
             continue;
         }
         let rate = |field: &str| row.get(field).and_then(Value::as_f64).and_then(per_million);
+        // A row that charges long requests differently says so on its
+        // standard tier; another tier without its own band is then only known
+        // up to that threshold, never flat across it.
+        let row_threshold = threshold(row.keys(), "");
+        // Anthropic prices the 5-minute and 1-hour cache separately.
+        let ttl_split = |suffix: &str| {
+            row.contains_key(&format!(
+                "cache_creation_input_token_cost_above_1hr{suffix}"
+            ))
+        };
         for (tier, suffix) in TIERS {
             let scope = |above: Option<u64>| {
                 let field = |name: &str| match above {
@@ -173,18 +198,11 @@ pub(crate) fn prices(text: &str) -> Vec<Price> {
                     ..Price::default()
                 };
                 let write = field("cache_creation_input_token_cost");
-                // Anthropic prices the 5-minute and 1-hour cache separately.
-                let hour = above
-                    .is_none()
-                    .then(|| {
-                        rate(&format!(
-                            "cache_creation_input_token_cost_above_1hr{suffix}"
-                        ))
-                    })
-                    .flatten();
-                if hour.is_some() {
+                if ttl_split(suffix) {
+                    // A missing 1h rate stays unknown rather than borrowing
+                    // the 5m one, so 1h writes price as partial.
                     price.cache_write_5m = write;
-                    price.cache_write_1h = hour;
+                    price.cache_write_1h = field("cache_creation_input_token_cost_above_1hr");
                 } else {
                     price.cache_write = write;
                 }
@@ -194,7 +212,7 @@ pub(crate) fn prices(text: &str) -> Vec<Price> {
             if base.input.is_none() && base.output.is_none() {
                 continue;
             }
-            match threshold(row.keys(), suffix) {
+            match threshold(row.keys(), suffix).or(row_threshold) {
                 Some(threshold) => {
                     let limit = threshold * 1000;
                     out.push(Price {
@@ -276,6 +294,24 @@ mod tests {
             "output_cost_per_token_above_272k_tokens": 1.5e-05,
             "input_cost_per_token_priority": 4e-06, "output_cost_per_token_priority": 2e-05
         },
+        "claude-long-9": {
+            "litellm_provider": "anthropic",
+            "input_cost_per_token": 1e-06, "output_cost_per_token": 5e-06,
+            "cache_creation_input_token_cost": 1.25e-06,
+            "cache_creation_input_token_cost_above_1hr": 2e-06,
+            "input_cost_per_token_above_100k_tokens": 2e-06,
+            "output_cost_per_token_above_100k_tokens": 1e-05,
+            "cache_creation_input_token_cost_above_100k_tokens": 2.5e-06,
+            "cache_creation_input_token_cost_above_1hr_above_100k_tokens": 4e-06
+        },
+        "claude-partial-9": {
+            "litellm_provider": "anthropic",
+            "input_cost_per_token": 1e-06, "output_cost_per_token": 5e-06,
+            "cache_creation_input_token_cost": 1.25e-06,
+            "cache_creation_input_token_cost_above_1hr": 2e-06,
+            "input_cost_per_token_above_100k_tokens": 2e-06,
+            "cache_creation_input_token_cost_above_100k_tokens": 2.5e-06
+        },
         "openrouter/gpt-9": {"litellm_provider": "openrouter", "input_cost_per_token": 1},
         "low/1024-x-1024/gpt-image": {"litellm_provider": "openai", "input_cost_per_token": 1},
         "gemini-9": {"litellm_provider": "gemini", "input_cost_per_token": 1e-06}
@@ -307,7 +343,26 @@ mod tests {
         let priority: Vec<_> = gpt.iter().filter(|p| p.tier == "priority").collect();
         assert_eq!(priority.len(), 1);
         assert_eq!(priority[0].output.as_deref(), Some("20"));
+        // The row is banded, so a tier without its own band stops at it.
+        assert_eq!(priority[0].context_max, Some(272_000));
         assert!(gpt.iter().all(|p| p.tier != "flex"));
+
+        let long: Vec<_> = prices
+            .iter()
+            .filter(|p| p.model == "claude-long-9")
+            .collect();
+        assert_eq!(long.len(), 2);
+        assert_eq!(long[1].context_min, Some(100_001));
+        assert_eq!(long[1].cache_write_5m.as_deref(), Some("2.5"));
+        assert_eq!(long[1].cache_write_1h.as_deref(), Some("4"));
+        assert_eq!(long[1].cache_write, None);
+        let partial: Vec<_> = prices
+            .iter()
+            .filter(|p| p.model == "claude-partial-9")
+            .collect();
+        assert_eq!(partial[1].cache_write_5m.as_deref(), Some("2.5"));
+        assert_eq!(partial[1].cache_write_1h, None);
+        assert_eq!(partial[1].cache_write, None);
 
         assert!(prices.iter().all(|p| !p.model.contains('/')));
         assert!(prices.iter().all(|p| p.model != "gemini-9"));
@@ -320,6 +375,24 @@ mod tests {
         assert_eq!(per_million(-1.0), None);
         assert_eq!(per_million(f64::NAN), None);
         assert!(prices("not json").is_empty());
+    }
+
+    #[test]
+    fn a_failed_refresh_backs_off_for_a_day() {
+        let dir = tempfile::tempdir().unwrap();
+        // What load() records after a failed download.
+        fs::write(dir.path().join(FAILED_FILE), b"").unwrap();
+        fs::write(dir.path().join(CACHE_FILE), MAP).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(3 * 24 * 60 * 60);
+        fs::File::options()
+            .write(true)
+            .open(dir.path().join(CACHE_FILE))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        // Network allowed, cache stale, but a recent failure: no new fetch.
+        let snapshot = load(dir.path(), true).unwrap();
+        assert_eq!(snapshot.fetched, old);
     }
 
     #[test]

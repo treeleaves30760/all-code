@@ -13,8 +13,8 @@ use serde::Serialize;
 use super::native;
 use super::pricing::{CostComponents, CostEstimate, CostStatus, Money, PriceBook, PriceSource};
 use super::records::{
-    Granularity, Metrics, OutputBasis, ReadResult, Source, SourceDiagnostics, TokenCounts,
-    UsageRecord,
+    Granularity, InputBasis, Metrics, OutputBasis, ReadResult, Source, SourceDiagnostics,
+    TokenCounts, UsageRecord,
 };
 use crate::config::{Agent, Config};
 use crate::doctor::{Cell, INDENT, Table, Theme, Tone, heading_text};
@@ -740,8 +740,23 @@ pub(crate) struct KnownTokens {
 
 impl KnownTokens {
     fn push(&mut self, tokens: &TokenCounts) {
+        // An inclusive count with an unknown cache part still bounds the
+        // uncached input: whatever cache is unknown is counted as uncached, so
+        // gross input stays exact and only the split is uncertain.
+        let uncached = tokens.uncached_input().or_else(|| {
+            let input = tokens.input_tokens?;
+            if tokens.input_basis != InputBasis::Inclusive {
+                return None;
+            }
+            self.incomplete = true;
+            Some(
+                input
+                    .saturating_sub(tokens.cache_read_tokens.unwrap_or(0))
+                    .saturating_sub(tokens.cache_write_tokens.unwrap_or(0)),
+            )
+        });
         for (sum, value) in [
-            (&mut self.uncached_input, tokens.uncached_input()),
+            (&mut self.uncached_input, uncached),
             (&mut self.cache_read, tokens.cache_read_tokens),
             (&mut self.cache_write, tokens.cache_write_tokens),
             (&mut self.output, tokens.output_tokens),
@@ -1723,6 +1738,24 @@ fn render_tps(report: &TpsReport, theme: &Theme) -> String {
 mod tests {
     use super::super::records::{CorrelationId, Outcome, OutputBasis, Timing};
     use super::*;
+
+    #[test]
+    fn known_inclusive_input_survives_an_unknown_cache_counter() {
+        let mut known = KnownTokens::default();
+        known.push(&TokenCounts {
+            input_tokens: Some(100),
+            input_basis: InputBasis::Inclusive,
+            output_tokens: Some(5),
+            cache_read_tokens: Some(30),
+            cache_write_tokens: None,
+            ..TokenCounts::default()
+        });
+        assert_eq!(known.input(), 100);
+        assert_eq!(known.uncached_input, 70);
+        assert_eq!(known.cache_read, 30);
+        assert_eq!(known.output, 5);
+        assert!(known.incomplete);
+    }
 
     #[test]
     fn dates_are_strict_and_offsets_normalized() {
