@@ -3,7 +3,7 @@ id: usage
 title: 用量
 sidebar_label: 用量
 sidebar_position: 6
-description: 查詢 Claude 與 Codex 額度、查看用戶端觀測的 TTFT 與每秒 token 數，並用離線價格表估算本機歷史紀錄的 token 成本。
+description: 查詢 Claude 與 Codex 額度、查看用戶端觀測的 TTFT 與每秒 token 數，並用內建與 LiteLLM 價格表估算本機歷史紀錄的 token 成本。
 keywords:
   - alc usage
   - alc tps
@@ -26,27 +26,43 @@ keywords:
 alc usage                   # 帳號額度、相容帳本、每日 token／成本統計
 alc usage --offline         # 只讀本機統計；不讀憑證、不連網
 alc usage weekly --offline --timezone Asia/Taipei --chart
+alc usage yearly --wrapped  # 一張涵蓋所有 agent 與 provider 的分享圖
 alc tps                     # 最新 20 筆符合條件且有 timing 的請求
 ```
 
-一般用量報告保留 **Accounts** 與 **Usage by provider and agent**，接著新增
-**Token usage and estimated cost (USD)**。以下節錄帳號與相容帳本區塊：
+一般用量報告依序顯示 **Accounts**、**Usage by provider and agent**，接著是
+**Token usage** 與 **By model**：
 
 ```text
 Accounts
-     PROFILE     ACCOUNT                  PLAN  REMAINING
-  ✓  anthropic   ~/.claude                max   5h 97% left, resets in 2h 53m — week 79% left, resets in 6d 4h — Fable week 62% left, resets in 6d 4h
-  ✓  codex       you@example.com          pro   week 66% left, resets in 5d 9h — no credits
-  ·  ollama      —                        —     no quota API
-  ·  openrouter  —                        —     no API key; run `alc config key openrouter`
+     PROFILE     ACCOUNT          PLAN  LEFT        REMAINING
+  ✓  anthropic   ~/.claude        max   ▰▰▰▰▰▰▰▰▱▱  5h 97% left, resets in 2h 53m — week 79% left, resets in 6d 4h
+  ✓  codex       you@example.com  pro   ▰▰▰▰▰▰▰▱▱▱  week 66% left, resets in 5d 9h — no credits
+  ·  ollama      —                —     —           no quota API
+  ·  openrouter  —                —     —           no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS   INPUT  CACHED  CACHE %  OUTPUT  LAST
-  codex     claude           1      1  20,800  15,400      74%      35  7m ago
-  ollama    opencode         1      —       —       —        —       —  12m ago
-  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
+  ╭──────────┬──────────┬──────────┬───────┬────────┬────────┬─────────┬────────┬─────────╮
+  │ Provider │ Agent    │ Launches │ Turns │  Input │ Cached │ Cache % │ Output │ Last    │
+  ├──────────┼──────────┼──────────┼───────┼────────┼────────┼─────────┼────────┼─────────┤
+  │ codex    │ claude   │        1 │     1 │ 20,800 │ 15,400 │     74% │     35 │ 7m ago  │
+  │ ollama   │ opencode │        1 │     — │      — │      — │       — │      — │ 12m ago │
+  ╰──────────┴──────────┴──────────┴───────┴────────┴────────┴─────────┴────────┴─────────╯
+  ~/.config/alc/usage.jsonl — tokens count only where alc carries the traffic (opt in with --metrics)
 
 ✓ ready
+
+Token usage
+  since 2026-10-05 · UTC · 3,412 records · prices alc-curated-2026-10-08-litellm-33d908e0
+  ╭────────────┬───────────────┬──────────────────────┬───────────┬─────────┬─────────────┬────────────┬──────────────┬─────────╮
+  │ Date       │ Agents        │ Models               │     Input │  Output │ Cache write │ Cache read │ Total tokens │    Cost │
+  ├────────────┼───────────────┼──────────────────────┼───────────┼─────────┼─────────────┼────────────┼──────────────┼─────────┤
+  │ 2026-10-05 │ claude, codex │ gpt-5.2-codex,       │ 1,204,330 │  88,410 │     310,201 │ 21,733,090 │   23,336,031 │  $19.42 │
+  │            │               │ sonnet-4-6           │           │         │             │            │              │         │
+  │ 2026-10-06 │ claude        │ sonnet-4-6           │   402,118 │  51,902 │     120,554 │  9,108,422 │   9,682,996+ │  $6.71+ │
+  ├────────────┼───────────────┼──────────────────────┼───────────┼─────────┼─────────────┼────────────┼──────────────┼─────────┤
+  │ Total      │               │                      │ 1,606,448 │ 140,312 │     430,755 │ 30,841,512 │  33,019,027+ │ $26.13+ │
+  ╰────────────┴───────────────┴──────────────────────┴───────────┴─────────┴─────────────┴────────────┴──────────────┴─────────╯
 ```
 
 每個啟用的 provider profile 在 Accounts 裡各有一列。`REMAINING` 是倒數的：
@@ -255,13 +271,35 @@ alc usage --offline --claude-dir "$HOME/.claude-work" --codex-dir "$HOME/.codex-
 
 不指定位置視窗或日期界線，仍讀取全部歷史。既有 `--daily`、`--monthly` 仍是
 互斥的分組選項，將明確的日期／來源／模型篩選後的歷史分組；`--monthly`
-**不表示**本月。主表提供每日總計，使用完整整數、千分位與靠右對齊的數字。
-模型／來源列另外保留 provider 與 granularity 的區別。
+**不表示**本月。
+
+終端畫面以依終端寬度調整的框線表格呈現：寬度不夠時先讓模型清單換行，再改用
+`1.23M` 形式的數字，最後才省略次要欄位；導向檔案或管線時保留完整整數。總和中有
+一部分未知時（沒有 token 數的檢查點、無法讀取的計數器、沒有價格的模型），欄位會
+顯示已知的部分並標上 `+`，表示至少這麼多，而不是把整天變成 `N/A`。`~` 表示
+alc 帳本與原生歷史在那天都看到同一個 agent，可能把同一個請求算兩次；用
+`--source` 擇一。`--details` 會附上嚴格的逐來源表，保留 provider 與 granularity
+的區別、精確總和或 `N/A`、費用組成、假設與涵蓋缺口。
 
 `--timezone UTC|local|<IANA>` 預設 UTC。只有日期的界線、曆法視窗與日／月桶都用
 相同時區。例如 `--since 2026-10-01 --until 2026-10-08 --timezone Asia/Taipei`
 包含台北的 10 月 1–7 日。RFC3339 界線是時區偏移指定的確切時刻，不會被選取的
 時區重新解讀。
+
+### Wrapped 分享圖
+
+```sh
+alc usage --wrapped                 # 全部歷史，寫到 ~/alc-wrapped.png
+alc usage yearly --wrapped="$HOME/2026.png"
+alc usage --source claude,codex --since 2026-01-01 --wrapped
+```
+
+`--wrapped[=PATH]` 會把選取範圍內所有 agent 與 provider 的用量畫成一張可分享的
+PNG：總 token、第一天與最忙的一天、每週節奏、GitHub 風格的活動熱度圖、各 agent
+占比、常用模型與 provider、請求數、session 數、活躍天數、最長連續天數、快取命中率、
+尖峰時段與估計成本。它取代文字報告，並在 iTerm2、WezTerm、kitty 與 Ghostty 中
+直接顯示（tmux 內不顯示）。原生歷史只記錄模型而不記錄路由，所以其 provider 以模型
+的開發商標示。數字是上述的已知總和；頁尾會註明何時是下限。
 
 ### 離線 PNG 匯出
 
@@ -355,15 +393,20 @@ OpenAI 格式的 input 已包含快取子集；Anthropic 格式的 input 是未�
 
 缺少計數或適用的精確費率、有紀錄的服務層級沒有費率，或分級費率缺少逐請求
 context 資料時，會產生未知／部分成本並列出原因。未記錄服務層級時假設 standard；
-OpenAI 的 `default` 對應 standard。文字顯示 `N/A` 或已知小計加 `?`；
-JSON 的 `total_usd` 保留 `null`。
+OpenAI 的 `default` 對應 standard。預設畫面以 `+` 標示已知小計（完全沒有價格時顯示
+`—`）；`--details` 顯示 `N/A` 或已知小計加 `?`；JSON 的 `total_usd` 保留 `null`。
 已知的零計數不等於缺少計數，找不到模型價格**不代表免費**。本機／自訂端點需要
 精確覆寫，除非精確的官方端點能提供支援的參考；免費參考費率必須明寫 `"0"` 字串。
 
-價格是離線、精選的 LiteLLM 子集，不是完整上游目錄或即時價格來源。內建快照日期為
-**2026-10-08**，固定在 LiteLLM commit
-`33d908e0ae2c0a257eeb5d546df08527d348a670`，附上游 SHA-256 與 MIT 授權來源。
-歷史用量依這份快照重新定價；不含稅、折扣、訂閱、未記錄的工具或非 token 費用。
+價格先取離線、精選的 LiteLLM 子集。內建快照日期為 **2026-10-08**，固定在 LiteLLM
+commit `33d908e0ae2c0a257eeb5d546df08527d348a670`，附上游 SHA-256 與 MIT 授權來源。
+子集沒有的模型改用 **LiteLLM 公開的價格表**定價，也就是 `npx ccusage` 讀的同一個
+檔案。alc 每天最多下載一次到設定目錄的 `litellm-prices.json`，而且只在有紀錄缺價格
+時才下載。它只採用 Anthropic 與 OpenAI 的官方列（含服務層級與長上下文區間），且絕不
+取代精選或覆寫的費率。`--offline` 只用快取、不下載。此時報告的 `pricing_snapshot`
+結尾會是 `+litellm-live-<日期>:sha256:<雜湊>`，這些列的 `price_sources` 種類為
+`litellm`；這些費率未經官方驗證。請求的快取計數器未知時，長上下文區間依已知的輸入
+下限選擇，因此成本仍標示為下限。歷史用量依這些價格重新定價；不含稅、折扣、訂閱、未記錄的工具或非 token 費用。
 精確費率加在設定目錄的 **`pricing.toml`**，或用
 **`alc usage --pricing-file PATH`** 指定檔案。[價格 sidecar 參考](./configuration.md#價格-sidecar)
 列出格式；它不是主要 `config.toml` 裡的一張 table。
@@ -376,7 +419,10 @@ JSON 的 `total_usd` 保留 `null`。
   `timezone`、解析後的 `range`、選取的 `window`、`daily_rollups`、
   `uncached_input_tokens`，以及總計、每日與模型／來源層級的 `cost_components`。
   分項為 `uncached_input`、`cache_read`、`cache_write`、`output`，各有可為
-  `null` 的 `known_subtotal_usd` 與 `total_usd`。統計保留 source/profile/provider/
+  `null` 的 `known_subtotal_usd` 與 `total_usd`。每個層級的嚴格總計旁都有
+  `known_tokens`（`uncached_input`、`cache_read`、`cache_write`、`output`、
+  `incomplete`）：即終端畫面顯示的已知總和，`incomplete` 為真時是下限。每日總計
+  也列出其 `agents` 與 `models`。統計保留 source/profile/provider/
   agent/model 列、`granularity`、可為 `null` 的 token 總數、`records`、可為
   `null` 的 `requests`、`known_requests`、`priced_records`、`unpriced_records`、
   `deduplicated_records`、`known_subtotal_usd`、可為 `null` 的 `total_usd`、

@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use clap::builder::TypedValueParser;
 use clap::{Args, ValueEnum};
@@ -13,8 +13,8 @@ use serde::Serialize;
 use super::native;
 use super::pricing::{CostComponents, CostEstimate, CostStatus, Money, PriceBook, PriceSource};
 use super::records::{
-    Granularity, Metrics, OutputBasis, ReadResult, Source, SourceDiagnostics, TokenCounts,
-    UsageRecord,
+    Granularity, InputBasis, Metrics, OutputBasis, ReadResult, Source, SourceDiagnostics,
+    TokenCounts, UsageRecord,
 };
 use crate::config::{Agent, Config};
 use crate::doctor::{Cell, INDENT, Table, Theme, Tone, heading_text};
@@ -96,9 +96,15 @@ pub(crate) struct UsageOptions {
     /// Write an offline PNG chart; without a path, use ~/ai-usage.png.
     #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "PATH", value_parser = clap::builder::OsStringValueParser::new().map(PathBuf::from))]
     pub chart: Option<PathBuf>,
+    /// Write a shareable PNG summary of every agent and provider; without a path, use ~/alc-wrapped.png.
+    #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "PATH", value_parser = clap::builder::OsStringValueParser::new().map(PathBuf::from))]
+    pub wrapped: Option<PathBuf>,
     /// Print the report as JSON.
     #[arg(long)]
     pub json: bool,
+    /// Also print per-source rows, assumptions and coverage diagnostics.
+    #[arg(long)]
+    pub details: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -147,6 +153,14 @@ impl QueryTimezone {
             Self::Utc => timestamp.date_naive(),
             Self::Local => timestamp.with_timezone(&Local).date_naive(),
             Self::Named(zone) => timestamp.with_timezone(zone).date_naive(),
+        }
+    }
+
+    fn hour(&self, timestamp: DateTime<Utc>) -> u32 {
+        match self {
+            Self::Utc => timestamp.hour(),
+            Self::Local => timestamp.with_timezone(&Local).hour(),
+            Self::Named(zone) => timestamp.with_timezone(zone).hour(),
         }
     }
 
@@ -527,6 +541,7 @@ pub(crate) struct Statistics {
     pub cache_read_tokens: Option<u64>,
     pub cache_write_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    pub known_tokens: KnownTokens,
     pub cost_components: CostComponents,
     pub known_subtotal_usd: Option<String>,
     /// None if pricing or reconciliation is incomplete.
@@ -544,6 +559,59 @@ pub(crate) struct Statistics {
     pub(crate) subtotal: Option<Money>,
     #[serde(skip)]
     pub(crate) total: Option<Money>,
+    #[serde(skip)]
+    pub(crate) known_cost: Money,
+    /// Calendar months, built like `daily`, for `--monthly` and charts.
+    #[serde(skip)]
+    pub(crate) monthly: Vec<DailyRollup>,
+    #[serde(skip)]
+    pub(crate) activity: Activity,
+    /// Today in the selected timezone, the reference for "days ago".
+    #[serde(skip)]
+    pub(crate) today: NaiveDate,
+}
+
+/// When and where the selected usage happened, for the wrapped image. Token
+/// figures are known sums (see [`KnownTokens`]).
+#[derive(Debug, Default)]
+pub(crate) struct Activity {
+    pub sessions: u64,
+    /// Known tokens by hour of day in the selected timezone.
+    pub hours: [u64; 24],
+    /// Known tokens by recorded provider, or by the model's maker for native
+    /// histories that do not record one.
+    pub providers: BTreeMap<String, u64>,
+}
+
+/// A native history knows the model, not the route; its maker is the best
+/// provider label available.
+pub(crate) fn provider_label(provider: Option<&str>, model: Option<&str>) -> String {
+    if let Some(provider) = provider.filter(|provider| !provider.is_empty()) {
+        return provider.to_owned();
+    }
+    let Some(model) = model.map(str::to_ascii_lowercase) else {
+        return "unknown".to_owned();
+    };
+    let maker = [
+        (
+            &["claude", "opus", "sonnet", "haiku", "fable"][..],
+            "anthropic",
+        ),
+        (&["gpt", "o1", "o3", "o4", "codex", "chatgpt"], "openai"),
+        (&["gemini", "gemma"], "google"),
+        (&["qwen"], "qwen"),
+        (&["deepseek"], "deepseek"),
+        (&["kimi", "moonshot"], "moonshot"),
+        (&["glm"], "zai"),
+        (&["grok"], "xai"),
+        (&["mistral", "codestral", "devstral"], "mistral"),
+        (&["minimax"], "minimax"),
+        (&["llama"], "meta"),
+    ]
+    .into_iter()
+    .find(|(prefixes, _)| prefixes.iter().any(|prefix| model.starts_with(prefix)))
+    .map(|(_, maker)| maker);
+    maker.unwrap_or("other").to_owned()
 }
 
 #[derive(Debug, Serialize)]
@@ -566,10 +634,17 @@ pub(crate) struct DailyRollup {
     pub unpriced_records: u64,
     pub possible_overlap: bool,
     pub coverage_incomplete: bool,
+    /// Display sums; see [`KnownTokens`]. The exact fields above stay strict.
+    pub known_tokens: KnownTokens,
+    pub agents: BTreeSet<Agent>,
+    pub models: BTreeSet<String>,
     #[serde(skip)]
     pub(crate) subtotal: Option<Money>,
     #[serde(skip)]
     pub(crate) total: Option<Money>,
+    /// The priced part even under possible overlap, for an approximate display.
+    #[serde(skip)]
+    pub(crate) known_cost: Money,
 }
 
 #[derive(Debug, Serialize)]
@@ -590,6 +665,7 @@ pub(crate) struct UsageRow {
     pub cache_read_tokens: Option<u64>,
     pub cache_write_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    pub known_tokens: KnownTokens,
     pub cost_components: CostComponents,
     pub known_subtotal_usd: String,
     pub total_usd: Option<String>,
@@ -605,6 +681,8 @@ pub(crate) struct UsageRow {
     pub billing_meaning: String,
     pub assumptions: BTreeSet<String>,
     pub reasons: BTreeSet<String>,
+    #[serde(skip)]
+    pub(crate) known_cost: Money,
 }
 
 fn add(total: Option<u64>, value: Option<u64>) -> Option<u64> {
@@ -650,12 +728,75 @@ impl TokenTotals {
     }
 }
 
+/// What is known, for display: unlike the exact totals beside it, one unknown
+/// counter does not erase the rest. With `incomplete` the sums are a lower
+/// bound; under possible source overlap they may also count a request twice.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub(crate) struct KnownTokens {
+    pub uncached_input: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub output: u64,
+    /// At least one counter in the group was unknown.
+    pub incomplete: bool,
+}
+
+impl KnownTokens {
+    fn push(&mut self, tokens: &TokenCounts) {
+        // An inclusive count with an unknown cache part still bounds the
+        // uncached input: whatever cache is unknown is counted as uncached, so
+        // gross input stays exact and only the split is uncertain.
+        let uncached = tokens.uncached_input().or_else(|| {
+            let input = tokens.input_tokens?;
+            if tokens.input_basis != InputBasis::Inclusive {
+                return None;
+            }
+            self.incomplete = true;
+            Some(
+                input
+                    .saturating_sub(tokens.cache_read_tokens.unwrap_or(0))
+                    .saturating_sub(tokens.cache_write_tokens.unwrap_or(0)),
+            )
+        });
+        for (sum, value) in [
+            (&mut self.uncached_input, uncached),
+            (&mut self.cache_read, tokens.cache_read_tokens),
+            (&mut self.cache_write, tokens.cache_write_tokens),
+            (&mut self.output, tokens.output_tokens),
+        ] {
+            match value {
+                Some(value) => *sum = sum.saturating_add(value),
+                None => self.incomplete = true,
+            }
+        }
+    }
+
+    pub(crate) fn add(&mut self, other: &Self) {
+        self.uncached_input = self.uncached_input.saturating_add(other.uncached_input);
+        self.cache_read = self.cache_read.saturating_add(other.cache_read);
+        self.cache_write = self.cache_write.saturating_add(other.cache_write);
+        self.output = self.output.saturating_add(other.output);
+        self.incomplete |= other.incomplete;
+    }
+
+    pub(crate) fn input(&self) -> u64 {
+        self.uncached_input
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
+    }
+
+    pub(crate) fn total(&self) -> u64 {
+        self.input().saturating_add(self.output)
+    }
+}
+
 #[derive(Debug)]
 struct Tally {
     records: u64,
     requests: Option<u64>,
     known_requests: u64,
     tokens: TokenTotals,
+    known: KnownTokens,
     cost_components: CostComponents,
     subtotal: Money,
     total: Option<Money>,
@@ -663,6 +804,8 @@ struct Tally {
     partial_records: u64,
     unpriced_records: u64,
     possible_overlap: bool,
+    agents: BTreeSet<Agent>,
+    models: BTreeSet<String>,
 }
 
 impl Default for Tally {
@@ -672,6 +815,7 @@ impl Default for Tally {
             requests: Some(0),
             known_requests: 0,
             tokens: TokenTotals::default(),
+            known: KnownTokens::default(),
             cost_components: CostComponents::zero(),
             subtotal: Money::ZERO,
             total: Some(Money::ZERO),
@@ -679,6 +823,8 @@ impl Default for Tally {
             partial_records: 0,
             unpriced_records: 0,
             possible_overlap: false,
+            agents: BTreeSet::new(),
+            models: BTreeSet::new(),
         }
     }
 }
@@ -700,7 +846,12 @@ impl Tally {
         // estimate.effective_tokens is also unknown for checkpoints, so no
         // checkpoint counters can leak into either token sums or chart stacks.
         self.tokens.push(&estimate.effective_tokens);
+        self.known.push(&estimate.effective_tokens);
         self.possible_overlap |= possible_overlap;
+        self.agents.insert(record.agent);
+        if let Some(model) = &record.model {
+            self.models.insert(model.clone());
+        }
         self.subtotal = self
             .subtotal
             .checked_add(estimate.known_subtotal)
@@ -763,8 +914,12 @@ impl Tally {
             unpriced_records: self.unpriced_records,
             possible_overlap: self.possible_overlap,
             coverage_incomplete,
+            known_tokens: self.known,
+            agents: self.agents,
+            models: self.models,
             subtotal,
             total,
+            known_cost: self.subtotal,
         }
     }
 }
@@ -844,6 +999,7 @@ impl UsageGroup {
             cache_read_tokens: self.tally.tokens.cache_read,
             cache_write_tokens: self.tally.tokens.cache_write,
             output_tokens: self.tally.tokens.output,
+            known_tokens: self.tally.known,
             cost_components: self.tally.cost_components,
             known_subtotal_usd: self.tally.subtotal.to_usd_string(),
             total_usd: self.tally.total.map(Money::to_usd_string),
@@ -864,6 +1020,7 @@ impl UsageGroup {
             .to_owned(),
             assumptions: self.assumptions,
             reasons: self.reasons,
+            known_cost: self.tally.subtotal,
         }
     }
 }
@@ -873,14 +1030,16 @@ pub(crate) fn statistics(
     config: &Config,
     options: &UsageOptions,
 ) -> Result<Statistics> {
-    statistics_at(config_dir, config, options, Utc::now())
+    statistics_at(config_dir, config, options, Utc::now(), !options.offline)
 }
 
+/// `network` allows refreshing LiteLLM's price map; a cached copy is used either way.
 fn statistics_at(
     config_dir: &Path,
     config: &Config,
     options: &UsageOptions,
     now: DateTime<Utc>,
+    network: bool,
 ) -> Result<Statistics> {
     if options.window.is_some() && (options.daily || options.monthly) {
         bail!("calendar window cannot be used with --daily or --monthly grouping");
@@ -898,18 +1057,26 @@ fn statistics_at(
         .collect();
     recompute_overlap(&mut records);
     let mut day_sources = BTreeMap::<String, BTreeMap<Agent, BTreeSet<Source>>>::new();
+    let mut month_sources = BTreeMap::<String, BTreeMap<Agent, BTreeSet<Source>>>::new();
     for row in &records {
-        day_sources
-            .entry(query.timezone.period(row.record.timestamp_ms, false))
-            .or_default()
-            .entry(row.record.agent)
-            .or_default()
-            .extend(&row.provenance);
+        for (map, monthly) in [(&mut day_sources, false), (&mut month_sources, true)] {
+            map.entry(query.timezone.period(row.record.timestamp_ms, monthly))
+                .or_default()
+                .entry(row.record.agent)
+                .or_default()
+                .extend(&row.provenance);
+        }
     }
-    let book = PriceBook::load(config_dir, options.pricing_file.as_deref())?;
+    let mut book = PriceBook::load(config_dir, options.pricing_file.as_deref())?;
+    if book.has_gaps(records.iter().map(|row| &row.record)) {
+        book = book.with_live(config_dir, network);
+    }
     let mut groups = BTreeMap::<GroupKey, UsageGroup>::new();
     let mut days = BTreeMap::<String, Tally>::new();
+    let mut months = BTreeMap::<String, Tally>::new();
     let mut overall = Tally::default();
+    let mut activity = Activity::default();
+    let mut sessions = BTreeSet::new();
     for row in &records {
         let estimate = book.estimate(&row.record);
         let day = query.timezone.period(row.record.timestamp_ms, false);
@@ -917,7 +1084,30 @@ fn statistics_at(
         days.entry(day)
             .or_default()
             .push(&row.record, &estimate, daily_overlap)?;
+        let month = query.timezone.period(row.record.timestamp_ms, true);
+        let monthly_overlap = has_overlap(row, &month_sources[&month]);
+        months
+            .entry(month)
+            .or_default()
+            .push(&row.record, &estimate, monthly_overlap)?;
         overall.push(&row.record, &estimate, row.possible_overlap)?;
+        let mut known = KnownTokens::default();
+        known.push(&estimate.effective_tokens);
+        if let Some(at) = timestamp(row.record.timestamp_ms) {
+            let hour = &mut activity.hours[query.timezone.hour(at) as usize];
+            *hour = hour.saturating_add(known.total());
+        }
+        let provider = activity
+            .providers
+            .entry(provider_label(
+                row.record.provider.as_deref(),
+                row.record.model.as_deref(),
+            ))
+            .or_default();
+        *provider = provider.saturating_add(known.total());
+        if let Some(session) = &row.record.session_id {
+            sessions.insert((row.record.agent, session.as_str()));
+        }
         let period = if options.daily || options.window.is_some() {
             query.timezone.period(row.record.timestamp_ms, false)
         } else if options.monthly {
@@ -995,6 +1185,7 @@ fn statistics_at(
         cache_read_tokens: overall.tokens.cache_read,
         cache_write_tokens: overall.tokens.cache_write,
         output_tokens: overall.tokens.output,
+        known_tokens: overall.known,
         cost_components: overall.cost_components,
         known_subtotal_usd: subtotal.map(Money::to_usd_string),
         total_usd: overall.total.map(Money::to_usd_string),
@@ -1009,6 +1200,16 @@ fn statistics_at(
         warnings,
         subtotal,
         total: overall.total,
+        known_cost: overall.subtotal,
+        monthly: months
+            .into_iter()
+            .map(|(month, tally)| tally.daily(month, coverage_incomplete))
+            .collect(),
+        activity: Activity {
+            sessions: sessions.len() as u64,
+            ..activity
+        },
+        today: query.timezone.date(now),
     })
 }
 
@@ -1079,8 +1280,10 @@ fn append_table(out: &mut String, table: &Table, theme: &Theme) {
     }
 }
 
-pub(crate) fn render_statistics(report: &Statistics, theme: &Theme) -> String {
-    let mut out = heading_text(theme, "Token usage and estimated cost (USD)");
+/// The strict, every-row account behind the summary view: exact sums or N/A,
+/// fee components, and each row's assumptions and coverage gaps.
+pub(crate) fn render_details(report: &Statistics, theme: &Theme) -> String {
+    let mut out = heading_text(theme, "Details: exact token usage and estimated cost (USD)");
     out.push_str(&format!(
         "{INDENT}Daily totals (mutually exclusive token and fee categories)\n"
     ));
@@ -1541,6 +1744,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn known_inclusive_input_survives_an_unknown_cache_counter() {
+        let mut known = KnownTokens::default();
+        known.push(&TokenCounts {
+            input_tokens: Some(100),
+            input_basis: InputBasis::Inclusive,
+            output_tokens: Some(5),
+            cache_read_tokens: Some(30),
+            cache_write_tokens: None,
+            ..TokenCounts::default()
+        });
+        assert_eq!(known.input(), 100);
+        assert_eq!(known.uncached_input, 70);
+        assert_eq!(known.cache_read, 30);
+        assert_eq!(known.output, 5);
+        assert!(known.incomplete);
+    }
+
+    #[test]
     fn dates_are_strict_and_offsets_normalized() {
         assert_eq!(
             parse_bound("2026-10-01", &QueryTimezone::Utc).unwrap(),
@@ -1701,6 +1922,7 @@ mod tests {
             &Config::default(),
             &options,
             parse("2021-01-01T12:00:00Z"),
+            false,
         )
         .unwrap();
         assert_eq!(report.records, 2);
@@ -1740,6 +1962,7 @@ mod tests {
             &Config::default(),
             &options,
             parse("2021-01-01T12:00:00Z"),
+            false,
         )
         .unwrap();
         assert_eq!(all.records, 4);

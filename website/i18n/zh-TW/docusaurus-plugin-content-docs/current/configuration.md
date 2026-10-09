@@ -129,9 +129,11 @@ claude_config_dir = "/Users/you/.claude-work"
 ## 價格 sidecar
 
 [`alc usage`](./usage.md#一個估算美元代表什麼)使用內建、離線且精選的 LiteLLM 子集，
-加上選用的本機覆寫來估算；產生報告時不會下載價格。內建快照日期為 2026-10-08，
+加上選用的本機覆寫來估算；兩者都沒有的模型，改用 LiteLLM 公開價格表補上，並在設定
+目錄以 `litellm-prices.json` 快取一天（即 `npx ccusage` 的來源；`--offline` 只讀快取）。內建快照日期為 2026-10-08，
 固定 LiteLLM commit `33d908e0ae2c0a257eeb5d546df08527d348a670`、上游 SHA-256 與
-MIT 授權來源。報告的 `pricing_snapshot` 用雜湊識別內建資料與選用覆寫；歷史用量
+MIT 授權來源。報告的 `pricing_snapshot` 用雜湊識別內建資料與選用覆寫；若由 LiteLLM 即時費率
+補上缺價，結尾會是 `+litellm-live-<日期>:sha256:<雜湊>`，因此這類估算可能每天不同；歷史用量
 依這份快照重新定價，不會還原成歷史發票。
 
 覆寫放在 **`<alc-config-dir>/pricing.toml`**，或用

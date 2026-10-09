@@ -499,26 +499,11 @@ pub(crate) fn generate_token() -> Result<String> {
     Ok(base64url(&bytes))
 }
 
-/// The RFC 4648 §5 URL-safe alphabet: `-` and `_` in place of `+` and `/`, so
-/// a token survives being pasted into a URL or a query string untouched.
-const ALPHABET: [u8; 64] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-/// Base64url without padding. Hand-rolled to keep a whole crate out of the
-/// dependency tree for fifteen lines that only ever see a 32-byte token.
+/// RFC 4648 §5 base64url without padding (`-` and `_` in place of `+` and
+/// `/`), so a token survives being pasted into a URL or a query string.
 fn base64url(bytes: &[u8]) -> String {
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let mut block = [0u8; 3];
-        block[..chunk.len()].copy_from_slice(chunk);
-        let packed = (u32::from(block[0]) << 16) | (u32::from(block[1]) << 8) | u32::from(block[2]);
-        // Three bytes make four characters; a one- or two-byte tail makes two
-        // or three, and the '=' that would pad it out is dropped.
-        for index in 0..=chunk.len() {
-            let sextet = (packed >> (18 - 6 * index)) & 0b11_1111;
-            encoded.push(ALPHABET[sextet as usize] as char);
-        }
-    }
-    encoded
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 #[cfg(test)]

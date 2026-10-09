@@ -3,7 +3,7 @@ id: usage
 title: Usage
 sidebar_label: Usage
 sidebar_position: 6
-description: Check Claude and Codex quota, inspect client-observed TTFT and tokens per second, and estimate token costs from local histories with offline pricing.
+description: Check Claude and Codex quota, inspect client-observed TTFT and tokens per second, and estimate token costs from local histories with bundled and LiteLLM pricing.
 keywords:
   - alc usage
   - alc tps
@@ -25,28 +25,43 @@ What is left on each login, which agent used tokens, and how new requests perfor
 alc usage                   # Accounts, compatibility ledger, daily token/cost statistics
 alc usage --offline         # local statistics only; no credentials or network
 alc usage weekly --offline --timezone Asia/Taipei --chart
+alc usage yearly --wrapped  # one shareable image across every agent and provider
 alc tps                     # latest 20 matching requests with recorded timing
 ```
 
-The normal usage report keeps **Accounts** and **Usage by provider and agent**, then
-adds **Token usage and estimated cost (USD)**. Accounts and compatibility-ledger
-excerpt:
+The normal usage report shows **Accounts**, **Usage by provider and agent**, then
+**Token usage** and **By model**:
 
 ```text
 Accounts
-     PROFILE     ACCOUNT                  PLAN  REMAINING
-  ✓  anthropic   ~/.claude                max   5h 97% left, resets in 2h 53m — week 79% left, resets in 6d 4h — Fable week 62% left, resets in 6d 4h
-  ✓  codex       you@example.com          pro   week 66% left, resets in 5d 9h — no credits
-  ·  ollama      —                        —     no quota API
-  ·  openrouter  —                        —     no API key; run `alc config key openrouter`
+     PROFILE     ACCOUNT          PLAN  LEFT        REMAINING
+  ✓  anthropic   ~/.claude        max   ▰▰▰▰▰▰▰▰▱▱  5h 97% left, resets in 2h 53m — week 79% left, resets in 6d 4h
+  ✓  codex       you@example.com  pro   ▰▰▰▰▰▰▰▱▱▱  week 66% left, resets in 5d 9h — no credits
+  ·  ollama      —                —     —           no quota API
+  ·  openrouter  —                —     —           no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS   INPUT  CACHED  CACHE %  OUTPUT  LAST
-  codex     claude           1      1  20,800  15,400      74%      35  7m ago
-  ollama    opencode         1      —       —       —        —       —  12m ago
-  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
+  ╭──────────┬──────────┬──────────┬───────┬────────┬────────┬─────────┬────────┬─────────╮
+  │ Provider │ Agent    │ Launches │ Turns │  Input │ Cached │ Cache % │ Output │ Last    │
+  ├──────────┼──────────┼──────────┼───────┼────────┼────────┼─────────┼────────┼─────────┤
+  │ codex    │ claude   │        1 │     1 │ 20,800 │ 15,400 │     74% │     35 │ 7m ago  │
+  │ ollama   │ opencode │        1 │     — │      — │      — │       — │      — │ 12m ago │
+  ╰──────────┴──────────┴──────────┴───────┴────────┴────────┴─────────┴────────┴─────────╯
+  ~/.config/alc/usage.jsonl — tokens count only where alc carries the traffic (opt in with --metrics)
 
 ✓ ready
+
+Token usage
+  since 2026-10-05 · UTC · 3,412 records · prices alc-curated-2026-10-08-litellm-33d908e0
+  ╭────────────┬───────────────┬──────────────────────┬───────────┬─────────┬─────────────┬────────────┬──────────────┬─────────╮
+  │ Date       │ Agents        │ Models               │     Input │  Output │ Cache write │ Cache read │ Total tokens │    Cost │
+  ├────────────┼───────────────┼──────────────────────┼───────────┼─────────┼─────────────┼────────────┼──────────────┼─────────┤
+  │ 2026-10-05 │ claude, codex │ gpt-5.2-codex,       │ 1,204,330 │  88,410 │     310,201 │ 21,733,090 │   23,336,031 │  $19.42 │
+  │            │               │ sonnet-4-6           │           │         │             │            │              │         │
+  │ 2026-10-06 │ claude        │ sonnet-4-6           │   402,118 │  51,902 │     120,554 │  9,108,422 │   9,682,996+ │  $6.71+ │
+  ├────────────┼───────────────┼──────────────────────┼───────────┼─────────┼─────────────┼────────────┼──────────────┼─────────┤
+  │ Total      │               │                      │ 1,606,448 │ 140,312 │     430,755 │ 30,841,512 │  33,019,027+ │ $26.13+ │
+  ╰────────────┴───────────────┴──────────────────────┴───────────┴─────────┴─────────────┴────────────┴──────────────┴─────────╯
 ```
 
 One Accounts row per enabled provider profile. `REMAINING` counts down: `63% left`
@@ -289,15 +304,40 @@ exclusive and retains daily detail. It cannot be combined with `--since`,
 Without a positional window or date bounds, alc still reads all history. The
 existing `--daily` and `--monthly` flags remain mutually exclusive grouping
 options for all selected history, with any explicit date/source/model filters;
-`--monthly` does **not** mean this month. The main table shows daily rollups with
-full integers, thousands separators, and right-aligned numeric columns. Separate
-model/source rows preserve provider and granularity distinctions.
+`--monthly` does **not** mean this month.
+
+The terminal view draws boxed tables sized to the terminal: long model lists
+wrap, then numbers switch to `1.23M` form, then optional columns drop. Piped
+output keeps full integers. Where part of a sum is unknown (a checkpoint without
+token counts, an unreadable counter, an unpriced model) the cell shows what is
+known and marks it `+`, meaning at least this much, instead of turning the whole
+day into `N/A`. `~` marks days where alc's ledger and a native history both saw an
+agent and may count a request twice; `--source` picks one. `--details` appends
+the strict per-source table, which keeps provider and granularity distinctions,
+exact sums or `N/A`, fee components, assumptions and coverage gaps.
 
 `--timezone UTC|local|<IANA>` defaults to UTC. Date-only bounds, calendar windows,
 and day/month buckets use that same zone. For example,
 `--since 2026-10-01 --until 2026-10-08 --timezone Asia/Taipei` includes October 1–7
 in Taipei. RFC3339 bounds are exact instants defined by their offsets; choosing
 a timezone does not reinterpret them.
+
+### Wrapped image
+
+```sh
+alc usage --wrapped                 # all history, ~/alc-wrapped.png
+alc usage yearly --wrapped="$HOME/2026.png"
+alc usage --source claude,codex --since 2026-01-01 --wrapped
+```
+
+`--wrapped[=PATH]` writes one shareable PNG of the selected history across every
+agent and provider: total tokens, first and busiest days, weekday rhythm, a
+GitHub-style activity heatmap, agent shares, top models and providers, requests,
+sessions, active days, longest streak, cache hit rate, peak hour and estimated
+cost. It replaces the text report and shows the image inline in iTerm2, WezTerm,
+kitty and Ghostty (not inside tmux). Native histories record a model but not
+the route, so their provider is labelled by the model's maker. Figures are the
+known sums described above; the footer says when they are lower bounds.
 
 ### Offline PNG export
 
@@ -408,16 +448,27 @@ uses exact integer pico-dollars (10^-12 USD), not floating-point money.
 Missing counters or applicable exact rates, an unpriced recorded service tier,
 or unavailable per-request context for banded rates produce unknown/partial costs
 with reasons. Absent service-tier metadata assumes standard; OpenAI's `default`
-maps to standard. Text shows `N/A` or a known subtotal
-plus `?`; JSON leaves `total_usd` as `null`. A known zero count is not an absent
+maps to standard. The default view marks a known subtotal `+` (or shows `—`
+when nothing is priced); `--details` shows `N/A` or a known subtotal plus `?`;
+JSON leaves `total_usd` as `null`. A known zero count is not an absent
 count, and a missing model price is **not free**. Local/custom endpoints need an
 exact override unless an exact official endpoint supplies a supported reference;
 free reference rates must be explicit `"0"` strings.
 
-Pricing is an offline curated LiteLLM subset, not the full upstream catalog or
-a live price feed. The bundled snapshot is dated **2026-10-08**, pinned to
-LiteLLM commit `33d908e0ae2c0a257eeb5d546df08527d348a670`, with upstream SHA-256
-and MIT license provenance. Historical usage is repriced with this snapshot;
+Pricing starts from an offline curated LiteLLM subset. The bundled snapshot is
+dated **2026-10-08**, pinned to LiteLLM commit
+`33d908e0ae2c0a257eeb5d546df08527d348a670`, with upstream SHA-256 and MIT license
+provenance. Models it lacks are priced from **LiteLLM's public price map**, the
+same file `npx ccusage` reads. alc downloads it at most once a day to
+`litellm-prices.json` in the config directory, and only when some record has no
+price. It takes only first-party Anthropic and OpenAI rows, including service
+tiers and long-context bands, and never lets them replace a curated or override
+rate. `--offline` uses the cached copy without fetching. The report's
+`pricing_snapshot` then ends in `+litellm-live-<date>:sha256:<hash>`, and each
+such row's `price_sources` has kind `litellm`. These rates are not first-party
+verified. When a request's cache counters are unknown, its long-context band is
+chosen from the known lower bound of its input, so the cost stays a marked lower
+bound. Historical usage is repriced with these prices;
 taxes, discounts, subscriptions, unrecorded tools, and non-token charges are
 excluded. Add exact rates in the config directory's **`pricing.toml`** or select
 one with **`alc usage --pricing-file PATH`**. The [pricing sidecar
@@ -433,7 +484,11 @@ in the main `config.toml`.
   `daily_rollups`, `uncached_input_tokens`, and `cost_components` at total,
   daily, and model/source levels. Components are `uncached_input`, `cache_read`,
   `cache_write`, and `output`, each with nullable `known_subtotal_usd` and
-  `total_usd`. Statistics retain source/profile/provider/agent/model rows,
+  `total_usd`. `known_tokens` (`uncached_input`, `cache_read`, `cache_write`,
+  `output`, `incomplete`) sits beside the strict totals at every level: the
+  known sums the terminal view shows, a lower bound when `incomplete` is true.
+  Each daily rollup also lists its `agents` and `models`. Statistics retain
+  source/profile/provider/agent/model rows,
   `granularity`, nullable token totals, `records`, nullable `requests`,
   `known_requests`, `priced_records`, `unpriced_records`,
   `deduplicated_records`, `known_subtotal_usd`, nullable `total_usd`,

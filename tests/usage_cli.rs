@@ -72,6 +72,7 @@ impl Fixture {
             .env("LOCALAPPDATA", &home)
             .env("XDG_CONFIG_HOME", &home)
             .env("XDG_DATA_HOME", &home)
+            .env("ALC_LITELLM_URL", "off")
             .env("NO_COLOR", "1")
             .timeout(Duration::from_secs(45));
         command
@@ -1033,7 +1034,7 @@ fn exact_full_integer_text_and_daily_fee_headers_do_not_round_large_values() {
     fixture.ledger(&[row]);
     let output = fixture
         .command()
-        .args(["usage", "--offline", "--source", "alc"])
+        .args(["usage", "--offline", "--source", "alc", "--details"])
         .assert()
         .success()
         .get_output()
@@ -1043,6 +1044,8 @@ fn exact_full_integer_text_and_daily_fee_headers_do_not_round_large_values() {
     for expected in [
         "9,007,199,254,740,993",
         "1,234,567",
+        "Token usage",
+        "By model",
         "Daily totals",
         "PROVIDER",
         "GRANULARITY",
@@ -1105,4 +1108,42 @@ fn codex_checkpoints_are_grouped_separately_and_never_summed_as_tokens_or_reques
     assert_eq!(delta["known_requests"], 0);
     assert_eq!(report["statistics"]["known_subtotal_usd"], "0.000305");
     assert_null(&report["statistics"], "total_usd");
+}
+
+#[test]
+fn summary_view_keeps_known_sums_and_marks_unknown_parts() {
+    let fixture = Fixture::new();
+    fixture.prices(CUSTOM_PRICES);
+    let mut unknown = request("2026-01-02T01:00:00Z");
+    unknown["record"]["tokens"]["output_tokens"] = Value::Null;
+    fixture.ledger(&[request("2026-01-02T00:00:00Z"), unknown]);
+    let output = fixture
+        .command()
+        .args(["usage", "--offline", "--source", "alc"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    // Uncached input is 70 per request; the unknown output erases nothing else.
+    for expected in [
+        "Token usage",
+        "By model",
+        "2026-01-02",
+        "fixture-model",
+        "140",
+        "210+",
+        "at least",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    assert!(!text.contains("N/A"), "{text}");
+    assert!(!text.contains("GRANULARITY"), "{text}");
+    let report = fixture.usage(&["--source", "alc"]);
+    let day = &report["statistics"]["daily_rollups"][0];
+    assert_eq!(day["output_tokens"], Value::Null);
+    assert_eq!(day["known_tokens"]["output"], 10);
+    assert_eq!(day["known_tokens"]["incomplete"], true);
+    assert_eq!(day["models"][0], "fixture-model");
 }

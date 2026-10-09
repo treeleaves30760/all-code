@@ -17,6 +17,9 @@ name = "alc"
 path = "src/main.rs"
 
 [dependencies]
+# Text for the wrapped image; already in the tree through plotters, whose own
+# text layout drops each glyph's side bearing.
+ab_glyph = "0.2"
 anyhow = "1.0"
 avt = "0.18"
 # src/bridge only. Versions match what the vendored bridge already pulled in,

@@ -12,7 +12,7 @@ use plotters::coord::Shift;
 use plotters::prelude::*;
 
 use super::pricing::Money;
-use super::query::{DailyRollup, Statistics};
+use super::query::{DailyRollup, Statistics, format_count};
 
 const WIDTH: u32 = 1560;
 const HEIGHT: u32 = 1280;
@@ -31,23 +31,30 @@ const LABELS: [&str; 3] = ["Uncached input", "Cache read + write", "Output"];
 const FONT: &str = "alc-chart";
 type Area<'a> = DrawingArea<BitMapBackend<'a>, Shift>;
 
-pub(super) fn destination(requested: &Path) -> Result<PathBuf> {
+/// `requested`, or `file_name` in the home directory when it is empty.
+pub(super) fn destination(requested: &Path, file_name: &str) -> Result<PathBuf> {
     if !requested.as_os_str().is_empty() {
         return Ok(requested.to_owned());
     }
     let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     let home = env::var_os(variable)
         .filter(|home| !home.is_empty())
-        .with_context(|| format!("{variable} is unavailable; use --chart=/absolute/path.png"))?;
+        .with_context(|| format!("{variable} is unavailable; pass an absolute PNG path"))?;
     let home = PathBuf::from(home);
     ensure!(
         home.is_absolute(),
         "{variable} must be an absolute home directory"
     );
-    Ok(home.join("ai-usage.png"))
+    Ok(home.join(file_name))
 }
 
 pub(super) fn export(report: &Statistics, path: &Path) -> Result<()> {
+    write_png(path, |staged| render(report, staged))
+}
+
+/// Renders into a sibling temporary file and renames it over `path`, so a
+/// failed render never leaves a truncated image behind.
+pub(super) fn write_png(path: &Path, render: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
     if let Ok(metadata) = fs::symlink_metadata(path) {
         ensure!(
             metadata.file_type().is_file(),
@@ -69,8 +76,7 @@ pub(super) fn export(report: &Statistics, path: &Path) -> Result<()> {
         .suffix(".png")
         .tempfile_in(parent)
         .with_context(|| format!("cannot write chart in {}", parent.display()))?;
-    render(report, staged.path())
-        .with_context(|| format!("failed to render {}", path.display()))?;
+    render(staged.path()).with_context(|| format!("failed to render {}", path.display()))?;
     staged
         .as_file()
         .sync_all()
@@ -513,7 +519,7 @@ fn draw_tokens(area: &Area<'_>, values: &[Bucket], scale: &str) -> Result<()> {
             y = top;
         }
         if bucket.token_total() == Some(max) {
-            text(area, &integer(max), (x - 18, y - 25), 14, INK)?;
+            text(area, &format_count(max), (x - 18, y - 25), 14, INK)?;
         }
     }
     date_labels(area, values, step, bottom, scale)?;
@@ -644,7 +650,7 @@ fn draw_composition(area: &Area<'_>, report: &Statistics) -> Result<()> {
             area,
             &format!(
                 "{}  ({:.1}%)",
-                integer(*value),
+                format_count(*value),
                 *value as f64 / total as f64 * 100.0
             ),
             (291, y + 25),
@@ -716,7 +722,7 @@ fn draw_table(area: &Area<'_>, report: &Statistics) -> Result<()> {
     for (index, (label, tokens, cost)) in rows.iter().enumerate() {
         let y = 73 + index as i32 * 39;
         text(area, label, (0, y), 16, INK)?;
-        let token = tokens.map(integer).unwrap_or_else(|| "N/A".to_owned());
+        let token = tokens.map(format_count).unwrap_or_else(|| "N/A".to_owned());
         let style = (FONT, 16)
             .into_font()
             .color(&INK)
@@ -736,10 +742,6 @@ fn draw_table(area: &Area<'_>, report: &Statistics) -> Result<()> {
         text(area, &format!("{known} / {complete}"), (455, y), 15, INK)?;
     }
     Ok(())
-}
-
-fn integer(value: u64) -> String {
-    super::query::format_count(value)
 }
 
 fn compact(value: f64) -> String {
@@ -785,8 +787,18 @@ mod tests {
             unpriced_records: 0,
             possible_overlap: false,
             coverage_incomplete: false,
+            known_tokens: super::super::query::KnownTokens {
+                uncached_input: 7,
+                cache_read: 2,
+                cache_write: 1,
+                output: 1,
+                incomplete: false,
+            },
+            agents: Default::default(),
+            models: Default::default(),
             subtotal: Some(Money::ZERO),
             total: Some(Money::ZERO),
+            known_cost: Money::ZERO,
         }
     }
 
@@ -908,7 +920,7 @@ mod tests {
 
     #[test]
     fn integers_are_exact_and_small_costs_do_not_look_free() {
-        assert_eq!(integer(12_345_678), "12,345,678");
+        assert_eq!(format_count(12_345_678), "12,345,678");
         assert_eq!(compact(0.00000001), "1.0e-8");
         assert_eq!(compact(0.0), "0");
         assert_eq!(compact(1.0851), "1.0851");

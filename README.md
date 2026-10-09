@@ -271,7 +271,7 @@ and protocol for every kind.
 | `alc config` | The configuration TUI; also `init`, `show`, `path`, `upsert`, `key`, `set-default`, `remove` |
 | `alc doctor` | Binaries, credentials, compatibility, defaults, bridge and remote state |
 | `alc models` | The GPT models the Codex bridge offers; `--refresh`, `--json` |
-| `alc usage [weekly\|monthly\|yearly]` | Accounts/quota, the compatibility ledger, and daily token/cost statistics; `--timezone`, `--chart[=PATH]`, `--daily`, `--monthly`, `--offline`, `--pricing-file`, `--json` |
+| `alc usage [weekly\|monthly\|yearly]` | Accounts/quota, the compatibility ledger, and daily token/cost statistics; `--timezone`, `--chart[=PATH]`, `--wrapped[=PATH]`, `--daily`, `--monthly`, `--details`, `--offline`, `--pricing-file`, `--json` |
 | `alc tps` | Client-observed TTFT and estimated/E2E tokens per second; latest 20 timed requests by default, `--include-unmeasured`, `--limit`, `--json` |
 | `alc update` | Verify and activate an immutable alc generation; `--check`, `--force`, `--download-only`, `--from ... --offline`, `--rollback` |
 | `alc share <agent>` | Launch with the session mirrored to a browser page |
@@ -345,23 +345,38 @@ alc usage
 
 ```text
 Accounts
-     PROFILE     ACCOUNT                  PLAN  REMAINING
-  ✓  anthropic   ~/.claude                max   5h 97% left, resets in 2h 53m — week 79% left, resets in 6d 4h — Fable week 62% left, resets in 6d 4h
-  ✓  codex       you@example.com          pro   week 66% left, resets in 5d 9h — no credits
-  ·  ollama      —                        —     no quota API
-  ·  openrouter  —                        —     no API key; run `alc config key openrouter`
+     PROFILE     ACCOUNT          PLAN  LEFT        REMAINING
+  ✓  anthropic   ~/.claude        max   ▰▰▰▰▰▰▰▰▱▱  5h 97% left, resets in 2h 53m — week 79% left, resets in 6d 4h
+  ✓  codex       you@example.com  pro   ▰▰▰▰▰▰▰▱▱▱  week 66% left, resets in 5d 9h — no credits
+  ·  ollama      —                —     —           no quota API
+  ·  openrouter  —                —     —           no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS   INPUT  CACHED  CACHE %  OUTPUT  LAST
-  codex     claude           1      1  20,800  15,400      74%      35  7m ago
-  ollama    opencode         1      —       —       —        —       —  12m ago
-  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
+  ╭──────────┬──────────┬──────────┬───────┬────────┬────────┬─────────┬────────┬─────────╮
+  │ Provider │ Agent    │ Launches │ Turns │  Input │ Cached │ Cache % │ Output │ Last    │
+  ├──────────┼──────────┼──────────┼───────┼────────┼────────┼─────────┼────────┼─────────┤
+  │ codex    │ claude   │        1 │     1 │ 20,800 │ 15,400 │     74% │     35 │ 7m ago  │
+  │ ollama   │ opencode │        1 │     — │      — │      — │       — │      — │ 12m ago │
+  ╰──────────┴──────────┴──────────┴───────┴────────┴────────┴─────────┴────────┴─────────╯
+  ~/.config/alc/usage.jsonl — tokens count only where alc carries the traffic (opt in with --metrics)
 
 ✓ ready
+
+Token usage
+  since 2026-10-05 · UTC · 3,412 records · prices alc-curated-2026-10-08-litellm-33d908e0
+  ╭────────────┬───────────────┬──────────────────────┬───────────┬─────────┬─────────────┬────────────┬──────────────┬─────────╮
+  │ Date       │ Agents        │ Models               │     Input │  Output │ Cache write │ Cache read │ Total tokens │    Cost │
+  ├────────────┼───────────────┼──────────────────────┼───────────┼─────────┼─────────────┼────────────┼──────────────┼─────────┤
+  │ 2026-10-05 │ claude, codex │ gpt-5.2-codex,       │ 1,204,330 │  88,410 │     310,201 │ 21,733,090 │   23,336,031 │  $19.42 │
+  │            │               │ sonnet-4-6           │           │         │             │            │              │         │
+  │ 2026-10-06 │ claude        │ sonnet-4-6           │   402,118 │  51,902 │     120,554 │  9,108,422 │   9,682,996+ │  $6.71+ │
+  ├────────────┼───────────────┼──────────────────────┼───────────┼─────────┼─────────────┼────────────┼──────────────┼─────────┤
+  │ Total      │               │                      │ 1,606,448 │ 140,312 │     430,755 │ 30,841,512 │  33,019,027+ │ $26.13+ │
+  ╰────────────┴───────────────┴──────────────────────┴───────────┴─────────┴─────────────┴────────────┴──────────────┴─────────╯
 ```
 
-This excerpt is the retained Accounts and compatibility-ledger view; the normal
-CLI report now adds token/cost statistics after it.
+The report continues with a **By model** table (requests, tokens, a share bar
+and cost per agent and model) and a short legend.
 
 alc asks each login's own vendor what is left: chatgpt.com for a Codex login,
 api.anthropic.com for Claude Code's, and the published balance endpoint for an
@@ -418,11 +433,29 @@ UTC and controls date-only `YYYY-MM-DD` bounds, calendar windows, and buckets;
 RFC3339 bounds remain the exact instant their offset specifies. Usage defaults
 to all sources; TPS defaults to `alc` and accepts `--limit` 1–10000.
 `alc usage --offline` reads only local configuration, histories, and pricing:
-no credentials/Keychain, quota calls, refresh, or network. `alc tps` is also a
+no credentials/Keychain, quota calls, refresh, or network (a cached LiteLLM price map is still read). `alc tps` is also a
 local, credential-free read and does not probe running daemons.
 
-The main statistics table has daily rollups with full integers, thousands
-separators, and right-aligned numeric columns; model/source details follow.
+The terminal view shows daily (or `--monthly`) rollups and a by-model table in
+boxed tables sized to the terminal: long model lists wrap, then numbers switch
+to `1.23M` form, then optional columns drop. Piped output keeps full integers.
+Where part of a sum is unknown — a checkpoint without token counts, an
+unreadable counter, an unpriced model — the cell shows what is known and marks
+it `+` (at least this much) instead of turning the whole day into `N/A`; `~`
+marks days where alc's ledger and a native history both saw an agent and may
+count a request twice (`--source` picks one). `--details` appends the strict
+per-source table with exact sums or `N/A`, fee components, assumptions and
+coverage gaps; `--json` keeps every exact field and adds `known_tokens`,
+`agents` and `models` to each rollup.
+
+`--wrapped[=PATH]` writes one shareable PNG of the selected history across every
+agent and provider — total tokens, first and busiest days, weekday rhythm, an
+activity heatmap, agent shares, top models and providers, requests, sessions,
+streaks, cache hit rate, peak hour and estimated cost — to `alc-wrapped.png` in
+your home directory by default, and shows it inline in iTerm2, WezTerm, kitty
+and Ghostty. It takes the same filters (`alc usage yearly --wrapped`,
+`--source`, `--since`) and replaces the text report.
+
 `--chart[=PATH]` opts into an offline PNG with three panels: date token bars,
 date USD bars, and an uncached-input/cache/output token pie. Its default path
 is `ai-usage.png` in your home directory. Rendering uses Rust and a bundled font,
@@ -516,10 +549,14 @@ context, and cache TTL before addition. JSON preserves gross `input_tokens`
 and adds `uncached_input_tokens` and `cost_components` for uncached input,
 cache read, cache write, and output. Money uses exact pico-dollar arithmetic
 and decimal USD strings, not floating-point totals. Reasoning is an output
-subset, not billed again; cache reads/writes and TTLs keep their distinct semantics. Pricing is an
-offline curated LiteLLM subset dated 2026-10-08, pinned to commit
-`33d908e0ae2c0a257eeb5d546df08527d348a670` with SHA-256/MIT provenance, not a live
-price feed. Add exact local/custom rates in the separate config-directory
+subset, not billed again; cache reads/writes and TTLs keep their distinct semantics. Prices
+come first from an offline curated LiteLLM subset dated 2026-10-08, pinned to commit
+`33d908e0ae2c0a257eeb5d546df08527d348a670` with SHA-256/MIT provenance. Models it
+lacks are priced from LiteLLM's public price map, the same file `npx ccusage`
+reads: alc downloads it at most once a day to `litellm-prices.json` in the config
+directory, takes only first-party Anthropic and OpenAI rows, and never lets it
+replace a curated or override rate. `--offline` uses only that cached copy. Add
+exact local/custom rates in the separate config-directory
 `pricing.toml`, or use `alc usage --pricing-file PATH`; missing prices are not
 free, and free rates must be explicit `"0"` strings. Historical usage is
 repriced with the named snapshot. See the [pricing sidecar

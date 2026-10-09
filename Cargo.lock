@@ -37,6 +37,7 @@ dependencies = [
 name = "all-code"
 version = "2.0.1"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "assert_cmd",
  "avt",

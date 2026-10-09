@@ -247,7 +247,7 @@ OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本�
 | `alc config` | 設定用的 TUI；另有 `init`、`show`、`path`、`upsert`、`key`、`set-default`、`remove` |
 | `alc doctor` | 執行檔、憑證、相容性、預設值，以及橋接與遠端狀態 |
 | `alc models` | Codex 橋接提供的 GPT 模型；`--refresh`、`--json` |
-| `alc usage [weekly\|monthly\|yearly]` | 帳號／額度、相容帳本與每日 token／成本統計；`--timezone`、`--chart[=PATH]`、`--daily`、`--monthly`、`--offline`、`--pricing-file`、`--json` |
+| `alc usage [weekly\|monthly\|yearly]` | 帳號／額度、相容帳本與每日 token／成本統計；`--timezone`、`--chart[=PATH]`、`--wrapped[=PATH]`、`--daily`、`--monthly`、`--details`、`--offline`、`--pricing-file`、`--json` |
 | `alc tps` | 用戶端觀測的 TTFT 與估算／E2E 每秒 token 數；預設最新 20 筆有 timing 的請求，`--include-unmeasured`、`--limit`、`--json` |
 | `alc update` | 驗證並啟用不可變的 alc 世代；`--check`、`--force`、`--download-only`、`--from ... --offline`、`--rollback` |
 | `alc share <agent>` | 啟動 agent，並把 session 鏡像到網頁 |
@@ -320,23 +320,38 @@ alc usage
 
 ```text
 Accounts
-     PROFILE     ACCOUNT                  PLAN  REMAINING
-  ✓  anthropic   ~/.claude                max   5h 97% left, resets in 2h 53m — week 79% left, resets in 6d 4h — Fable week 62% left, resets in 6d 4h
-  ✓  codex       you@example.com          pro   week 66% left, resets in 5d 9h — no credits
-  ·  ollama      —                        —     no quota API
-  ·  openrouter  —                        —     no API key; run `alc config key openrouter`
+     PROFILE     ACCOUNT          PLAN  LEFT        REMAINING
+  ✓  anthropic   ~/.claude        max   ▰▰▰▰▰▰▰▰▱▱  5h 97% left, resets in 2h 53m — week 79% left, resets in 6d 4h
+  ✓  codex       you@example.com  pro   ▰▰▰▰▰▰▰▱▱▱  week 66% left, resets in 5d 9h — no credits
+  ·  ollama      —                —     —           no quota API
+  ·  openrouter  —                —     —           no API key; run `alc config key openrouter`
 
 Usage by provider and agent
-  PROVIDER  AGENT     LAUNCHES  TURNS   INPUT  CACHED  CACHE %  OUTPUT  LAST
-  codex     claude           1      1  20,800  15,400      74%      35  7m ago
-  ollama    opencode         1      —       —       —        —       —  12m ago
-  source: ~/.config/alc/usage.jsonl — tokens are counted only where alc carries the traffic; an unobserved direct launch counts as a launch alone (opt in with --metrics)
+  ╭──────────┬──────────┬──────────┬───────┬────────┬────────┬─────────┬────────┬─────────╮
+  │ Provider │ Agent    │ Launches │ Turns │  Input │ Cached │ Cache % │ Output │ Last    │
+  ├──────────┼──────────┼──────────┼───────┼────────┼────────┼─────────┼────────┼─────────┤
+  │ codex    │ claude   │        1 │     1 │ 20,800 │ 15,400 │     74% │     35 │ 7m ago  │
+  │ ollama   │ opencode │        1 │     — │      — │      — │       — │      — │ 12m ago │
+  ╰──────────┴──────────┴──────────┴───────┴────────┴────────┴─────────┴────────┴─────────╯
+  ~/.config/alc/usage.jsonl — tokens count only where alc carries the traffic (opt in with --metrics)
 
 ✓ ready
+
+Token usage
+  since 2026-10-05 · UTC · 3,412 records · prices alc-curated-2026-10-08-litellm-33d908e0
+  ╭────────────┬───────────────┬──────────────────────┬───────────┬─────────┬─────────────┬────────────┬──────────────┬─────────╮
+  │ Date       │ Agents        │ Models               │     Input │  Output │ Cache write │ Cache read │ Total tokens │    Cost │
+  ├────────────┼───────────────┼──────────────────────┼───────────┼─────────┼─────────────┼────────────┼──────────────┼─────────┤
+  │ 2026-10-05 │ claude, codex │ gpt-5.2-codex,       │ 1,204,330 │  88,410 │     310,201 │ 21,733,090 │   23,336,031 │  $19.42 │
+  │            │               │ sonnet-4-6           │           │         │             │            │              │         │
+  │ 2026-10-06 │ claude        │ sonnet-4-6           │   402,118 │  51,902 │     120,554 │  9,108,422 │   9,682,996+ │  $6.71+ │
+  ├────────────┼───────────────┼──────────────────────┼───────────┼─────────┼─────────────┼────────────┼──────────────┼─────────┤
+  │ Total      │               │                      │ 1,606,448 │ 140,312 │     430,755 │ 30,841,512 │  33,019,027+ │ $26.13+ │
+  ╰────────────┴───────────────┴──────────────────────┴───────────┴─────────┴─────────────┴────────────┴──────────────┴─────────╯
 ```
 
-這份節錄是保留的 Accounts 與相容帳本畫面；一般 CLI 報告現在會在其後新增
-token／成本統計。
+報告接著還有 **By model** 表（每個 agent 與模型的請求數、token、占比長條與
+成本）和一段簡短圖例。
 
 alc 會向每個登入所屬的服務商查詢剩餘額度：Codex 登入問 chatgpt.com、Claude
 Code 的登入問 api.anthropic.com，OpenRouter、DeepSeek、Moonshot、MiniMax 與
@@ -386,10 +401,25 @@ alc usage --offline --source alc --filter-profile work --filter-agent claude
 `YYYY-MM-DD` 界線、曆法視窗與日期分桶；RFC3339 界線仍是其時區偏移指定的確切
 時刻。Usage 預設所有來源；TPS 預設 `alc`，`--limit` 接受 1–10000。
 `alc usage --offline` 只讀本機設定、歷史與價格：不讀憑證／鑰匙圈、不查額度、
-不更新登入、不連網。`alc tps` 也只讀本機、不讀憑證，不探測執行中的 daemon。
+不更新登入、不連網（仍會讀取已快取的 LiteLLM 價格表）。`alc tps` 也只讀本機、不讀憑證，不探測執行中的 daemon。
 
-統計主表提供每日總計，使用完整整數、千分位與靠右對齊的數字；模型／來源明細
-另列。`--chart[=PATH]` 才會產生離線 PNG，三區分別為日期 token 長條、日期 USD
+終端畫面以依終端寬度調整的框線表格，顯示每日（或 `--monthly`）總計與依模型的
+統計：寬度不夠時先讓模型清單換行，再改用 `1.23M` 形式的數字，最後才省略次要欄位；
+導向檔案或管線時保留完整整數。總和中有一部分未知時——沒有 token 數的檢查點、
+無法讀取的計數器、沒有價格的模型——欄位會顯示已知的部分並標上 `+`（至少這麼多），
+而不是把整天變成 `N/A`；`~` 表示 alc 帳本與原生歷史在那天都看到同一個 agent，
+可能把同一個請求算兩次（用 `--source` 擇一）。`--details` 會附上嚴格的逐來源表：
+精確總和或 `N/A`、費用組成、假設與涵蓋缺口；`--json` 保留所有精確欄位，並在每個
+總計加入 `known_tokens`、`agents` 與 `models`。
+
+`--wrapped[=PATH]` 會把選取範圍內所有 agent 與 provider 的用量畫成一張可分享的
+PNG——總 token、第一天與最忙的一天、每週節奏、活動熱度圖、各 agent 占比、常用
+模型與 provider、請求數、session 數、連續天數、快取命中率、尖峰時段與估計成本——
+預設寫到 home 目錄的 `alc-wrapped.png`，並在 iTerm2、WezTerm、kitty 與 Ghostty
+中直接顯示。它接受相同的篩選條件（`alc usage yearly --wrapped`、`--source`、
+`--since`），並取代文字報告。
+
+`--chart[=PATH]` 才會產生離線 PNG，三區分別為日期 token 長條、日期 USD
 長條，以及未快取輸入／快取／輸出的 token 圓餅。預設寫到 home 目錄的
 `ai-usage.png`。繪圖用 Rust 與內嵌字型，不依賴 Python 或系統字型。圖與報告
 使用相同的選取範圍與時區；較長期間的圖會標示較粗的分桶，CLI 仍保留每日明細。
@@ -460,9 +490,11 @@ session 才能取得後續量測，不必停止舊 session。
 再相加。JSON 保留總輸入 `input_tokens`，新增 `uncached_input_tokens` 與
 `cost_components`，分開未快取輸入、快取讀取、快取寫入與輸出。金額用精確的
 pico-dollar 運算與十進位 USD 字串，不用浮點總數。推理是輸出子集，不重複計費；
-快取讀寫與 TTL 保留各自語意。價格是日期為 2026-10-08 的離線精選 LiteLLM 子集，固定在 commit
-`33d908e0ae2c0a257eeb5d546df08527d348a670` 並附 SHA-256／MIT 來源，不是即時價格。
-精確的本機／自訂費率放在獨立的設定目錄 `pricing.toml`，或用
+快取讀寫與 TTL 保留各自語意。價格先取日期為 2026-10-08 的離線精選 LiteLLM 子集，固定在 commit
+`33d908e0ae2c0a257eeb5d546df08527d348a670` 並附 SHA-256／MIT 來源。子集沒有的模型，
+改用 LiteLLM 公開的價格表定價，也就是 `npx ccusage` 讀的同一個檔案：alc 每天最多下載
+一次到設定目錄的 `litellm-prices.json`，只採用 Anthropic 與 OpenAI 官方列，且絕不取代
+精選或覆寫的費率。`--offline` 只使用這份快取。精確的本機／自訂費率放在獨立的設定目錄 `pricing.toml`，或用
 `alc usage --pricing-file PATH`；找不到價格不等於免費，免費費率要明寫 `"0"`
 字串。歷史用量依具名快照重新定價。見[價格 sidecar
 格式](https://treeleaves30760.github.io/all-code/zh-TW/configuration#價格-sidecar)。

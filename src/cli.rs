@@ -246,6 +246,7 @@ struct ClaudeArgs {
     effort: Option<ReasoningEffort>,
 
     /// Deprecated and ignored; Claude Code now picks the model in-session.
+    /// Kept so old scripts do not forward it to Claude Code, which rejects it.
     #[arg(long, hide = true)]
     no_picker: bool,
 

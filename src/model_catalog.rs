@@ -31,7 +31,6 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -192,7 +191,7 @@ impl CodexSource {
         let body = crate::bridge::models::fetch_account_models(
             &login,
             &declared,
-            now_unix().saturating_mul(1_000),
+            crate::usage::ledger::now_unix().saturating_mul(1_000),
         )?;
         Ok((body, declared))
     }
@@ -298,7 +297,7 @@ impl ModelCatalog {
 
     pub fn load_and_refresh_if_due(config_dir: &Path, source: &CodexSource) -> Self {
         let stamp = source.cache_stamp();
-        Self::refresh_if_due(config_dir, stamp, now_unix(), || {
+        Self::refresh_if_due(config_dir, stamp, crate::usage::ledger::now_unix(), || {
             Self::refresh_with(config_dir, source)
         })
     }
@@ -395,7 +394,7 @@ impl ModelCatalog {
 
         let mut catalog = Self {
             schema_version: 1,
-            refreshed_at: now_unix(),
+            refreshed_at: crate::usage::ledger::now_unix(),
             source: label,
             codex_cache_stamp: stamp,
             unreported: Vec::new(),
@@ -733,13 +732,6 @@ fn refresh_due(catalog: &ModelCatalog, stamp: Option<&str>, now: u64) -> bool {
     now.saturating_sub(catalog.refreshed_at) >= REFRESH_INTERVAL_SECONDS
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,7 +791,7 @@ mod tests {
         let payload = parse_payload(json.as_bytes()).expect("a parsable payload");
         let mut catalog = ModelCatalog {
             schema_version: 1,
-            refreshed_at: now_unix(),
+            refreshed_at: crate::usage::ledger::now_unix(),
             source: "test".to_owned(),
             codex_cache_stamp: None,
             unreported: Vec::new(),
@@ -1138,20 +1130,32 @@ mod tests {
     #[test]
     fn a_fresh_catalog_is_not_due() {
         let mut catalog = ModelCatalog::built_in();
-        catalog.refreshed_at = now_unix();
+        catalog.refreshed_at = crate::usage::ledger::now_unix();
         catalog.codex_cache_stamp = Some("0.154.0".to_owned());
-        assert!(!refresh_due(&catalog, Some("0.154.0"), now_unix()));
+        assert!(!refresh_due(
+            &catalog,
+            Some("0.154.0"),
+            crate::usage::ledger::now_unix()
+        ));
     }
 
     #[test]
     fn upgrading_codex_makes_the_catalog_due_the_same_day() {
         let mut catalog = ModelCatalog::built_in();
-        catalog.refreshed_at = now_unix();
+        catalog.refreshed_at = crate::usage::ledger::now_unix();
         catalog.codex_cache_stamp = Some("0.149.1".to_owned());
-        assert!(refresh_due(&catalog, Some("0.154.0"), now_unix()));
+        assert!(refresh_due(
+            &catalog,
+            Some("0.154.0"),
+            crate::usage::ledger::now_unix()
+        ));
         // A Codex home alc cannot read says nothing, so it must not make
         // every single command re-sync.
-        assert!(!refresh_due(&catalog, None, now_unix()));
+        assert!(!refresh_due(
+            &catalog,
+            None,
+            crate::usage::ledger::now_unix()
+        ));
     }
 
     /// A sync that cannot succeed must still cost at most one attempt a day.
@@ -1166,7 +1170,7 @@ mod tests {
         stale.codex_cache_stamp = Some("0.149.1".to_owned());
         write_cache(dir.path(), &stale).unwrap();
 
-        let now = now_unix();
+        let now = crate::usage::ledger::now_unix();
         let mut attempts = 0;
         let kept =
             ModelCatalog::refresh_if_due(dir.path(), Some("0.154.0".to_owned()), now, || {
@@ -1210,9 +1214,12 @@ mod tests {
         stale.codex_cache_stamp = Some("0.154.0".to_owned());
         write_cache(dir.path(), &stale).unwrap();
 
-        let kept = ModelCatalog::refresh_if_due(dir.path(), None, now_unix(), || {
-            bail!("no route, and no Codex home to fall back to")
-        });
+        let kept = ModelCatalog::refresh_if_due(
+            dir.path(),
+            None,
+            crate::usage::ledger::now_unix(),
+            || bail!("no route, and no Codex home to fall back to"),
+        );
         assert_eq!(kept.codex_cache_stamp.as_deref(), Some("0.154.0"));
     }
 

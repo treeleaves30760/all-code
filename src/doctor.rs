@@ -1040,6 +1040,10 @@ impl Theme {
         if self.unicode { "•" } else { "*" }
     }
 
+    pub(crate) fn unicode(&self) -> bool {
+        self.unicode
+    }
+
     pub(crate) fn dash(&self) -> &'static str {
         if self.unicode { "—" } else { "-" }
     }

@@ -19,8 +19,10 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
+use crate::runtime::{bytes_digest, hex_digest};
+
 use super::records::{
-    Billing, Granularity, Source, TokenCounts, UsageRecord, is_codex_endpoint,
+    Billing, Granularity, InputBasis, Source, TokenCounts, UsageRecord, is_codex_endpoint,
     official_endpoint_provider,
 };
 
@@ -414,7 +416,7 @@ impl PriceBook {
             id: metadata.id.clone(),
             date: Some(metadata.date),
             urls,
-            sha256: sha256(BUNDLED.as_bytes()),
+            sha256: bytes_digest(BUNDLED.as_bytes()),
             upstream_commit: Some(metadata.upstream_commit),
             upstream_sha256: Some(metadata.upstream_sha256),
             license: Some(metadata.license),
@@ -439,7 +441,7 @@ impl PriceBook {
             }
         };
         let overrides = if let Some(text) = &override_text {
-            let hash = sha256(text.as_bytes());
+            let hash = bytes_digest(text.as_bytes());
             let source = PriceSource {
                 kind: "override".to_owned(),
                 id: format!("pricing.toml:sha256:{hash}"),
@@ -477,6 +479,85 @@ impl PriceBook {
 
     pub(crate) fn snapshot_id(&self) -> &str {
         &self.snapshot_id
+    }
+
+    /// Whether some record names a model this book cannot price, so a lookup
+    /// in LiteLLM's map could help.
+    pub(crate) fn has_gaps<'a>(&self, mut records: impl Iterator<Item = &'a UsageRecord>) -> bool {
+        records.any(|record| record.model.is_some() && !self.estimate(record).applicable)
+    }
+
+    /// Adds LiteLLM's runtime price map, the source `npx ccusage` reads, below
+    /// the curated snapshot: it only names models the snapshot and any
+    /// override leave out, and never replaces a curated rate. A map that does
+    /// not validate is ignored rather than failing the report.
+    pub(crate) fn with_live(mut self, config_dir: &Path, network: bool) -> Self {
+        let Some(snapshot) = super::litellm::load(config_dir, network) else {
+            return self;
+        };
+        let date = chrono::DateTime::<chrono::Utc>::from(snapshot.fetched)
+            .format("%Y-%m-%d")
+            .to_string();
+        let hash = bytes_digest(snapshot.text.as_bytes());
+        let source = PriceSource {
+            kind: "litellm".to_owned(),
+            id: format!("litellm-live-{date}"),
+            date: Some(date.clone()),
+            urls: vec![super::litellm::URL.to_owned()],
+            sha256: hash.clone(),
+            upstream_commit: None,
+            upstream_sha256: None,
+            license: Some("MIT".to_owned()),
+            notes: vec!["Fetched at run time from LiteLLM's public price map, as npx ccusage does; fills only models the curated snapshot lacks and is not first-party verified.".to_owned()],
+        };
+        let known: BTreeSet<(&str, &str)> = self
+            .entries
+            .iter()
+            .chain(&self.overrides)
+            .flat_map(|entry| {
+                entry
+                    .names
+                    .iter()
+                    .map(|name| (entry.provider.as_str(), name.as_str()))
+            })
+            .collect();
+        let rate =
+            |value: &Option<String>| value.as_deref().and_then(|value| Rate::parse(value).ok());
+        let live: Vec<Entry> = super::litellm::prices(&snapshot.text)
+            .into_iter()
+            .filter(|price| !known.contains(&(price.provider.as_str(), price.model.as_str())))
+            .map(|price| Entry {
+                rates: Rates {
+                    input: rate(&price.input),
+                    output: rate(&price.output),
+                    cache_read: rate(&price.cache_read),
+                    cache_write: rate(&price.cache_write),
+                    cache_write_5m: rate(&price.cache_write_5m),
+                    cache_write_1h: rate(&price.cache_write_1h),
+                },
+                names: BTreeSet::from([price.model.clone()]),
+                provider: price.provider,
+                model: price.model,
+                profile: None,
+                endpoint: None,
+                tier: price.tier,
+                context_min: price.context_min,
+                context_max: price.context_max,
+                source: source.clone(),
+                overridden: false,
+            })
+            .collect();
+        if live.is_empty() {
+            return self;
+        }
+        let mut entries = self.entries.clone();
+        entries.extend(live);
+        if validate_entries(&entries).is_err() {
+            return self;
+        }
+        self.entries = entries;
+        self.snapshot_id = format!("{}+litellm-live-{date}:sha256:{hash}", self.snapshot_id);
+        self
     }
 
     pub(crate) fn estimate(&self, record: &UsageRecord) -> CostEstimate {
@@ -571,13 +652,23 @@ impl PriceBook {
             return estimate;
         }
         let has_bands = tier_entries.iter().any(|entry| entry.has_context_band());
+        let mut band_from_lower_bound = false;
+        let mut band_uncertain = false;
         let entry = if has_bands {
             if record.granularity != Granularity::Request {
                 estimate.status = CostStatus::Partial;
                 estimate.reasons.push("context-dependent rates require gross input of each request; cumulative deltas cannot select a band".to_owned());
                 return estimate;
             }
-            let Some(gross) = tokens.gross_input() else {
+            // An unknown cache counter leaves only a lower bound on gross
+            // input. Rates rise with the band, so the band holding that bound
+            // prices the request at no more than it cost; the estimate stays
+            // partial.
+            let gross = match tokens.gross_input() {
+                Some(gross) => Some(gross),
+                None => known_gross_input(&tokens).inspect(|_| band_from_lower_bound = true),
+            };
+            let Some(gross) = gross else {
                 estimate.status = CostStatus::Partial;
                 estimate.reasons.push(
                     "gross request input is unknown or overflowed; context band cannot be selected"
@@ -586,13 +677,28 @@ impl PriceBook {
                 return estimate;
             };
             let Some(entry) = tier_entries
-                .into_iter()
+                .iter()
+                .copied()
                 .find(|entry| entry.contains_context(gross))
             else {
                 estimate.status = CostStatus::Partial;
                 estimate.reasons.push("gross request input has no verified context band; flat rates were not substituted".to_owned());
                 return estimate;
             };
+            // A lower bound below the top band could still belong higher up;
+            // that is only a lower-bound price if no higher band is cheaper.
+            if band_from_lower_bound
+                && let Some(max) = entry.context_max
+                && tier_entries
+                    .iter()
+                    .filter(|other| other.context_min.is_some_and(|min| min > max))
+                    .any(|other| !entry.rates.never_above(&other.rates))
+            {
+                estimate.status = CostStatus::Partial;
+                estimate.reasons.push("gross request input is only a lower bound and a higher context band is cheaper; no band was selected".to_owned());
+                return estimate;
+            }
+            band_uncertain = band_from_lower_bound && entry.context_max.is_some();
             estimate.assumptions.push("Context band selected from gross input of this request; its rates apply to all request tokens.".to_owned());
             entry
         } else {
@@ -618,6 +724,12 @@ impl PriceBook {
             &mut cache_write,
             &mut estimate.assumptions,
         );
+        if band_uncertain {
+            // Every component used the lower band's rates, so none is exact.
+            for component in [&mut input, &mut output, &mut cache_read, &mut cache_write] {
+                component.missing("context band chosen from a lower bound of gross input");
+            }
+        }
         estimate.cost_components = CostComponents {
             uncached_input: input.component(),
             output: output.component(),
@@ -631,6 +743,9 @@ impl PriceBook {
         if invalid_cache {
             accumulator
                 .missing("invalid cache counters/subsets were left unknown rather than priced");
+        }
+        if band_uncertain {
+            accumulator.missing("an unknown cache counter left gross input as a lower bound; the context band it selects gives a lower-bound cost");
         }
         if tokens.reasoning_tokens.is_some() {
             estimate.assumptions.push(
@@ -724,6 +839,17 @@ impl PriceBook {
                 None
             }
         }
+    }
+}
+
+/// Gross input from the counters that are known, when the uncached part is.
+fn known_gross_input(tokens: &TokenCounts) -> Option<u64> {
+    let input = tokens.input_tokens?;
+    match tokens.input_basis {
+        InputBasis::Inclusive => Some(input),
+        InputBasis::Separate => input
+            .checked_add(tokens.cache_read_tokens.unwrap_or(0))?
+            .checked_add(tokens.cache_write_tokens.unwrap_or(0)),
     }
 }
 
@@ -984,6 +1110,25 @@ impl Accumulator {
     }
 }
 
+impl Rates {
+    /// No rate here exceeds the matching rate in `higher`, where both exist.
+    fn never_above(&self, higher: &Self) -> bool {
+        [
+            (self.input, higher.input),
+            (self.output, higher.output),
+            (self.cache_read, higher.cache_read),
+            (self.cache_write, higher.cache_write),
+            (self.cache_write_5m, higher.cache_write_5m),
+            (self.cache_write_1h, higher.cache_write_1h),
+        ]
+        .into_iter()
+        .all(|pair| match pair {
+            (Some(low), Some(high)) => low.0 <= high.0,
+            _ => true,
+        })
+    }
+}
+
 fn price_cache_write(
     tokens: &TokenCounts,
     rates: &Rates,
@@ -1046,14 +1191,6 @@ fn price_cache_write(
     // The TTL buckets replace the aggregate; it is never charged again.
     accumulator.price("5m cache write", Some(short), rates.cache_write_5m);
     accumulator.price("1h cache write", Some(long), rates.cache_write_1h);
-}
-
-fn sha256(bytes: &[u8]) -> String {
-    hex_digest(&Sha256::digest(bytes))
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -1472,7 +1609,17 @@ cache_write="3"
         let separate = book.estimate(&request);
         assert_eq!(separate.total_usd.as_deref(), Some("0.000168"));
         request.tokens.cache_read_tokens = None;
-        assert_eq!(book.estimate(&request).total_usd, None);
+        // 50 known gross tokens select the low band: a lower bound, kept partial.
+        let lower = book.estimate(&request);
+        assert_eq!(lower.total_usd, None);
+        assert_eq!(lower.status, CostStatus::Partial);
+        assert_eq!(lower.known_subtotal.to_usd_string(), "0.00005");
+        // No component is exact either: a higher band could still apply.
+        assert_eq!(lower.cost_components.uncached_input.total_usd, None);
+        assert_eq!(lower.cost_components.output.total_usd, None);
+        request.tokens.input_tokens = None;
+        assert_eq!(book.estimate(&request).known_subtotal, Money::ZERO);
+        request.tokens.input_tokens = Some(50);
         request.tokens.cache_read_tokens = Some(0);
         request.tokens.input_tokens = Some(100);
         assert_eq!(book.estimate(&request).total_usd.as_deref(), Some("0.0001"));
@@ -1481,6 +1628,101 @@ cache_write="3"
             book.estimate(&request).total_usd.as_deref(),
             Some("0.000303")
         );
+    }
+
+    #[test]
+    fn a_lower_bound_never_selects_a_band_when_a_higher_one_is_cheaper() {
+        let (_dir, book) = overridden(&sidecar(
+            r#"
+[[models]]
+provider="custom"
+model="odd"
+context_max_tokens=100
+input="3"
+output="3"
+[[models]]
+provider="custom"
+model="odd"
+context_min_tokens=101
+input="1"
+output="3"
+"#,
+        ));
+        let mut request = record(Some("custom"), "odd", InputBasis::Separate);
+        request.tokens.input_tokens = Some(50);
+        request.tokens.cache_read_tokens = None;
+        let estimate = book.estimate(&request);
+        assert_eq!(estimate.status, CostStatus::Partial);
+        assert_eq!(estimate.known_subtotal, Money::ZERO);
+        assert!(
+            estimate
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("cheaper"))
+        );
+        // In the top band the lower bound is exact about the band itself.
+        request.tokens.input_tokens = Some(150);
+        let top = book.estimate(&request);
+        assert_eq!(top.known_subtotal.to_usd_string(), "0.00015");
+        assert_eq!(
+            top.cost_components
+                .uncached_input
+                .total_usd
+                .unwrap()
+                .to_usd_string(),
+            "0.00015"
+        );
+    }
+
+    #[test]
+    fn live_litellm_prices_fill_gaps_without_replacing_curated_rates() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("litellm-prices.json"),
+            r#"{
+                "claude-sonnet-4-6": {"litellm_provider": "anthropic",
+                    "input_cost_per_token": 0.001, "output_cost_per_token": 0.001},
+                "claude-opus-9": {"litellm_provider": "anthropic",
+                    "input_cost_per_token": 5e-06, "output_cost_per_token": 2.5e-05,
+                    "cache_read_input_token_cost": 5e-07,
+                    "cache_creation_input_token_cost": 6.25e-06,
+                    "cache_creation_input_token_cost_above_1hr": 1e-05}
+            }"#,
+        )
+        .unwrap();
+        let curated = PriceBook::load(dir.path(), None).unwrap();
+        let mut native = record(None, "claude-opus-9", InputBasis::Separate);
+        native.source = Source::Claude;
+        native.billing = Billing::ApiEquivalent;
+        native.tokens.input_tokens = Some(1_000_000);
+        native.tokens.output_tokens = Some(1_000_000);
+        assert!(!curated.estimate(&native).applicable);
+        assert!(curated.has_gaps(std::iter::once(&native)));
+
+        // Offline: the cached map is read, nothing is fetched.
+        let book = PriceBook::load(dir.path(), None)
+            .unwrap()
+            .with_live(dir.path(), false);
+        assert!(book.snapshot_id().contains("+litellm-live-"));
+        let estimate = book.estimate(&native);
+        assert_eq!(estimate.total_usd.as_deref(), Some("30"));
+        assert_eq!(estimate.price_source.unwrap().kind, "litellm");
+        assert!(!book.has_gaps(std::iter::once(&native)));
+
+        let mut sonnet = record(Some("anthropic"), "claude-sonnet-4-6", InputBasis::Separate);
+        sonnet.tokens.input_tokens = Some(1_000_000);
+        let curated_rate = curated.estimate(&sonnet);
+        let with_live = book.estimate(&sonnet);
+        assert_eq!(with_live.total_usd, curated_rate.total_usd);
+        assert_eq!(with_live.total_usd.as_deref(), Some("3"));
+        assert_eq!(with_live.price_source.unwrap().kind, "bundled");
+
+        // No cache, no network: the book is unchanged.
+        let empty = tempfile::tempdir().unwrap();
+        let unchanged = PriceBook::load(empty.path(), None)
+            .unwrap()
+            .with_live(empty.path(), false);
+        assert_eq!(unchanged.snapshot_id(), curated.snapshot_id());
     }
 
     #[test]

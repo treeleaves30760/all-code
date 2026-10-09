@@ -138,11 +138,15 @@ profile spends. [Usage](./usage.md) has the whole flow.
 ## Pricing sidecar
 
 [`alc usage`](./usage.md#what-an-estimated-dollar-means) estimates with a bundled,
-offline curated LiteLLM subset and optional local overrides. It never fetches
-prices at report time. The bundled snapshot is dated 2026-10-08 and pins LiteLLM
+offline curated LiteLLM subset and optional local overrides, and fills models
+both lack from LiteLLM's public price map, cached for a day as
+`litellm-prices.json` in the config directory (the source `npx ccusage` uses;
+`--offline` reads only the cache). The bundled snapshot is dated 2026-10-08 and pins LiteLLM
 commit `33d908e0ae2c0a257eeb5d546df08527d348a670`, upstream SHA-256, and MIT license
 provenance. The report's `pricing_snapshot` identifies the bundled data and any
-selected override by hash; historical usage is repriced with that snapshot,
+selected override by hash, and ends in `+litellm-live-<date>:sha256:<hash>` when
+live LiteLLM rates filled a gap, so such estimates can shift from day to day;
+historical usage is repriced with that snapshot,
 not reconstructed into historical invoices.
 
 Put overrides in **`<alc-config-dir>/pricing.toml`**, or choose another file with
