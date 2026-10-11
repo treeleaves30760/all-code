@@ -34,16 +34,11 @@ fn serve_once(body: String) -> (String, thread::JoinHandle<()>) {
     let address = listener.local_addr().expect("test server address");
     let handle = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept updater request");
-        let mut request = [0_u8; 4096];
-        let _ = stream.read(&mut request).expect("read updater request");
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
         stream
-            .write_all(response.as_bytes())
-            .expect("write updater response");
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("a bounded read");
+        read_request(&mut stream);
+        respond(stream, "200 OK", &body);
     });
     (format!("http://{address}/latest"), handle)
 }

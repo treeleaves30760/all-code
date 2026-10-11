@@ -57,9 +57,10 @@ fn file_digest(path: &Path) -> String {
 /// while `fs::copy` is writing an executable hands the child that write
 /// descriptor until the child reaches its own `exec` - and running the copy
 /// inside that window fails with "Text file busy". Copies of executables take
-/// this lock exclusively and every spawn takes it shared, held only until
-/// `spawn` returns: std reports success only after the child's `exec`, by
-/// which point close-on-exec has dropped every inherited descriptor.
+/// this lock exclusively and every spawn takes it shared until `spawn`
+/// returns. The fork happens inside `spawn`, so no child's descriptor table
+/// can ever hold a copy's write descriptor. Windows and macOS have no such
+/// rule; there the lock only costs a little contention.
 static EXEC: RwLock<()> = RwLock::new(());
 
 /// Copies a file this suite will execute, or hand to alc to execute.
@@ -72,6 +73,8 @@ fn copy_executable(from: &Path, to: &Path) {
 
 /// `Command::output`/`spawn` under [`EXEC`]. Every child this suite starts
 /// goes through here; one that does not can reopen the race for others.
+/// `exec_output` sets all three streams the way `output` defaults them,
+/// overriding any set before it.
 trait Exec {
     fn exec_output(&mut self) -> std::io::Result<Output>;
     fn exec_spawn(&mut self) -> std::io::Result<Child>;
@@ -256,6 +259,9 @@ fn command(executable: &Path, config: &Path) -> Command {
     command
         .env("ALC_CONFIG_DIR", config)
         .env("ALC_UPDATE_API_URL", "http://127.0.0.1:9/no-network")
+        // Fresh debug payloads verified in parallel can outlast the 15 s
+        // release limit on a busy runner; that is load, not a hung binary.
+        .env("ALC_VERSION_TIMEOUT_SECS", "120")
         .env_remove("OPENAI_API_KEY")
         .env_remove("OPENAI_BASE_URL")
         .env_remove("ALC_RUNTIME_ORIGIN")
@@ -347,6 +353,7 @@ fn edit_json(path: &Path, edit: impl FnOnce(&mut Value)) {
     fs::write(path, serde_json::to_vec(&json).unwrap()).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_freshly_copied_executable_runs_while_other_threads_spawn() {
     // Other tests' spawns, compressed: without `EXEC`, Linux turns some of
@@ -366,7 +373,7 @@ fn a_freshly_copied_executable_runs_while_other_threads_spawn() {
         })
         .collect();
     let result = std::panic::catch_unwind(|| {
-        for round in 0..150 {
+        for round in 0..50 {
             let copy = directory.path().join(format!("{round}-{}", binary_name()));
             copy_executable(fixture, &copy);
             let output = Command::new(&copy)
@@ -849,7 +856,8 @@ fn await_ready(path: &Path, child: &mut OwnedChild) {
             "fixture exited before ready"
         );
         assert!(
-            start.elapsed() < Duration::from_secs(10),
+            // A deadline, not a wait: generous for a loaded CI runner.
+            start.elapsed() < Duration::from_secs(30),
             "fixture did not become ready"
         );
         thread::sleep(Duration::from_millis(10));

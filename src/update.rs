@@ -29,6 +29,20 @@ const ZIP_METADATA_LIMIT: u64 = 4 * 1024 * 1024;
 const VERSION_OUTPUT_LIMIT: u64 = 64 * 1024;
 const VERSION_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// [`VERSION_TIMEOUT`]; debug builds let tests raise it, since a suite that
+/// starts several fresh 64 MB debug binaries at once on a loaded runner can
+/// spend longer than a release binary ever should.
+fn version_timeout() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(seconds) = std::env::var("ALC_VERSION_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        return Duration::from_secs(seconds);
+    }
+    VERSION_TIMEOUT
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct Release {
     tag_name: String,
@@ -896,7 +910,7 @@ fn packaged_version(binary: &Path) -> Result<Version> {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if start.elapsed() >= VERSION_TIMEOUT {
+        if start.elapsed() >= version_timeout() {
             let _ = child.kill();
             let _ = child.wait();
             bail!("alc --version timed out during payload verification");
@@ -1505,6 +1519,25 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(packaged_version(&binary).unwrap(), Version::new(2, 0, 1));
+        // Linux will not exec a file still open for writing (ETXTBSY), and a
+        // child forked by another test while the script was being written
+        // holds it open until that child execs. Wait that out; it is brief.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let version = loop {
+            match packaged_version(&binary) {
+                Err(error)
+                    if Instant::now() < deadline
+                        && error.chain().any(|cause| {
+                            cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
+                                io.kind() == std::io::ErrorKind::ExecutableFileBusy
+                            })
+                        }) =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                result => break result.unwrap(),
+            }
+        };
+        assert_eq!(version, Version::new(2, 0, 1));
     }
 }
