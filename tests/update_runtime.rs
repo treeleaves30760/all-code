@@ -8,7 +8,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -50,6 +50,48 @@ fn digest(bytes: &[u8]) -> String {
 
 fn file_digest(path: &Path) -> String {
     digest(&fs::read(path).unwrap())
+}
+
+/// Linux refuses to exec a file that any process still holds open for writing
+/// (`ETXTBSY`). Tests share one process, so a `fork` on another test's thread
+/// while `fs::copy` is writing an executable hands the child that write
+/// descriptor until the child reaches its own `exec` - and running the copy
+/// inside that window fails with "Text file busy". Copies of executables take
+/// this lock exclusively and every spawn takes it shared, held only until
+/// `spawn` returns: std reports success only after the child's `exec`, by
+/// which point close-on-exec has dropped every inherited descriptor.
+static EXEC: RwLock<()> = RwLock::new(());
+
+/// Copies a file this suite will execute, or hand to alc to execute.
+fn copy_executable(from: &Path, to: &Path) {
+    let _guard = EXEC
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    fs::copy(from, to).unwrap();
+}
+
+/// `Command::output`/`spawn` under [`EXEC`]. Every child this suite starts
+/// goes through here; one that does not can reopen the race for others.
+trait Exec {
+    fn exec_output(&mut self) -> std::io::Result<Output>;
+    fn exec_spawn(&mut self) -> std::io::Result<Child>;
+}
+
+impl Exec for Command {
+    fn exec_output(&mut self) -> std::io::Result<Output> {
+        // `output`'s own defaults; nothing here configures these streams
+        // before calling it.
+        self.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .exec_spawn()?
+            .wait_with_output()
+    }
+
+    fn exec_spawn(&mut self) -> std::io::Result<Child> {
+        let _guard = EXEC.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.spawn()
+    }
 }
 
 struct StampedFixtures {
@@ -124,7 +166,7 @@ fn compile_fixture(root: &Path, stamp: &str, version: &str) -> PathBuf {
         .arg("-o")
         .arg(&binary)
         .current_dir(&scripts)
-        .output()
+        .exec_output()
         .unwrap();
     assert!(
         output.status.success(),
@@ -147,7 +189,7 @@ impl Install {
         let payload_dir = directory.path().join("verified-payload");
         fs::create_dir(&payload_dir).unwrap();
         let payload = payload_dir.join(binary_name());
-        fs::copy(env!("CARGO_BIN_EXE_alc"), &payload).unwrap();
+        copy_executable(Path::new(env!("CARGO_BIN_EXE_alc")), &payload);
         let front = directory.path().join("bin").join(binary_name());
         let config = directory.path().join("config");
         fs::create_dir(&config).unwrap();
@@ -163,7 +205,7 @@ impl Install {
             .arg(&front)
             .arg("--version")
             .arg(VERSION)
-            .output()
+            .exec_output()
             .unwrap();
         success(&output);
         let hash = file_digest(&payload);
@@ -205,7 +247,7 @@ impl Install {
         if force {
             command.arg("--force");
         }
-        command.output().unwrap()
+        command.exec_output().unwrap()
     }
 }
 
@@ -242,7 +284,7 @@ fn success(output: &Output) {
 fn version(executable: &Path, config: &Path) -> String {
     let output = command(executable, config)
         .arg("--version")
-        .output()
+        .exec_output()
         .unwrap();
     success(&output);
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
@@ -306,6 +348,44 @@ fn edit_json(path: &Path, edit: impl FnOnce(&mut Value)) {
 }
 
 #[test]
+fn a_freshly_copied_executable_runs_while_other_threads_spawn() {
+    // Other tests' spawns, compressed: without `EXEC`, Linux turns some of
+    // these runs into "Text file busy".
+    let fixture = &fixtures().old;
+    let directory = tempfile::tempdir().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let spawners: Vec<_> = (0..4)
+        .map(|_| {
+            let stop = Arc::clone(&stop);
+            let fixture = fixture.clone();
+            thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    let _ = Command::new(&fixture).arg("--version").exec_output();
+                }
+            })
+        })
+        .collect();
+    let result = std::panic::catch_unwind(|| {
+        for round in 0..150 {
+            let copy = directory.path().join(format!("{round}-{}", binary_name()));
+            copy_executable(fixture, &copy);
+            let output = Command::new(&copy)
+                .arg("--version")
+                .exec_output()
+                .unwrap_or_else(|error| panic!("round {round}: {error}"));
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "alc 1.0.0");
+        }
+    });
+    stop.store(true, Ordering::SeqCst);
+    for spawner in spawners {
+        spawner.join().unwrap();
+    }
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[test]
 fn full_front_dispatches_future_cli_and_pinned_generation_bypasses_active() {
     let install = Install::new();
     let original_front = fs::read(&install.front).unwrap();
@@ -325,7 +405,7 @@ fn full_front_dispatches_future_cli_and_pinned_generation_bypasses_active() {
         .args(["future-command", "space argument", "--new-option"])
         .env("ALC_RUNTIME_ORIGIN", "/does/not/exist")
         .env("ALC_RUNTIME_SELECTOR", "bogus")
-        .output()
+        .exec_output()
         .unwrap();
     success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -357,7 +437,7 @@ fn rollback_retains_generations_and_rechecks_installed_not_running_version() {
     assert_eq!(install.active()["current"]["version"], "4.0.0");
     let rollback = command(&install.pinned, &install.config)
         .args(["update", "--rollback", "previous", "--offline"])
-        .output()
+        .exec_output()
         .unwrap();
     success(&rollback);
     assert_eq!(
@@ -368,7 +448,7 @@ fn rollback_retains_generations_and_rechecks_installed_not_running_version() {
     let rollback = command(&install.pinned, &install.config)
         .args(["update", "--rollback"])
         .arg(&newer_hash[..12])
-        .output()
+        .exec_output()
         .unwrap();
     success(&rollback);
     assert_eq!(version(&install.front, &install.config), "alc 4.0.0");
@@ -404,8 +484,8 @@ fn concurrent_offline_apply_serializes_and_cannot_downgrade_newer_activation() {
         .args(["--offline", "--force"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let first = first.spawn().unwrap();
-    let second = second.spawn().unwrap();
+    let first = first.exec_spawn().unwrap();
+    let second = second.exec_spawn().unwrap();
     success(&first.wait_with_output().unwrap());
     success(&second.wait_with_output().unwrap());
     assert_eq!(install.active()["current"]["version"], "4.0.0");
@@ -543,7 +623,7 @@ fn offline_rejects_unknown_corrupt_wrong_target_and_oversized_metadata_without_e
             .arg(bundle)
             .arg("--offline")
             .env("ALC_UPDATE_API_URL", format!("{}/latest", network.address))
-            .output()
+            .exec_output()
             .unwrap();
         assert!(!output.status.success(), "accepted {scenario}");
         assert_eq!(
@@ -593,7 +673,7 @@ fn download_only_persists_verified_bundle_and_offline_reuses_it_without_network(
         .args(["update", "--download-only"])
         .arg(&bundle)
         .env("ALC_UPDATE_API_URL", format!("{}/latest", server.address))
-        .output()
+        .exec_output()
         .unwrap();
     success(&output);
     assert_eq!(install.active(), before);
@@ -616,14 +696,14 @@ fn interrupted_initial_activation_recovers_marker_and_preserves_rollback_metadat
     let old_root = install.directory.path().join("old-front");
     fs::create_dir(&old_root).unwrap();
     let old_front = old_root.join(binary_name());
-    fs::copy(&fixtures().old, &old_front).unwrap();
+    copy_executable(&fixtures().old, &old_front);
     let output = command(Path::new(env!("CARGO_BIN_EXE_alc")), &install.config)
         .arg("__install")
         .arg("--install-to")
         .arg(&old_front)
         .arg("--version")
         .arg(VERSION)
-        .output()
+        .exec_output()
         .unwrap();
     success(&output);
     let root = old_root.join(".alc");
@@ -638,7 +718,7 @@ fn interrupted_initial_activation_recovers_marker_and_preserves_rollback_metadat
         .arg(&old_front)
         .arg("--version")
         .arg(VERSION)
-        .output()
+        .exec_output()
         .unwrap();
     success(&output);
     assert!(!root.join("activation.json").exists());
@@ -667,7 +747,7 @@ fn online_same_version_retry_finishes_initial_activation_without_downloading() {
     let output = command(&install.front, &install.config)
         .arg("update")
         .env("ALC_UPDATE_API_URL", format!("{}/latest", server.address))
-        .output()
+        .exec_output()
         .unwrap();
     success(&output);
     assert_eq!(fs::read(root.join("active.json")).unwrap(), activation);
@@ -695,7 +775,7 @@ fn rollback_cancels_interrupted_activation_before_changing_active() {
     fs::write(root.join("pending.json"), b"{}").unwrap();
     let output = command(&install.pinned, &install.config)
         .args(["update", "--rollback", "previous", "--offline"])
-        .output()
+        .exec_output()
         .unwrap();
     success(&output);
     assert_eq!(install.active()["current"]["version"], VERSION);
@@ -728,7 +808,7 @@ fn damaged_generation_and_unknown_active_manifest_fail_closed() {
     });
     let output = command(&install.front, &install.config)
         .arg("--version")
-        .output()
+        .exec_output()
         .unwrap();
     assert!(!output.status.success());
     fs::write(&active_path, &saved).unwrap();
@@ -736,7 +816,7 @@ fn damaged_generation_and_unknown_active_manifest_fail_closed() {
     assert!(
         !command(&install.front, &install.config)
             .arg("--version")
-            .output()
+            .exec_output()
             .unwrap()
             .status
             .success()
@@ -746,7 +826,7 @@ fn damaged_generation_and_unknown_active_manifest_fail_closed() {
     assert!(
         !command(&install.front, &install.config)
             .arg("--version")
-            .output()
+            .exec_output()
             .unwrap()
             .status
             .success()
@@ -787,7 +867,7 @@ fn activation_does_not_stop_loaded_front_or_previous_payload() {
         command(&install.front, &install.config)
             .arg("hold")
             .arg(&ready)
-            .spawn()
+            .exec_spawn()
             .unwrap(),
     );
     await_ready(&ready, &mut holding);
@@ -817,7 +897,7 @@ fn old_front_bootstrap_retains_old_content_and_uses_atomic_publication() {
     let bin = directory.path().join("bin");
     fs::create_dir(&bin).unwrap();
     let front = bin.join(binary_name());
-    fs::copy(&fixtures().old, &front).unwrap();
+    copy_executable(&fixtures().old, &front);
     let old_digest = file_digest(&front);
     let config = directory.path().join("config");
     let output = command(Path::new(env!("CARGO_BIN_EXE_alc")), &config)
@@ -826,7 +906,7 @@ fn old_front_bootstrap_retains_old_content_and_uses_atomic_publication() {
         .arg(&front)
         .arg("--version")
         .arg(VERSION)
-        .output()
+        .exec_output()
         .unwrap();
     success(&output);
     assert_eq!(version(&front, &config), format!("alc {VERSION}"));
@@ -853,7 +933,7 @@ fn locked_legacy_windows_front_reports_pending_preserves_payload_and_retries_syn
     let bin = directory.path().join("bin");
     fs::create_dir(&bin).unwrap();
     let front = bin.join(binary_name());
-    fs::copy(&fixtures().old, &front).unwrap();
+    copy_executable(&fixtures().old, &front);
     let original = file_digest(&front);
     let config = directory.path().join("config");
     let ready = directory.path().join("ready");
@@ -861,7 +941,7 @@ fn locked_legacy_windows_front_reports_pending_preserves_payload_and_retries_syn
         command(&front, &config)
             .arg("hold")
             .arg(&ready)
-            .spawn()
+            .exec_spawn()
             .unwrap(),
     );
     await_ready(&ready, &mut holding);
@@ -871,7 +951,7 @@ fn locked_legacy_windows_front_reports_pending_preserves_payload_and_retries_syn
         .arg(&front)
         .arg("--version")
         .arg(VERSION)
-        .output()
+        .exec_output()
         .unwrap();
     assert!(
         !output.status.success(),
@@ -894,7 +974,7 @@ fn locked_legacy_windows_front_reports_pending_preserves_payload_and_retries_syn
         .arg(&front)
         .arg("--version")
         .arg(VERSION)
-        .output()
+        .exec_output()
         .unwrap();
     success(&output);
     assert_eq!(version(&front, &config), format!("alc {VERSION}"));

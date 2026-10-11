@@ -56,7 +56,16 @@ fn serve_once(body: String) -> (String, thread::JoinHandle<()>) {
 /// and a POST whose body arrived in a later packet than its head - alc's
 /// `/api/show` is one - left that body unread, so closing the socket sent a
 /// reset and the client saw a broken connection instead of the answer.
+///
+/// On macOS and Windows an accepted socket inherits a non-blocking
+/// listener's mode, and a read that finds nothing yet returns `WouldBlock`
+/// at once - ignoring any read timeout - which here would end the request
+/// early and close the connection under a client still sending it. So the
+/// stream is made blocking first; its read timeout is what bounds the wait.
 fn read_request(stream: &mut std::net::TcpStream) -> String {
+    stream
+        .set_nonblocking(false)
+        .expect("a blocking fake-server stream");
     let mut request = Vec::new();
     let mut chunk = [0_u8; 1024];
     let mut wanted = None;
@@ -81,6 +90,47 @@ fn read_request(stream: &mut std::net::TcpStream) -> String {
         }
     }
     String::from_utf8_lossy(&request).into_owned()
+}
+
+#[test]
+fn the_fake_server_reader_waits_for_a_late_request_on_an_inherited_nonblocking_accept() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (accepted, ready) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        // What macOS and Windows hand back from a non-blocking listener,
+        // reproduced so Linux runs the same case.
+        stream.set_nonblocking(true).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        accepted.send(()).unwrap();
+        let request = read_request(&mut stream);
+        respond(stream, "200 OK", "{}");
+        request
+    });
+    let mut client = std::net::TcpStream::connect(address).unwrap();
+    client
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    ready
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    // The reader is waiting before a byte exists, and the body comes later
+    // than the head - the two moments a non-blocking read gives up on.
+    thread::sleep(std::time::Duration::from_millis(50));
+    let head = "POST /prefix/v1/messages HTTP/1.1\r\nHost: fixture\r\nContent-Length: 5\r\n\r\n";
+    // A reader that gave up has closed on us already, so these may fail;
+    // what it read, asserted below, is the useful report.
+    let _ = client.write_all(head.as_bytes());
+    thread::sleep(std::time::Duration::from_millis(50));
+    let _ = client.write_all(b"hello");
+    let mut response = String::new();
+    let _ = client.read_to_string(&mut response);
+    drop(client); // `respond` drains until the client hangs up.
+    assert_eq!(server.join().unwrap(), format!("{head}hello"));
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
 }
 
 /// Answers and closes the way a real server does: the response, the write
