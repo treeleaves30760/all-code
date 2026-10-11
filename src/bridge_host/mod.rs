@@ -805,6 +805,9 @@ mod tests {
                     thread::sleep(Duration::from_millis(10));
                     continue;
                 };
+                // Accepts inherit the listener's non-blocking mode on macOS
+                // and Windows, where a read would not wait for the request.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_millis(500)))
                     .unwrap();
@@ -868,6 +871,9 @@ mod tests {
                     thread::sleep(Duration::from_millis(10));
                     continue;
                 };
+                // Accepts inherit the listener's non-blocking mode on macOS
+                // and Windows, where a read would not wait for the request.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .unwrap();
