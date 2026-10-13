@@ -45,11 +45,11 @@ const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 /// chatgpt.com gates each model on a `minimal_client_version` and believes
 /// whatever version the caller declares, so this number decides how much of
 /// the catalog comes back. GPT-6.1 Sol's upstream row literally carries
-/// 0.153.0, but 0.159.1 was the first stable Codex bundle containing it, and
-/// the catalog alc ships was captured on 2026-10-13 with client 0.160.0, so
-/// that is alc's operational floor. The two versions answer different
-/// questions and are kept separate. A user whose Codex is newer still asks
-/// as that newer client; this is a floor, not a pin.
+/// 0.153.0, and 0.159.1 was the first stable Codex bundle containing it. The
+/// floor is 0.160.0, the client the catalog alc ships was captured with on
+/// 2026-10-13. What a row says it needs and what alc declares answer
+/// different questions and are kept separate. A user whose Codex is newer
+/// still asks as that newer client; this is a floor, not a pin.
 ///
 /// Nothing in alc can notice that on its own: a model held back by a
 /// `minimal_client_version` above this number is absent from the answer, and
@@ -99,9 +99,12 @@ pub struct ModelInfo {
     pub context_window: u64,
     /// The largest window chatgpt.com lets this model be driven at, when
     /// Codex is told to (`model_context_window` in its own config). Larger
-    /// than `context_window` for every current model; 0 when the source did
+    /// than `context_window` for every model alc ships; 0 when the source did
     /// not say, which `max_window` reads as "no larger window is known".
-    #[serde(default)]
+    ///
+    /// Left out when 0, so an entry with no known maximum still parses under
+    /// an older alc's `deny_unknown_fields`.
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub max_context_window: u64,
     pub default_effort: ReasoningEffort,
     pub supported_efforts: Vec<ReasoningEffort>,
@@ -115,6 +118,10 @@ pub struct ModelInfo {
     /// that on every read - including reads that never touch a source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i64>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl ModelInfo {
@@ -255,7 +262,17 @@ impl ModelCatalog {
         let mut merged = Vec::with_capacity(self.models.len() + floor.len());
         for bundled in &floor {
             match self.models.iter().find(|model| model.id == bundled.id) {
-                Some(known) => merged.push(known.clone()),
+                Some(known) => {
+                    let mut known = known.clone();
+                    // A cache written before alc knew about maximum windows
+                    // has none, and must not hide the one alc ships until a
+                    // sync happens to succeed - the rule `enrich` applies to
+                    // a source, applied to the cache.
+                    if known.max_context_window == 0 {
+                        known.max_context_window = bundled.max_context_window;
+                    }
+                    merged.push(known);
+                }
                 None => {
                     restored.push(bundled.id.clone());
                     merged.push(bundled.clone());
@@ -802,10 +819,12 @@ mod tests {
     /// ships, which is the row the ordering rules have to hold against now
     /// that chatgpt.com hides it.
     fn codex_current_listing_gpt_5_5() -> String {
-        CODEX_CURRENT.replace(
+        let listed = CODEX_CURRENT.replace(
             "\"visibility\":\"hide\",\"priority\":12",
             "\"visibility\":\"list\",\"priority\":12",
-        )
+        );
+        assert_ne!(listed, CODEX_CURRENT, "the fixture no longer hides GPT-5.5");
+        listed
     }
 
     fn ids(catalog: &ModelCatalog) -> Vec<&str> {
@@ -1360,6 +1379,40 @@ mod tests {
         let model: ModelInfo = serde_json::from_str(json).unwrap();
         assert_eq!(model.max_context_window, 0);
         assert_eq!(model.max_window(), 272_000);
+    }
+
+    /// Every user upgrading from alc 2.1.0 has a cache with no
+    /// `max_context_window` in it, and a sync that may not succeed for a day
+    /// or ever. Until one does, the maximum alc ships still has to apply.
+    #[test]
+    fn a_cache_from_before_the_maximum_window_still_gets_the_shipped_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cached = serde_json::to_value(ModelCatalog::built_in()).unwrap();
+        cached["source"] = "installed Codex CLI (`codex debug models`)".into();
+        for model in cached["models"].as_array_mut().unwrap() {
+            model
+                .as_object_mut()
+                .unwrap()
+                .remove("max_context_window")
+                .expect("the shipped entry carries a maximum");
+        }
+        fs::write(
+            dir.path().join(CACHE_FILE),
+            serde_json::to_vec_pretty(&cached).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = ModelCatalog::load(dir.path());
+        assert_eq!(loaded.source, "installed Codex CLI (`codex debug models`)");
+        assert_eq!(loaded.find("gpt-6-sol").unwrap().max_window(), 872_000);
+    }
+
+    #[test]
+    fn a_model_with_no_known_maximum_is_written_without_one() {
+        let mut model = ModelCatalog::built_in().models.remove(0);
+        model.max_context_window = 0;
+        let json = serde_json::to_value(&model).unwrap();
+        assert!(json.get("max_context_window").is_none(), "{json}");
     }
 
     #[test]
