@@ -1556,6 +1556,7 @@ fn bundled_model_catalog_is_available_offline() {
         .stdout(predicate::str::contains("gpt-5.6-luna"))
         .stdout(predicate::str::contains("gpt-5.6-terra"))
         .stdout(predicate::str::contains("gpt-5.6-sol"))
+        .stdout(predicate::str::contains("Codex context: 500K (max 872K)"))
         .stdout(predicate::str::contains("low, medium, high, xhigh, max"));
 }
 

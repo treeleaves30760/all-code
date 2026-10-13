@@ -1338,11 +1338,17 @@ fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
+        let maximum = if model.max_window() > model.context_window {
+            format!(" (max {}K)", model.max_window() / 1_000)
+        } else {
+            String::new()
+        };
         println!(
-            "- {}: {} (Codex context: {}K; default: {}; efforts: {})",
+            "- {}: {} (Codex context: {}K{}; default: {}; efforts: {})",
             model.id,
             model.description,
             model.context_window / 1_000,
+            maximum,
             model.default_effort,
             efforts
         );
