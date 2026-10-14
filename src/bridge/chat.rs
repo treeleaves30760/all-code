@@ -333,6 +333,8 @@ pub(crate) fn to_upstream(
         },
         prompt_cache_key: None,
         input,
+        max_output_tokens: None,
+        temperature: None,
     })
 }
 

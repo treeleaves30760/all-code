@@ -447,6 +447,8 @@ pub(crate) fn to_upstream(
         tool_choice: request.tool_choice.as_ref().and_then(tool_choice),
         prompt_cache_key: affinity.map(|affinity| affinity.cache_key.clone()),
         input,
+        max_output_tokens: None,
+        temperature: None,
     })
 }
 

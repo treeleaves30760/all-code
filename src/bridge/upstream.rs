@@ -135,6 +135,13 @@ pub(crate) struct UpstreamRequest {
     /// Must be a list, and carries the tools, the system prompt and the
     /// conversation in that order.
     pub input: Vec<InputItem>,
+    /// The client's output cap, Antigravity only. chatgpt.com refuses
+    /// `max_output_tokens` outright, so it is never serialised.
+    #[serde(skip)]
+    pub max_output_tokens: Option<u64>,
+    /// Antigravity only, for the same reason.
+    #[serde(skip)]
+    pub temperature: Option<f64>,
 }
 
 impl UpstreamRequest {
