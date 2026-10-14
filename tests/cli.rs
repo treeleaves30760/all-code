@@ -1600,6 +1600,43 @@ fn doctor_section<'a>(output: &'a str, heading: &str) -> &'a str {
         .map_or(after, |(section, _)| section)
 }
 
+/// A Codex profile on its model's maximum window uses plan limits faster
+/// past the standard one, so doctor names the choice next to the effort.
+#[test]
+fn doctor_reports_the_codex_context_choice() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "codex",
+            "--kind",
+            "codex",
+            "--context",
+            "max",
+        ])
+        .assert()
+        .success();
+    let output = alc(&temp).args(["doctor"]).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        doctor_section(&text, "Codex bridge").contains("max context"),
+        "{text}"
+    );
+
+    // The standard window is the default and goes unmentioned.
+    alc(&temp)
+        .args(["config", "upsert", "codex", "--context", "standard"])
+        .assert()
+        .success();
+    let output = alc(&temp).args(["doctor"]).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !doctor_section(&text, "Codex bridge").contains("context"),
+        "{text}"
+    );
+}
+
 /// A bridge that is not up is the normal state between sessions, so the
 /// section reports it without counting it as a problem - and it is the one
 /// place that says agent view has been switched off, which is why a user who

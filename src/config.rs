@@ -89,10 +89,6 @@ pub enum ContextChoice {
 }
 
 impl ContextChoice {
-    // Nothing cycles through the choices until the profile editor offers
-    // them; the expectation fails the build once it does, so it cannot
-    // outlive its reason.
-    #[expect(dead_code)]
     pub const ALL: [Self; 2] = [Self::Standard, Self::Max];
 
     pub fn as_str(self) -> &'static str {
