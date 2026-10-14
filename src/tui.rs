@@ -18,8 +18,8 @@ use ratatui::widgets::{
 
 use crate::antigravity::{self, AgyModel};
 use crate::config::{
-    Agent, AuthStyle, Config, ContextChoice, Protocol, Provider, ProviderKind, ReasoningEffort,
-    Store, validate_profile_name,
+    ADD_ANTIGRAVITY, Agent, AuthStyle, Config, ContextChoice, Protocol, Provider, ProviderKind,
+    ReasoningEffort, Store, validate_profile_name,
 };
 use crate::model_catalog::{CodexSource, ModelCatalog};
 use crate::model_picker::{PickerApp, PickerRequest};
@@ -473,7 +473,20 @@ impl App {
             .map(|(name, _)| name.clone())
             .collect();
         if compatible.is_empty() {
-            self.set_status(format!("No compatible provider exists for {agent}."), true);
+            // agy's profile is missing from every config.toml written before
+            // the antigravity kind; say which command adds it, unless the
+            // name is taken and `upsert` would rewrite that profile.
+            let hint = if agent == Agent::Agy
+                && !self.store.config.providers.contains_key("antigravity")
+            {
+                format!(" To add one, {ADD_ANTIGRAVITY}.")
+            } else {
+                String::new()
+            };
+            self.set_status(
+                format!("No compatible provider exists for {agent}.{hint}"),
+                true,
+            );
             return;
         }
         let current = self.store.config.defaults.get(agent);
@@ -1173,6 +1186,15 @@ fn draw_remote(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut state);
 }
 
+/// The Compatibility column for an agent's default profile.
+fn default_compatibility(config: &Config, agent: Agent) -> &'static str {
+    match config.providers.get(config.defaults.get(agent)) {
+        Some(provider) if provider.supports(agent) => "ready",
+        Some(_) => "incompatible",
+        None => "missing",
+    }
+}
+
 fn draw_defaults(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let header = Row::new(["Agent", "Default provider", "Compatibility"])
         .style(
@@ -1183,16 +1205,10 @@ fn draw_defaults(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
         .bottom_margin(1);
     let rows = Agent::ALL.into_iter().map(|agent| {
         let name = app.store.config.defaults.get(agent);
-        let compatible = app
-            .store
-            .config
-            .providers
-            .get(name)
-            .is_some_and(|provider| provider.supports(agent));
         Row::new([
             Cell::from(agent.to_string()),
             Cell::from(name.to_owned()),
-            Cell::from(if compatible { "ready" } else { "incompatible" }),
+            Cell::from(default_compatibility(&app.store.config, agent)),
         ])
     });
     let table = Table::new(
@@ -1234,16 +1250,21 @@ fn draw_edit(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
                 .then(|| {
                     // Before the first browse the shipped list names the
                     // models; it costs a parse, not a process.
-                    let models = app.agy_models.clone().unwrap_or_else(antigravity::bundled);
-                    models.into_iter().find(|model| model.id == value)
+                    let bundled;
+                    let models = match app.agy_models.as_deref() {
+                        Some(models) => models,
+                        None => {
+                            bundled = antigravity::bundled();
+                            &bundled
+                        }
+                    };
+                    models
+                        .iter()
+                        .find(|model| model.id == value)
+                        .map(|model| format!("  {}", model.label))
                 })
                 .flatten()
-                .map(|model| {
-                    Span::styled(
-                        format!("  {}", model.label),
-                        Style::default().fg(Color::DarkGray),
-                    )
-                });
+                .map(|label| Span::styled(label, Style::default().fg(Color::DarkGray)));
             let mut spans = vec![
                 Span::styled(format!("{label:<18}"), Style::default().fg(Color::Cyan)),
                 Span::raw(if value.is_empty() { "<empty>" } else { &value }.to_owned()),
@@ -1572,6 +1593,49 @@ mod tests {
             raw.contains("yes please"),
             "the broken file was overwritten"
         );
+    }
+
+    /// A config.toml from before the antigravity kind has no profile for
+    /// agy. That is an upgrade, not a broken profile, and the defaults
+    /// screen says what is missing and which command adds it.
+    #[test]
+    fn the_defaults_screen_names_the_missing_antigravity_profile_and_its_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.store.config.providers.remove("antigravity");
+        app.screen = Screen::Defaults;
+        assert_eq!(
+            default_compatibility(&app.store.config, Agent::Agy),
+            "missing"
+        );
+        let screen = rendered(&mut app);
+        assert!(screen.contains("missing"), "{screen}");
+        assert!(!screen.contains("incompatible"), "{screen}");
+
+        app.default_selected = Agent::ALL.iter().position(|a| *a == Agent::Agy).unwrap();
+        press(&mut app, KeyCode::Right);
+        assert!(app.status_error);
+        assert!(app.status.contains(ADD_ANTIGRAVITY), "{}", app.status);
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn a_profile_named_antigravity_of_another_kind_is_incompatible_and_gets_no_upsert_hint() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.store.config.providers.insert(
+            "antigravity".to_owned(),
+            Provider::for_kind(ProviderKind::Openrouter),
+        );
+        app.screen = Screen::Defaults;
+        assert_eq!(
+            default_compatibility(&app.store.config, Agent::Agy),
+            "incompatible"
+        );
+        app.default_selected = Agent::ALL.iter().position(|a| *a == Agent::Agy).unwrap();
+        press(&mut app, KeyCode::Right);
+        assert!(app.status_error);
+        assert!(!app.status.contains("upsert antigravity"), "{}", app.status);
     }
 
     #[test]

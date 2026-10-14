@@ -7,7 +7,8 @@ use anyhow::Result;
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::{
-    Agent, AuthStyle, Config, ContextChoice, Provider, ProviderKind, ReasoningEffort, Store,
+    ADD_ANTIGRAVITY, Agent, AuthStyle, Config, ContextChoice, Provider, ProviderKind,
+    ReasoningEffort, Store,
 };
 use crate::model_catalog::{CodexSource, ModelCatalog};
 use crate::{ollama, openai_server};
@@ -189,9 +190,6 @@ fn defaults(store: &Store, theme: &Theme) {
     let rows = Agent::ALL.map(|agent| default_row(&store.config, theme, agent));
     marked(theme, &rows);
 }
-
-/// What adds the profile agy runs on to a config.toml written before it.
-const ADD_ANTIGRAVITY: &str = "run `alc config upsert antigravity --kind antigravity`";
 
 fn default_row(config: &Config, theme: &Theme, agent: Agent) -> Row {
     let name = config.defaults.get(agent);
@@ -598,10 +596,18 @@ fn antigravity_rows(config: &Config, theme: &Theme, facts: &AgyFacts<'_>) -> Vec
                 .providers
                 .values()
                 .any(|provider| provider.kind == ProviderKind::Antigravity);
-            let detail = if none_of_the_kind && !explicit {
-                format!("no antigravity profile; {ADD_ANTIGRAVITY}")
-            } else {
-                error.to_string()
+            // The upsert hint only where the name is free: `upsert` on a
+            // taken name rewrites that profile for the new kind.
+            let taken = config.providers.get("antigravity");
+            let detail = match taken {
+                None if none_of_the_kind && !explicit => {
+                    format!("no antigravity profile; {ADD_ANTIGRAVITY}")
+                }
+                Some(other) if !explicit && other.kind != ProviderKind::Antigravity => format!(
+                    "the profile named 'antigravity' is {}, not the antigravity kind; add one under another name with `alc config upsert <name> --kind antigravity` and make it agy's default with `alc config set-default agy <name>`",
+                    other.kind
+                ),
+                _ => error.to_string(),
             };
             Row::new(status, "profile", theme.paint(status.tone(), &detail))
         }
@@ -1535,6 +1541,30 @@ mod tests {
                 .contains("run `alc config upsert antigravity --kind antigravity`"),
             "{}",
             default.detail
+        );
+    }
+
+    #[test]
+    fn a_profile_named_antigravity_of_another_kind_is_not_offered_the_upsert_that_replaces_it() {
+        let mut config = upgraded_config();
+        config.providers.insert(
+            "antigravity".to_owned(),
+            Provider::for_kind(ProviderKind::Openrouter),
+        );
+        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        let profile = row(&rows, "profile");
+        assert!(profile.status == Some(Status::Warn));
+        assert!(
+            !profile.detail.contains("upsert antigravity"),
+            "{}",
+            profile.detail
+        );
+        assert!(
+            profile.detail.contains(
+                "the profile named 'antigravity' is openrouter, not the antigravity kind"
+            ),
+            "{}",
+            profile.detail
         );
     }
 

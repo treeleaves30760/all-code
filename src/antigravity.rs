@@ -300,10 +300,22 @@ mod tests {
         assert!(parse_models_output("Fetching available models...\n").is_empty());
         assert!(parse_models_output("error: not logged in").is_empty());
         let temp = tempfile::tempdir().unwrap();
-        // ALC_AGY_BIN pointing at a program that prints nothing useful
-        let catalog = models_with(temp.path(), true, |_| Ok(String::from("nope")));
-        assert_eq!(catalog.models.len(), bundled().len());
-        assert!(catalog.source.contains("bundled"));
+        // An agy that answers with nothing alc can parse. The binary is
+        // injected so the answer is read whether or not agy is installed.
+        let catalog = models_from(
+            temp.path(),
+            true,
+            Some(PathBuf::from("agy")),
+            |_| Ok(String::from("nope")),
+            1_000,
+        );
+        assert_eq!(catalog.models, bundled());
+        assert!(catalog.source.contains("bundled"), "{}", catalog.source);
+        assert!(
+            catalog.source.contains("listed no models"),
+            "{}",
+            catalog.source
+        );
     }
 
     #[test]
