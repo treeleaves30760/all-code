@@ -5,8 +5,8 @@ use serde_json::{Map, Value, json};
 
 use crate::config::{AuthStyle, Protocol, Provider, ProviderKind, Store};
 use crate::launch::{
-    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, has_model_override, openai_style_base_url,
-    resolve_codex_effort, resolve_codex_model,
+    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, bridge_plan, has_model_override,
+    openai_style_base_url,
 };
 
 pub(crate) fn build(
@@ -17,20 +17,8 @@ pub(crate) fn build(
     passthrough: &[OsString],
     overrides: &LaunchOverrides,
 ) -> Result<()> {
-    if provider.kind == ProviderKind::Codex {
-        spec.bridge = Some(BridgePlan {
-            model: overrides
-                .model
-                .clone()
-                .map_or_else(|| resolve_codex_model(provider), Ok)?,
-            effort: overrides
-                .reasoning_effort
-                .or(provider.reasoning_effort)
-                .or(resolve_codex_effort(provider)?),
-            context_window: overrides.context_window,
-            options: overrides.model_options.clone(),
-            api: BridgeApi::Responses,
-        });
+    if let Some(plan) = bridge_plan(provider, overrides, BridgeApi::Responses)? {
+        spec.bridge = Some(plan);
         spec.args.extend_from_slice(passthrough);
         return Ok(());
     }
@@ -56,10 +44,11 @@ pub(crate) fn build(
         | ProviderKind::Google
         | ProviderKind::Custom => (format!("alc-{profile_name}"), true),
         ProviderKind::Codex => unreachable!(),
-        // `Provider::supports` keeps OpenCode off this kind; said here too so
-        // a caller that skips it gets an error rather than a broken config.
+        // Taken by `bridge_plan` above; said here too so a path that skips
+        // it gets an error rather than a broken config.
         ProviderKind::Antigravity => bail!(
-            "provider '{profile_name}' is an Antigravity login, which only the Antigravity CLI can use"
+            "provider '{profile_name}' is an Antigravity login, which alc reaches only through its \
+             bridge; this is an alc bug - please report it"
         ),
     };
 
@@ -134,9 +123,9 @@ pub(crate) fn build(
     Ok(())
 }
 
-/// Wires the bundled Codex bridge (listening on `base_url`) into an OpenCode
+/// Wires the bundled bridge (listening on `base_url`) into an OpenCode
 /// session as an `@ai-sdk/openai` provider named `alc-codex`, pointed at the
-/// loopback bridge instead of api.openai.com.
+/// loopback bridge instead of api.openai.com - on the Codex login or agy's.
 pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
     let models: Map<String, Value> = if plan.options.is_empty() {
         let mut fallback = Map::new();
@@ -158,7 +147,11 @@ pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgeP
     inline["provider"] = json!({
         "alc-codex": {
             "npm": "@ai-sdk/openai",
-            "name": "alc: Codex subscription",
+            "name": if spec.provider_kind == ProviderKind::Antigravity {
+                "alc: Antigravity login"
+            } else {
+                "alc: Codex subscription"
+            },
             "options": {
                 // The loopback bridge ignores auth entirely; the SDK still
                 // requires some non-empty apiKey value to be configured.

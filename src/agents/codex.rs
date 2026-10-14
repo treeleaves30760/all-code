@@ -4,8 +4,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::{AuthStyle, Provider, ProviderKind, Store};
 use crate::launch::{
-    LaunchOverrides, LaunchSpec, has_effort_override, has_model_override, has_option, key_or_error,
-    openai_style_base_url, toml_string,
+    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, bridge_plan, has_effort_override,
+    has_model_override, has_option, key_or_error, openai_style_base_url, toml_string,
 };
 
 pub(crate) fn build(
@@ -16,6 +16,22 @@ pub(crate) fn build(
     passthrough: &[OsString],
     overrides: &LaunchOverrides,
 ) -> Result<()> {
+    // Codex cannot sign with agy's login itself, so on that kind it runs on
+    // alc's in-process bridge over the Responses surface, pinned like every
+    // other agent there; `apply_bridge` points it at the bridge once the
+    // port is known.
+    if provider.kind == ProviderKind::Antigravity {
+        let plan = bridge_plan(provider, overrides, BridgeApi::Responses)?
+            .context("the Antigravity kind always runs on alc's bridge")?;
+        if !has_model_override(passthrough) {
+            spec.args
+                .extend([OsString::from("--model"), OsString::from(&plan.model)]);
+        }
+        spec.bridge = Some(plan);
+        spec.args.extend_from_slice(passthrough);
+        return Ok(());
+    }
+
     if provider.kind == ProviderKind::Codex {
         // Codex CLI reads its login and its `config.toml` out of CODEX_HOME,
         // so a profile that pins one runs on that account rather than on
@@ -141,4 +157,97 @@ fn codex_provider_id(profile: &str) -> String {
 fn push_codex_config(args: &mut Vec<OsString>, key: &str, value: String) {
     args.push(OsString::from("--config"));
     args.push(OsString::from(format!("{key}={value}")));
+}
+
+/// Points Codex at alc's in-process bridge for a login Codex cannot sign with
+/// itself (agy's). Prepended, so the flags precede any subcommand Codex was
+/// given. Codex on its own login runs natively and never gets a plan.
+pub(crate) fn apply_bridge(
+    spec: &mut LaunchSpec,
+    base_url: &str,
+    _plan: &BridgePlan,
+) -> Result<()> {
+    if spec.provider_kind != ProviderKind::Antigravity {
+        return Ok(());
+    }
+    let id = "alc_antigravity";
+    let mut flags = Vec::new();
+    push_codex_config(&mut flags, "model_provider", toml_string(id));
+    push_codex_config(
+        &mut flags,
+        &format!("model_providers.{id}.name"),
+        toml_string("alc: Antigravity login"),
+    );
+    push_codex_config(
+        &mut flags,
+        &format!("model_providers.{id}.base_url"),
+        toml_string(&format!("{base_url}/v1")),
+    );
+    push_codex_config(
+        &mut flags,
+        &format!("model_providers.{id}.wire_api"),
+        toml_string("responses"),
+    );
+    push_codex_config(
+        &mut flags,
+        &format!("model_providers.{id}.requires_openai_auth"),
+        "false".to_owned(),
+    );
+    spec.args.splice(0..0, flags);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Agent;
+    use crate::launch::{BridgeApi, BridgePlan};
+
+    #[test]
+    fn codex_on_antigravity_is_pointed_at_the_bridge_ahead_of_its_subcommand() {
+        let mut spec = LaunchSpec::for_test();
+        spec.provider_kind = ProviderKind::Antigravity;
+        spec.agent = Agent::Codex;
+        spec.args = ["--model", "gemini-3.8-flash-low", "exec"]
+            .map(OsString::from)
+            .to_vec();
+        let plan = BridgePlan {
+            model: "gemini-3.8-flash-low".to_owned(),
+            effort: None,
+            context_window: None,
+            options: Vec::new(),
+            api: BridgeApi::Responses,
+        };
+        apply_bridge(&mut spec, "http://127.0.0.1:9", &plan).unwrap();
+        let args: Vec<String> = spec
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            &args[..2],
+            ["--config", "model_provider=\"alc_antigravity\""]
+        );
+        assert!(
+            args.contains(
+                &"model_providers.alc_antigravity.base_url=\"http://127.0.0.1:9/v1\"".to_owned()
+            ),
+            "{args:?}"
+        );
+        assert!(
+            args.contains(&"model_providers.alc_antigravity.wire_api=\"responses\"".to_owned()),
+            "{args:?}"
+        );
+        assert_eq!(
+            &args[args.len() - 3..],
+            ["--model", "gemini-3.8-flash-low", "exec"]
+        );
+
+        let mut native = LaunchSpec::for_test();
+        apply_bridge(&mut native, "http://127.0.0.1:9", &plan).unwrap();
+        assert!(
+            native.args.is_empty(),
+            "Codex on its own login has no bridge to point at"
+        );
+    }
 }

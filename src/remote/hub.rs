@@ -787,6 +787,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         forward,
         settings_plan,
         codex_auth_file,
+        agy_credential_file,
         claude_settings_file,
         file_setup,
         model,
@@ -830,6 +831,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         // session pointed straight back at Anthropic.
         settings_plan,
         codex_auth_file: codex_auth_file.map(PathBuf::from),
+        agy_credential_file: agy_credential_file.map(PathBuf::from),
         claude_settings_file: claude_settings_file.map(PathBuf::from),
         file_setup,
         model,
@@ -868,6 +870,7 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         forward,
         settings_plan,
         codex_auth_file,
+        agy_credential_file,
         claude_settings_file,
         file_setup,
         model,
@@ -899,6 +902,10 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         codex_auth_file: codex_auth_file
             .as_ref()
             .map(|path| text(path.as_os_str(), "Codex credential path"))
+            .transpose()?,
+        agy_credential_file: agy_credential_file
+            .as_ref()
+            .map(|path| text(path.as_os_str(), "agy login path"))
             .transpose()?,
         claude_settings_file: claude_settings_file
             .as_ref()
@@ -1318,6 +1325,9 @@ mod tests {
             api: crate::launch::BridgeApi::Messages,
         });
         spec.codex_auth_file = Some(PathBuf::from("/work/codex/auth.json"));
+        spec.agy_credential_file = Some(PathBuf::from(
+            "/work/.gemini/antigravity-cli/antigravity-oauth-token",
+        ));
         spec.file_setup = vec![crate::launch::FileSetup::WriteTemp {
             path: PathBuf::from("/tmp/alc-kimi.json"),
             contents: "{\"apiKey\":\"never-print-this-value\"}".to_owned(),
@@ -1333,6 +1343,12 @@ mod tests {
         assert_eq!(
             back.codex_auth_file,
             Some(PathBuf::from("/work/codex/auth.json"))
+        );
+        assert_eq!(
+            back.agy_credential_file,
+            Some(PathBuf::from(
+                "/work/.gemini/antigravity-cli/antigravity-oauth-token"
+            ))
         );
         let plan = back.bridge.expect("the bridge plan crossed the wire");
         assert_eq!(plan.model, "gpt-6-astra");

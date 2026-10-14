@@ -272,24 +272,19 @@ pub(crate) struct AntigravityStart {
     pub note: Option<String>,
 }
 
-/// The family and effort a Claude Code session on Antigravity starts on.
-///
-/// The effort is this run's choice before the profile's, and a stated
-/// effort before the one a wire id implies - as `alc agy` reads a profile.
-/// The wire knows only `low`, `medium` and `high`, and a family may serve
-/// fewer (GPT-OSS serves `medium` alone), so the effort is brought to the
-/// rung the bridge will actually send, out loud: launching at `max` would
-/// show a session running at `high` as running at `max`.
+/// The family and effort a Claude Code session on Antigravity starts on:
+/// [`antigravity_rung`], refused for a model outside the families, because
+/// Claude Code's tiers and effort slider need a family to land on.
 pub(crate) fn antigravity_start(
     profile_name: &str,
     provider: &Provider,
     overrides: &LaunchOverrides,
 ) -> Result<AntigravityStart> {
-    let asked = overrides
-        .model
-        .clone()
-        .unwrap_or_else(|| provider.model.clone());
-    let family = crate::antigravity::family_of_model(&asked).with_context(|| {
+    antigravity_rung(provider, overrides).with_context(|| {
+        let asked = overrides
+            .model
+            .clone()
+            .unwrap_or_else(|| provider.model.clone());
         let families: Vec<String> = crate::antigravity::families()
             .into_iter()
             .map(|family| family.id)
@@ -299,7 +294,29 @@ pub(crate) fn antigravity_start(
              ({}) or one of their wire ids, such as `gemini-3.8-flash-low`",
             families.join(", ")
         )
-    })?;
+    })
+}
+
+/// The family and effort a session on Antigravity starts on, or `None` for
+/// a model outside the families. Shared by Claude Code and by every agent on
+/// the in-process bridge (`launch::bridge_plan`), so both start on the same
+/// rung and say so in the same words.
+///
+/// The effort is this run's choice before the profile's, and a stated
+/// effort before the one a wire id implies - as `alc agy` reads a profile.
+/// The wire knows only `low`, `medium` and `high`, and a family may serve
+/// fewer (GPT-OSS serves `medium` alone), so the effort is brought to the
+/// rung the bridge will actually send, out loud: launching at `max` would
+/// show a session running at `high` as running at `max`.
+pub(crate) fn antigravity_rung(
+    provider: &Provider,
+    overrides: &LaunchOverrides,
+) -> Option<AntigravityStart> {
+    let asked = overrides
+        .model
+        .clone()
+        .unwrap_or_else(|| provider.model.clone());
+    let family = crate::antigravity::family_of_model(&asked)?;
     let suffix = |model: &str| {
         crate::antigravity::split_wire_id(model)
             .and_then(|(_, effort)| effort.parse::<ReasoningEffort>().ok())
@@ -332,7 +349,7 @@ pub(crate) fn antigravity_start(
             )
         }
     });
-    Ok(AntigravityStart {
+    Some(AntigravityStart {
         family,
         effort: rung,
         note,

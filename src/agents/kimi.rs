@@ -7,8 +7,8 @@ use anyhow::{Context, Result};
 
 use crate::config::{AuthStyle, Provider, ProviderKind, Store};
 use crate::launch::{
-    BridgeApi, BridgePlan, FileSetup, LaunchOverrides, LaunchSpec, anthropic_shaped, has_option,
-    home_dir, key_or_error, prepend_args, resolve_codex_effort, resolve_codex_model,
+    BridgeApi, BridgePlan, FileSetup, LaunchOverrides, LaunchSpec, anthropic_shaped, bridge_plan,
+    has_option, home_dir, key_or_error, prepend_args,
 };
 
 /// Kimi Code CLI (the `kimi` binary) is driven through a TOML config file
@@ -32,22 +32,8 @@ pub(crate) fn build(
     passthrough: &[OsString],
     overrides: &LaunchOverrides,
 ) -> Result<()> {
-    if provider.kind == ProviderKind::Codex {
-        let model = overrides
-            .model
-            .clone()
-            .map_or_else(|| resolve_codex_model(provider), Ok)?;
-        let effort = overrides
-            .reasoning_effort
-            .or(provider.reasoning_effort)
-            .or(resolve_codex_effort(provider)?);
-        spec.bridge = Some(BridgePlan {
-            model,
-            effort,
-            context_window: overrides.context_window,
-            options: overrides.model_options.clone(),
-            api: BridgeApi::Responses,
-        });
+    if let Some(plan) = bridge_plan(provider, overrides, BridgeApi::Responses)? {
+        spec.bridge = Some(plan);
         spec.args.extend_from_slice(passthrough);
         return Ok(());
     }

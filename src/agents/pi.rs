@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use crate::config::{AuthStyle, Provider, ProviderKind, ReasoningEffort, Store};
 use crate::launch::{
-    BridgeApi, BridgePlan, FileSetup, LaunchOverrides, LaunchSpec, has_model_override, has_option,
-    key_or_error, openai_style_base_url, resolve_codex_effort, resolve_codex_model,
+    BridgeApi, BridgePlan, FileSetup, LaunchOverrides, LaunchSpec, bridge_plan, has_model_override,
+    has_option, key_or_error, openai_style_base_url,
 };
 
 pub(crate) fn build(
@@ -19,22 +19,9 @@ pub(crate) fn build(
     passthrough: &[OsString],
     overrides: &LaunchOverrides,
 ) -> Result<()> {
-    if provider.kind == ProviderKind::Codex {
-        let model = overrides
-            .model
-            .clone()
-            .map_or_else(|| resolve_codex_model(provider), Ok)?;
-        let effort = overrides
-            .reasoning_effort
-            .or(provider.reasoning_effort)
-            .or(resolve_codex_effort(provider)?);
-        spec.bridge = Some(BridgePlan {
-            model: model.clone(),
-            effort,
-            context_window: overrides.context_window,
-            options: overrides.model_options.clone(),
-            api: BridgeApi::Responses,
-        });
+    if let Some(plan) = bridge_plan(provider, overrides, BridgeApi::Responses)? {
+        let (model, effort) = (plan.model.clone(), plan.effort);
+        spec.bridge = Some(plan);
         inject_launch_args(spec, "alc-codex", &model, effort, passthrough);
         return Ok(());
     }

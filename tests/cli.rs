@@ -1534,6 +1534,148 @@ fn antigravity_claude_names_a_missing_login_before_it_starts_a_bridge() {
 }
 
 #[test]
+fn every_agent_runs_on_the_antigravity_login_through_the_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    for agent in [
+        "opencode", "pi", "kimi", "codex", "copilot", "goose", "qwen",
+    ] {
+        alc(&temp)
+            .args(["--agy", "--dry-run", agent])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("adapter: built in"))
+            .stdout(predicate::str::contains(
+                "catalog: the Antigravity families alc ships",
+            ));
+    }
+    alc(&temp)
+        .args(["--agy", "--dry-run", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model claude-opus-5-5-high"));
+}
+
+/// The ladder's top is the wire's `high`, said once, as Claude Code's is.
+#[test]
+fn a_bridged_agent_on_antigravity_starts_on_a_rung_the_bridge_runs_out_loud() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "antigravity",
+            "--kind",
+            "antigravity",
+            "--effort",
+            "max",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .args(["--agy", "--dry-run", "pi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--model claude-opus-5-5-high --thinking high",
+        ))
+        .stderr(predicate::str::contains(
+            "note: Antigravity tops out at 'high', so this session uses high rather than max.",
+        ));
+}
+
+#[test]
+fn a_bridged_agent_with_no_agy_login_is_told_to_sign_in() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    alc(&temp)
+        .env("ALC_OPENCODE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args(["--agy", "--no-share", "opencode"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("run `agy` and sign in"));
+    assert!(
+        !work.path().join("args.txt").exists(),
+        "the agent never started"
+    );
+}
+
+/// Signed in, OpenCode and Codex start against the in-process bridge on
+/// loopback - not against any vendor - with the provider named for agy's
+/// login. The stand-in agent makes no request, so nothing leaves the machine.
+#[test]
+fn a_signed_in_bridged_agent_is_pointed_at_the_in_process_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("agy-login"),
+        serde_json::json!({
+            "auth_method": "consumer",
+            "token": {
+                "access_token": "synthetic-access-token-never-echo",
+                "token_type": "Bearer",
+                "expiry": "2099-01-01T00:00:00Z",
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    alc(&temp)
+        .env("ALC_OPENCODE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args(["--agy", "--no-share", "opencode"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("synthetic-access-token-never-echo").not());
+    let env = std::fs::read_to_string(work.path().join("env.txt")).unwrap();
+    let config = env
+        .lines()
+        .find_map(|line| line.strip_prefix("OPENCODE_CONFIG_CONTENT="))
+        .expect("OpenCode was handed its config");
+    assert!(config.contains("alc: Antigravity login"), "{config}");
+    assert!(config.contains("http://127.0.0.1:"), "{config}");
+    assert!(
+        config.contains("\"model\":\"alc-codex/claude-opus-5-5-high\""),
+        "{config}"
+    );
+    assert!(!env.contains("synthetic-access-token-never-echo"));
+
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    alc(&temp)
+        .env("ALC_CODEX_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args(["--agy", "--no-share", "codex", "exec", "hello"])
+        .assert()
+        .success();
+    let args = std::fs::read_to_string(work.path().join("args.txt")).unwrap();
+    // A batch file sees a quote inside an argument doubled, as cmd escapes it.
+    #[cfg(windows)]
+    let args = args.replace("\"\"", "\"");
+    let args: Vec<&str> = args.lines().collect();
+    assert_eq!(
+        args[..2],
+        ["--config", "model_provider=\"alc_antigravity\""]
+    );
+    assert!(
+        args.iter()
+            .any(|arg| arg
+                .starts_with("model_providers.alc_antigravity.base_url=\"http://127.0.0.1:")),
+        "{args:?}"
+    );
+    assert_eq!(
+        args[args.len() - 4..],
+        ["--model", "claude-opus-5-5-high", "exec", "hello"]
+    );
+}
+
+#[test]
 fn claude_credential_names_a_missing_agy_login_without_starting_a_bridge() {
     let temp = tempfile::tempdir().unwrap();
     let route = write_agy_route(&temp);

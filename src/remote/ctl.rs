@@ -168,6 +168,10 @@ pub(crate) struct WireSpec {
     /// have. A path, never a credential.
     #[serde(default)]
     pub codex_auth_file: Option<String>,
+    /// agy's login file as the client resolved it, for the same reason as
+    /// `codex_auth_file`. A path, never a credential.
+    #[serde(default)]
+    pub agy_credential_file: Option<String>,
     /// Claude Code's own `settings.json`, resolved in the client's shell for
     /// the same reason: `CLAUDE_CONFIG_DIR` and `HOME` belong to whoever
     /// typed the command, not to the daemon.

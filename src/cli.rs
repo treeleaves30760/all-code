@@ -929,6 +929,8 @@ fn run_agent(
     let provider = store.config.resolve(agent, requested_provider)?.1.clone();
     let overrides = if provider.kind == ProviderKind::Codex && agent != Agent::Codex {
         codex_launch_overrides(store, &provider, dry_run)?
+    } else if provider.kind == ProviderKind::Antigravity && agent != Agent::Agy {
+        antigravity_launch_overrides(&provider, None, None)
     } else {
         launch::LaunchOverrides::default()
     };
@@ -1331,7 +1333,9 @@ fn run_spec(
             );
             // A dry run exists to report what a real run would do, so it has
             // to admit the launch it is describing would be refused.
-            if launch::bridge_codex_models().is_some_and(|routable| !routable.contains(&plan.model))
+            if spec.provider_kind == ProviderKind::Codex
+                && launch::bridge_codex_models()
+                    .is_some_and(|routable| !routable.contains(&plan.model))
             {
                 println!(
                     "adapter: WOULD FAIL - the bridge cannot route '{}'; run without --dry-run for the models it does",
