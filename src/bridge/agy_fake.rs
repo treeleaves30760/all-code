@@ -6,8 +6,6 @@
 //! thread is stopped and joined when it is dropped: a server thread that
 //! outlived its test could hold the test runner's output open.
 
-#![allow(dead_code, reason = "wired in by Plan C Tasks 7-12")]
-
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -209,4 +207,72 @@ fn answer(mut stream: TcpStream, reply: Reply) {
     let _ = stream.write_all(reply.body.as_bytes());
     let _ = stream.flush();
     let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
+/// A whole bridge on the Antigravity upstream, pointed at `fake`, signed with
+/// a synthetic `tok-a`.
+pub(crate) fn agy_bridge(
+    fake: &FakeCodeAssist,
+    ledger: Option<std::path::PathBuf>,
+    effort: Option<crate::config::ReasoningEffort>,
+) -> Arc<crate::bridge::BridgeState> {
+    use crate::bridge::agy_auth::test_support::{MemoryStore, credential};
+    use crate::bridge::agy_auth::{AgyCredentials, AgyLocator};
+    use crate::bridge::agy_upstream::{AgyState, AgyUpstream};
+    let credentials = AgyCredentials::with_parts(
+        Arc::new(MemoryStore::with_file(credential("tok-a", 3600))),
+        std::env::temp_dir().join("alc-agy-bridge-test.lock"),
+        None,
+    );
+    let agy = AgyState::from_upstream(
+        AgyUpstream::with_base(credentials, fake.base.clone())
+            .unwrap()
+            .without_backoff(),
+    );
+    let config = crate::bridge::BridgeConfig {
+        auth_file: std::path::PathBuf::new(),
+        effort,
+        responses_api: true,
+        agent: crate::config::Agent::Claude,
+        provider: "antigravity".to_owned(),
+        ledger,
+        claude_tiers: Some(crate::antigravity::tiers("claude-sonnet-5-5")),
+        upstream: crate::bridge::UpstreamKind::Antigravity {
+            credential: AgyLocator {
+                file: std::path::PathBuf::from("unused"),
+            },
+            config_dir: std::env::temp_dir(),
+        },
+    };
+    Arc::new(
+        crate::bridge::BridgeState::with_upstream(
+            config,
+            crate::bridge::Upstream::Antigravity(Arc::new(agy)),
+        )
+        .unwrap(),
+    )
+}
+
+/// POSTs `body` through the bridge's router and reads the whole answer.
+pub(crate) async fn post_json(
+    state: Arc<crate::bridge::BridgeState>,
+    path: &str,
+    body: Value,
+) -> (axum::http::StatusCode, String) {
+    use tower::ServiceExt as _;
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap();
+    let response = crate::bridge::server::router(state)
+        .oneshot(request)
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
 }
