@@ -385,6 +385,16 @@ pub(crate) enum UpstreamEvent {
         item_id: String,
         arguments: String,
     },
+    /// Reasoning text, on the Antigravity upstream only: the Messages surface
+    /// renders it as a `thinking` block. chatgpt.com sends none, because the
+    /// Codex bodies alc builds ask for no reasoning summary.
+    #[serde(rename = "response.reasoning_summary_text.delta")]
+    ReasoningSummaryTextDelta {
+        output_index: u32,
+        #[serde(default)]
+        item_id: String,
+        delta: String,
+    },
     #[serde(rename = "response.completed")]
     Completed { response: ResponseObject },
     /// Sent when the turn stopped short (token cap, upstream cutoff). The

@@ -36,6 +36,7 @@ pub(crate) mod agy_upstream;
 pub(crate) mod auth;
 pub(crate) mod chat;
 pub(crate) mod gemini;
+pub(crate) mod gemini_stream;
 pub(crate) mod messages;
 pub(crate) mod models;
 pub(crate) mod responses;
