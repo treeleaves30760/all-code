@@ -1723,6 +1723,543 @@ fn claude_credential_names_a_missing_agy_login_without_starting_a_bridge() {
         .stdout(predicate::str::contains("not running"));
 }
 
+/// The streams Task 1's spike captured from the live endpoint, CRLF framing
+/// and all: the fake Code Assist server replays them, so the end-to-end
+/// tests read the shapes Google really sends.
+const FLASH_TOOL_TURN: &str = include_str!("fixtures/antigravity/flash-tool-turn.sse");
+const FLASH_TOOL_REPLAY: &str = include_str!("fixtures/antigravity/flash-tool-replay.sse");
+const CLAUDE_TOOL_TURN: &str = include_str!("fixtures/antigravity/claude-tool-turn.sse");
+const CLAUDE_TOOL_REPLAY: &str = include_str!("fixtures/antigravity/claude-tool-replay.sse");
+/// The question the captured tool turns answered.
+const WEATHER_QUESTION: &str = "Call get_weather for Paris, then stop.";
+
+fn weather_tool() -> serde_json::Value {
+    serde_json::json!({"name": "get_weather", "description": "Current weather for a city",
+        "input_schema": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"}}, "required": ["city"]}})
+}
+
+/// Starts `alc --agy claude` with the stand-in `claude`, then asks for the
+/// credential the way Claude Code's apiKeyHelper does. Returns the base URL
+/// Claude Code was handed, the route it names, and the credential.
+fn launch_claude_on_agy(
+    temp: &tempfile::TempDir,
+    work: &tempfile::TempDir,
+    fake: &FakeCodeAssist,
+) -> (String, String, String) {
+    let stand_in = fake_claude(work.path());
+    let launch = alc(temp)
+        .env("ALC_AGY_API_BASE", &fake.base)
+        .env("ALC_CLAUDE_BIN", &stand_in)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args(["--agy", "--no-share", "claude"])
+        .output()
+        .unwrap();
+    assert!(
+        launch.status.success(),
+        "{}",
+        String::from_utf8_lossy(&launch.stderr)
+    );
+    assert_no_agy_secret("the launch's output", &launch.stdout);
+    assert_no_agy_secret("the launch's output", &launch.stderr);
+    let (_, _, settings) = what_claude_got(work.path());
+    let base_url = settings["env"]["ANTHROPIC_BASE_URL"]
+        .as_str()
+        .expect("Claude Code was handed a base URL")
+        .to_owned();
+    let route = base_url.rsplit('/').next().unwrap().to_owned();
+    assert!(route.starts_with("ag-"), "{base_url}");
+    let token = claude_credential_on_agy(temp, fake, &route);
+    (base_url, route, token)
+}
+
+/// `alc claude-credential <route>`, as Claude Code's apiKeyHelper runs it.
+fn claude_credential_on_agy(
+    temp: &tempfile::TempDir,
+    fake: &FakeCodeAssist,
+    route: &str,
+) -> String {
+    let helper = alc(temp)
+        .env("ALC_AGY_API_BASE", &fake.base)
+        .args(["claude-credential", route])
+        .output()
+        .unwrap();
+    assert!(
+        helper.status.success(),
+        "{}",
+        String::from_utf8_lossy(&helper.stderr)
+    );
+    assert_no_agy_secret("the helper's output", &helper.stdout);
+    assert_no_agy_secret("the helper's output", &helper.stderr);
+    String::from_utf8(helper.stdout).unwrap().trim().to_owned()
+}
+
+/// One Messages request, sent the way Claude Code sends it.
+fn claude_code_messages(base_url: &str, token: &str, body: &serde_json::Value) -> String {
+    let url = reqwest::Url::parse(base_url).unwrap();
+    let port = url.port().unwrap();
+    let body = body.to_string();
+    let answer = http(
+        &port.to_string(),
+        &format!(
+            "POST {}/v1/messages?beta=true HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nx-api-key: {token}\r\nanthropic-version: 2023-06-01\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            url.path().trim_end_matches('/'),
+            body.len()
+        ),
+    );
+    assert_no_agy_secret("a bridge answer", answer.as_bytes());
+    answer
+}
+
+/// The JSON body of an HTTP response, chunked or not (the host chunks).
+fn json_body(response: &str) -> serde_json::Value {
+    let (head, mut rest) = response.split_once("\r\n\r\n").expect("an HTTP response");
+    let mut body = String::new();
+    if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        while let Some((size, after)) = rest.split_once("\r\n") {
+            let size = usize::from_str_radix(size.trim(), 16).expect("a chunk size");
+            if size == 0 {
+                break;
+            }
+            body.push_str(&after[..size]);
+            rest = after[size..].trim_start_matches("\r\n");
+        }
+    } else {
+        body.push_str(rest);
+    }
+    serde_json::from_str(&body).unwrap_or_else(|error| panic!("{error}: {response}"))
+}
+
+/// The first turn of a tool round on `model`.
+fn weather_ask(model: &str) -> serde_json::Value {
+    serde_json::json!({"model": model, "stream": false, "max_tokens": 2048,
+        "output_config": {"effort": "low"}, "tools": [weather_tool()],
+        "messages": [{"role": "user", "content": WEATHER_QUESTION}]})
+}
+
+/// The turn that answers it: the assistant content as the bridge returned
+/// it (Claude Code sends back what it was given), then the tool's result.
+fn weather_answer(model: &str, assistant: &serde_json::Value, call: &str) -> serde_json::Value {
+    serde_json::json!({"model": model, "stream": true, "max_tokens": 2048,
+        "output_config": {"effort": "low"}, "tools": [weather_tool()],
+        "messages": [
+            {"role": "user", "content": WEATHER_QUESTION},
+            {"role": "assistant", "content": assistant},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call, "content": "Sunny, 21 C"}]}]})
+}
+
+/// The `contents` of a request body the live endpoint accepted (Task 1).
+fn captured_contents(name: &str) -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/antigravity")
+        .join(format!("{name}.request.json"));
+    let captured: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    captured["contents"].clone()
+}
+
+/// The synthetic login's secrets, which nothing alc prints or writes may hold.
+const AGY_SECRETS: [&str; 2] = [
+    "synthetic-agy-token-never-echo",
+    "synthetic-refresh-never-sent",
+];
+
+fn assert_no_agy_secret(what: &str, bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes);
+    for secret in AGY_SECRETS {
+        assert!(!text.contains(secret), "{what} holds agy's login: {text}");
+    }
+}
+
+/// Every file under `dir` but the login the test itself wrote and the copy
+/// of alc's own executable a launch pins (a quarter of a gigabyte in a debug
+/// build, and nothing alc writes data into).
+fn assert_no_agy_secret_under(dir: &std::path::Path) {
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).unwrap().flatten() {
+            let path = entry.path();
+            let skipped = path
+                .file_name()
+                .is_some_and(|name| ["agy-login", "alc", "alc.exe"].iter().any(|n| name == *n));
+            if path.is_dir() {
+                pending.push(path);
+            } else if !skipped && let Ok(bytes) = std::fs::read(&path) {
+                assert_no_agy_secret(&path.display().to_string(), &bytes);
+            }
+        }
+    }
+}
+
+/// Claude Code's whole tool round on agy's login: the launch, the helper,
+/// the background bridge, and two models - Flash, which signs its tool call
+/// and must see the signature again, and Claude, which signs nothing - all
+/// against a stand-in for Google replaying what the live endpoint sent.
+#[test]
+fn a_claude_code_tool_round_runs_through_the_background_bridge_on_antigravity() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    write_agy_login(&temp);
+    let fake = serve_code_assist(
+        &[
+            FLASH_TOOL_TURN,
+            FLASH_TOOL_REPLAY,
+            CLAUDE_TOOL_TURN,
+            CLAUDE_TOOL_REPLAY,
+        ],
+        ("404 Not Found", "{}"),
+    );
+    let _stop = StopTheBridge(&temp);
+    let (base_url, _, token) = launch_claude_on_agy(&temp, &work, &fake);
+
+    let first = claude_code_messages(&base_url, &token, &weather_ask("gemini-3.8-flash"));
+    assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+    let first = json_body(&first);
+    assert_eq!(first["stop_reason"], "tool_use", "{first}");
+    assert!(
+        first["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|block| block["type"] == "tool_use" && block["id"] == "call-flash-1"),
+        "{first}"
+    );
+    let second = claude_code_messages(
+        &base_url,
+        &token,
+        &weather_answer("gemini-3.8-flash", &first["content"], "call-flash-1"),
+    );
+    assert!(second.starts_with("HTTP/1.1 200"), "{second}");
+    assert!(
+        second.contains("Sunny,") && second.contains(" 21°C."),
+        "{second}"
+    );
+    assert!(second.contains("event: message_stop"), "{second}");
+
+    let generates = fake.calls("streamGenerateContent");
+    assert_eq!(fake.calls("loadCodeAssist").len(), 1, "one project lookup");
+    assert_eq!(generates.len(), 2, "{generates:?}");
+    for call in &generates {
+        assert!(call.head.starts_with("post "), "{}", call.head);
+        assert!(
+            call.head
+                .contains("authorization: bearer synthetic-agy-token-never-echo"),
+            "{}",
+            call.head
+        );
+        assert!(
+            call.head.contains("user-agent: antigravity/cli/1.3.4 ("),
+            "{}",
+            call.head
+        );
+        assert!(
+            !call.head.contains("anthropic-beta"),
+            "Gemini never sees it"
+        );
+        assert!(
+            !call.body.contains(&token),
+            "the bridge's own credential stays local"
+        );
+    }
+    let replay: serde_json::Value = serde_json::from_str(&generates[1].body).unwrap();
+    assert_eq!(replay["model"], "gemini-3.8-flash-low");
+    assert_eq!(replay["project"], "proj-never-shown");
+    // The body the live endpoint accepted: the call signed with the
+    // signature Flash minted, then its functionResponse.
+    assert_eq!(
+        replay["request"]["contents"],
+        captured_contents("flash-tool-replay")
+    );
+
+    let first = claude_code_messages(&base_url, &token, &weather_ask("claude-sonnet-5-5"));
+    assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+    let first = json_body(&first);
+    assert_eq!(first["stop_reason"], "tool_use", "{first}");
+    let second = claude_code_messages(
+        &base_url,
+        &token,
+        &weather_answer("claude-sonnet-5-5", &first["content"], "call-claude-1"),
+    );
+    assert!(second.starts_with("HTTP/1.1 200"), "{second}");
+    assert!(
+        second.contains("Paris:") && second.contains(" Sunny, 21 "),
+        "{second}"
+    );
+
+    let generates = fake.calls("streamGenerateContent");
+    assert_eq!(fake.calls("loadCodeAssist").len(), 1, "the project is kept");
+    assert_eq!(generates.len(), 4, "{generates:?}");
+    assert!(
+        generates[2]
+            .head
+            .contains("anthropic-beta: interleaved-thinking-2025-05-14"),
+        "{}",
+        generates[2].head
+    );
+    let replay: serde_json::Value = serde_json::from_str(&generates[3].body).unwrap();
+    assert_eq!(replay["model"], "claude-sonnet-5-5-low");
+    assert_eq!(
+        replay["request"]["contents"],
+        captured_contents("claude-tool-replay")
+    );
+
+    alc(&temp).args(["bridge", "stop"]).assert().success();
+    let ledger = std::fs::read_to_string(temp.path().join("usage.jsonl")).unwrap();
+    assert!(
+        ledger.contains("gemini-3.8-flash-low")
+            && ledger.contains("claude-sonnet-5-5-low")
+            && ledger.contains("antigravity"),
+        "{ledger}"
+    );
+    assert_no_agy_secret_under(temp.path());
+    assert_no_agy_secret_under(work.path());
+}
+
+/// What goes wrong upstream reaches Claude Code as an error, through the
+/// real host: a 401 after the first part is the client's to see (replaying
+/// half a turn would duplicate it), a SAFETY stop is not an ordinary end,
+/// and a restarted host refuses an unsigned Gemini round rather than send
+/// Google a round it would reject.
+#[test]
+fn antigravity_failures_reach_claude_code_through_the_background_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    write_agy_login(&temp);
+    let broken = concat!(
+        "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hel\"}]}}]}}\r\n\r\n",
+        "data: {\"error\":{\"code\":401,\"message\":\"Request had invalid authentication credentials.\",\"status\":\"UNAUTHENTICATED\"}}\r\n\r\n",
+    );
+    let blocked = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"SAFETY\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"totalTokenCount\":5}}}\r\n\r\n";
+    let fake = serve_code_assist(&[broken, blocked], ("404 Not Found", "{}"));
+    let _stop = StopTheBridge(&temp);
+    let (base_url, route, token) = launch_claude_on_agy(&temp, &work, &fake);
+    let hello = serde_json::json!({"model": "gemini-3.8-flash", "stream": true, "max_tokens": 256,
+        "messages": [{"role": "user", "content": "Say hello."}]});
+
+    let answer = claude_code_messages(&base_url, &token, &hello);
+    assert!(
+        answer.starts_with("HTTP/1.1 200"),
+        "the stream had begun: {answer}"
+    );
+    assert!(answer.contains("\"text\":\"Hel\""), "{answer}");
+    assert!(answer.contains("event: error"), "{answer}");
+    assert!(answer.contains("UNAUTHENTICATED"), "{answer}");
+    assert_eq!(
+        fake.calls("streamGenerateContent").len(),
+        1,
+        "no renewal, no retry"
+    );
+
+    let answer = claude_code_messages(&base_url, &token, &hello);
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert!(answer.contains("event: error"), "{answer}");
+    assert!(answer.contains("SAFETY"), "{answer}");
+    assert!(!answer.contains("end_turn"), "{answer}");
+    assert_eq!(fake.calls("streamGenerateContent").len(), 2);
+
+    // A new host holds none of the signatures the old one minted.
+    alc(&temp).args(["bridge", "stop"]).assert().success();
+    let token = claude_credential_on_agy(&temp, &fake, &route);
+    let unsigned = serde_json::json!([
+        {"type": "tool_use", "id": "call-flash-1", "name": "get_weather", "input": {"city": "Paris"}}
+    ]);
+    let refused = claude_code_messages(
+        &base_url,
+        &token,
+        &weather_answer("gemini-3.8-flash", &unsigned, "call-flash-1"),
+    );
+    assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
+    assert!(
+        refused.contains("start a new session to continue on Antigravity"),
+        "{refused}"
+    );
+    assert_eq!(
+        fake.calls("streamGenerateContent").len(),
+        2,
+        "nothing reached Google"
+    );
+    alc(&temp).args(["bridge", "stop"]).assert().success();
+    assert_no_agy_secret_under(temp.path());
+}
+
+/// A stand-in agent: the `stand_in_opencode` test of this very binary, run
+/// on its own. Rust rather than a shell script, so one client speaks HTTP and
+/// JSON the same way on every platform.
+fn stand_in_opencode_bin(dir: &std::path::Path) -> std::path::PathBuf {
+    let me = std::env::current_exe().unwrap();
+    let run = format!(
+        "\"{}\" stand_in_opencode --exact --ignored --nocapture --test-threads=1",
+        me.display()
+    );
+    #[cfg(windows)]
+    {
+        let path = dir.join("opencode.cmd");
+        std::fs::write(
+            &path,
+            format!("@echo off\r\n{run}\r\nexit /b %errorlevel%\r\n"),
+        )
+        .unwrap();
+        path
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("opencode");
+        std::fs::write(&path, format!("#!/bin/sh\nexec {run}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+}
+
+/// Not a test of its own: what [`stand_in_opencode_bin`] runs. It reads the
+/// config alc hands OpenCode, sends one streamed Responses turn to the
+/// provider it names, and writes the answer to `ALC_STAND_IN_OUT`.
+#[test]
+#[ignore = "the stand-in OpenCode an end-to-end test launches through alc; idle when run directly"]
+fn stand_in_opencode() {
+    let Some(out) = std::env::var_os("ALC_STAND_IN_OUT") else {
+        return;
+    };
+    let config: serde_json::Value =
+        serde_json::from_str(&std::env::var("OPENCODE_CONFIG_CONTENT").unwrap()).unwrap();
+    let options = &config["provider"]["alc-codex"]["options"];
+    let url = reqwest::Url::parse(options["baseURL"].as_str().unwrap()).unwrap();
+    let model = config["model"].as_str().unwrap();
+    let model = model.strip_prefix("alc-codex/").unwrap_or(model);
+    let body = serde_json::json!({"model": model, "stream": true,
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "Where is it sunny?"}]}]})
+    .to_string();
+    let port = url.port().unwrap();
+    let answer = http(
+        &port.to_string(),
+        &format!(
+            "POST {}/responses HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            url.path().trim_end_matches('/'),
+            options["apiKey"].as_str().unwrap(),
+            body.len()
+        ),
+    );
+    std::fs::write(out, answer).unwrap();
+}
+
+/// OpenCode runs on the in-process bridge, not the background host: one
+/// Responses turn reaches the stand-in for Google as agy, and the answer
+/// comes back as Responses events.
+#[test]
+fn opencode_completes_a_responses_turn_on_the_antigravity_login() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    write_agy_login(&temp);
+    let fake = serve_code_assist(&[CLAUDE_TOOL_REPLAY], ("404 Not Found", "{}"));
+    let answer = work.path().join("answer.txt");
+    let output = alc(&temp)
+        .env("ALC_AGY_API_BASE", &fake.base)
+        .env("ALC_OPENCODE_BIN", stand_in_opencode_bin(work.path()))
+        .env("ALC_STAND_IN_OUT", &answer)
+        .args(["--agy", "--no-share", "opencode"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_no_agy_secret("alc's output", &output.stdout);
+    assert_no_agy_secret("alc's output", &output.stderr);
+    let answer = std::fs::read_to_string(answer).expect("the stand-in OpenCode ran");
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert!(answer.contains("response.output_text.delta"), "{answer}");
+    assert!(answer.contains(" Sunny, 21 "), "{answer}");
+    assert!(answer.contains("response.completed"), "{answer}");
+    assert_no_agy_secret("the bridge's answer", answer.as_bytes());
+
+    let generates = fake.calls("streamGenerateContent");
+    assert_eq!(generates.len(), 1, "{generates:?}");
+    assert_eq!(fake.calls("loadCodeAssist").len(), 1);
+    let call = &generates[0];
+    assert!(
+        call.head
+            .contains("authorization: bearer synthetic-agy-token-never-echo"),
+        "{}",
+        call.head
+    );
+    assert!(call.head.contains("user-agent: antigravity/cli/1.3.4 ("));
+    assert!(
+        call.head
+            .contains("anthropic-beta: interleaved-thinking-2025-05-14")
+    );
+    let sent: serde_json::Value = serde_json::from_str(&call.body).unwrap();
+    assert_eq!(sent["model"], "claude-opus-5-5-high");
+    assert_eq!(
+        sent["request"]["contents"],
+        serde_json::json!([{"role": "user", "parts": [{"text": "Where is it sunny?"}]}])
+    );
+    assert_no_agy_secret_under(temp.path());
+}
+
+/// One real turn on this machine's agy login: real Claude Code, through
+/// alc's launch and the background bridge, to Google.
+/// Opt-in: `ALC_LIVE_AGY=1 cargo test --test cli live_antigravity -- --ignored`.
+#[test]
+#[ignore = "talks to Google with this machine's agy login; set ALC_LIVE_AGY=1 and run with --ignored"]
+fn live_antigravity_claude_code_answers_through_the_background_bridge() {
+    if std::env::var_os("ALC_LIVE_AGY").is_none() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let _stop = StopTheBridge(&temp);
+    let mut command = alc(&temp);
+    // The real login, read the way a user's launch reads it.
+    command
+        .env_remove("ALC_AGY_NO_KEYRING")
+        .env_remove("ALC_AGY_CREDENTIAL_FILE");
+    // A Claude Code session running this suite must not lend the child its
+    // own endpoint, key or session.
+    for (name, _) in std::env::vars_os() {
+        let name = name.to_string_lossy().into_owned();
+        if (name.starts_with("CLAUDE") || name.starts_with("ANTHROPIC"))
+            && name != "CLAUDE_CONFIG_DIR"
+        {
+            command.env_remove(name);
+        }
+    }
+    let output = command
+        .timeout(std::time::Duration::from_secs(240))
+        .args([
+            "--agy",
+            "--no-share",
+            "claude",
+            "--",
+            "-p",
+            "Reply with exactly OK",
+            "--output-format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}\n{stdout}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let answer: serde_json::Value = stdout
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str(line.trim()).ok())
+        .unwrap_or_else(|| panic!("Claude Code printed no JSON: {stdout}"));
+    assert_eq!(answer["is_error"], false, "{answer}");
+    assert_eq!(
+        answer["result"].as_str().map(str::trim),
+        Some("OK"),
+        "{answer}"
+    );
+}
+
 /// A config.toml written before the antigravity kind existed has no profile
 /// for agy, and "run `alc config`" alone does not say which command adds it.
 #[test]
@@ -2419,7 +2956,8 @@ fn doctor_checks_a_fresh_antigravity_login_for_a_project_without_printing_it() {
     let temp = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     write_agy_login(&temp);
-    let (base, requests) = serve_agy_quota(("404 Not Found", "{}"));
+    let fake = serve_code_assist(&[], ("404 Not Found", "{}"));
+    let base = fake.base.clone();
     let output = alc(&temp)
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
@@ -2439,9 +2977,10 @@ fn doctor_checks_a_fresh_antigravity_login_for_a_project_without_printing_it() {
     for secret in ["synthetic-agy-token-never-echo", "proj-never-shown"] {
         assert!(!text.contains(secret), "{text}");
     }
-    let requests: Vec<String> = requests.try_iter().collect();
+    let requests = fake.requests();
     assert_eq!(requests.len(), 1, "{requests:?}");
-    assert!(requests[0].starts_with("POST /v1internal:loadCodeAssist "));
+    assert_eq!(requests[0].path, "/v1internal:loadCodeAssist");
+    assert!(requests[0].head.starts_with("post "));
 }
 
 /// A config.toml written before the antigravity kind has no profile for agy.
@@ -2976,37 +3515,117 @@ fn usage_reports_every_codex_login_when_two_profiles_name_two_homes() {
         .stdout(predicate::str::contains("codex-work"));
 }
 
-/// A stand-in for the Cloud Code endpoint's two read-only calls. Every
-/// request's head and body is sent back to the test; `quota` is the status
-/// and body the quota call answers with.
-fn serve_agy_quota(
-    quota: (&'static str, &'static str),
-) -> (String, std::sync::mpsc::Receiver<String>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Cloud Code");
-    let address = listener.local_addr().expect("fake Cloud Code address");
-    let (seen, requests) = std::sync::mpsc::channel();
-    thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else {
-                continue;
+/// One request a fake Code Assist server saw.
+#[derive(Clone, Debug)]
+struct CodeAssistRequest {
+    path: String,
+    /// The request line and headers, lowercased.
+    head: String,
+    body: String,
+}
+
+/// A stand-in for Google's Code Assist endpoint, on loopback, until it is
+/// dropped. `loadCodeAssist` names `proj-never-shown`,
+/// `retrieveUserQuotaSummary` answers with the status and body it was given,
+/// and each `streamGenerateContent` replays the next of its turns (the last
+/// repeats).
+struct FakeCodeAssist {
+    base: String,
+    log: std::sync::Arc<std::sync::Mutex<Vec<CodeAssistRequest>>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    server: Option<thread::JoinHandle<()>>,
+}
+
+impl FakeCodeAssist {
+    fn requests(&self) -> Vec<CodeAssistRequest> {
+        self.log.lock().unwrap().clone()
+    }
+
+    /// The requests for one method, e.g. `loadCodeAssist`.
+    fn calls(&self, method: &str) -> Vec<CodeAssistRequest> {
+        self.requests()
+            .into_iter()
+            .filter(|request| {
+                request
+                    .path
+                    .strip_prefix("/v1internal:")
+                    .and_then(|rest| rest.split('?').next())
+                    == Some(method)
+            })
+            .collect()
+    }
+}
+
+/// Stops serving: the accept loop polls the flag, so the thread ends and
+/// the port closes with the test that opened it.
+impl Drop for FakeCodeAssist {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
+}
+
+fn serve_code_assist(turns: &[&str], quota: (&'static str, &str)) -> FakeCodeAssist {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Code Assist");
+    listener
+        .set_nonblocking(true)
+        .expect("a listener the stop flag can interrupt");
+    let address = listener.local_addr().expect("fake Code Assist address");
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (recorded, stopping) = (log.clone(), stop.clone());
+    let turns: Vec<String> = turns.iter().map(|turn| (*turn).to_owned()).collect();
+    let (quota_status, quota) = (quota.0, quota.1.to_owned());
+    let server = thread::spawn(move || {
+        let mut generated = 0_usize;
+        while !stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(_) => {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
             };
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
             let request = read_request(&mut stream);
-            let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
-            let _ = seen.send(request);
-            let (status, body) = if path == "/v1internal:loadCodeAssist" {
-                (
+            let (head, body) = request
+                .split_once("\r\n\r\n")
+                .unwrap_or((request.as_str(), ""));
+            let path = head.split_whitespace().nth(1).unwrap_or("").to_owned();
+            recorded.lock().unwrap().push(CodeAssistRequest {
+                path: path.clone(),
+                head: head.to_ascii_lowercase(),
+                body: body.to_owned(),
+            });
+            match path.as_str() {
+                "/v1internal:loadCodeAssist" => respond(
+                    stream,
                     "200 OK",
                     r#"{"cloudaicompanionProject":"proj-never-shown"}"#,
-                )
-            } else if path == "/v1internal:retrieveUserQuotaSummary" {
-                quota
-            } else {
-                ("404 Not Found", r#"{"error":"not found"}"#)
-            };
-            respond(stream, status, body);
+                ),
+                "/v1internal:retrieveUserQuotaSummary" => respond(stream, quota_status, &quota),
+                "/v1internal:streamGenerateContent?alt=sse" => {
+                    let turn = turns.get(generated).or(turns.last());
+                    generated += 1;
+                    respond_as(
+                        stream,
+                        "200 OK",
+                        "text/event-stream",
+                        turn.map_or("", String::as_str),
+                    );
+                }
+                _ => respond(stream, "404 Not Found", r#"{"error":"not found"}"#),
+            }
         }
     });
-    (format!("http://{address}"), requests)
+    FakeCodeAssist {
+        base: format!("http://{address}"),
+        log,
+        stop,
+        server: Some(server),
+    }
 }
 
 fn write_agy_login(temp: &tempfile::TempDir) {
@@ -3032,15 +3651,17 @@ fn write_agy_login(temp: &tempfile::TempDir) {
 fn usage_reports_what_is_left_on_the_antigravity_login_by_pool() {
     let temp = tempfile::tempdir().unwrap();
     write_agy_login(&temp);
-    let (base, requests) = serve_agy_quota((
-        "200 OK",
-        r#"{"groups":[
-            {"displayName":"Gemini Models","buckets":[
-              {"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.4},
-              {"bucketId":"gemini-5h","window":"5h","remainingFraction":0.72}]},
-            {"displayName":"Claude and GPT models","buckets":[
-              {"bucketId":"3p-weekly","window":"weekly","remainingFraction":0.91}]}]}"#,
-    ));
+    let reset = (chrono::Utc::now() + chrono::Duration::hours(3))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let quota = serde_json::json!({"groups": [
+        {"displayName": "Gemini Models", "buckets": [
+            {"bucketId": "gemini-weekly", "window": "weekly", "remainingFraction": 0.4},
+            {"bucketId": "gemini-5h", "window": "5h", "remainingFraction": 0.72, "resetTime": reset}]},
+        {"displayName": "Claude and GPT models", "buckets": [
+            {"bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 0.91}]}]})
+    .to_string();
+    let fake = serve_code_assist(&[], ("200 OK", &quota));
+    let base = fake.base.clone();
     let output = alc(&temp)
         .env("ALC_AGY_API_BASE", &base)
         .env("ALC_ASCII", "1")
@@ -3078,21 +3699,21 @@ fn usage_reports_what_is_left_on_the_antigravity_login_by_pool() {
         assert!(!stdout.contains(secret), "{stdout}");
     }
 
-    let requests: Vec<String> = requests.try_iter().collect();
+    let requests = fake.requests();
     assert_eq!(requests.len(), 2, "{requests:?}");
-    assert!(requests[0].starts_with("POST /v1internal:loadCodeAssist "));
-    assert!(requests[1].starts_with("POST /v1internal:retrieveUserQuotaSummary "));
-    assert!(
-        requests[1].contains(r#"{"project":"proj-never-shown"}"#),
-        "{}",
-        requests[1]
-    );
+    assert_eq!(requests[0].path, "/v1internal:loadCodeAssist");
+    assert_eq!(requests[1].path, "/v1internal:retrieveUserQuotaSummary");
+    assert_eq!(requests[1].body, r#"{"project":"proj-never-shown"}"#);
     for request in &requests {
-        let lower = request.to_ascii_lowercase();
-        assert!(lower.contains("authorization: bearer synthetic-agy-token-never-echo"));
-        assert!(lower.contains("user-agent: antigravity/cli/"));
-        assert!(lower.contains("x-goog-api-client: "), "{request}");
-        assert!(!request.contains("synthetic-refresh"));
+        assert!(request.head.starts_with("post "), "{}", request.head);
+        assert!(
+            request
+                .head
+                .contains("authorization: bearer synthetic-agy-token-never-echo")
+        );
+        assert!(request.head.contains("user-agent: antigravity/cli/"));
+        assert!(request.head.contains("x-goog-api-client: "), "{request:?}");
+        assert!(!request.body.contains("synthetic-refresh"));
     }
 
     let text = alc(&temp)
@@ -3104,14 +3725,22 @@ fn usage_reports_what_is_left_on_the_antigravity_login_by_pool() {
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&text.stdout);
-    assert!(text.contains("Gemini: 5h 72% left"), "{text}");
-    assert!(text.contains("Claude/GPT: week 91% left"), "{text}");
+    assert!(text.contains("Gemini: 5h 72% left, resets in"), "{text}");
+    assert!(
+        text.contains("week 40% left; Claude/GPT: week 91% left"),
+        "{text}"
+    );
+    assert!(
+        fake.calls("streamGenerateContent").is_empty(),
+        "reading the quota spends none of it"
+    );
 }
 
 #[test]
 fn usage_names_the_fix_when_google_refuses_or_agy_is_signed_out() {
     let temp = tempfile::tempdir().unwrap();
-    let (base, requests) = serve_agy_quota(("401 Unauthorized", r#"{"error":{"code":401}}"#));
+    let fake = serve_code_assist(&[], ("401 Unauthorized", r#"{"error":{"code":401}}"#));
+    let base = fake.base.clone();
     let run = || {
         let output = alc(&temp)
             .env("ALC_AGY_API_BASE", &base)
@@ -3126,6 +3755,16 @@ fn usage_names_the_fix_when_google_refuses_or_agy_is_signed_out() {
     let signed_out = run();
     assert_eq!(signed_out["state"], "signed-out", "{signed_out}");
     assert_eq!(signed_out["error"], "not logged in; run `agy`");
+    let text = alc(&temp)
+        .env("ALC_AGY_API_BASE", &base)
+        .env("ALC_ASCII", "1")
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["usage", "--provider", "antigravity"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("not logged in; run `agy`"), "{text}");
 
     write_agy_login(&temp);
     let refused = run();
@@ -3152,14 +3791,14 @@ fn usage_names_the_fix_when_google_refuses_or_agy_is_signed_out() {
         .to_string(),
     )
     .unwrap();
-    let asked = requests.try_iter().count();
+    let asked = fake.requests().len();
     let expired = run();
     assert_eq!(expired["state"], "unavailable", "{expired}");
     assert_eq!(
         expired["error"],
         "expired; agy renews it on the next launch"
     );
-    assert_eq!(requests.try_iter().count(), 0, "asked {asked} before");
+    assert_eq!(fake.requests().len(), asked, "asked {asked} before");
 }
 
 #[test]
