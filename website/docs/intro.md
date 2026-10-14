@@ -4,7 +4,7 @@ slug: /
 title: all-code (alc)
 sidebar_label: Overview
 sidebar_position: 1
-description: Run Claude Code on the Codex/ChatGPT subscription you already pay for, seven other coding agents on that login or any provider, and the Antigravity CLI on its own, from one command.
+description: Run Claude Code on the Codex/ChatGPT subscription you already pay for, seven other coding agents on that login or any provider, and the Antigravity CLI on its own Google login, which every other agent can use too, from one command.
 keywords:
   - claude code
   - codex cli
@@ -30,7 +30,7 @@ pagination_prev: null
 
 <h1 className="alc-hero__title">Claude Code on your <em>ChatGPT plan</em>.</h1>
 
-<p className="alc-hero__lead">One <code>codex login</code> serves Claude Code and seven other coding agents on that subscription, or on any provider you point them at — and Google's Antigravity CLI runs on its own login.</p>
+<p className="alc-hero__lead">One <code>codex login</code> serves Claude Code and seven other coding agents on that subscription, or on any provider you point them at — and Google's Antigravity CLI brings its own login, which every other agent can run on too.</p>
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh

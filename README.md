@@ -2,8 +2,9 @@
 
 **Run Claude Code on the Codex/ChatGPT subscription you already pay for** — and
 seven other coding agents besides, on that same login or on any provider you
-point them at, plus Google's Antigravity CLI on its own login. Any session can
-be mirrored to a browser page and driven from another device.
+point them at, plus Google's Antigravity CLI, whose Google login every other
+agent can run on too. Any session can be mirrored to a browser page and driven
+from another device.
 
 [![CI](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml/badge.svg)](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/treeleaves30760/all-code?logo=github)](https://github.com/treeleaves30760/all-code/releases/latest)
@@ -88,8 +89,8 @@ provider terms before routing subscription credentials through it.
 
 The same `codex login` drives every agent alc launches but one. No second key,
 no per-agent setup. The one is `alc agy`, Google's Antigravity CLI, which signs
-in to Google itself and runs only on that login — see
-[Antigravity](#antigravity).
+in to Google itself — and that Google login, in turn, serves every other agent
+too: see [Antigravity](#antigravity).
 
 ```sh
 alc --codex claude       # in-session /model picker
@@ -246,7 +247,8 @@ performance](#ttft-tps-and-estimated-cost) explains what is measured.
 Anthropic, the OpenAI API, OpenRouter, a local Ollama, llama.cpp or vLLM server,
 DeepSeek, Moonshot, Z.ai, MiniMax, Groq, xAI, Google, or a custom endpoint — and
 change it for a single run without editing anything. agy, the Antigravity CLI,
-runs on its own Google login instead ([Antigravity](#antigravity), below).
+runs on its own Google login instead, and `--agy` puts any other agent on that
+login too ([Antigravity](#antigravity), below).
 
 ```sh
 alc config                 # keys and per-agent defaults live here
@@ -293,7 +295,8 @@ does not, because alc's settings take precedence over it.
 runs neither on the Codex login nor on a provider you point it at: agy signs in
 to Google itself, and alc launches it on that login without handling any
 credential. The starter configuration ships an enabled `antigravity` profile for
-it, so once agy is signed in there is nothing to set up.
+it, so once agy is signed in there is nothing to set up — for agy, or for any
+other agent on that login ([below](#every-other-agent-on-the-antigravity-login)).
 
 ```sh
 alc agy                                   # claude-opus-5-5-high, at agy's own default effort
@@ -307,9 +310,11 @@ one, its effort as `--effort`; a `--model` or `--effort` you put after
 `alc agy` is forwarded as is, and alc then sends none of its own. agy's efforts
 stop at `max`, so a profile set to `ultra` launches on `max`, with a one-line
 note saying so. `alc models --agy` lists what `agy models` reports, kept for a
-day, or a bundled list when agy cannot be asked; `--refresh` asks again now. In
-`alc config`, the Model row of an antigravity profile steps through the same
-list with ←/→. `--agy` (or `--antigravity`) is the shortcut for
+day, or a bundled list when agy cannot be asked; `--refresh` asks again now. It
+prints each model's context window, and marks an id that none of the five
+families below serves ` (not bridgeable)`: agy may run it, the other agents
+cannot. In `alc config`, the Model row of an antigravity profile steps through
+the same list with ←/→. `--agy` (or `--antigravity`) is the shortcut for
 `--provider antigravity`.
 
 A `config.toml` written by an older alc has no `antigravity` profile. `alc agy`
@@ -319,11 +324,65 @@ then says so and names the fix, and `alc doctor` warns with the same command:
 alc config upsert antigravity --kind antigravity
 ```
 
-Only agy runs on this login today; `alc --agy claude` is refused. Routing the
-other agents through the Antigravity login is coming, as an explicit opt-in,
-because Google has suspended accounts for third-party use of that login (see
-the [Google AI Developers Forum](https://discuss.ai.google.dev/)). `alc agy`
-itself carries no such risk: agy makes its own calls.
+#### Every other agent on the Antigravity login
+
+The same login also serves every other agent, through alc's bridge:
+
+```sh
+alc --agy claude                          # Claude Code, on claude-opus-5-5 at high effort
+alc --agy claude --model gemini-3.8-flash --effort low
+alc --agy opencode                        # or pi, kimi, codex, copilot, goose, qwen
+alc --agy claude --context max            # 840K for Claude, 900K Argon, 1,048K Flash
+alc --agy usage                           # what is left of the plan's windows
+```
+
+alc borrows the access token agy already stored — the Windows Credential
+Manager entry `gemini:antigravity`, or the file
+`~/.gemini/antigravity-cli/antigravity-oauth-token` — and keeps nothing else: it
+never stores a refresh token, never writes agy's login, and never runs a Google
+sign-in of its own. agy still owns the login: when the token is about to
+expire, alc runs `agy --output-format json models` (which has agy renew it) and
+reads the store again. A login found in both places is refused rather than
+guessed at; sign out of agy and in again. To Google, alc presents itself as the
+agy client — agy's User-Agent and client header — because the endpoint chooses
+what an account may run by that identity.
+
+Use of this optional integration remains subject to the account provider's
+terms and restrictions. There is no compatibility or account-availability
+guarantee.
+
+Five model families run on this login: `claude-opus-5-5`, `claude-sonnet-5-5`,
+`gemini-4-argon` (Google AI Ultra accounts), `gemini-3.8-flash` and
+`gpt-oss-120b`, each at `low`, `medium` or `high` effort (GPT-OSS at `medium`
+only). The id Google receives is the two joined, such as
+`gemini-3.8-flash-low`. Claude Code switches model and effort per request as
+usual: its `/model` picker lists the five families, its effort picks the
+variant, `opus` lands on Claude Opus 5.5, `sonnet` on the session's model and
+`haiku` on Gemini 3.8 Flash. An effort above `high` runs as `high`, and one a
+family lacks as one it serves, each with a one-line note. `--model`, `--effort`
+and `--context` change one run of `alc --agy claude`; `--save` is refused with
+the `alc config upsert` command that saves the same choice. The other agents run
+one model for the whole session — the profile's model at the profile's effort —
+so choose it on the profile:
+
+```sh
+alc config upsert antigravity --model gemini-3.8-flash-low --context max
+```
+
+Each family starts on a 256K window (GPT-OSS on 131K). `context = "max"` on the
+profile, or `--context max` for one run of Claude Code, gives 840K for Claude,
+900K for Argon and 1,048K for Flash. Codex CLI is handed the window as
+`model_context_window` (older Codex versions also needed
+`model_auto_compact_token_limit` set by hand in their own config). Codex's
+in-session `/model` picker still offers OpenAI's slugs, which fail upstream on
+this login: change the model on the profile instead.
+
+Gemini signs its reasoning, and the signature travels with the conversation. A
+Gemini tool round that lost its signature — a session started elsewhere, an
+effort changed mid-task, or a bridge restarted — is refused with a request to
+start a new session rather than replayed unsigned. Reading the login is
+verified on Windows; on macOS and Linux it is best effort, and the token file
+works on every OS.
 
 ## Command reference
 
@@ -396,7 +455,10 @@ alc doctor
 binaries, every provider profile against all nine agents, the resolved per-agent
 defaults, a leftover GPT model pinned in `~/.claude/settings.json`, the Codex
 bridge's model, effort, context choice, and `codex login` state, the Antigravity
-CLI (binary, set-up state, profile, model source), an enabled
+login (agy's binary, the login's state — an expired token agy can renew is
+healthy, `expired; agy renews it on the next launch` — its Google project, the
+profile, the model source, and whether the bridge serves the other agents), an
+enabled
 Ollama, llama.cpp or vLLM profile checked against its running server, and the
 remote-control posture — then a summary of issues with a fix for each. It exits
 non-zero when it finds one.
@@ -447,8 +509,11 @@ and cost per agent and model) and a short legend.
 
 alc asks each login's own vendor what is left: chatgpt.com for a Codex login,
 api.anthropic.com for Claude Code's, and the published balance endpoint for an
-OpenRouter, DeepSeek, Moonshot, MiniMax or Z.ai key; the `antigravity` row says
-no quota API, because agy keeps its login to itself. Nothing is ever written
+OpenRouter, DeepSeek, Moonshot, MiniMax or Z.ai key, and Google's own quota
+endpoint for the `antigravity` row, which shows the Gemini pool and the
+Claude/GPT pool by window (`Gemini: 5h 72% left, resets in 3h 0m — week 40%
+left; Claude/GPT: week 91% left`); an expired agy token reads as unavailable
+until agy renews it on the next launch. Nothing is ever written
 back and no token is refreshed, so a status command cannot invalidate the
 credential a running session is holding.
 
@@ -464,9 +529,10 @@ alc --provider codex-work claude
 ```
 
 The compatibility table reads `usage.jsonl`: launch entries plus metadata-only
-request records from the Codex translation bridge and opt-in direct API
-observation. `CACHED` is the part of `INPUT` read from the prompt cache;
-`CACHE %` is that token share, rounded to a whole percent. Unobserved traffic
+request records from the translation bridge (on the Codex login or the
+Antigravity one) and opt-in direct API observation. `CACHED` is the part of
+`INPUT` read from the prompt cache; `CACHE %` is that token share, rounded to a
+whole percent. Unobserved traffic
 shows `—`, not zero. The remote-control page keeps Accounts and this ledger;
 the new native-history/cost and TPS reports are CLI-only.
 
@@ -552,8 +618,8 @@ them zero. In new statistics, each zero input/output counter in legacy v1/v2
 turns is independently unknown; positive counters and compatibility-ledger totals
 remain intact.
 
-**New direct requests need opt-in.** The Codex translation bridge is observed
-automatically. Supported direct API launches use `alc --metrics <agent>`;
+**New direct requests need opt-in.** The translation bridge is observed
+automatically, on the Codex login and the Antigravity one alike. Supported direct API launches use `alc --metrics <agent>`;
 without it, their behavior stays unchanged:
 
 ```sh
@@ -617,7 +683,10 @@ context, and cache TTL before addition. JSON preserves gross `input_tokens`
 and adds `uncached_input_tokens` and `cost_components` for uncached input,
 cache read, cache write, and output. Money uses exact pico-dollar arithmetic
 and decimal USD strings, not floating-point totals. Reasoning is an output
-subset, not billed again; cache reads/writes and TTLs keep their distinct semantics. Prices
+subset, not billed again; cache reads/writes and TTLs keep their distinct semantics.
+On the Antigravity login only `gpt-oss-120b` is priced (at 0); the Claude and
+Gemini families run on a Google plan with no verified API-equivalent rate, so
+their cost stays unknown. Prices
 come first from an offline curated LiteLLM subset dated 2026-10-08, pinned to commit
 `33d908e0ae2c0a257eeb5d546df08527d348a670` with SHA-256/MIT provenance. Models it
 lacks are priced from LiteLLM's public price map, the same file `npx ccusage`
@@ -645,7 +714,7 @@ The two lookup tables, resolved for your own configuration by `alc doctor`.
 | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | responses, chat | No |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | anthropic, responses, chat | Yes |
 | `codex` | — (native `codex login`) | — | native | Yes (bridge) |
-| `antigravity` | — (native `agy` login) | — | native (`agy` only) | Not yet |
+| `antigravity` | — (native `agy` login) | — | native (`agy`), bridge (every other agent) | Yes (bridge) |
 | `ollama` | `http://localhost:11434` | — | anthropic, responses, chat | Yes |
 | `vllm` | `http://localhost:8000/v1` | — | responses, chat (+ anthropic) | Yes |
 | `llamacpp` | `http://localhost:8080/v1` | `LLAMA_API_KEY` | anthropic, responses, chat | Yes |
@@ -686,7 +755,9 @@ upsert` when upstream renames or retires a model.
 use from the links above (Pi is `npm install -g @earendil-works/pi-coding-agent`;
 agy you install and sign in per Google's own Antigravity instructions).
 Every agent but agy reaches the Codex bridge with one `codex login` whatever it
-accepts natively; agy runs only on its own Google login. `ALC_CLAUDE_BIN` and its
+accepts natively, and every agent but agy also runs on agy's Google login
+through the same bridge (`alc --agy <agent>`); agy itself runs only on that
+login. `ALC_CLAUDE_BIN` and its
 siblings, `ALC_AGY_BIN` among them, override a binary path.
 
 ## Codex bridge
@@ -729,7 +800,7 @@ never written, `max` is saved as `context = "max"` on the Codex profile, and
 `alc doctor` adds `/ max context` to the bridge row of a profile set to it. The
 profile's choice reaches every agent on the bridge, not only Claude Code. The
 per-run `--context`, like `--effort`, belongs to `alc claude` and is refused
-off a Codex provider.
+off a Codex or Antigravity provider.
 
 **Choosing the defaults.** GPT-6.1 Sol at `low` is the fallback only when no
 model or effort has been chosen; your saved selections stay as they are.

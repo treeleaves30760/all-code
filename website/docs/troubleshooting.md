@@ -16,7 +16,7 @@ keywords:
 
 Start with `alc doctor`. It reports every agent binary, credential status,
 provider profiles with a per-agent compatibility column, the resolved defaults,
-the Codex login state, and whether the Antigravity CLI has been set up.
+the Codex login state, and the Antigravity login's state.
 
 ## `'claude' is not installed or not on PATH`
 
@@ -58,13 +58,10 @@ alc config upsert antigravity --kind antigravity
 `alc doctor` shows the same hint, as a warning, and so does the Agent defaults
 screen of `alc config`, until you do.
 
-## `is not compatible with agy` or `drives the Antigravity CLI only`
+## `is not compatible with agy`
 
-agy and the `antigravity` kind belong only to each other: agy signs in to Google
-itself, so `alc --codex agy` or `alc --openrouter agy` is refused, and so is
-`alc --agy claude`. Run plain `alc agy`. Routing other agents through the
-Antigravity login is not available yet; [Antigravity
-CLI](./agents.md#antigravity-cli-agy) says why.
+agy runs only on the `antigravity` kind: agy signs in to Google itself, so
+`alc --codex agy` or `alc --openrouter agy` is refused. Run plain `alc agy`.
 
 If a profile of your own is already named `antigravity`, leave it alone:
 `alc config upsert antigravity` would rewrite it for the new kind, base URL and
@@ -75,6 +72,32 @@ another name and make that agy's default:
 alc config upsert google-agy --kind antigravity
 alc config set-default agy google-agy
 ```
+
+## ``not signed in to Antigravity`` or ``refresh required; run `agy` and sign in``
+
+alc borrows agy's login and lets agy renew it. Run `agy` once in a terminal and
+sign in; the next request picks the new token up. If the message says agy is
+not on PATH to renew an expired login, install agy (or point `ALC_AGY_BIN` at
+it), then sign in. `alc doctor` shows the login's state: an expired token that
+agy can renew is healthy, `expired; agy renews it on the next launch`.
+
+## `ambiguous sources`
+
+agy's login is stored twice — in the system keyring and in
+`~/.gemini/antigravity-cli/antigravity-oauth-token` — and alc will not guess
+which one agy updates. Sign out of agy and sign in again so only one remains.
+
+## `start a new session to continue on Antigravity`
+
+Gemini signs its reasoning, and Antigravity refuses a tool round whose
+signature was lost: the session began elsewhere, the model or effort changed
+mid-task, or alc's bridge restarted. alc never invents a signature; start a new
+session (`/clear` in Claude Code) and continue there.
+
+## `Google refused this Antigravity account (403 …)`
+
+alc does not retry a 403: the account may be restricted. Open agy to check the
+account; the message carries Google's own one-line reason.
 
 ## Auto mode says server-side checks are unavailable
 
