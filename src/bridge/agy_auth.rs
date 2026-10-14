@@ -16,6 +16,8 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use base64::Engine as _;
@@ -44,6 +46,10 @@ pub(crate) enum AgyAuthError {
     AmbiguousSources,
     MalformedCredential,
     CredentialStoreUnavailable,
+    AgyNotInstalled,
+    RefreshFailed,
+    RefreshBusy,
+    RefreshRequired,
 }
 
 impl AgyAuthError {
@@ -53,6 +59,10 @@ impl AgyAuthError {
             Self::AmbiguousSources => "ambiguous_sources",
             Self::MalformedCredential => "malformed_credential",
             Self::CredentialStoreUnavailable => "credential_store_unavailable",
+            Self::AgyNotInstalled => "agy_not_installed",
+            Self::RefreshFailed => "agy_refresh_failed",
+            Self::RefreshBusy => "refresh_busy",
+            Self::RefreshRequired => "refresh_required",
         }
     }
 
@@ -74,6 +84,17 @@ impl AgyAuthError {
                 "the system credential store could not be read (credential_store_unavailable); \
                  make sure this desktop session is signed in, then retry"
             }
+            Self::AgyNotInstalled => {
+                "the Antigravity login has expired and agy is not on PATH to renew it \
+                 (agy_not_installed); install agy, run it and sign in"
+            }
+            Self::RefreshFailed => {
+                "agy could not renew the Antigravity login (agy_refresh_failed); run `agy` and sign in"
+            }
+            Self::RefreshBusy => {
+                "another alc is renewing the Antigravity login (refresh_busy); try again in a moment"
+            }
+            Self::RefreshRequired => "refresh required; run `agy` and sign in",
         }
     }
 }
@@ -307,7 +328,7 @@ fn read_keyring() -> Result<Option<RawCredential>, AgyAuthError> {
 /// with an unlock prompt (gnome-keyring) or an access dialog (Keychain) and
 /// wait for a person who is not there; past this the lookup reads as absent.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-const KEYRING_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const KEYRING_TOOL_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn keyring_tool(program: &str, args: &[&str]) -> Result<Option<RawCredential>, AgyAuthError> {
@@ -323,12 +344,12 @@ fn keyring_tool(program: &str, args: &[&str]) -> Result<Option<RawCredential>, A
 fn keyring_tool_within(
     program: &str,
     args: &[&str],
-    timeout: std::time::Duration,
+    timeout: Duration,
 ) -> Result<Option<RawCredential>, AgyAuthError> {
     use std::io::Read as _;
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     let deadline = Instant::now() + timeout;
     let Ok(mut child) = Command::new(program)
@@ -365,7 +386,12 @@ fn keyring_tool_within(
             }
         }
     };
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    // The tool has exited, so its answer is already in the pipe. A floor keeps
+    // a tool that exits right at the deadline from losing an answer the reader
+    // has not handed over yet.
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_millis(100));
     let Ok(Ok(mut bytes)) = receiver.recv_timeout(remaining) else {
         return Ok(None);
     };
@@ -538,8 +564,180 @@ pub(crate) fn status(store: &dyn CredentialStore, now: i64) -> LoginState {
     }
 }
 
+/// How long agy gets to renew its login before alc kills it.
+pub(crate) const REFRESH_TIMEOUT: Duration = Duration::from_secs(25);
+/// How long a renewal waits for another process's.
+pub(crate) const LOCK_WAIT: Duration = Duration::from_secs(30);
+
+/// One process-wide lock file, so two alc processes (a background bridge and
+/// an in-process one, say) never run agy at the same time.
+pub(crate) fn refresh_lock_path(config_dir: &Path) -> PathBuf {
+    crate::bridge_host::files::run_dir(config_dir).join("agy-refresh.lock")
+}
+
+/// agy's login as a bridge uses it: read fresh from the store on every call,
+/// renewed by agy when stale or refused.
+pub(crate) struct AgyCredentials {
+    store: Arc<dyn CredentialStore>,
+    lock_file: PathBuf,
+    agy: Option<PathBuf>,
+    refresh_timeout: Duration,
+    lock_wait: Duration,
+    /// One renewal in flight per process. Waiters re-read the store once they
+    /// get it, so they take the leader's token instead of running agy again.
+    flight: tokio::sync::Mutex<()>,
+}
+
+impl AgyCredentials {
+    pub(crate) fn new(locator: &AgyLocator, config_dir: &Path) -> Self {
+        Self::with_parts(
+            Arc::new(locator.store()),
+            refresh_lock_path(config_dir),
+            crate::doctor::resolve(&crate::doctor::binary_for(crate::config::Agent::Agy)),
+        )
+    }
+
+    pub(crate) fn with_parts(
+        store: Arc<dyn CredentialStore>,
+        lock_file: PathBuf,
+        agy: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            store,
+            lock_file,
+            agy,
+            refresh_timeout: REFRESH_TIMEOUT,
+            lock_wait: LOCK_WAIT,
+            flight: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_timeouts(mut self, refresh: Duration, lock: Duration) -> Self {
+        self.refresh_timeout = refresh;
+        self.lock_wait = lock;
+        self
+    }
+
+    /// The login as stored now. Never renews; there is no cache to be stale.
+    /// Blocking: on macOS and Linux it can wait on the keyring tool, so async
+    /// code reads through [`Self::read`] instead.
+    pub(crate) fn current(&self) -> Result<AgyToken, AgyAuthError> {
+        load(self.store.as_ref())
+    }
+
+    /// A token to sign the next request with, renewed first when stale.
+    pub(crate) async fn token(&self) -> Result<AgyToken, AgyAuthError> {
+        let token = self.read().await?;
+        if token.is_fresh(now_secs()) {
+            return Ok(token);
+        }
+        self.renew(None).await
+    }
+
+    /// Renews after upstream refused `rejected` with a 401: the result must be
+    /// fresh *and* a different token, or the same refusal would follow.
+    pub(crate) async fn renew_after_rejection(
+        &self,
+        rejected: Fingerprint,
+    ) -> Result<AgyToken, AgyAuthError> {
+        self.renew(Some(rejected)).await
+    }
+
+    async fn renew(&self, rejected: Option<Fingerprint>) -> Result<AgyToken, AgyAuthError> {
+        let _flight = self.flight.lock().await;
+        if let Some(token) = self.usable(rejected).await? {
+            return Ok(token);
+        }
+        let lock_file = self.lock_file.clone();
+        let wait = self.lock_wait;
+        let lock = tokio::task::spawn_blocking(move || {
+            crate::file_lock::FileLock::acquire_timeout(&lock_file, wait)
+        })
+        .await
+        .map_err(|_| AgyAuthError::RefreshBusy)?
+        .map_err(|_| AgyAuthError::RefreshBusy)?;
+        // Another process may have renewed while this one waited for the lock.
+        if let Some(token) = self.usable(rejected).await? {
+            return Ok(token);
+        }
+        let agy = self.agy.clone().ok_or(AgyAuthError::AgyNotInstalled)?;
+        let timeout = self.refresh_timeout;
+        // The lock travels with agy, not with this future: a caller that
+        // gives up mid-renewal must not free the lock while agy still runs.
+        tokio::task::spawn_blocking(move || {
+            let _lock = lock;
+            run_agy(&agy, timeout)
+        })
+        .await
+        .map_err(|_| AgyAuthError::RefreshFailed)??;
+        self.usable(rejected)
+            .await?
+            .ok_or(AgyAuthError::RefreshRequired)
+    }
+
+    /// The stored token when it is fresh and not the one just refused. A
+    /// missing or unreadable login is an error here, which is what keeps agy
+    /// from ever being run for a user who is not signed in.
+    async fn usable(
+        &self,
+        rejected: Option<Fingerprint>,
+    ) -> Result<Option<AgyToken>, AgyAuthError> {
+        let token = self.read().await?;
+        let refused = rejected == Some(token.fingerprint());
+        Ok((token.is_fresh(now_secs()) && !refused).then_some(token))
+    }
+
+    /// [`Self::current`] on the blocking pool, so a keyring tool that waits
+    /// for an unlock prompt holds a blocking thread and not an async worker.
+    async fn read(&self) -> Result<AgyToken, AgyAuthError> {
+        let store = Arc::clone(&self.store);
+        tokio::task::spawn_blocking(move || load(store.as_ref()))
+            .await
+            .map_err(|_| AgyAuthError::CredentialStoreUnavailable)?
+    }
+}
+
+/// `agy --output-format json models`: a command that makes agy refresh its
+/// own login before answering. No stdin, no output kept, no auto-update, no
+/// console window, and killed at `timeout`.
+fn run_agy(binary: &Path, timeout: Duration) -> Result<(), AgyAuthError> {
+    use std::process::{Command, Stdio};
+    let mut command = Command::new(binary);
+    command
+        .args(["--output-format", "json", "models"])
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    let mut child = command.spawn().map_err(|_| AgyAuthError::RefreshFailed)?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => return Err(AgyAuthError::RefreshFailed),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            // Past the deadline, or a child that can no longer be waited on:
+            // either way it is not left running.
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AgyAuthError::RefreshFailed);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
     use super::{AgyAuthError, CredentialStore, RawCredential};
@@ -617,12 +815,96 @@ pub(crate) mod test_support {
         .to_string()
         .into_bytes()
     }
+
+    /// A stand-in agy: counts its runs, records its arguments and the
+    /// auto-update switch, sleeps, then (when given) installs `renewed` as the
+    /// stored login.
+    ///
+    /// It never leaves a process behind. The sleep is the script's own
+    /// process, so the kill at a refresh timeout reaches it: on Windows a
+    /// `cmd` loop on `%TIME%` (a `ping` grandchild would outlive the kill and
+    /// hold the test runner's output open), on Unix `exec sleep` when nothing
+    /// follows it.
+    pub(crate) fn fake_agy(
+        dir: &Path,
+        renewed: Option<&[u8]>,
+        target: &Path,
+        sleep_secs: u32,
+    ) -> PathBuf {
+        if let Some(renewed) = renewed {
+            std::fs::write(dir.join("renewed.json"), renewed).unwrap();
+        }
+        let d = dir.display();
+        let t = target.display();
+        #[cfg(windows)]
+        {
+            let mut script = format!(
+                "@echo off\r\n>>\"{d}\\calls\" echo called\r\n>\"{d}\\args\" echo %*\r\n\
+                 >\"{d}\\env\" echo %AGY_CLI_DISABLE_AUTO_UPDATE%\r\n"
+            );
+            if sleep_secs > 0 {
+                // Centiseconds since midnight, wrapped at midnight.
+                let centis = sleep_secs * 100;
+                script.push_str(&format!(
+                    "call :now start\r\n:wait\r\ncall :now now\r\n\
+                     set /a \"elapsed=(now-start+8640000)%%8640000\"\r\n\
+                     if %elapsed% lss {centis} goto wait\r\n"
+                ));
+            }
+            if renewed.is_some() {
+                script.push_str(&format!("copy /Y \"{d}\\renewed.json\" \"{t}\" >NUL\r\n"));
+            }
+            script.push_str(
+                "exit /b 0\r\n:now\r\nset \"clock=%TIME: =0%\"\r\n\
+                 set /a \"%1=((1%clock:~0,2%-100)*3600+(1%clock:~3,2%-100)*60\
+                 +(1%clock:~6,2%-100))*100+(1%clock:~9,2%-100)\"\r\nexit /b 0\r\n",
+            );
+            let path = dir.join("agy.cmd");
+            std::fs::write(&path, script).unwrap();
+            path
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut script = format!(
+                "#!/bin/sh\necho called >> '{d}/calls'\necho \"$@\" > '{d}/args'\n\
+                 echo \"$AGY_CLI_DISABLE_AUTO_UPDATE\" > '{d}/env'\n"
+            );
+            if sleep_secs > 0 {
+                let exec = if renewed.is_some() { "" } else { "exec " };
+                script.push_str(&format!("{exec}sleep {sleep_secs}\n"));
+            }
+            if renewed.is_some() {
+                script.push_str(&format!("cp '{d}/renewed.json' '{t}'\n"));
+            }
+            // Written here, installed by `cp`: a file this multi-threaded
+            // process held open for writing can be ETXTBSY to exec while
+            // another test's fork still carries the descriptor.
+            let source = dir.join("agy.sh");
+            std::fs::write(&source, script).unwrap();
+            let path = dir.join("agy");
+            let copied = std::process::Command::new("cp")
+                .arg(&source)
+                .arg(&path)
+                .status()
+                .unwrap();
+            assert!(copied.success(), "cp {copied}");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        }
+    }
+
+    /// How many times the fake agy in `dir` ran.
+    pub(crate) fn agy_calls(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("calls")).map_or(0, |text| text.lines().count())
+    }
 }
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
-    use super::test_support::{MemoryStore, credential};
+    use super::test_support::{MemoryStore, agy_calls, credential, fake_agy};
     use super::*;
 
     #[test]
@@ -844,11 +1126,24 @@ mod tests {
     /// A keyring that shows an unlock prompt nobody answers must not hold a
     /// request forever: past the deadline the tool is killed and the keyring
     /// reads as absent.
+    ///
+    /// The sleeper is the direct child on both systems, so the kill reaches
+    /// it: a `.cmd` around `ping` would leave `ping` holding the test
+    /// runner's output for ten seconds after the test ended.
     #[test]
     fn a_keyring_tool_that_hangs_reads_as_absent_at_the_deadline() {
         let dir = tempfile::tempdir().unwrap();
-        let hanging = fake_tool(dir.path(), "exec sleep 10", "ping -n 11 127.0.0.1 >nul");
-        let started = std::time::Instant::now();
+        let hanging = if cfg!(windows) {
+            let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+            let ping = Path::new(&root).join("System32").join("PING.EXE");
+            (
+                ping.display().to_string(),
+                vec!["-n".to_owned(), "11".to_owned(), "127.0.0.1".to_owned()],
+            )
+        } else {
+            fake_tool(dir.path(), "exec sleep 10", "")
+        };
+        let started = Instant::now();
         assert_eq!(
             run_fake(&hanging, Duration::from_millis(500)).unwrap(),
             None
@@ -896,5 +1191,201 @@ mod tests {
             read_windows_credential("alc-test:no-such-target-7f3c9e1d").unwrap(),
             None
         );
+    }
+
+    /// A file-backed login and a fake agy that replaces it with `renewed`.
+    fn renewing(
+        dir: &Path,
+        stored: Vec<u8>,
+        renewed: Option<Vec<u8>>,
+        sleep_secs: u32,
+    ) -> AgyCredentials {
+        let file = dir.join("login");
+        std::fs::write(&file, stored).unwrap();
+        let agy = fake_agy(dir, renewed.as_deref(), &file, sleep_secs);
+        AgyCredentials::with_parts(
+            Arc::new(SystemStore::file_only(file)),
+            dir.join("run").join("agy-refresh.lock"),
+            Some(agy),
+        )
+    }
+
+    #[test]
+    fn the_renewal_errors_have_fixed_codes_and_name_the_fix() {
+        let cases = [
+            (AgyAuthError::AgyNotInstalled, "agy_not_installed"),
+            (AgyAuthError::RefreshFailed, "agy_refresh_failed"),
+            (AgyAuthError::RefreshBusy, "refresh_busy"),
+        ];
+        for (error, code) in cases {
+            assert_eq!(error.code(), code);
+            assert!(error.message().contains(&format!("({code})")), "{error}");
+        }
+        assert_eq!(AgyAuthError::RefreshRequired.code(), "refresh_required");
+        let failed = AgyAuthError::RefreshFailed.message();
+        assert!(failed.contains("run `agy` and sign in"), "{failed}");
+        let busy = AgyAuthError::RefreshBusy.message();
+        assert!(busy.contains("try again"), "{busy}");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_token_is_returned_without_running_agy() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = renewing(dir.path(), credential("tok-a", 3600), None, 0);
+        assert_eq!(credentials.token().await.unwrap().access_token(), "tok-a");
+        assert_eq!(agy_calls(dir.path()), 0);
+    }
+
+    #[tokio::test]
+    async fn a_stale_token_is_renewed_by_agy_with_auto_update_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = renewing(
+            dir.path(),
+            credential("tok-a", 10),
+            Some(credential("tok-b", 3600)),
+            0,
+        );
+        assert_eq!(credentials.token().await.unwrap().access_token(), "tok-b");
+        assert_eq!(agy_calls(dir.path()), 1);
+        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+        assert_eq!(args.trim(), "--output-format json models");
+        let env = std::fs::read_to_string(dir.path().join("env")).unwrap();
+        assert_eq!(env.trim(), "true");
+    }
+
+    #[tokio::test]
+    async fn no_login_never_runs_agy() {
+        let dir = tempfile::tempdir().unwrap();
+        let agy = fake_agy(dir.path(), None, &dir.path().join("login"), 0);
+        let credentials = AgyCredentials::with_parts(
+            Arc::new(SystemStore::file_only(dir.path().join("login"))),
+            dir.path().join("agy-refresh.lock"),
+            Some(agy),
+        );
+        assert_eq!(
+            credentials.token().await.unwrap_err(),
+            AgyAuthError::LoginRequired
+        );
+        assert_eq!(
+            credentials
+                .renew_after_rejection(
+                    parse_credential(&credential("tok-a", 3600))
+                        .unwrap()
+                        .fingerprint()
+                )
+                .await
+                .unwrap_err(),
+            AgyAuthError::LoginRequired
+        );
+        assert_eq!(agy_calls(dir.path()), 0);
+    }
+
+    #[tokio::test]
+    async fn an_expired_login_with_no_agy_asks_to_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = AgyCredentials::with_parts(
+            Arc::new(MemoryStore::with_file(credential("tok-a", -100))),
+            dir.path().join("agy-refresh.lock"),
+            None,
+        );
+        let error = credentials.token().await.unwrap_err();
+        assert_eq!(error, AgyAuthError::AgyNotInstalled);
+        assert_eq!(error.code(), "agy_not_installed");
+        assert!(error.message().contains("sign in"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn after_a_401_the_same_token_is_not_accepted_back() {
+        let dir = tempfile::tempdir().unwrap();
+        // agy runs but leaves the login as it was.
+        let credentials = renewing(dir.path(), credential("tok-a", 3600), None, 0);
+        let rejected = credentials.current().unwrap().fingerprint();
+        let error = credentials
+            .renew_after_rejection(rejected)
+            .await
+            .unwrap_err();
+        assert_eq!(error, AgyAuthError::RefreshRequired);
+        assert_eq!(error.message(), "refresh required; run `agy` and sign in");
+        assert_eq!(agy_calls(dir.path()), 1);
+    }
+
+    #[tokio::test]
+    async fn a_401_after_another_process_renewed_takes_the_new_token_without_agy() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = renewing(dir.path(), credential("tok-b", 3600), None, 0);
+        let rejected = parse_credential(&credential("tok-a", 3600))
+            .unwrap()
+            .fingerprint();
+        let token = credentials.renew_after_rejection(rejected).await.unwrap();
+        assert_eq!(token.access_token(), "tok-b");
+        assert_eq!(agy_calls(dir.path()), 0);
+    }
+
+    #[tokio::test]
+    async fn an_agy_that_fails_is_refresh_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = renewing(dir.path(), credential("tok-a", 10), None, 0);
+        // A missing program is the same failure as a failing one.
+        let credentials = AgyCredentials {
+            agy: Some(dir.path().join("alc-test-no-such-agy-7f3c9e1d.exe")),
+            ..credentials
+        };
+        assert_eq!(
+            credentials.token().await.unwrap_err(),
+            AgyAuthError::RefreshFailed
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_renewals_run_agy_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = Arc::new(renewing(
+            dir.path(),
+            credential("tok-a", 10),
+            Some(credential("tok-b", 3600)),
+            1,
+        ));
+        let mut waiting = Vec::new();
+        for _ in 0..4 {
+            let credentials = Arc::clone(&credentials);
+            waiting.push(tokio::spawn(async move { credentials.token().await }));
+        }
+        for task in waiting {
+            assert_eq!(task.await.unwrap().unwrap().access_token(), "tok-b");
+        }
+        assert_eq!(agy_calls(dir.path()), 1);
+    }
+
+    #[tokio::test]
+    async fn a_hung_agy_is_killed_at_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = renewing(dir.path(), credential("tok-a", 10), None, 20)
+            .with_timeouts(Duration::from_secs(1), LOCK_WAIT);
+        let started = Instant::now();
+        assert_eq!(
+            credentials.token().await.unwrap_err(),
+            AgyAuthError::RefreshFailed
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(agy_calls(dir.path()), 1);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_lock_held_elsewhere_is_refresh_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = renewing(dir.path(), credential("tok-a", 10), None, 0)
+            .with_timeouts(REFRESH_TIMEOUT, Duration::from_millis(200));
+        let _held =
+            crate::file_lock::FileLock::acquire(&dir.path().join("run").join("agy-refresh.lock"))
+                .unwrap();
+        assert_eq!(
+            credentials.token().await.unwrap_err(),
+            AgyAuthError::RefreshBusy
+        );
+        assert_eq!(agy_calls(dir.path()), 0);
     }
 }
