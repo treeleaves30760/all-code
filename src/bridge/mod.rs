@@ -96,10 +96,6 @@ pub(crate) enum UpstreamKind {
     Codex,
     /// Google's Code Assist endpoint on agy's login. `config_dir` places the
     /// cross-process renewal lock.
-    #[allow(
-        dead_code,
-        reason = "built by the bridge host and launch from Plan C Tasks 10-11"
-    )]
     Antigravity {
         credential: agy_auth::AgyLocator,
         config_dir: PathBuf,

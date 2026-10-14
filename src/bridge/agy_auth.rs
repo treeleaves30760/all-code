@@ -564,6 +564,16 @@ pub(crate) fn status(store: &dyn CredentialStore, now: i64) -> LoginState {
     }
 }
 
+/// Refuses, in the user's terminal, a launch whose agy login cannot serve:
+/// none at all, two at once, or one alc cannot read. An expired login is
+/// fine - the first request asks agy to renew it.
+pub(crate) fn require_login(store: &dyn CredentialStore) -> anyhow::Result<()> {
+    match status(store, now_secs()) {
+        LoginState::Ready { .. } | LoginState::Expired => Ok(()),
+        LoginState::Missing(error) => anyhow::bail!("{error}"),
+    }
+}
+
 /// How long agy gets to renew its login before alc kills it.
 pub(crate) const REFRESH_TIMEOUT: Duration = Duration::from_secs(25);
 /// How long a renewal waits for another process's.
@@ -924,6 +934,32 @@ mod tests {
 
     use super::test_support::{MemoryStore, agy_calls, credential, fake_agy};
     use super::*;
+
+    #[test]
+    fn a_launch_is_refused_only_on_a_login_that_cannot_serve() {
+        require_login(&MemoryStore::with_file(credential("tok-a", 3600))).unwrap();
+        // Expired is fine: the first request asks agy to renew it.
+        require_login(&MemoryStore::with_keyring(credential("tok-a", -60))).unwrap();
+        let missing = require_login(&MemoryStore::empty())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            missing.contains("not signed in to Antigravity")
+                && missing.contains("run `agy` and sign in"),
+            "{missing}"
+        );
+        let both = require_login(&MemoryStore::with_both(
+            credential("tok-a", 3600),
+            credential("tok-b", 3600),
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(both.contains("ambiguous sources"), "{both}");
+        let malformed = require_login(&MemoryStore::with_file(b"not json".to_vec()))
+            .unwrap_err()
+            .to_string();
+        assert!(malformed.contains("malformed_credential"), "{malformed}");
+    }
 
     #[test]
     fn a_plain_credential_parses_and_never_shows_its_token() {

@@ -1350,15 +1350,152 @@ fn agy_refuses_every_other_kind() {
         .stderr(predicate::str::contains("antigravity"));
 }
 
+/// An Antigravity route file, as `alc --agy claude` writes it, reading agy's
+/// login from the file this test owns.
+fn write_agy_route(temp: &tempfile::TempDir) -> &'static str {
+    let routes = temp.path().join("run").join("bridge").join("routes");
+    std::fs::create_dir_all(&routes).unwrap();
+    let route = serde_json::json!({
+        "id": "ag-0123456789ab",
+        "kind": "antigravity",
+        "profile": "antigravity",
+        "credential": {"file": temp.path().join("agy-login")},
+        "tiers": {"strongest": "claude-opus-5-5", "default": "claude-opus-5-5", "cheapest": "gemini-3.8-flash"}
+    });
+    std::fs::write(routes.join("ag-0123456789ab.json"), route.to_string()).unwrap();
+    "ag-0123456789ab"
+}
+
 #[test]
-fn the_antigravity_kind_runs_only_agy_for_now() {
+fn antigravity_claude_dry_run_runs_on_a_background_route() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
         .args(["--agy", "--dry-run", "claude"])
         .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--model claude-opus-5-5 --effort high",
+        ))
+        .stdout(predicate::str::contains("/r/ag-"))
+        .stdout(predicate::str::contains(
+            "\"ANTHROPIC_DEFAULT_HAIKU_MODEL\":\"gemini-3.8-flash\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"256000\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_AUTO_MODE_SERVER\":\"0\"",
+        ))
+        .stdout(predicate::str::contains("via Antigravity"))
+        .stdout(predicate::str::contains("adapter: background bridge"))
+        .stdout(predicate::str::contains(
+            "catalog: the Antigravity families alc ships",
+        ));
+    // A dry run writes no route and starts no bridge, signed in or not.
+    assert!(
+        !temp
+            .path()
+            .join("run")
+            .join("bridge")
+            .join("routes")
+            .exists()
+    );
+}
+
+#[test]
+fn antigravity_claude_takes_the_larger_window_on_context_max() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--agy", "--dry-run", "claude", "--context", "max"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"840000\"",
+        ));
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "antigravity",
+            "--kind",
+            "antigravity",
+            "--context",
+            "max",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .args([
+            "--agy",
+            "--dry-run",
+            "claude",
+            "--model",
+            "gemini-3.8-flash-low",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--model gemini-3.8-flash --effort low",
+        ))
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"1048576\"",
+        ));
+    alc(&temp)
+        .args(["--agy", "--dry-run", "claude", "--save"])
+        .assert()
         .failure()
-        .stderr(predicate::str::contains("antigravity"))
-        .stderr(predicate::str::contains("alc agy"));
+        .stderr(predicate::str::contains("--save"))
+        .stderr(predicate::str::contains(
+            "alc config upsert antigravity --model <id>",
+        ));
+}
+
+/// `alc models --agy` lists live ids that belong to no family; the refusal
+/// names the families rather than pointing at a list it would reject.
+#[test]
+fn antigravity_claude_refuses_a_model_outside_the_families_and_names_them() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--agy", "--dry-run", "claude", "--model", "gemini-2.5-pro"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("gemini-2.5-pro"))
+        .stderr(predicate::str::contains(
+            "claude-opus-5-5, claude-sonnet-5-5, gemini-4-argon, gemini-3.8-flash, gpt-oss-120b",
+        ))
+        .stderr(predicate::str::contains("alc models --agy").not());
+}
+
+#[test]
+fn antigravity_claude_names_a_missing_login_before_it_starts_a_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--agy", "claude"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not signed in to Antigravity"))
+        .stderr(predicate::str::contains("run `agy` and sign in"));
+    alc(&temp)
+        .args(["bridge", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+}
+
+#[test]
+fn claude_credential_names_a_missing_agy_login_without_starting_a_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    let route = write_agy_route(&temp);
+    alc(&temp)
+        .args(["claude-credential", route])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("run `agy` and sign in"));
+    alc(&temp)
+        .args(["bridge", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
 }
 
 /// A config.toml written before the antigravity kind existed has no profile

@@ -86,10 +86,8 @@ pub struct AgyFamily {
 }
 
 /// Where Claude Code's `opus` tier lands on this login.
-#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
 pub const STRONGEST_FAMILY: &str = "claude-opus-5-5";
 /// Where `haiku` and Claude Code's background work land.
-#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
 pub const CHEAPEST_FAMILY: &str = "gemini-3.8-flash";
 
 /// The families alc ships, most capable first.
@@ -115,7 +113,6 @@ pub fn split_wire_id(model: &str) -> Option<(AgyFamily, String)> {
 }
 
 /// The family a family id or a wire id belongs to.
-#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
 pub fn family_of_model(model: &str) -> Option<AgyFamily> {
     family(model.trim()).or_else(|| split_wire_id(model).map(|(family, _)| family))
 }
@@ -172,7 +169,6 @@ pub fn wire_model_for(model: &str, effort: Option<ReasoningEffort>) -> String {
 
 /// The window a session on `family` is handed: standard, or the family's
 /// maximum when the profile opted in.
-#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
 pub fn context_window(family: &AgyFamily, choice: ContextChoice) -> u64 {
     match choice {
         ContextChoice::Standard => family.context_window,
@@ -182,7 +178,6 @@ pub fn context_window(family: &AgyFamily, choice: ContextChoice) -> u64 {
 
 /// The families as pickers show them: one row per family, effort chosen
 /// separately, windows per the profile's context choice.
-#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
 pub fn model_infos(choice: ContextChoice) -> Vec<ModelInfo> {
     families()
         .into_iter()
@@ -215,7 +210,6 @@ pub fn model_infos(choice: ContextChoice) -> Vec<ModelInfo> {
 
 /// Where Claude's tiers land: Opus for the strongest, the session's family
 /// for the default, Flash for the cheapest.
-#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
 pub fn tiers(default_family: &str) -> crate::bridge::tiers::ModelTiers {
     crate::bridge::tiers::ModelTiers {
         strongest: STRONGEST_FAMILY.to_owned(),

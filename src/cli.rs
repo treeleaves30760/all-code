@@ -518,8 +518,8 @@ struct UpsertArgs {
     #[arg(long)]
     clear_effort: bool,
 
-    /// How much of a Codex model's window to use: standard, or max (uses
-    /// plan limits faster past the standard window).
+    /// How much of a Codex or Antigravity model's window to use: standard,
+    /// or max (uses plan limits faster past the standard window).
     #[arg(long, value_name = "CHOICE")]
     context: Option<ContextChoice>,
 
@@ -961,10 +961,36 @@ fn run_claude(
         (name.to_owned(), provider.clone())
     };
 
+    if provider.kind == ProviderKind::Antigravity {
+        if args.save {
+            bail!(
+                "--save is available with a Codex provider; set an antigravity profile's defaults with \
+                 `alc config upsert {profile_name} --model <id> --effort <level> --context <standard|max>`"
+            );
+        }
+        // This run's choice goes through the provider, so the one place that
+        // turns a choice into a window decides it for this run too; the
+        // windows reach the plan through the overrides.
+        let mut provider = provider;
+        if let Some(choice) = args.context {
+            provider.context = choice;
+        }
+        let overrides = antigravity_launch_overrides(&provider, args.model.as_deref(), args.effort);
+        let spec = launch::build(
+            store,
+            Agent::Claude,
+            requested_provider,
+            &args.args,
+            &overrides,
+        )?;
+        return run_spec(store, spec, dry_run, sharing);
+    }
+
     if provider.kind != ProviderKind::Codex {
         if args.effort.is_some() || args.context.is_some() || args.save {
             bail!(
-                "--effort, --context and --save are available with a Codex provider; use `alc --codex claude`"
+                "--effort, --context and --save are available with a Codex or Antigravity provider; \
+                 use `alc --codex claude` or `alc --agy claude`"
             );
         }
         // A local server can say how much context it really gives the model,
@@ -1173,6 +1199,27 @@ fn codex_session_overrides(
     }
 }
 
+/// What an Antigravity-bridged session is launched with: the model and
+/// effort this run names (the plan falls back to the profile's), the window
+/// the profile's context choice gives that family, and every family for the
+/// agent's own picker.
+fn antigravity_launch_overrides(
+    provider: &Provider,
+    model: Option<&str>,
+    effort: Option<ReasoningEffort>,
+) -> launch::LaunchOverrides {
+    let context_window = antigravity::family_of_model(model.unwrap_or(&provider.model))
+        .map(|family| antigravity::context_window(&family, provider.context));
+    launch::LaunchOverrides {
+        // Only this run's: the plan reads a profile's wire-id effort after
+        // the profile's own `effort`, and a run's before it.
+        model: model.map(str::to_owned),
+        reasoning_effort: effort,
+        context_window,
+        model_options: antigravity::model_infos(provider.context),
+    }
+}
+
 /// The catalog entries the bundled bridge can actually route.
 ///
 /// These become the agent's own in-session picker, and the catalog on disk
@@ -1290,7 +1337,10 @@ fn run_spec(
                 "metrics: would observe native API requests through an authenticated loopback forwarding route; TTFT/TPS start with new requests"
             );
         }
-        if spec.is_bridged() {
+        if spec.is_bridged() && spec.provider_kind == ProviderKind::Antigravity {
+            // The picker is the families alc ships, never a synced list.
+            println!("catalog: the Antigravity families alc ships");
+        } else if spec.is_bridged() {
             // A dry run used to be the one path that said nothing at all
             // about where its model list came from, which is why a machine
             // quietly hiding a model looked healthy here.

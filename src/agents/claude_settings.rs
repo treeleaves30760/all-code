@@ -85,6 +85,7 @@ pub(crate) fn tiers_for(model: &str, options: &[ModelInfo]) -> ModelTiers {
     }
 }
 
+/// What a bridged Claude Code document needs, on either upstream.
 pub(crate) struct CodexDocument<'a> {
     pub model: &'a str,
     pub options: &'a [ModelInfo],
@@ -97,6 +98,19 @@ pub(crate) struct CodexDocument<'a> {
 /// A Claude Code session on the Codex login: every model it can name lands on
 /// a Codex model, and every feature only a Claude model has is off.
 pub(crate) fn codex_document(inputs: &CodexDocument<'_>) -> Value {
+    bridged_document(inputs, "Codex")
+}
+
+/// The same on agy's login: every model Claude Code can name lands on an
+/// Antigravity family (Claude ids on Opus/Sonnet, `haiku` on Flash), the
+/// picker lists the five families, and effort stays per request because the
+/// bridge turns it into the wire id's suffix.
+pub(crate) fn antigravity_document(inputs: &CodexDocument<'_>) -> Value {
+    bridged_document(inputs, "Antigravity")
+}
+
+/// A Claude Code session on alc's background bridge over `upstream`'s login.
+fn bridged_document(inputs: &CodexDocument<'_>, upstream: &str) -> Value {
     let mut env = Map::new();
     put(
         &mut env,
@@ -142,17 +156,18 @@ pub(crate) fn codex_document(inputs: &CodexDocument<'_>) -> Value {
         inputs.tiers.cheapest.as_str(),
     );
     // Clients older than the `modelPicker` setting still get one selectable
-    // GPT entry from the documented custom-model variables.
+    // entry for the upstream's model from the documented custom-model
+    // variables.
     put(&mut env, "ANTHROPIC_CUSTOM_MODEL_OPTION", inputs.model);
     put(
         &mut env,
         "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-        format!("{} via Codex", inputs.model),
+        format!("{} via {upstream}", inputs.model),
     );
     put(
         &mut env,
         "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-        "Selected by all-code using your Codex login",
+        format!("Selected by all-code using your {upstream} login"),
     );
     if let Some(window) = inputs.context_window {
         put(
@@ -164,7 +179,7 @@ pub(crate) fn codex_document(inputs: &CodexDocument<'_>) -> Value {
     for (name, value) in CLAUDE_ONLY_FEATURES_OFF {
         put(&mut env, name, value);
     }
-    // Codex cannot return Anthropic's server-side auto-mode verdicts, but
+    // Neither upstream can return Anthropic's server-side auto-mode verdicts, but
     // Claude Code's own classifier works through this bridge. It also flattens
     // the system blocks for a non-Anthropic upstream, so ask the client to omit
     // the attribution block rather than making a conversation-specific prefix.
@@ -470,7 +485,7 @@ fn helper_command_for(
 
 /// Refuses a route alc did not mint.
 ///
-/// A route is `codex-` and twelve hex digits, or `profile:` and a profile
+/// A route is `codex-` or `ag-` and twelve hex digits, or `profile:` and a profile
 /// name. The charset of a profile name is checked by `Config::validate`,
 /// which runs on a save, in `doctor` and in the TUI - but never on
 /// `Store::load`, so a hand-edited `config.toml` carries whatever it says all
@@ -487,8 +502,8 @@ fn check_route(route: &str) -> Result<()> {
         .is_some_and(|profile| validate_profile_name(profile).is_ok());
     if !named && !valid_route_id(route) && !crate::bridge_host::files::valid_forward_id(route) {
         bail!(
-            "refusing to build an apiKeyHelper for route {route:?}: alc's routes are `codex-` and \
-             twelve hex digits, or `profile:` and a profile name of letters, numbers, '-' and '_'"
+            "refusing to build an apiKeyHelper for route {route:?}: alc's routes are `codex-` or \
+             `ag-` and twelve hex digits, or `profile:` and a profile name of letters, numbers, '-' and '_'"
         );
     }
     Ok(())
@@ -585,7 +600,7 @@ fn model_picker(models: &[ModelInfo]) -> Value {
             })
         })
         .collect();
-    // Claude's own lineup cannot be served through the Codex adapter.
+    // Claude's own lineup cannot be served through the bridge.
     json!({ "options": options, "replaceBuiltInOptions": true })
 }
 
@@ -857,6 +872,83 @@ mod tests {
             route: "codex-0123456789ab",
             helper: "HELPER".to_owned(),
         })
+    }
+
+    #[test]
+    fn an_antigravity_document_turns_every_claude_model_into_an_antigravity_family() {
+        let options = crate::antigravity::model_infos(crate::config::ContextChoice::Standard);
+        let tiers = crate::antigravity::tiers("claude-opus-5-5");
+        let document = antigravity_document(&CodexDocument {
+            model: "claude-opus-5-5",
+            options: &options,
+            context_window: Some(256_000),
+            tiers: &tiers,
+            route: "ag-0123456789ab",
+            helper: "HELPER".to_owned(),
+        });
+        let env = env(&document);
+        let value = |name: &str| env[name].as_str().unwrap_or_default().to_owned();
+        assert_eq!(
+            value("ANTHROPIC_BASE_URL"),
+            format!("{BRIDGE_ORIGIN}/r/ag-0123456789ab")
+        );
+        assert_eq!(value("ANTHROPIC_MODEL"), "claude-opus-5-5");
+        assert_eq!(value("ANTHROPIC_DEFAULT_OPUS_MODEL"), "claude-opus-5-5");
+        assert_eq!(value("ANTHROPIC_DEFAULT_SONNET_MODEL"), "claude-opus-5-5");
+        assert_eq!(value("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "gemini-3.8-flash");
+        assert_eq!(value("ANTHROPIC_SMALL_FAST_MODEL"), "gemini-3.8-flash");
+        assert_eq!(value("CLAUDE_CODE_MAX_CONTEXT_TOKENS"), "256000");
+        assert_eq!(value("CLAUDE_CODE_AUTO_MODE_SERVER"), "0");
+        assert_eq!(value("CLAUDE_CODE_DISABLE_1M_CONTEXT"), "1");
+        assert_eq!(
+            value("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
+            "claude-opus-5-5 via Antigravity"
+        );
+        assert_eq!(
+            value("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
+            "Selected by all-code using your Antigravity login"
+        );
+        let rows = document["modelPicker"]["options"].as_array().unwrap();
+        let ids: Vec<_> = rows
+            .iter()
+            .map(|row| row["model"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "gemini-4-argon",
+                "gemini-3.8-flash",
+                "gpt-oss-120b"
+            ]
+        );
+        assert_eq!(rows[2]["label"], "Gemini 4 Argon");
+        assert!(!env.keys().any(|name| name.contains("EFFORT")));
+    }
+
+    #[test]
+    fn an_antigravity_route_gets_a_helper_and_a_foreign_one_is_named_by_both_prefixes() {
+        let line = helper_command(
+            Shell::Sh,
+            Path::new("/usr/bin/alc"),
+            Path::new("/home/ada/.config/alc"),
+            "ag-0123456789ab",
+        )
+        .unwrap();
+        assert!(
+            line.ends_with("claude-credential 'ag-0123456789ab'"),
+            "{line}"
+        );
+        let error = helper_command(
+            Shell::Sh,
+            Path::new("/usr/bin/alc"),
+            Path::new("/home/ada/.config/alc"),
+            "ag-nothex",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("`codex-` or `ag-`"), "{error}");
     }
 
     /// The guideline, row by row: every model Claude Code can name lands on a
