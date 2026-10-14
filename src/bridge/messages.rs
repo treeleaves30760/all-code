@@ -2089,6 +2089,7 @@ mod tests {
                 default: "gpt-5.6-terra".to_owned(),
                 cheapest: "gpt-5.6-luna".to_owned(),
             }),
+            upstream: crate::bridge::UpstreamKind::Codex,
         };
         let request = |model: &str| -> MessagesRequest {
             serde_json::from_value(serde_json::json!({

@@ -22,7 +22,6 @@
 //! Schemas. Agents ship JSON Schema richer than Gemini's subset, so schemas
 //! are rewritten, not refused: what has a Gemini spelling gets it, the rest
 //! is dropped and reported once.
-#![allow(dead_code, reason = "wired in by Plan C Tasks 7-12")]
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 

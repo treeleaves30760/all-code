@@ -10,6 +10,7 @@
 #![allow(dead_code, reason = "wired in by Plan C Tasks 7-12")]
 
 use std::collections::VecDeque;
+use std::path::Path;
 use std::time::Duration;
 
 use axum::http::StatusCode;
@@ -17,7 +18,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 
 use super::BridgeError;
-use super::agy_auth::{AgyAuthError, AgyCredentials, AgyToken, Fingerprint};
+use super::agy_auth::{AgyAuthError, AgyCredentials, AgyLocator, AgyToken, Fingerprint};
 use super::upstream::{BODY_IDLE_TIMEOUT, SseDecoder, SseFrame};
 
 /// agy's own client identity, captured from agy 1.3.4 on 2026-10-14. Bumped
@@ -216,6 +217,39 @@ enum Attempt {
         retry_after: Option<Duration>,
     },
     Final(BridgeError),
+}
+
+/// One agy login as a bridge serves it: the transport, the signatures its
+/// answers carried (by call id), and which dropped schema keywords have
+/// already been reported.
+pub(crate) struct AgyState {
+    pub upstream: AgyUpstream,
+    pub signatures: super::gemini::SignatureCache,
+    warned: std::sync::Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl AgyState {
+    pub(crate) fn new(credential: &AgyLocator, config_dir: &Path) -> anyhow::Result<Self> {
+        Ok(Self::from_upstream(AgyUpstream::new(AgyCredentials::new(
+            credential, config_dir,
+        ))?))
+    }
+
+    pub(crate) fn from_upstream(upstream: AgyUpstream) -> Self {
+        Self {
+            upstream,
+            signatures: super::gemini::SignatureCache::new(super::gemini::SIGNATURE_CACHE_CAPACITY),
+            warned: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+        }
+    }
+
+    /// True the first time `key` is reported by this process.
+    pub(crate) fn first_warning(&self, key: &str) -> bool {
+        self.warned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.to_owned())
+    }
 }
 
 pub(crate) struct AgyUpstream {

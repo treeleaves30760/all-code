@@ -1098,6 +1098,8 @@ fn bridge_config(
         provider,
         ledger,
         claude_tiers: None,
+        // Task 11 makes this a parameter of the plan.
+        upstream: crate::bridge::UpstreamKind::Codex,
     }
 }
 

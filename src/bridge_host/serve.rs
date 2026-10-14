@@ -137,6 +137,7 @@ impl Host {
             provider: record.profile.clone(),
             ledger: Some(self.config_dir.join(crate::usage::ledger::LEDGER_FILE)),
             claude_tiers: Some(record.tiers),
+            upstream: crate::bridge::UpstreamKind::Codex,
         };
         let state = Arc::new(BridgeState::with_auth(config, login).map_err(|error| {
             BridgeError::new(

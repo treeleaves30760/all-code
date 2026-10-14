@@ -1275,6 +1275,7 @@ mod tests {
             provider: "codex".to_owned(),
             ledger: None,
             claude_tiers: None,
+            upstream: crate::bridge::UpstreamKind::Codex,
         }
     }
 

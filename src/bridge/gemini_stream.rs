@@ -8,17 +8,20 @@
 //! signs - which is where the request side looks for it again - and a call's
 //! signature is also remembered by call id for the clients that drop
 //! reasoning items.
-#![allow(dead_code, reason = "wired in by Plan C Tasks 8-12")]
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
-use super::BridgeError;
-use super::agy_upstream::{random_hex, reason as error_reason};
-use super::gemini::{LOCAL_CALL_PREFIX, SignatureCache, seal_signature};
+use super::agy_upstream::{AgyState, GeminiEvents, random_hex, reason as error_reason};
+use super::gemini::{self, LOCAL_CALL_PREFIX, SignatureCache, seal_signature};
+use super::upstream::{UpstreamFrame, UpstreamRequest, UpstreamStream};
+use super::{BridgeError, BridgeState};
+use crate::usage::observer::RequestObservation;
+use crate::usage::records::Outcome;
 
 /// Call ids minted in this process, for [`LOCAL_CALL_PREFIX`] ids.
 static MINTED_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -489,6 +492,147 @@ pub(crate) fn responses_usage(usage: &Value) -> Value {
         mapped["output_tokens_details"] = json!({"reasoning_tokens": thoughts});
     }
     mapped
+}
+
+/// A live Antigravity turn: Gemini events in, Responses frames out, each
+/// shown to the usage ledger on the way.
+///
+/// Nothing here retries. [`super::agy_upstream::AgyUpstream::stream_generate`]
+/// already has, up to the response headers; once a frame of this turn has
+/// reached a surface, a failure - a 401 included - is the client's to see,
+/// because replaying a turn it has half received would duplicate it.
+pub(crate) struct AgyStream {
+    events: GeminiEvents,
+    turn: GeminiTurn,
+    agy: Arc<AgyState>,
+    ready: VecDeque<Value>,
+    finished: bool,
+    observation: Option<RequestObservation>,
+}
+
+impl AgyStream {
+    pub(crate) fn new(
+        response: reqwest::Response,
+        wire_model: &str,
+        agy: Arc<AgyState>,
+        observation: Option<RequestObservation>,
+    ) -> Self {
+        Self {
+            events: GeminiEvents::new(response),
+            turn: GeminiTurn::new(wire_model),
+            agy,
+            ready: VecDeque::new(),
+            finished: false,
+            observation,
+        }
+    }
+
+    pub(crate) async fn next(&mut self) -> Option<Result<UpstreamFrame, BridgeError>> {
+        loop {
+            if let Some(value) = self.ready.pop_front() {
+                let raw = value.to_string();
+                if let Some(observation) = &self.observation {
+                    observation.frame_at(&raw, observation.elapsed_us());
+                }
+                return Some(
+                    serde_json::from_value(value)
+                        .map(|event| UpstreamFrame { raw, event })
+                        .map_err(|error| {
+                            BridgeError::new(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "api_error",
+                                format!(
+                                    "alc built an Antigravity event it cannot read back ({error}); \
+                                     this is an alc bug - please report it"
+                                ),
+                            )
+                        }),
+                );
+            }
+            if self.finished {
+                return None;
+            }
+            let produced = match self.events.next().await {
+                Some(Ok(event)) => self.turn.accept(&event, &self.agy.signatures),
+                Some(Err(error)) => Err(error),
+                None => {
+                    self.finished = true;
+                    self.turn.end_of_stream()
+                }
+            };
+            match produced {
+                Ok(events) => {
+                    self.ready.extend(events);
+                    if self.turn.is_finished() {
+                        self.finished = true;
+                    }
+                }
+                Err(error) => {
+                    self.finished = true;
+                    if let Some(observation) = &self.observation {
+                        observation.finish(outcome_of(&error));
+                    }
+                    return Some(Err(error));
+                }
+            }
+        }
+    }
+}
+
+fn outcome_of(error: &BridgeError) -> Outcome {
+    if error.status == StatusCode::GATEWAY_TIMEOUT {
+        Outcome::TimedOut
+    } else {
+        Outcome::Failed
+    }
+}
+
+/// Sends a translated request to Antigravity and hands back its stream.
+///
+/// `request.model` is resolved here as well, so a surface that already put
+/// the wire id there (Messages does, for its ledger row) and one that did not
+/// reach the same model.
+pub(crate) async fn send(
+    state: &BridgeState,
+    agy: &Arc<AgyState>,
+    request: UpstreamRequest,
+    observed: Option<RequestObservation>,
+) -> Result<UpstreamStream, BridgeError> {
+    let effort = request
+        .reasoning
+        .as_ref()
+        .and_then(|reasoning| reasoning.effort);
+    let opened = async {
+        let wire = gemini::wire_model(&request.model, effort, state.config.claude_tiers.as_ref())?;
+        let translated = gemini::translate(&request, &wire, &agy.signatures)?;
+        for key in &translated.dropped_schema_keys {
+            if agy.first_warning(key)
+                && let Some(observation) = &observed
+            {
+                observation.warn(&format!("antigravity: tool schema keyword `{key}` dropped"));
+            }
+        }
+        let response = agy
+            .upstream
+            .stream_generate(&wire, translated.request)
+            .await?;
+        Ok::<_, BridgeError>((wire, response))
+    }
+    .await;
+    match opened {
+        Ok((wire, response)) => Ok(UpstreamStream::antigravity(AgyStream::new(
+            response,
+            &wire,
+            Arc::clone(agy),
+            observed,
+        ))),
+        Err(error) => {
+            if let Some(observation) = &observed {
+                observation.finish(outcome_of(&error));
+            }
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
