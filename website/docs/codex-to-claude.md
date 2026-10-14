@@ -84,6 +84,30 @@ Every model but the two Lunas also offers `ultra`, which native `alc codex` can
 reach but the bridge cannot. alc clamps it to `max` and says so at launch,
 rather than letting the request be refused mid-session.
 
+## Context window
+
+Each model starts on the window Codex itself gives it: 500K tokens for GPT-6.1
+Sol, 272K for the others. Every one of them can run with up to 872K, and
+`--context max` asks for that:
+
+```sh
+alc --codex claude --context max         # this run only
+alc config upsert codex --context max    # the Codex profile's default
+```
+
+Past the standard window a turn uses your plan limits faster. OpenAI documents
+the larger window as opt-in in Codex too (`model_context_window` in Codex's own
+config), and alc keeps it opt-in the same way: `standard` is the default and is
+never written, `max` is saved as `context = "max"` on the Codex profile, and
+the [configuration TUI](./configuration.md#the-configuration-tui) has a
+**Context** row for it right after Reasoning effort.
+
+`alc models` prints both numbers — `Codex context: 500K (max 872K)` — and
+`alc doctor` adds `/ max context` to the bridge row of a profile set to it. The
+profile's choice reaches every agent on the bridge, not only Claude Code. The
+per-run `--context`, like `--effort`, belongs to `alc claude` and is refused
+off a Codex provider.
+
 ## Starting somewhere else
 
 An unconfigured session starts on GPT-6.1 Sol at `low` effort. A model or effort
@@ -92,11 +116,14 @@ you already selected on the alc profile or in your Codex config still wins.
 ```sh
 alc --codex claude --model gpt-6-luna --effort low
 alc --codex claude --model gpt-6.1-sol --effort low --save
+alc --codex claude --context max --save
 ```
 
-`--save` stores both on the provider profile. Without them a session starts on
-the profile's values, then the selected Codex profile, then the model's own
-default. Anything after `--` goes to the agent untouched and wins.
+`--save` stores the model, the effort and the context choice on the provider
+profile. Without them a session starts on the profile's values, then the
+selected Codex profile, then the model's own default; the context choice comes
+only from `--context` or the profile, and is the standard window otherwise.
+Anything after `--` goes to the agent untouched and wins.
 
 A model chosen with `/model` applies to that session only; the next launch
 starts from the profile again.
@@ -129,8 +156,8 @@ cannot happen, and the catalog bundled into the binary is a floor neither of
 them can drop below: a synced list may add models, never remove one. The sync
 runs once a day, and again as soon as Codex is upgraded.
 
-alc declares at least Codex client version `0.159.1`, the first stable bundle
-containing GPT-6.1 Sol, or your installed version if newer. This operational
+alc declares at least Codex client version `0.160.0`, the client the bundled
+catalog was captured with, or your installed version if newer. This operational
 floor is separate from the upstream model row's literal `minimal_client_version`
 of `0.153.0`; you do not need to upgrade Codex just to see the bundled model.
 
@@ -140,18 +167,23 @@ alc models --refresh
 alc models --json
 ```
 
-The synced context window reaches Claude Code as
+The window the profile chose — the model's standard one, or its maximum under
+`context = "max"` — reaches Claude Code as
 [`CLAUDE_CODE_MAX_CONTEXT_TOKENS`](https://code.claude.com/docs/en/env-vars),
 so a GPT model compacts at the real Codex limit rather than the 200k Claude
-Code assumes for an ID it does not know.
+Code assumes for an ID it does not know. The other agents get the same number
+in their own window fields, and `alc --codex --dry-run claude` shows it in the
+settings it would pass.
 
 ## Auto mode and prompt caching
 
 No setup or extra flags are needed.
 
 **Auto mode still works.** Codex cannot perform Claude Code's server-side check,
-so Claude Code uses its own classifier instead. Classifier calls go through
-Codex and consume Codex quota.
+so Claude Code uses its own classifier instead, running on the session's model.
+Classifier calls go through Codex and consume Codex quota. Every other provider
+except the `anthropic` kind works the same way — see [Auto mode on every
+provider](./providers.md#auto-mode-on-every-provider).
 
 **Prompt-cache routing is automatic.** alc keeps a Claude Code session on a
 stable Codex cache route. Reuse still needs the same prompt prefix, so changing

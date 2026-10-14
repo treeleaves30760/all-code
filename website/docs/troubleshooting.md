@@ -49,10 +49,15 @@ current.
 ## Auto mode says server-side checks are unavailable
 
 Upgrade alc and start a new session. No extra flag is needed; running background
-sessions keep their launch settings. If the message remains, check whether your
-own `--settings` overrides alc's defaults. [Auto mode and prompt
-caching](./codex-to-claude.md#auto-mode-and-prompt-caching) explains the fallback:
-Auto mode remains available, but its classifier calls use Codex quota.
+sessions keep their launch settings. On every provider but the `anthropic` kind,
+alc runs Claude Code's local classifier on the profile's model, so auto mode
+remains available and its classifier calls use that provider's quota — Codex
+quota on the bridge. If the message remains, check whether your own
+`--settings` overrides alc's defaults, for example by setting
+`ANTHROPIC_DEFAULT_SONNET_MODEL` or `CLAUDE_CODE_AUTO_MODE_SERVER`. [Auto mode
+on every provider](./providers.md#auto-mode-on-every-provider) and [Auto mode
+and prompt caching](./codex-to-claude.md#auto-mode-and-prompt-caching) explain
+the fallback.
 
 ## `CACHED` is zero or `—`
 

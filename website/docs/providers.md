@@ -81,3 +81,27 @@ Ollama, llama.cpp and vLLM each answer Anthropic Messages at their root, beside
 the OpenAI routes, so Claude Code runs on all three whichever OpenAI protocol a
 profile names for the other agents. [Local models](./local-models.md) covers
 what alc sets for each and how to keep the first turn short.
+
+## Auto mode on every provider
+
+Claude Code's auto mode checks each tool call with a classifier. Anthropic runs
+that check on its own servers, which no other provider can, so on every other
+provider alc has Claude Code run its local classifier on the profile's model:
+it pins `ANTHROPIC_DEFAULT_SONNET_MODEL` — the `sonnet` alias the classifier
+uses — to that model and sets `CLAUDE_CODE_AUTO_MODE_SERVER=0` to skip the
+server attempt. Auto mode then works on OpenRouter, DeepSeek, a custom endpoint
+or anything else Claude Code can reach, and its classifier calls spend that
+provider's quota. `/model sonnet` names the profile's model too.
+
+Three things are left alone:
+
+- The `anthropic` kind — your own Claude login or API key — keeps Anthropic's
+  server-side check and its alias table.
+- A profile whose model is itself a Claude Code alias, such as `sonnet` or
+  `opus`, is not pinned: Claude Code would send that alias verbatim as the
+  model's name.
+- A `--settings` of your own that names `ANTHROPIC_DEFAULT_SONNET_MODEL` still
+  wins over alc's.
+
+The [Codex bridge](./codex-to-claude.md#auto-mode-and-prompt-caching) and local
+servers already worked this way.

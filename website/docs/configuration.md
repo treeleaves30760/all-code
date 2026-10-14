@@ -95,6 +95,9 @@ The keys are shown at the bottom of every screen. The primary controls are:
 - Arrow keys: navigate fields and cycle choices, including reasoning effort.
 - On a Codex profile, `←`/`→` on the Model field opens the guided GPT model and
   effort chooser, which writes the launch defaults for `alc --codex claude`.
+- On a Codex profile, `←`/`→` on the Context row, right after Reasoning effort,
+  switches between the model's `standard` window and its `max` one; other kinds
+  show `codex only` there.
 - `s`: save; `q`: save and quit; `Ctrl+C`: quit without saving.
 
 ## Scripting commands
@@ -111,9 +114,14 @@ alc config remove work
 ```
 
 `alc config upsert` accepts `--kind`, `--model`, `--effort`, `--clear-effort`,
-`--small-model`, `--base-url`, `--anthropic-base-url`, `--protocol`, `--auth`,
-`--api-key-env`, `--codex-profile`, `--codex-home`, `--claude-config-dir`,
-`--disable`, and `--enable`.
+`--context`, `--small-model`, `--base-url`, `--anthropic-base-url`,
+`--protocol`, `--auth`, `--api-key-env`, `--codex-profile`, `--codex-home`,
+`--claude-config-dir`, `--disable`, and `--enable`.
+
+`--context standard|max` belongs to a `codex` profile and is refused on any
+other kind. `max` is saved as `context = "max"`; `standard` is the default and
+is never written. Past the standard window a turn uses plan limits faster —
+[Context window](./codex-to-claude.md#context-window) has the numbers.
 
 ## Several logins of one kind
 
@@ -206,9 +214,12 @@ that covers the Codex login and local runtimes such as Ollama.
 
 ## Setting precedence for Codex-to-Claude
 
-1. This run's `--model` / `--effort`
+1. This run's `--model` / `--effort` / `--context`
 2. The alc provider profile
 3. `<codex_home>/<profile>.config.toml`, then `<codex_home>/config.toml` —
    where `codex_home` is the profile's field, else `CODEX_HOME`, else
    `~/.codex`
 4. The model catalog's documented default
+
+The context choice stops at step 2: with neither `--context` nor
+`context = "max"` on the profile, a session gets the model's standard window.
