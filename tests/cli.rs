@@ -132,9 +132,13 @@ fn the_fake_server_reader_waits_for_a_late_request_on_an_inherited_nonblocking_a
 /// side shut, then anything the client still sends read off until it hangs
 /// up, so no byte is left unread when the socket goes - on Windows that
 /// would turn the close into a reset.
-fn respond(mut stream: std::net::TcpStream, status: &str, body: &str) {
+fn respond(stream: std::net::TcpStream, status: &str, body: &str) {
+    respond_as(stream, status, "application/json", body);
+}
+
+fn respond_as(mut stream: std::net::TcpStream, status: &str, content_type: &str, body: &str) {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes());
@@ -257,6 +261,187 @@ fn serve_llamacpp() -> String {
         }
     });
     format!("http://{address}/v1")
+}
+
+/// Each request's model, and whether it was the auto-mode classifier's.
+type RecordedModels = std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>;
+
+/// A stand-in Anthropic Messages endpoint for a real Claude Code in auto
+/// mode. Its first turn asks for one Bash call auto mode will not allow on
+/// its own, so the classifier runs; the classifier - the request whose system
+/// prompt is Claude Code's security monitor - is answered `<block>no</block>`,
+/// the allow verdict that prompt asks for; any other turn ends with `done`.
+/// It serves until the test process exits.
+fn serve_recording_anthropic() -> (String, RecordedModels) {
+    use serde_json::{Value, json};
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Anthropic");
+    let address = listener.local_addr().expect("fake Anthropic address");
+    let models = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = models.clone();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let recorded = recorded.clone();
+            // One thread per connection: `respond` waits for the client to hang
+            // up, and Claude Code may already be sending its next request.
+            thread::spawn(move || {
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .expect("a bounded read");
+                let request = read_request(&mut stream);
+                let body = request.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+                let body: Value = serde_json::from_str(body).unwrap_or_default();
+                // Anything without a model - a model listing, say - gets an empty one.
+                let Some(model) = body["model"].as_str() else {
+                    respond(stream, "200 OK", r#"{"data":[],"has_more":false}"#);
+                    return;
+                };
+                let classifier = body["system"].to_string().contains("security monitor");
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((model.to_owned(), classifier));
+                let offers_bash = body["tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "Bash"));
+                let (block, stop) = if classifier {
+                    (
+                        json!({"type":"text","text":"<block>no</block>"}),
+                        "end_turn",
+                    )
+                } else if offers_bash && !request.contains(r#""tool_result""#) {
+                    let input = json!({"command":"curl -s -o probe.html https://example.com","description":"probe"});
+                    (
+                        json!({"type":"tool_use","id":"toolu_probe","name":"Bash","input":input}),
+                        "tool_use",
+                    )
+                } else {
+                    (json!({"type":"text","text":"done"}), "end_turn")
+                };
+                if body["stream"] != true {
+                    let message = json!({"id":"msg_probe","type":"message","role":"assistant","model":model,
+                        "content":[block],"stop_reason":stop,"stop_sequence":null,
+                        "usage":{"input_tokens":10,"output_tokens":5}});
+                    respond(stream, "200 OK", &message.to_string());
+                    return;
+                }
+                let (opening, delta) = if block["type"] == "tool_use" {
+                    let mut opening = block.clone();
+                    opening["input"] = json!({});
+                    let delta = json!({"type":"input_json_delta","partial_json":block["input"].to_string()});
+                    (opening, delta)
+                } else {
+                    let delta = json!({"type":"text_delta","text":block["text"]});
+                    (json!({"type":"text","text":""}), delta)
+                };
+                let events = [
+                    json!({"type":"message_start","message":{"id":"msg_probe","type":"message",
+                        "role":"assistant","model":model,"content":[],"stop_reason":null,
+                        "stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}),
+                    json!({"type":"content_block_start","index":0,"content_block":opening}),
+                    json!({"type":"content_block_delta","index":0,"delta":delta}),
+                    json!({"type":"content_block_stop","index":0}),
+                    json!({"type":"message_delta","delta":{"stop_reason":stop,"stop_sequence":null},
+                        "usage":{"output_tokens":5}}),
+                    json!({"type":"message_stop"}),
+                ];
+                let stream_body: String = events
+                    .iter()
+                    .map(|event| {
+                        format!(
+                            "event: {}\ndata: {event}\n\n",
+                            event["type"].as_str().unwrap()
+                        )
+                    })
+                    .collect();
+                respond_as(stream, "200 OK", "text/event-stream", &stream_body);
+            });
+        }
+    });
+    (format!("http://{address}"), models)
+}
+
+/// Auto mode on a provider that is not Anthropic: the classifier must ask
+/// for the profile's model, not Claude Code's own `claude-sonnet-5`.
+#[test]
+#[ignore = "needs a real `claude` on PATH; run with --ignored"]
+fn auto_mode_classifies_on_the_profiles_model_through_a_custom_provider() {
+    if which::which("claude").is_err() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (base_url, models) = serve_recording_anthropic();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "probe",
+            "--kind",
+            "custom",
+            "--protocol",
+            "anthropic",
+            "--base-url",
+            &base_url,
+            "--model",
+            "fake-model",
+            "--api-key-env",
+            "PROBE_KEY",
+        ])
+        .assert()
+        .success();
+    // Past onboarding, with auto mode's consent already given.
+    let claude_config = tempfile::tempdir().unwrap();
+    std::fs::write(
+        claude_config.path().join(".claude.json"),
+        r#"{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":true,"autoModeAccepted":true}"#,
+    )
+    .unwrap();
+    // Where the Bash call writes its probe.html.
+    let workdir = tempfile::tempdir().unwrap();
+    let mut command = alc(&temp);
+    // This suite may itself run under Claude Code; nothing of that session
+    // may reach the one under test.
+    for (name, _) in std::env::vars_os() {
+        let upper = name.to_string_lossy().to_ascii_uppercase();
+        if upper.starts_with("CLAUDE") || upper.starts_with("ANTHROPIC") {
+            command.env_remove(name);
+        }
+    }
+    command
+        .current_dir(workdir.path())
+        .env("CLAUDE_CONFIG_DIR", claude_config.path())
+        .env("PROBE_KEY", "k")
+        .args([
+            "-p",
+            "probe",
+            "claude",
+            "--",
+            "-p",
+            "run echo with Bash",
+            "--permission-mode",
+            "auto",
+            "--output-format",
+            "json",
+            "--max-turns",
+            "3",
+        ])
+        // Claude Code's own start-up takes seconds; still a deadline.
+        .timeout(std::time::Duration::from_secs(120))
+        .assert()
+        .success();
+    let seen = models.lock().unwrap();
+    assert!(
+        seen.iter().any(|(_, classifier)| *classifier),
+        "the classifier never ran: {seen:?}"
+    );
+    // The classifier included: every request names the profile's model, so
+    // none falls back to a `claude-*` one the provider does not serve.
+    assert!(
+        seen.iter().all(|(model, _)| model == "fake-model"),
+        "{seen:?}"
+    );
 }
 
 fn llamacpp_profile(temp: &tempfile::TempDir, base_url: &str, key: Option<&str>) {
