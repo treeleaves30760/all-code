@@ -11,6 +11,7 @@
 #![allow(dead_code, reason = "wired in by Plan C Tasks 8-12")]
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -18,6 +19,9 @@ use serde_json::{Value, json};
 use super::BridgeError;
 use super::agy_upstream::{random_hex, reason as error_reason};
 use super::gemini::{LOCAL_CALL_PREFIX, SignatureCache, seal_signature};
+
+/// Call ids minted in this process, for [`LOCAL_CALL_PREFIX`] ids.
+static MINTED_CALLS: AtomicU64 = AtomicU64::new(0);
 
 enum Open {
     Message {
@@ -120,10 +124,14 @@ impl GeminiTurn {
                 self.finish_reason = Some(reason.to_owned());
             }
         }
-        if let Some(usage) = event.get("usageMetadata").filter(|usage| usage.is_object()) {
+        let usage = event.get("usageMetadata").filter(|usage| usage.is_object());
+        if let Some(usage) = usage {
             self.usage = Some(usage.clone());
         }
-        if self.finish_reason.is_some() && self.usage.is_some() {
+        // Only counts sent with the finish, or after it, are the turn's
+        // final ones; a finish without them waits for the next counts or the
+        // end of the stream.
+        if self.finish_reason.is_some() && usage.is_some() {
             self.terminate(&mut out);
         }
         Ok(out)
@@ -250,14 +258,18 @@ impl GeminiTurn {
                     "Antigravity sent a tool call with no name",
                 )
             })?;
-        // Minted ids are random, not counted: the signature cache is keyed by
-        // the call id alone and outlives this turn.
+        // The signature cache is keyed by the call id alone and outlives
+        // this turn: the counter keeps minted ids unique in this process
+        // whatever the randomness did, the random tail across restarts.
         let call_id = call
             .get("id")
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty())
             .map_or_else(
-                || format!("{LOCAL_CALL_PREFIX}{}", random_hex(12)),
+                || {
+                    let n = MINTED_CALLS.fetch_add(1, Ordering::Relaxed);
+                    format!("{LOCAL_CALL_PREFIX}{n}_{}", random_hex(8))
+                },
                 str::to_owned,
             );
         if !self.seen_calls.insert(call_id.clone()) {
@@ -344,8 +356,12 @@ impl GeminiTurn {
         } else {
             json!([{"type": "summary_text", "text": text}])
         };
+        // An unsigned thought carries an empty `encrypted_content`, never
+        // null: clients replay the item, and the request side reads "" as
+        // unsigned.
+        let encrypted = sealed.as_deref().unwrap_or("");
         out.push(json!({"type": "response.output_item.done", "output_index": index,
-            "item": {"type": "reasoning", "id": id, "summary": summary, "encrypted_content": sealed}}));
+            "item": {"type": "reasoning", "id": id, "summary": summary, "encrypted_content": encrypted}}));
         // A signature-only thought signs what follows it, as on the request
         // side; one that came with text stays on its thought.
         if text.is_empty() && sealed.is_some() {
@@ -514,11 +530,11 @@ pub(crate) mod tests {
             .filter_map(|event| {
                 let item = &event["item"];
                 match item["type"].as_str()? {
-                    "reasoning" => Some(InputItem::Reasoning {
-                        id: item["id"].as_str()?.to_owned(),
-                        summary: item["summary"].as_array().cloned().unwrap_or_default(),
-                        encrypted_content: item["encrypted_content"].as_str()?.to_owned(),
-                    }),
+                    // As a client replays it: the item itself, through serde.
+                    "reasoning" => Some(
+                        serde_json::from_value(item.clone())
+                            .unwrap_or_else(|error| panic!("{item}: {error}")),
+                    ),
                     "function_call" => Some(InputItem::FunctionCall {
                         id: item["id"].as_str().map(str::to_owned),
                         call_id: item["call_id"].as_str()?.to_owned(),
@@ -870,7 +886,13 @@ pub(crate) mod tests {
             .unwrap();
             the_call(&events)["call_id"].as_str().unwrap().to_owned()
         };
-        assert_ne!(call(), call());
+        let (first, second) = (call(), call());
+        assert_ne!(first, second);
+        for id in [&first, &second] {
+            let (n, tail) = id.strip_prefix("ag_").unwrap().split_once('_').unwrap();
+            assert!(n.parse::<u64>().is_ok(), "{id}");
+            assert_eq!(tail.len(), 16, "{id}");
+        }
     }
 
     #[test]
@@ -944,6 +966,128 @@ pub(crate) mod tests {
             signatures.recall("c3").as_deref(),
             Some("agy1:gemini-3.8-flash-low:S3")
         );
+    }
+
+    /// Gemini above LOW streams thought text unsigned (the signature rides
+    /// the call after it). The client replays that reasoning item: it must
+    /// parse, and alc then replays the turn with no signature invented.
+    #[test]
+    fn unsigned_thought_text_round_trips_and_is_replayed_unsigned() {
+        let events = run(&[event(
+            json!([{"text": "Pondering.", "thought": true}, {"text": "Sunny."}]),
+            Some("STOP"),
+            Some(json!({})),
+        )])
+        .unwrap();
+        let reasoning = done_items(&events)
+            .into_iter()
+            .find(|item| item["type"] == "reasoning")
+            .unwrap();
+        assert_eq!(reasoning["encrypted_content"], "");
+        let item: InputItem = serde_json::from_value(reasoning).unwrap();
+        assert!(
+            matches!(&item, InputItem::Reasoning { encrypted_content, .. } if encrypted_content.is_empty()),
+            "{item:?}"
+        );
+        // A client that leaves the field out entirely is read the same way.
+        let bare: InputItem =
+            serde_json::from_value(json!({"type": "reasoning", "id": "rs_0", "summary": []}))
+                .unwrap();
+        assert!(
+            matches!(&bare, InputItem::Reasoning { encrypted_content, .. } if encrypted_content.is_empty()),
+            "{bare:?}"
+        );
+        let wire = "claude-sonnet-5-5-low";
+        let mut input = weather_turn();
+        input.extend(items_from(&events));
+        input.push(InputItem::Message {
+            role: "user".to_owned(),
+            content: vec![crate::bridge::upstream::ContentPart::InputText {
+                text: "And tomorrow?".to_owned(),
+            }],
+        });
+        let replayed = translate(&request(wire, input), wire, &SignatureCache::new(8))
+            .unwrap()
+            .request;
+        let text = replayed.to_string();
+        assert!(!text.contains("thoughtSignature"), "{text}");
+        // Task 6 drops an unsigned reasoning item rather than forging one;
+        // the turn's own text is what replays.
+        assert!(!text.contains("Pondering."), "{text}");
+        assert_eq!(
+            replayed["contents"][1],
+            json!({"role": "model", "parts": [{"text": "Sunny."}]})
+        );
+    }
+
+    #[test]
+    fn counts_sent_after_the_finish_are_the_ones_reported() {
+        let signatures = SignatureCache::new(8);
+        let mut turn = GeminiTurn::new("claude-sonnet-5-5-low");
+        let early = json!({"promptTokenCount": 5, "candidatesTokenCount": 1});
+        let first = turn
+            .accept(
+                &event(json!([{"text": "a"}]), None, Some(early.clone())),
+                &signatures,
+            )
+            .unwrap();
+        let finish = turn
+            .accept(
+                &event(json!([{"text": "b"}]), Some("STOP"), None),
+                &signatures,
+            )
+            .unwrap();
+        assert!(!kinds(&first).contains(&"response.completed".to_owned()));
+        assert!(
+            !kinds(&finish).contains(&"response.completed".to_owned()),
+            "{finish:#?}"
+        );
+        assert!(!turn.is_finished());
+        let counts = json!({"usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 9}});
+        let last = turn.accept(&counts, &signatures).unwrap();
+        let completed = last.last().unwrap();
+        assert_eq!(completed["type"], "response.completed");
+        assert_eq!(completed["response"]["usage"]["output_tokens"], 9);
+        assert!(turn.is_finished());
+        // With no later counts, the end of the stream settles on the earlier.
+        let events = run(&[
+            event(json!([{"text": "a"}]), None, Some(early)),
+            event(json!([{"text": "b"}]), Some("STOP"), None),
+        ])
+        .unwrap();
+        let completed = events.last().unwrap();
+        assert_eq!(completed["type"], "response.completed");
+        assert_eq!(completed["response"]["usage"]["output_tokens"], 1);
+    }
+
+    /// The captured text-only Flash turn: its closing signed empty part
+    /// becomes the last item, and only the terminal event follows it.
+    #[test]
+    fn the_captured_flash_text_turn_ends_on_its_sealed_signature() {
+        let signatures = SignatureCache::new(8);
+        let events = replay_events(
+            &fixtures::antigravity("flash-tool-replay.sse"),
+            "gemini-3.8-flash-low",
+            &signatures,
+        );
+        let dones = done_items(&events);
+        assert_eq!(dones.len(), 2, "{dones:#?}");
+        assert_eq!(dones[0]["type"], "message");
+        let said = dones[0]["content"][0]["text"].as_str().unwrap();
+        assert!(said.starts_with("Sunny,"), "{said}");
+        assert_eq!(dones[1]["type"], "reasoning");
+        assert_eq!(dones[1]["summary"], json!([]));
+        assert_eq!(
+            dones[1]["encrypted_content"],
+            "agy1:gemini-3.8-flash-low:sig-flash-2"
+        );
+        let position = events
+            .iter()
+            .position(|e| {
+                e["type"] == "response.output_item.done" && e["item"]["type"] == "reasoning"
+            })
+            .unwrap();
+        assert_eq!(kinds(&events[position + 1..]), ["response.completed"]);
     }
 
     #[test]

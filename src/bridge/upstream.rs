@@ -274,6 +274,8 @@ pub(crate) enum InputItem {
         id: String,
         #[serde(default)]
         summary: Vec<Value>,
+        /// Empty, or absent, for an unsigned reasoning item.
+        #[serde(default)]
         encrypted_content: String,
     },
 }
