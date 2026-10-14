@@ -1075,11 +1075,11 @@ pub(crate) fn hub_cannot_carry(hub_alc: &str, hub_pid: u32, spec: &LaunchSpec) -
         return None;
     }
     Some(format!(
-        "this session needs alc's own wiring for the agent (the Codex adapter or Claude Code's \
-         settings), and the hub that would run it is alc {hub_alc} \
-         (pid {hub_pid}) while this is alc {ours}; an older hub drops what it does not recognise \
-         and would launch the agent with no adapter behind it. Run `alc hub stop` and retry, or \
-         `--no-share` to run this one outside the hub"
+        "this session needs alc's own wiring for the agent (the translation bridge to the Codex \
+         or Antigravity login, or Claude Code's settings), and the hub that would run it is alc \
+         {hub_alc} (pid {hub_pid}) while this is alc {ours}; an older hub drops what it does not \
+         recognise and would launch the agent with no bridge behind it. Run `alc hub stop` and \
+         retry, or `--no-share` to run this one outside the hub"
     ))
 }
 

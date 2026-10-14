@@ -1130,6 +1130,40 @@ mod live_tests {
         }
     }
 
+    /// Points every login the usage report would read at an empty
+    /// directory of the test's own, so the report never reads the machine's
+    /// Codex, Claude or agy login, nor asks a vendor about one. The hub reads
+    /// no `CODEX_HOME` (`Env::hub_safe`), so the profiles pin their account
+    /// directories instead; agy's login has no per-profile pin, so its profile
+    /// is off, and the keyring is off for the process in any case.
+    fn isolate_usage(harness: &Harness) -> tempfile::TempDir {
+        crate::bridge::agy_auth::test_support::without_system_keyring();
+        let accounts = tempfile::tempdir().unwrap();
+        let codex_home = accounts.path().join("codex");
+        let claude_dir = accounts.path().join("claude");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        let mut store =
+            crate::config::Store::load(Some(harness._config.path().to_path_buf())).unwrap();
+        for provider in store.config.providers.values_mut() {
+            match provider.kind {
+                crate::config::ProviderKind::Codex => {
+                    provider.codex_home = Some(codex_home.to_string_lossy().into_owned());
+                }
+                crate::config::ProviderKind::Anthropic => {
+                    provider.claude_config_dir = Some(claude_dir.to_string_lossy().into_owned());
+                    provider.api_key_env = None;
+                }
+                // An API key read from the environment would be asked
+                // about at the vendor.
+                _ => provider.enabled = false,
+            }
+        }
+        store.save().unwrap();
+        accounts
+    }
+
     /// Sends a raw request and returns the whole response.
     fn request(address: SocketAddr, head: &str) -> String {
         let mut stream = TcpStream::connect(address).unwrap();
@@ -1201,6 +1235,7 @@ mod live_tests {
     #[test]
     fn the_usage_route_needs_a_token_and_answers_both_grades() {
         let harness = harness();
+        let _accounts = isolate_usage(&harness);
         let ask = |token: Option<&str>| {
             let authorization = match token {
                 Some(token) => format!("Authorization: Bearer {token}\r\n"),

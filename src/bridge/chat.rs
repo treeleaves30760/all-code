@@ -495,7 +495,7 @@ fn content_parts(
                     }
                     Some(other) => {
                         return Err(BridgeError::invalid(format!(
-                            "'{param}.type' is {other:?}; Codex takes text and image_url parts"
+                            "'{param}.type' is {other:?}; alc's bridge takes text and image_url parts"
                         )));
                     }
                     None => {

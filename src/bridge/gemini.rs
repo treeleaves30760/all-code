@@ -608,6 +608,7 @@ fn convert(
     }
     let mut out = Map::new();
     let mut format = None;
+    let mut choices = None;
     for (key, value) in object {
         match key.as_str() {
             "type" => apply_type(value, &mut out),
@@ -641,12 +642,16 @@ fn convert(
                     out.insert("anyOf".to_owned(), Value::Array(converted));
                 }
             }
-            "const" => {
-                out.insert("enum".to_owned(), json!([value]));
+            // `const` is the one value allowed, and outranks an `enum`.
+            "const" => choices = Some(vec![value.clone()]),
+            "enum" => {
+                if !object.contains_key("const") {
+                    choices = Some(value.as_array().cloned().unwrap_or_default());
+                }
             }
             "format" => format = Some(value),
-            "required" | "enum" | "description" | "nullable" | "minimum" | "maximum"
-            | "minItems" | "maxItems" => {
+            "required" | "description" | "nullable" | "minimum" | "maximum" | "minItems"
+            | "maxItems" => {
                 out.insert(key.clone(), value.clone());
             }
             silent if SILENTLY_DROPPED.contains(&silent) => {}
@@ -654,6 +659,11 @@ fn convert(
                 dropped.insert(other.to_owned());
             }
         }
+    }
+    // Before `format`: a list that is not all strings turns the node into a
+    // STRING, and the format is then judged on that.
+    if let Some(choices) = choices {
+        apply_choices(choices, &mut out, dropped);
     }
     // Judged after the loop: `type` may come after `format` in the object.
     if let Some(format) = format {
@@ -668,6 +678,40 @@ fn convert(
         }
     }
     Value::Object(out)
+}
+
+/// Code Assist's Schema `enum` is a list of strings, and anything else in
+/// it draws a 400 on every turn. A boolean or a number goes as its text on a
+/// STRING node, a `null` becomes `nullable`, and a list left empty is
+/// dropped and reported as `enum`. A list of strings is sent as it came.
+fn apply_choices(
+    choices: Vec<Value>,
+    out: &mut Map<String, Value>,
+    dropped: &mut BTreeSet<String>,
+) {
+    let mut all_strings = true;
+    let mut strings = Vec::with_capacity(choices.len());
+    for choice in choices {
+        match choice {
+            Value::String(text) => strings.push(Value::String(text)),
+            Value::Null => {
+                all_strings = false;
+                out.insert("nullable".to_owned(), json!(true));
+            }
+            other => {
+                all_strings = false;
+                strings.push(Value::String(other.to_string()));
+            }
+        }
+    }
+    if !all_strings {
+        out.insert("type".to_owned(), json!("STRING"));
+    }
+    if strings.is_empty() {
+        dropped.insert("enum".to_owned());
+    } else {
+        out.insert("enum".to_owned(), Value::Array(strings));
+    }
 }
 
 fn apply_type(value: &Value, out: &mut Map<String, Value>) {
@@ -951,6 +995,63 @@ pub(crate) mod tests {
                 "minLength".to_owned(),
                 "pattern".to_owned()
             ])
+        );
+    }
+
+    /// Code Assist's `enum` is a list of strings: any other value is sent as
+    /// its text, on a STRING, and a `null` becomes `nullable`.
+    #[test]
+    fn enum_and_const_values_reach_code_assist_as_strings() {
+        let translated = |schema: Value| {
+            let mut dropped = BTreeSet::new();
+            let out = translate_schema(
+                &json!({"type": "object", "properties": {"x": schema}}),
+                &mut dropped,
+            );
+            (out["properties"]["x"].clone(), dropped)
+        };
+        let nothing = BTreeSet::new();
+
+        assert_eq!(
+            translated(json!({"const": true, "description": "On"})),
+            (
+                json!({"type": "STRING", "enum": ["true"], "description": "On"}),
+                nothing.clone()
+            )
+        );
+        assert_eq!(
+            translated(json!({"type": "integer", "enum": [1, 5]})),
+            (
+                json!({"type": "STRING", "enum": ["1", "5"]}),
+                nothing.clone()
+            )
+        );
+        assert_eq!(
+            translated(json!({"enum": ["a", null]})),
+            (
+                json!({"type": "STRING", "enum": ["a"], "nullable": true}),
+                nothing.clone()
+            )
+        );
+        // Strings alone are left exactly as they were.
+        assert_eq!(
+            translated(json!({"type": "string", "enum": ["a", "b"]})),
+            (
+                json!({"type": "STRING", "enum": ["a", "b"]}),
+                nothing.clone()
+            )
+        );
+        assert_eq!(
+            translated(json!({"const": "fast"})),
+            (json!({"enum": ["fast"]}), nothing.clone())
+        );
+        // A list with nothing left in it is dropped, and said to be.
+        assert_eq!(
+            translated(json!({"const": null})),
+            (
+                json!({"type": "STRING", "nullable": true}),
+                BTreeSet::from(["enum".to_owned()])
+            )
         );
     }
 

@@ -973,14 +973,16 @@ fn run_claude(
         }
         let overrides = antigravity_launch_overrides(&provider, args.model.as_deref(), args.effort);
         if args.save {
-            // The command that saves exactly what this run resolved to.
+            // The command that saves exactly what this run resolved to. The
+            // model is the wire id of the rung it runs, which `alc agy` takes
+            // as well as the bridge: agy lists wire ids only.
             let start =
                 crate::agents::claude::antigravity_start(&profile_name, &provider, &overrides)?;
             bail!(
                 "--save is available with a Codex provider; save these as the antigravity \
                  profile's defaults with `alc config upsert {profile_name} --model {} --effort {} \
                  --context {}`",
-                start.family.id,
+                crate::antigravity::wire_model_for(&start.family.id, Some(start.effort)),
                 start.effort,
                 provider.context
             );

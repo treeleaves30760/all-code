@@ -729,9 +729,14 @@ impl EditForm {
                 let next = (index as isize + delta).rem_euclid(choices.len() as isize);
                 self.provider.reasoning_effort = choices[next as usize];
             }
-            // Only a Codex profile may leave the standard window; elsewhere
-            // the row is shown but holds still.
-            row if row == self.context_row() && self.provider.kind == ProviderKind::Codex => {
+            // Only a Codex or Antigravity profile may leave the standard
+            // window; elsewhere the row is shown but holds still.
+            row if row == self.context_row()
+                && matches!(
+                    self.provider.kind,
+                    ProviderKind::Codex | ProviderKind::Antigravity
+                ) =>
+            {
                 let index = ContextChoice::ALL
                     .iter()
                     .position(|context| *context == self.provider.context)
@@ -842,10 +847,13 @@ impl EditForm {
             (
                 "Context",
                 self.provider.context.to_string(),
-                if self.provider.kind == ProviderKind::Codex {
+                if matches!(
+                    self.provider.kind,
+                    ProviderKind::Codex | ProviderKind::Antigravity
+                ) {
                     "←/→"
                 } else {
-                    "codex only"
+                    "codex/antigravity only"
                 },
             ),
             (
@@ -1825,18 +1833,42 @@ mod tests {
         assert_eq!(fields[form.context_row()].2, "←/→");
     }
 
-    /// Only a Codex profile may leave the standard window, so on any other
-    /// kind the row is shown but cannot be changed.
+    /// An Antigravity profile may open its family's maximum window too, as
+    /// `alc config upsert --context` lets it.
     #[test]
-    fn the_context_row_is_read_only_off_codex() {
+    fn context_cycles_between_standard_and_max_on_an_antigravity_profile() {
+        let mut form = EditForm::existing(
+            "antigravity".to_owned(),
+            Provider::for_kind(ProviderKind::Antigravity),
+            false,
+        );
+        form.selected = form.context_row();
+        assert_eq!(form.fields()[form.context_row()].2, "←/→");
+        assert_eq!(form.provider.context, ContextChoice::Standard);
+        form.cycle(1);
+        assert_eq!(form.provider.context, ContextChoice::Max);
+        form.cycle(1);
+        assert_eq!(form.provider.context, ContextChoice::Standard);
+        form.cycle(-1);
+        assert_eq!(form.provider.context, ContextChoice::Max);
+    }
+
+    /// Only a Codex or Antigravity profile may leave the standard window, so
+    /// on any other kind the row is shown but cannot be changed.
+    #[test]
+    fn the_context_row_is_read_only_off_codex_and_antigravity() {
         let mut form = EditForm::new("test".to_owned());
         assert_ne!(form.provider.kind, ProviderKind::Codex);
+        assert_ne!(form.provider.kind, ProviderKind::Antigravity);
         form.selected = form.context_row();
         form.cycle(1);
         assert_eq!(form.provider.context, ContextChoice::Standard);
         form.cycle(-1);
         assert_eq!(form.provider.context, ContextChoice::Standard);
-        assert_eq!(form.fields()[form.context_row()].2, "codex only");
+        assert_eq!(
+            form.fields()[form.context_row()].2,
+            "codex/antigravity only"
+        );
     }
 
     /// Every row the form draws is one the cursor can reach, and no further.

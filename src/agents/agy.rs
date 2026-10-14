@@ -5,6 +5,10 @@
 //! binary, the profile's model and effort as agy's own `--model` and
 //! `--effort` flags, and whatever the user passed through.
 //!
+//! agy lists wire ids (`claude-opus-5-5-high`) only, while a profile may hold
+//! a bare family id (`claude-opus-5-5`), which the bridge reads too; a family
+//! id is sent as the wire id for the effort this run resolves to.
+//!
 //! agy's `--effort` takes `low|medium|high|xhigh|max`, the same spellings
 //! alc's [`ReasoningEffort`] uses, minus `ultra`.
 
@@ -17,7 +21,9 @@ use crate::launch::{LaunchOverrides, LaunchSpec, has_option};
 
 /// The model is this run's override, else the profile's; the effort the
 /// same. A `--model` or `--effort` the user passed through outranks both,
-/// and alc then sends no flag of its own rather than a second one.
+/// and alc then sends no flag of its own rather than a second one. A bare
+/// family id becomes its wire id for that effort; a wire id, or a model alc
+/// does not know, is sent as it is.
 pub(crate) fn build(
     spec: &mut LaunchSpec,
     provider: &Provider,
@@ -28,14 +34,20 @@ pub(crate) fn build(
         bail!("the Antigravity CLI runs only on an antigravity profile");
     }
 
+    let effort = overrides.reasoning_effort.or(provider.reasoning_effort);
     let model = overrides.model.as_deref().unwrap_or(&provider.model).trim();
     if !model.is_empty() && !has_option(passthrough, "--model", "--model") {
+        let model = if crate::antigravity::family(model).is_some() {
+            crate::antigravity::wire_model_for(model, effort)
+        } else {
+            model.to_owned()
+        };
         spec.args.push("--model".into());
         spec.args.push(model.into());
     }
 
     if !has_option(passthrough, "--effort", "--effort")
-        && let Some(effort) = overrides.reasoning_effort.or(provider.reasoning_effort)
+        && let Some(effort) = effort
     {
         let clamped = clamp_for_agy(effort);
         if clamped != effort {
@@ -189,6 +201,66 @@ mod tests {
         assert_eq!(
             spec.args,
             args(&["--model", "claude-opus-5-5-high", "--effort", "max"])
+        );
+    }
+
+    /// agy lists wire ids only, so a profile saved on a bare family id
+    /// reaches it as the wire id for the profile's effort.
+    #[test]
+    fn a_family_id_reaches_agy_as_the_wire_id_for_its_effort() {
+        let (mut spec, mut provider) = antigravity();
+        provider.model = "claude-opus-5-5".to_owned();
+        provider.reasoning_effort = Some(ReasoningEffort::Low);
+        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        assert_eq!(
+            spec.args,
+            args(&["--model", "claude-opus-5-5-low", "--effort", "low"])
+        );
+
+        // No effort is agy's own default rung, medium.
+        let (mut spec, mut provider) = antigravity();
+        provider.model = "gemini-3.8-flash".to_owned();
+        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        assert_eq!(spec.args, args(&["--model", "gemini-3.8-flash-medium"]));
+    }
+
+    #[test]
+    fn a_family_id_given_for_this_run_is_mapped_with_this_runs_effort() {
+        let (mut spec, mut provider) = antigravity();
+        provider.reasoning_effort = Some(ReasoningEffort::Low);
+        let overrides = LaunchOverrides {
+            model: Some("gemini-3.8-flash".to_owned()),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            ..LaunchOverrides::default()
+        };
+        build(&mut spec, &provider, &[], &overrides).unwrap();
+        assert_eq!(
+            spec.args,
+            args(&["--model", "gemini-3.8-flash-high", "--effort", "max"])
+        );
+    }
+
+    #[test]
+    fn a_wire_id_reaches_agy_unchanged() {
+        let (mut spec, mut provider) = antigravity();
+        provider.model = "gemini-3.8-flash-low".to_owned();
+        provider.reasoning_effort = Some(ReasoningEffort::High);
+        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        assert_eq!(
+            spec.args,
+            args(&["--model", "gemini-3.8-flash-low", "--effort", "high"])
+        );
+    }
+
+    #[test]
+    fn an_unknown_model_reaches_agy_unchanged() {
+        let (mut spec, mut provider) = antigravity();
+        provider.model = "gemini-9-preview".to_owned();
+        provider.reasoning_effort = Some(ReasoningEffort::Low);
+        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        assert_eq!(
+            spec.args,
+            args(&["--model", "gemini-9-preview", "--effort", "low"])
         );
     }
 

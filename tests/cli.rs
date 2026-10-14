@@ -1453,7 +1453,7 @@ fn antigravity_claude_takes_the_larger_window_on_context_max() {
         .failure()
         .stderr(predicate::str::contains("--save"))
         .stderr(predicate::str::contains(
-            "`alc config upsert antigravity --model gemini-3.8-flash --effort low --context max`",
+            "`alc config upsert antigravity --model gemini-3.8-flash-low --effort low --context max`",
         ));
 }
 
