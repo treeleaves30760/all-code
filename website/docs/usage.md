@@ -105,7 +105,7 @@ agy stored. It shows the Gemini pool and the Claude/GPT pool, each by its
 
 Read-only, never renewed: an expired token reads `expired; agy renews it on the
 next launch`, and the next launch on that login has agy renew it. Not signed in
-reads ``not logged in; run `agy` ``. Requests that other agents send through alc's
+reads `` not logged in; run `agy` ``. Requests that other agents send through alc's
 bridge on this login are recorded with the kind `antigravity`, the model id
 Google received and the token counts it reported. Only `gpt-oss-120b` is priced
 (at 0): the Claude and Gemini families run on a Google plan with no verified
@@ -160,8 +160,8 @@ did not issue it.
 
 This compatibility table reads only `usage.jsonl` in the [config
 directory](./configuration.md). Launches append launch entries; requests carried
-by the [Codex translation bridge](./codex-to-claude.md) (on the Codex login or
-the Antigravity one) or the opt-in direct API observer append metadata entries. Ordinary direct launches still count as
+by the [translation bridge](./codex-to-claude.md) (on the Codex login or the
+Antigravity one) or the opt-in direct API observer append metadata entries. Ordinary direct launches still count as
 launches alone. Native histories are separate statistics sources, not imports
 into this ledger.
 

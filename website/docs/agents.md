@@ -182,7 +182,9 @@ profile the starter configuration ships, and alc sets only `--model` from that
 profile and, when the profile names one, `--effort`. agy's efforts are `low`,
 `medium`, `high`, `xhigh` and `max`; a profile set to `ultra` launches on `max`,
 with a note saying so. A `--model` or `--effort` of your own after `alc agy` is
-forwarded as is, and alc then sends none of its own.
+forwarded as is, and alc then sends none of its own. agy lists wire ids only,
+so a bare family id on the profile (`claude-opus-5-5`, which the other agents'
+bridge reads too) reaches agy as the wire id for the profile's effort.
 
 ```sh
 alc agy

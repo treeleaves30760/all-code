@@ -95,9 +95,9 @@ The keys are shown at the bottom of every screen. The primary controls are:
 - Arrow keys: navigate fields and cycle choices, including reasoning effort.
 - On a Codex profile, `←`/`→` on the Model field opens the guided GPT model and
   effort chooser, which writes the launch defaults for `alc --codex claude`.
-- On a Codex profile, `←`/`→` on the Context row, right after Reasoning effort,
-  switches between the model's `standard` window and its `max` one; other kinds
-  show `codex only` there.
+- On a Codex or Antigravity profile, `←`/`→` on the Context row, right after
+  Reasoning effort, switches between the model's `standard` window and its `max`
+  one; other kinds show `codex/antigravity only` there.
 - `s`: save; `q`: save and quit; `Ctrl+C`: quit without saving.
 
 ## Scripting commands

@@ -141,7 +141,7 @@ whole session — the profile's model at the profile's effort — so choose it o
 the profile:
 
 ```sh
-alc config upsert antigravity --model gemini-3.8-flash-low --context max
+alc config upsert antigravity --model gemini-3.8-flash-low --effort low --context max
 ```
 
 Each family starts on a 256K window (GPT-OSS on 131K). `context = "max"` on the
@@ -149,8 +149,8 @@ profile, or `--context max` for one run of Claude Code, gives 840K for Claude,
 900K for Argon and 1,048K for Flash. Codex CLI is handed the window as
 `model_context_window` (older Codex versions also needed
 `model_auto_compact_token_limit` set by hand in their own config). Codex's
-in-session `/model` picker still offers OpenAI's slugs, which fail upstream on
-this login: change the model on the profile instead.
+in-session `/model` picker still offers OpenAI's slugs, which alc's bridge
+refuses on this login: change the model on the profile instead.
 
 ### Signed reasoning, quota and platforms
 

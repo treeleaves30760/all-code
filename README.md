@@ -307,7 +307,9 @@ alc models --agy                          # the models agy offers
 
 alc passes the profile's model as agy's `--model` and, when the profile sets
 one, its effort as `--effort`; a `--model` or `--effort` you put after
-`alc agy` is forwarded as is, and alc then sends none of its own. agy's efforts
+`alc agy` is forwarded as is, and alc then sends none of its own. agy lists wire
+ids only, so a bare family id on the profile (`claude-opus-5-5`, which the other
+agents' bridge reads too) reaches agy as the wire id for the profile's effort. agy's efforts
 stop at `max`, so a profile set to `ultra` launches on `max`, with a one-line
 note saying so. `alc models --agy` lists what `agy models` reports, kept for a
 day, or a bundled list when agy cannot be asked; `--refresh` asks again now. It
@@ -366,7 +368,7 @@ one model for the whole session — the profile's model at the profile's effort 
 so choose it on the profile:
 
 ```sh
-alc config upsert antigravity --model gemini-3.8-flash-low --context max
+alc config upsert antigravity --model gemini-3.8-flash-low --effort low --context max
 ```
 
 Each family starts on a 256K window (GPT-OSS on 131K). `context = "max"` on the
@@ -374,8 +376,8 @@ profile, or `--context max` for one run of Claude Code, gives 840K for Claude,
 900K for Argon and 1,048K for Flash. Codex CLI is handed the window as
 `model_context_window` (older Codex versions also needed
 `model_auto_compact_token_limit` set by hand in their own config). Codex's
-in-session `/model` picker still offers OpenAI's slugs, which fail upstream on
-this login: change the model on the profile instead.
+in-session `/model` picker still offers OpenAI's slugs, which alc's bridge
+refuses on this login: change the model on the profile instead.
 
 Gemini signs its reasoning, and the signature travels with the conversation. A
 Gemini tool round that lost its signature — a session started elsewhere, an
