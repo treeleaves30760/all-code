@@ -75,6 +75,56 @@ impl std::str::FromStr for ReasoningEffort {
     }
 }
 
+/// How much of a Codex model's window a session is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContextChoice {
+    /// The window chatgpt.com advertises as the model's own (272K; 500K for
+    /// GPT-6.1 Sol). Codex's own default too.
+    #[default]
+    Standard,
+    /// The model's `max_context_window` (872K today). Past the standard
+    /// window a turn uses plan limits faster, so this is opt-in.
+    Max,
+}
+
+impl ContextChoice {
+    // Nothing cycles through the choices until the profile editor offers
+    // them; the expectation fails the build once it does, so it cannot
+    // outlive its reason.
+    #[expect(dead_code)]
+    pub const ALL: [Self; 2] = [Self::Standard, Self::Max];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Max => "max",
+        }
+    }
+
+    pub fn is_standard(&self) -> bool {
+        *self == Self::Standard
+    }
+}
+
+impl std::fmt::Display for ContextChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ContextChoice {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "standard" | "std" => Ok(Self::Standard),
+            "max" | "maximum" => Ok(Self::Max),
+            _ => bail!("unknown context choice '{value}'; expected standard or max"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Agent {
@@ -447,6 +497,10 @@ pub struct Provider {
     pub kind: ProviderKind,
     pub model: String,
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Whether a Codex session gets the model's standard window or its
+    /// maximum. Only a codex profile may leave the standard default.
+    #[serde(default, skip_serializing_if = "ContextChoice::is_standard")]
+    pub context: ContextChoice,
     pub small_model: Option<String>,
     pub base_url: Option<String>,
     pub anthropic_base_url: Option<String>,
@@ -516,6 +570,7 @@ impl Provider {
             kind,
             model: model.to_owned(),
             reasoning_effort: (kind == ProviderKind::Openai).then_some(ReasoningEffort::Low),
+            context: ContextChoice::Standard,
             small_model: (kind == ProviderKind::Deepseek).then(|| "deepseek-v4-flash".to_owned()),
             base_url: kind.default_base_url().map(str::to_owned),
             anthropic_base_url: kind.default_anthropic_base_url().map(str::to_owned),
@@ -731,6 +786,12 @@ impl Config {
             }
             if provider.kind == ProviderKind::Custom && provider.effective_base_url().is_none() {
                 bail!("custom provider '{name}' needs a base_url");
+            }
+            if provider.context != ContextChoice::Standard && provider.kind != ProviderKind::Codex {
+                bail!(
+                    "provider '{name}' sets context = \"{}\", which only a codex profile can use",
+                    provider.context
+                );
             }
             provider.validate_account_dirs(name)?;
         }
@@ -1436,6 +1497,34 @@ enabled = true
             "{error}"
         );
         assert!(!error.contains("not compatible"), "{error}");
+    }
+
+    #[test]
+    fn context_choice_round_trips_and_defaults_to_standard() {
+        let provider: Provider = toml::from_str("kind = \"codex\"").unwrap();
+        assert_eq!(provider.context, ContextChoice::Standard);
+        let provider: Provider = toml::from_str("kind = \"codex\"\ncontext = \"max\"").unwrap();
+        assert_eq!(provider.context, ContextChoice::Max);
+        let text = toml::to_string(&Provider::for_kind(ProviderKind::Codex)).unwrap();
+        assert!(
+            !text.contains("context ="),
+            "standard is the absent default: {text}"
+        );
+        assert_eq!("MAX".parse::<ContextChoice>().unwrap(), ContextChoice::Max);
+        assert!("huge".parse::<ContextChoice>().is_err());
+    }
+
+    #[test]
+    fn a_context_choice_is_refused_off_the_codex_kind() {
+        let mut config = Config::default();
+        let mut provider = Provider::for_kind(ProviderKind::Openrouter);
+        provider.context = ContextChoice::Max;
+        config.providers.insert("work".to_owned(), provider);
+        let error = config.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("work") && error.contains("context"),
+            "{error}"
+        );
     }
 }
 
