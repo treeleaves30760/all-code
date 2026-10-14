@@ -7,9 +7,24 @@
     { "id": "claude-sonnet-5-5-high", "label": "Claude Sonnet 5.5 (High)" },
     { "id": "claude-sonnet-5-5-medium", "label": "Claude Sonnet 5.5 (Medium)" },
     { "id": "claude-sonnet-5-5-low", "label": "Claude Sonnet 5.5 (Low)" },
+    { "id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)" },
+    { "id": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)" },
+    { "id": "gemini-4-argon-low", "label": "Gemini 4 Argon (Low)" },
     { "id": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)" },
     { "id": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)" },
     { "id": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)" },
     { "id": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)" }
+  ],
+  "families": [
+    { "id": "claude-opus-5-5", "label": "Claude Opus 5.5", "context_window": 256000, "max_context_window": 840000, "max_output_tokens": 128000,
+      "thinking": { "low": { "thinkingLevel": "LOW" }, "medium": { "thinkingLevel": "MEDIUM" }, "high": { "thinkingLevel": "HIGH" } } },
+    { "id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5", "context_window": 256000, "max_context_window": 840000, "max_output_tokens": 128000,
+      "thinking": { "low": { "thinkingLevel": "LOW" }, "medium": { "thinkingLevel": "MEDIUM" }, "high": { "thinkingLevel": "HIGH" } } },
+    { "id": "gemini-4-argon", "label": "Gemini 4 Argon", "context_window": 256000, "max_context_window": 900000, "max_output_tokens": 65536,
+      "thinking": { "low": { "thinkingLevel": "LOW" }, "medium": { "thinkingLevel": "MEDIUM" }, "high": { "thinkingLevel": "HIGH" } } },
+    { "id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash", "context_window": 256000, "max_context_window": 1048576, "max_output_tokens": 65536,
+      "thinking": { "low": { "thinkingBudget": 1000 }, "medium": { "thinkingBudget": 4000 }, "high": { "thinkingBudget": -1 } } },
+    { "id": "gpt-oss-120b", "label": "GPT-OSS 120B", "context_window": 131072, "max_context_window": 131072, "max_output_tokens": 32768,
+      "thinking": { "medium": { "thinkingBudget": 8192 } } }
   ]
 }

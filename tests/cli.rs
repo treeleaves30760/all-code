@@ -2129,9 +2129,15 @@ fn bundled_antigravity_models_are_available_offline() {
         .lines()
         .filter_map(|line| line.strip_prefix("- "))
         .collect();
-    assert_eq!(listed.len(), 10, "{stdout}");
-    assert_eq!(listed[0], "claude-opus-5-5-high: Claude Opus 5.5 (High)");
-    assert_eq!(listed[9], "gpt-oss-120b-medium: GPT-OSS 120B (Medium)");
+    assert_eq!(listed.len(), 13, "{stdout}");
+    assert_eq!(
+        listed[0],
+        "claude-opus-5-5-high: Claude Opus 5.5 (High) (context 256K, max 840K)"
+    );
+    assert_eq!(
+        listed[12],
+        "gpt-oss-120b-medium: GPT-OSS 120B (Medium) (context 131K)"
+    );
     assert!(
         !temp.path().join("antigravity-models.json").exists(),
         "with no agy to run nothing was attempted, so nothing is recorded"

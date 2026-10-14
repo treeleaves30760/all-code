@@ -1405,7 +1405,21 @@ fn run_antigravity_models(store: &Store, args: &ModelsArgs) -> Result<u8> {
     println!("Antigravity model catalog");
     println!("source: {}", catalog.source);
     for model in &catalog.models {
-        println!("- {}: {}", model.id, model.label);
+        let windows = antigravity::split_wire_id(&model.id).map(|(family, _)| {
+            let standard = family.context_window / 1_000;
+            let maximum = family.max_context_window / 1_000;
+            if maximum > standard {
+                format!(" (context {standard}K, max {maximum}K)")
+            } else {
+                format!(" (context {standard}K)")
+            }
+        });
+        println!(
+            "- {}: {}{}",
+            model.id,
+            model.label,
+            windows.unwrap_or_default()
+        );
     }
     println!("Auto-sync: once a day from `agy models`; run `alc models --agy --refresh` to");
     println!("sync now.");

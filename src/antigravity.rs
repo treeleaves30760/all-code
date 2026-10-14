@@ -7,6 +7,7 @@
 //! to the list alc ships, so the picker is never empty. A failed ask is
 //! recorded like an answer, so it costs at most one attempt a day.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Agent;
+use crate::config::{Agent, ContextChoice, ReasoningEffort};
+use crate::model_catalog::ModelInfo;
 
 const CACHE_FILE: &str = "antigravity-models.json";
 const SCHEMA_VERSION: u32 = 1;
@@ -48,6 +50,8 @@ pub struct AgyCatalog {
 struct Bundle {
     schema_version: u32,
     models: Vec<AgyModel>,
+    #[serde(default)]
+    families: Vec<AgyFamily>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -64,6 +68,161 @@ pub fn bundled() -> Vec<AgyModel> {
         .expect("the bundled Antigravity model list must be valid");
     debug_assert_eq!(bundle.schema_version, SCHEMA_VERSION);
     bundle.models
+}
+
+/// One Antigravity model family: the wire ids are `<id>-<effort>` for each
+/// effort in `thinking`. Windows and caps are KohakuTerrarium's table (the
+/// Code Assist endpoint publishes none); Argon needs a Google AI Ultra plan.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AgyFamily {
+    pub id: String,
+    pub label: String,
+    pub context_window: u64,
+    pub max_context_window: u64,
+    pub max_output_tokens: u64,
+    /// Effort word → the `thinkingConfig` fields that effort sends, without
+    /// `includeThoughts` (always true; the bridge adds it).
+    pub thinking: BTreeMap<String, serde_json::Value>,
+}
+
+/// Where Claude Code's `opus` tier lands on this login.
+#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
+pub const STRONGEST_FAMILY: &str = "claude-opus-5-5";
+/// Where `haiku` and Claude Code's background work land.
+#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
+pub const CHEAPEST_FAMILY: &str = "gemini-3.8-flash";
+
+/// The families alc ships, most capable first.
+pub fn families() -> Vec<AgyFamily> {
+    let bundle: Bundle = serde_json::from_str(include_str!("../models/antigravity.json"))
+        .expect("the bundled Antigravity model list must be valid");
+    bundle.families
+}
+
+pub fn family(id: &str) -> Option<AgyFamily> {
+    families().into_iter().find(|family| family.id == id)
+}
+
+/// `claude-opus-5-5-low` → (the Opus family, `low`). `None` for a family id,
+/// an unknown model, or an effort the family does not serve.
+pub fn split_wire_id(model: &str) -> Option<(AgyFamily, String)> {
+    let (id, effort) = model.trim().rsplit_once('-')?;
+    let family = family(id)?;
+    family
+        .thinking
+        .contains_key(effort)
+        .then(|| (family, effort.to_owned()))
+}
+
+/// The family a family id or a wire id belongs to.
+#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
+pub fn family_of_model(model: &str) -> Option<AgyFamily> {
+    family(model.trim()).or_else(|| split_wire_id(model).map(|(family, _)| family))
+}
+
+/// alc's effort ladder on Antigravity's three rungs. Absent is `medium`,
+/// agy's own default.
+#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
+pub fn effort_word(effort: Option<ReasoningEffort>) -> &'static str {
+    match effort {
+        None | Some(ReasoningEffort::Medium) => "medium",
+        Some(ReasoningEffort::Low) => "low",
+        Some(
+            ReasoningEffort::High
+            | ReasoningEffort::Xhigh
+            | ReasoningEffort::Max
+            | ReasoningEffort::Ultra,
+        ) => "high",
+    }
+}
+
+/// The wire id for `effort` on `family`, or the family's only rung when it
+/// does not serve that one (GPT-OSS serves `medium` alone).
+#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
+pub fn wire_model(family: &AgyFamily, effort: &str) -> String {
+    let effort = if family.thinking.contains_key(effort) {
+        effort
+    } else if family.thinking.contains_key("medium") {
+        "medium"
+    } else {
+        family
+            .thinking
+            .keys()
+            .next()
+            .map_or("medium", String::as_str)
+    };
+    format!("{}-{effort}", family.id)
+}
+
+/// The wire id an agent pinned at launch sends: the profile's model with the
+/// pinned effort's suffix. A wire id with no pinned effort stays as it is,
+/// and a model alc does not know passes through for upstream to judge.
+#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
+pub fn wire_model_for(model: &str, effort: Option<ReasoningEffort>) -> String {
+    if let Some((family, _)) = split_wire_id(model) {
+        return match effort {
+            Some(_) => wire_model(&family, effort_word(effort)),
+            None => model.trim().to_owned(),
+        };
+    }
+    match family(model.trim()) {
+        Some(family) => wire_model(&family, effort_word(effort)),
+        None => model.trim().to_owned(),
+    }
+}
+
+/// The window a session on `family` is handed: standard, or the family's
+/// maximum when the profile opted in.
+#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
+pub fn context_window(family: &AgyFamily, choice: ContextChoice) -> u64 {
+    match choice {
+        ContextChoice::Standard => family.context_window,
+        ContextChoice::Max => family.max_context_window.max(family.context_window),
+    }
+}
+
+/// The families as pickers show them: one row per family, effort chosen
+/// separately, windows per the profile's context choice.
+#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
+pub fn model_infos(choice: ContextChoice) -> Vec<ModelInfo> {
+    families()
+        .into_iter()
+        .map(|family| {
+            let supported_efforts = family
+                .thinking
+                .keys()
+                .filter_map(|effort| effort.parse::<ReasoningEffort>().ok())
+                .collect::<Vec<_>>();
+            ModelInfo {
+                id: family.id.clone(),
+                name: family.label.clone(),
+                description: format!("{} through your Antigravity login", family.label),
+                context_window: context_window(&family, choice),
+                max_context_window: family.max_context_window,
+                default_effort: ReasoningEffort::Medium,
+                supported_efforts: [
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High,
+                ]
+                .into_iter()
+                .filter(|effort| supported_efforts.contains(effort))
+                .collect(),
+                priority: None,
+            }
+        })
+        .collect()
+}
+
+/// Where Claude's tiers land: Opus for the strongest, the session's family
+/// for the default, Flash for the cheapest.
+#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
+pub fn tiers(default_family: &str) -> crate::bridge::tiers::ModelTiers {
+    crate::bridge::tiers::ModelTiers {
+        strongest: STRONGEST_FAMILY.to_owned(),
+        default: default_family.to_owned(),
+        cheapest: CHEAPEST_FAMILY.to_owned(),
+    }
 }
 
 /// Reads `agy models` stdout: one `<id>\t<label>` line per model. Anything
@@ -319,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bundled_list_is_the_ten_models_in_the_shipped_order() {
+    fn the_bundled_list_is_the_thirteen_models_in_the_shipped_order() {
         let ids: Vec<_> = bundled().into_iter().map(|model| model.id).collect();
         assert_eq!(
             ids,
@@ -330,6 +489,9 @@ mod tests {
                 "claude-sonnet-5-5-high",
                 "claude-sonnet-5-5-medium",
                 "claude-sonnet-5-5-low",
+                "gemini-4-argon-high",
+                "gemini-4-argon-medium",
+                "gemini-4-argon-low",
                 "gemini-3.8-flash-high",
                 "gemini-3.8-flash-medium",
                 "gemini-3.8-flash-low",
@@ -337,7 +499,171 @@ mod tests {
             ]
         );
         assert_eq!(bundled()[0].label, "Claude Opus 5.5 (High)");
-        assert_eq!(bundled()[9].label, "GPT-OSS 120B (Medium)");
+        assert_eq!(bundled()[6].label, "Gemini 4 Argon (High)");
+        assert_eq!(bundled()[12].label, "GPT-OSS 120B (Medium)");
+    }
+
+    #[test]
+    fn the_families_carry_the_windows_caps_and_thinking_of_each_model() {
+        let rows: Vec<_> = families()
+            .into_iter()
+            .map(|f| {
+                (
+                    f.id,
+                    f.context_window,
+                    f.max_context_window,
+                    f.max_output_tokens,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("claude-opus-5-5".to_owned(), 256_000, 840_000, 128_000),
+                ("claude-sonnet-5-5".to_owned(), 256_000, 840_000, 128_000),
+                ("gemini-4-argon".to_owned(), 256_000, 900_000, 65_536),
+                ("gemini-3.8-flash".to_owned(), 256_000, 1_048_576, 65_536),
+                ("gpt-oss-120b".to_owned(), 131_072, 131_072, 32_768),
+            ]
+        );
+        let thinking = |id: &str, effort: &str| family(id).unwrap().thinking[effort].clone();
+        assert_eq!(
+            thinking("claude-opus-5-5", "low"),
+            serde_json::json!({"thinkingLevel": "LOW"})
+        );
+        assert_eq!(
+            thinking("gemini-4-argon", "high"),
+            serde_json::json!({"thinkingLevel": "HIGH"})
+        );
+        assert_eq!(
+            thinking("gemini-3.8-flash", "low"),
+            serde_json::json!({"thinkingBudget": 1000})
+        );
+        assert_eq!(
+            thinking("gemini-3.8-flash", "medium"),
+            serde_json::json!({"thinkingBudget": 4000})
+        );
+        assert_eq!(
+            thinking("gemini-3.8-flash", "high"),
+            serde_json::json!({"thinkingBudget": -1})
+        );
+        assert_eq!(
+            thinking("gpt-oss-120b", "medium"),
+            serde_json::json!({"thinkingBudget": 8192})
+        );
+        assert_eq!(family("gpt-oss-120b").unwrap().thinking.len(), 1);
+    }
+
+    #[test]
+    fn every_bundled_model_is_a_family_and_one_of_its_efforts() {
+        for model in bundled() {
+            let (family, effort) =
+                split_wire_id(&model.id).unwrap_or_else(|| panic!("{}", model.id));
+            assert!(family.thinking.contains_key(&effort), "{}", model.id);
+            assert!(model.label.starts_with(&family.label), "{}", model.id);
+        }
+    }
+
+    #[test]
+    fn wire_ids_split_into_a_family_and_an_effort() {
+        let split = |model: &str| split_wire_id(model).map(|(f, e)| (f.id, e));
+        assert_eq!(
+            split("claude-opus-5-5-low"),
+            Some(("claude-opus-5-5".to_owned(), "low".to_owned()))
+        );
+        assert_eq!(
+            split("gemini-3.8-flash-high"),
+            Some(("gemini-3.8-flash".to_owned(), "high".to_owned()))
+        );
+        assert_eq!(
+            split("gpt-oss-120b-medium"),
+            Some(("gpt-oss-120b".to_owned(), "medium".to_owned()))
+        );
+        assert_eq!(
+            split("gpt-oss-120b-low"),
+            None,
+            "gpt-oss serves medium only"
+        );
+        assert_eq!(split("claude-opus-5-5"), None, "a family is not a wire id");
+        assert_eq!(split("gemini-9-ultra-low"), None);
+        assert_eq!(
+            family_of_model("claude-opus-5-5").unwrap().id,
+            "claude-opus-5-5"
+        );
+        assert_eq!(
+            family_of_model("claude-opus-5-5-high").unwrap().id,
+            "claude-opus-5-5"
+        );
+        assert!(family_of_model("gpt-6-sol").is_none());
+    }
+
+    #[test]
+    fn efforts_land_on_the_three_antigravity_rungs() {
+        use crate::config::ReasoningEffort as E;
+        assert_eq!(effort_word(None), "medium");
+        assert_eq!(effort_word(Some(E::Low)), "low");
+        assert_eq!(effort_word(Some(E::Medium)), "medium");
+        for effort in [E::High, E::Xhigh, E::Max, E::Ultra] {
+            assert_eq!(effort_word(Some(effort)), "high", "{effort}");
+        }
+        let gpt = family("gpt-oss-120b").unwrap();
+        assert_eq!(wire_model(&gpt, "high"), "gpt-oss-120b-medium");
+        assert_eq!(
+            wire_model(&family("gemini-4-argon").unwrap(), "low"),
+            "gemini-4-argon-low"
+        );
+    }
+
+    #[test]
+    fn a_pinned_effort_picks_the_wire_suffix_at_launch() {
+        use crate::config::ReasoningEffort as E;
+        assert_eq!(
+            wire_model_for("claude-opus-5-5-high", Some(E::Low)),
+            "claude-opus-5-5-low"
+        );
+        assert_eq!(
+            wire_model_for("claude-opus-5-5-high", None),
+            "claude-opus-5-5-high"
+        );
+        assert_eq!(
+            wire_model_for("gemini-3.8-flash", None),
+            "gemini-3.8-flash-medium"
+        );
+        assert_eq!(
+            wire_model_for("gemini-3.8-flash", Some(E::Max)),
+            "gemini-3.8-flash-high"
+        );
+        assert_eq!(
+            wire_model_for("gpt-oss-120b-medium", Some(E::High)),
+            "gpt-oss-120b-medium"
+        );
+        assert_eq!(
+            wire_model_for("gemini-9-preview", Some(E::Low)),
+            "gemini-9-preview"
+        );
+    }
+
+    #[test]
+    fn model_infos_follow_the_context_choice() {
+        use crate::config::ContextChoice;
+        let standard = model_infos(ContextChoice::Standard);
+        assert_eq!(standard.len(), 5);
+        assert_eq!(standard[0].id, "claude-opus-5-5");
+        assert_eq!(standard[0].name, "Claude Opus 5.5");
+        assert_eq!(standard[0].context_window, 256_000);
+        assert_eq!(standard[0].max_context_window, 840_000);
+        assert_eq!(
+            standard[4].supported_efforts,
+            [crate::config::ReasoningEffort::Medium]
+        );
+        let max = model_infos(ContextChoice::Max);
+        assert_eq!(max[3].id, "gemini-3.8-flash");
+        assert_eq!(max[3].context_window, 1_048_576);
+        assert_eq!(max[4].context_window, 131_072);
+        let tiers = tiers("claude-sonnet-5-5");
+        assert_eq!(tiers.strongest, "claude-opus-5-5");
+        assert_eq!(tiers.default, "claude-sonnet-5-5");
+        assert_eq!(tiers.cheapest, "gemini-3.8-flash");
     }
 
     #[test]
