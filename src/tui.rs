@@ -30,11 +30,9 @@ type Backend = CrosstermBackend<Stdout>;
 pub fn run(store: &mut Store) -> Result<()> {
     // Refresh before taking over the screen so the model chooser is current.
     let catalog = ModelCatalog::load_and_refresh_if_due(&store.dir, &CodexSource::detect());
-    let agy_models = antigravity::models(&store.dir, false).models;
     let mut terminal = setup_terminal()?;
     let _cleanup = TerminalCleanup;
     let mut app = App::new(store.clone(), catalog);
-    app.agy_models = agy_models;
 
     loop {
         terminal.draw(|frame| draw(frame, &mut app))?;
@@ -139,8 +137,11 @@ impl RemoteRow {
 struct App {
     store: Store,
     catalog: ModelCatalog,
-    /// What the model row cycles through for an Antigravity profile.
-    agy_models: Vec<AgyModel>,
+    /// What the model row cycles through for an Antigravity profile; `None`
+    /// until it is first browsed. Asking agy spawns it and goes to the
+    /// network, and the default config gives everyone an Antigravity
+    /// profile, so opening `alc config` must not be what pays for it.
+    agy_models: Option<Vec<AgyModel>>,
     picker: Option<PickerApp>,
     screen: Screen,
     provider_selected: usize,
@@ -164,7 +165,7 @@ impl App {
         Self {
             store,
             catalog,
-            agy_models: antigravity::bundled(),
+            agy_models: None,
             picker: None,
             screen: Screen::Providers,
             provider_selected: 0,
@@ -350,7 +351,10 @@ impl App {
             KeyCode::Left | KeyCode::Right if form.browses_models() => {
                 if form.provider.kind == ProviderKind::Antigravity {
                     let delta = if key.code == KeyCode::Left { -1 } else { 1 };
-                    form.step_model(&self.agy_models, delta);
+                    let models = self
+                        .agy_models
+                        .get_or_insert_with(|| antigravity::models(&self.store.dir, false).models);
+                    form.step_model(models, delta);
                 } else {
                     self.open_model_picker();
                 }
@@ -1227,7 +1231,12 @@ fn draw_edit(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
             // agy's ids encode the effort tier; its own label says it in
             // words, so an Antigravity profile's model row shows it, dim.
             let model_label = (row == 2 && form.provider.kind == ProviderKind::Antigravity)
-                .then(|| app.agy_models.iter().find(|model| model.id == value))
+                .then(|| {
+                    // Before the first browse the shipped list names the
+                    // models; it costs a parse, not a process.
+                    let models = app.agy_models.clone().unwrap_or_else(antigravity::bundled);
+                    models.into_iter().find(|model| model.id == value)
+                })
                 .flatten()
                 .map(|model| {
                     Span::styled(
@@ -1579,7 +1588,41 @@ mod tests {
         let mut form = EditForm::existing("agy".to_owned(), provider, false);
         form.selected = 2;
         app.edit = Some(form);
+        // Loaded up front so a test never reaches for the real agy.
+        app.agy_models = Some(antigravity::bundled());
         app
+    }
+
+    /// Asking agy is a process spawn and a network call, and the default
+    /// config carries an Antigravity profile for everyone, so the list is
+    /// fetched only once someone actually browses it.
+    #[test]
+    fn the_antigravity_list_is_loaded_on_the_first_browse() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("antigravity-models.json"),
+            format!(
+                r#"{{"schema_version":1,"source":"agy models","refreshed_at":{},"models":[{{"id":"only-from-the-cache","label":"Cached"}}]}}"#,
+                crate::usage::ledger::now_unix()
+            ),
+        )
+        .unwrap();
+        let mut app = app_editing_antigravity("claude-opus-5-5-high");
+        app.store.dir = temp.path().to_path_buf();
+        app.agy_models = None;
+        assert!(
+            App::new(app.store.clone(), ModelCatalog::built_in())
+                .agy_models
+                .is_none(),
+            "opening alc config asks agy for nothing"
+        );
+
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.edit.as_ref().unwrap().provider.model,
+            "only-from-the-cache"
+        );
+        assert!(app.agy_models.is_some());
     }
 
     #[test]

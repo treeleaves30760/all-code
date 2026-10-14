@@ -4,7 +4,8 @@
 //! that answer is the one alc shows - cached for a day, because asking means
 //! a network round trip through agy. Everything that can go wrong on the way
 //! (no agy, a signed-out agy, a timeout, an answer alc cannot read) falls back
-//! to the list alc ships, so the picker is never empty.
+//! to the list alc ships, so the picker is never empty. A failed ask is
+//! recorded like an answer, so it costs at most one attempt a day.
 
 use std::fs;
 use std::io::Read;
@@ -38,7 +39,8 @@ pub struct AgyModel {
 pub struct AgyCatalog {
     pub models: Vec<AgyModel>,
     pub source: String,
-    /// Unix seconds of the agy answer behind the list; 0 for the bundled one.
+    /// Unix seconds of the last time agy was asked, answered or not; 0 when
+    /// there was no agy to ask.
     pub refreshed_at: u64,
 }
 
@@ -111,44 +113,80 @@ fn models_from(
     run: impl Fn(&Path) -> Result<String>,
     now: u64,
 ) -> AgyCatalog {
+    let cached = read_cache(config_dir);
     if !refresh
-        && let Some(cache) = read_cache(config_dir)
+        && let Some(cache) = &cached
         && now >= cache.refreshed_at
         && now - cache.refreshed_at < TTL_SECS
     {
         return AgyCatalog {
-            models: cache.models,
+            models: cache.models.clone(),
             source: format!("cache ({})", cache.source),
             refreshed_at: cache.refreshed_at,
         };
     }
-    let reason = match binary {
-        None => "agy not found".to_owned(),
-        Some(binary) => match run(&binary) {
-            Ok(text) => {
-                let models = parse_models_output(&text);
-                if models.is_empty() {
-                    "agy models listed no models".to_owned()
-                } else {
-                    let catalog = AgyCatalog {
-                        models,
-                        source: "agy models".to_owned(),
-                        refreshed_at: now,
-                    };
-                    // The cache only saves the next call a round trip, so a
-                    // read-only config directory costs nothing but that.
-                    let _ = write_cache(config_dir, &catalog);
-                    return catalog;
-                }
+    // No agy means nothing was spawned and nothing was waited for, so there
+    // is no attempt worth recording: installing agy takes effect at once.
+    let Some(binary) = binary else {
+        return AgyCatalog {
+            models: bundled(),
+            source: "bundled (agy not found)".to_owned(),
+            refreshed_at: 0,
+        };
+    };
+    let reason = match run(&binary) {
+        Ok(text) => {
+            let models = in_bundled_order(parse_models_output(&text));
+            if models.is_empty() {
+                "agy models listed no models".to_owned()
+            } else {
+                let catalog = AgyCatalog {
+                    models,
+                    source: "agy models".to_owned(),
+                    refreshed_at: now,
+                };
+                // The cache only saves the next call a round trip, so a
+                // read-only config directory costs nothing but that.
+                let _ = write_cache(config_dir, &catalog);
+                return catalog;
             }
-            Err(error) => format!("agy models failed: {error:#}"),
+        }
+        Err(error) => format!("agy models failed: {error:#}"),
+    };
+    // The attempt is recorded against the clock, as the Codex catalog does:
+    // otherwise a signed-out or offline agy is spawned - and, offline, waited
+    // on for up to RUN_TIMEOUT - by every later `alc config` and `alc models
+    // --agy`, forever, on exactly the machines where it cannot work. What an
+    // earlier answer listed is kept rather than traded for the shipped list.
+    let catalog = match cached {
+        Some(cache) if !cache.source.starts_with("bundled") => AgyCatalog {
+            models: cache.models,
+            source: format!("kept from an earlier agy models ({reason})"),
+            refreshed_at: now,
+        },
+        _ => AgyCatalog {
+            models: bundled(),
+            source: format!("bundled ({reason})"),
+            refreshed_at: now,
         },
     };
-    AgyCatalog {
-        models: bundled(),
-        source: format!("bundled ({reason})"),
-        refreshed_at: 0,
+    let _ = write_cache(config_dir, &catalog);
+    catalog
+}
+
+/// agy's answer in the order alc ships, so browsing does not reshuffle the
+/// day agy is reachable; models agy lists that alc does not ship follow, in
+/// agy's order. Shipped models agy did not list stay out: its answer is what
+/// the login can reach.
+fn in_bundled_order(mut live: Vec<AgyModel>) -> Vec<AgyModel> {
+    let mut ordered = Vec::with_capacity(live.len());
+    for shipped in bundled() {
+        if let Some(index) = live.iter().position(|model| model.id == shipped.id) {
+            ordered.push(live.remove(index));
+        }
     }
+    ordered.extend(live);
+    ordered
 }
 
 /// The agy alc would launch: `ALC_AGY_BIN`, else `agy` on PATH.
@@ -306,7 +344,7 @@ mod tests {
         let cached = models_from(temp.path(), false, agy(), run, 1_000 + TTL_SECS - 1);
         assert_eq!(calls.get(), 1, "a fresh cache must not run agy again");
         assert!(cached.source.contains("cache"));
-        assert_eq!(cached.models[0].id, "gemini-3.8-flash-high");
+        assert_eq!(cached.models[0].id, "claude-opus-5-5-low");
         assert_eq!(cached.refreshed_at, 1_000);
     }
 
@@ -327,19 +365,8 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_or_missing_agy_keeps_the_bundled_list_and_writes_no_cache() {
+    fn a_missing_agy_keeps_the_bundled_list_and_writes_no_cache() {
         let temp = tempfile::tempdir().unwrap();
-        let failed = models_from(
-            temp.path(),
-            true,
-            Some(PathBuf::from("agy")),
-            |_| anyhow::bail!("agy models exited with status 1"),
-            1_000,
-        );
-        assert_eq!(failed.models, bundled());
-        assert!(failed.source.contains("bundled"));
-        assert!(!temp.path().join(CACHE_FILE).exists());
-
         let missing = models_from(
             temp.path(),
             true,
@@ -349,6 +376,174 @@ mod tests {
         );
         assert_eq!(missing.models, bundled());
         assert!(missing.source.contains("bundled"));
+        assert!(missing.source.contains("agy not found"));
+        assert!(!temp.path().join(CACHE_FILE).exists());
+    }
+
+    /// The Antigravity twin of the Codex catalog's
+    /// `a_sync_that_fails_is_not_retried_by_every_later_command`: without the
+    /// attempt on record, every `alc config` and `alc models --agy` on a
+    /// machine with a signed-out or offline agy pays for the same failure.
+    #[test]
+    fn an_agy_that_fails_is_not_asked_again_until_tomorrow_or_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let calls = Cell::new(0);
+        let run = |_: &Path| {
+            calls.set(calls.get() + 1);
+            anyhow::bail!("agy models exited with status 1")
+        };
+        let agy = || Some(PathBuf::from("agy"));
+        let failed = models_from(temp.path(), false, agy(), run, 1_000);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(failed.models, bundled());
+        assert!(failed.source.contains("bundled"), "{}", failed.source);
+        assert!(
+            failed.source.contains("agy models failed"),
+            "{}",
+            failed.source
+        );
+        assert!(
+            temp.path().join(CACHE_FILE).is_file(),
+            "the attempt is recorded"
+        );
+
+        let later = models_from(temp.path(), false, agy(), run, 1_000 + TTL_SECS - 1);
+        assert_eq!(
+            calls.get(),
+            1,
+            "a recorded failure is not retried within a day"
+        );
+        assert_eq!(later.models, bundled());
+        assert!(
+            later.source.contains("agy models failed"),
+            "{}",
+            later.source
+        );
+
+        models_from(temp.path(), true, agy(), run, 1_000 + 10);
+        assert_eq!(calls.get(), 2, "--refresh still asks");
+        models_from(temp.path(), false, agy(), run, 1_000 + 10 + TTL_SECS);
+        assert_eq!(calls.get(), 3, "and so does the next day");
+    }
+
+    #[test]
+    fn an_answer_with_no_models_is_recorded_like_a_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let calls = Cell::new(0);
+        let run = |_: &Path| {
+            calls.set(calls.get() + 1);
+            Ok("error: not logged in".to_owned())
+        };
+        let agy = || Some(PathBuf::from("agy"));
+        let first = models_from(temp.path(), false, agy(), run, 1_000);
+        assert_eq!(first.models, bundled());
+        assert!(
+            first.source.contains("listed no models"),
+            "{}",
+            first.source
+        );
+        models_from(temp.path(), false, agy(), run, 1_001);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn a_failure_keeps_the_models_an_earlier_answer_listed() {
+        let temp = tempfile::tempdir().unwrap();
+        let agy = || Some(PathBuf::from("agy"));
+        let good = models_from(
+            temp.path(),
+            false,
+            agy(),
+            |_| Ok(REAL_SHAPE.to_owned()),
+            1_000,
+        );
+        let stale = 1_000 + TTL_SECS + 1;
+        let kept = models_from(
+            temp.path(),
+            false,
+            agy(),
+            |_| anyhow::bail!("timed out"),
+            stale,
+        );
+        assert_eq!(kept.models, good.models);
+        assert!(!kept.source.contains("bundled"), "{}", kept.source);
+        assert!(kept.source.contains("agy models failed"), "{}", kept.source);
+        assert_eq!(kept.refreshed_at, stale);
+
+        let again = models_from(temp.path(), false, agy(), |_| unreachable!(), stale + 1);
+        assert_eq!(again.models, good.models);
+    }
+
+    #[test]
+    fn a_cache_from_the_future_is_not_trusted() {
+        let temp = tempfile::tempdir().unwrap();
+        let agy = || Some(PathBuf::from("agy"));
+        let now = 1_000_000;
+        models_from(
+            temp.path(),
+            false,
+            agy(),
+            |_| Ok(REAL_SHAPE.to_owned()),
+            now + 10,
+        );
+        let calls = Cell::new(0);
+        models_from(
+            temp.path(),
+            false,
+            agy(),
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(REAL_SHAPE.to_owned())
+            },
+            now,
+        );
+        assert_eq!(calls.get(), 1, "a cache dated after now is asked again");
+    }
+
+    #[test]
+    fn a_live_answer_is_shown_in_the_bundled_order_with_additions_last() {
+        let temp = tempfile::tempdir().unwrap();
+        // agy 1.3.4's own order, plus two models alc does not ship, minus one
+        // it does.
+        let live = "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n\
+gemini-9-pro\tGemini 9 Pro\n\
+gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n\
+claude-opus-5-5-low\tClaude Opus 5.5 (Low)\n\
+claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)\n\
+claude-opus-5-5-high\tClaude Opus 5.5 (High)\n\
+claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)\n\
+claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)\n\
+claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)\n\
+gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n\
+aardvark-1\tAardvark 1\n";
+        let catalog = models_from(
+            temp.path(),
+            true,
+            Some(PathBuf::from("agy")),
+            |_| Ok(live.to_owned()),
+            1_000,
+        );
+        let ids: Vec<_> = catalog
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "claude-opus-5-5-high",
+                "claude-opus-5-5-medium",
+                "claude-opus-5-5-low",
+                "claude-sonnet-5-5-high",
+                "claude-sonnet-5-5-medium",
+                "claude-sonnet-5-5-low",
+                "gemini-3.8-flash-high",
+                "gemini-3.8-flash-medium",
+                "gpt-oss-120b-medium",
+                "gemini-9-pro",
+                "aardvark-1",
+            ]
+        );
     }
 
     #[test]

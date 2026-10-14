@@ -655,14 +655,15 @@ pub fn run() -> Result<u8> {
         Command::Models(args) => {
             // `--agy` is the global provider shortcut, so `alc models --agy`
             // and `alc --provider <an antigravity profile> models` both mean
-            // the Antigravity list.
+            // the Antigravity list. `--provider` is resolved as a launch of
+            // agy would resolve it: a profile name, or a kind with exactly
+            // one profile.
             let antigravity = cli.agy
                 || requested_provider.as_deref().is_some_and(|name| {
                     store
                         .config
-                        .providers
-                        .get(name)
-                        .is_some_and(|provider| provider.kind == ProviderKind::Antigravity)
+                        .resolve(Agent::Agy, Some(name))
+                        .is_ok_and(|(_, provider)| provider.kind == ProviderKind::Antigravity)
                 });
             if antigravity {
                 run_antigravity_models(&store, &args)

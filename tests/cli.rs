@@ -2073,8 +2073,9 @@ fn bundled_antigravity_models_are_available_offline() {
     assert_eq!(listed[9], "gpt-oss-120b-medium: GPT-OSS 120B (Medium)");
     assert!(
         !temp.path().join("antigravity-models.json").exists(),
-        "a bundled fallback is not cached"
+        "with no agy to run nothing was attempted, so nothing is recorded"
     );
+    assert!(source.contains("agy not found"), "{stdout}");
 
     alc(&temp)
         .env("PATH", "")
@@ -2083,6 +2084,24 @@ fn bundled_antigravity_models_are_available_offline() {
         .assert()
         .success()
         .stdout(predicate::str::contains("gemini-3.8-flash-medium"));
+
+    // `--provider` takes a profile name or a kind with exactly one profile,
+    // the same as a launch.
+    for provider in ["antigravity", "agy"] {
+        alc(&temp)
+            .env("PATH", "")
+            .env_remove("ALC_AGY_BIN")
+            .args(["--provider", provider, "models"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Antigravity model catalog"));
+    }
+    alc(&temp)
+        .env("PATH", "")
+        .args(["--provider", "codex", "models"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Codex bridge model catalog"));
 }
 
 #[test]
