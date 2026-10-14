@@ -93,6 +93,20 @@ alc 讀 Claude Code 自己的登入 —— 先找 macOS 鑰匙圈，再找它設
 改用 API key 的 Anthropic profile 則顯示 `no quota API`：那把金鑰是按 token 計費的，
 沒有「剩餘多少」這回事可以回報。
 
+## Antigravity 登入
+
+`antigravity` 那一列會用 agy 存好的 token，問 Google 的額度端點還剩多少。它會
+列出 Gemini 與 Claude/GPT 兩個額度池，各自依 `5h`、`day`、`week` 時間窗顯示：
+`Gemini: 5h 72% left, resets in 3h 0m — week 40% left; Claude/GPT: week 91%
+left`。
+
+只讀，永遠不更新：token 過期時顯示 `expired; agy renews it on the next launch`，
+下一次在這個登入上啟動時，agy 就會把它更新。沒有登入時顯示
+``not logged in; run `agy` ``。其他 agent 經由 alc 的橋接在這個登入上送出的請求，
+會以 kind `antigravity`、Google 收到的模型 id，以及它回報的 token 數記錄下來。
+只有 `gpt-oss-120b` 有定價（為 0）：Claude 與 Gemini 家族跑在 Google 的方案上，
+沒有經過驗證的 API-equivalent 費率，所以成本維持未知。
+
 ## 同一種的多個登入
 
 兩個 ChatGPT 登入就是兩個 profile。讓每個 profile 指向自己的目錄，之後每一次從那個
@@ -138,8 +152,8 @@ profile 叫這個種類的名字、而又有好幾個是同一種時，捷徑才
 ## 各 provider 與 agent 的用量
 
 這張相容用的表只讀[設定目錄](./configuration.md)裡的 `usage.jsonl`。啟動時追加
-啟動紀錄；[Codex 協定轉譯橋接](./codex-to-claude.md)或選擇啟用的直接 API 觀測器
-承載請求時，追加中繼資料紀錄。一般直接啟動仍只計為一次啟動。原生歷史是獨立的
+啟動紀錄；[Codex 協定轉譯橋接](./codex-to-claude.md)（Codex 登入或 Antigravity
+登入上的都算）或選擇啟用的直接 API 觀測器承載請求時，追加中繼資料紀錄。一般直接啟動仍只計為一次啟動。原生歷史是獨立的
 統計來源，不會匯入這份帳本。
 
 `INPUT` 是上游回報的總輸入。`CACHED` 是其中從提示快取讀取的部分。`CACHE %`
@@ -206,8 +220,8 @@ alc --openrouter --metrics --dry-run claude
 `--metrics` 要放在 **agent 名稱之前**。它在 alc 管理的端點設定位置加入受保護的
 loopback HTTP 轉送 route，保留 agent 的 SDK、協定、模型、參數與**上游驗證**。
 持續 Claude 觀測會把本機 helper 憑證替換為下文說明的密封替代憑證。這不是協定
-轉譯。不加時，一般直接啟動的行為不變；Codex 協定轉譯橋接本來就會觀測，不必
-另外啟用。
+轉譯。不加時，一般直接啟動的行為不變；協定轉譯橋接（Codex 登入或 Antigravity
+登入上的都算）本來就會觀測，不必另外啟用。
 
 | 直接啟動 | 觀測邊界 |
 | --- | --- |
@@ -217,7 +231,7 @@ loopback HTTP 轉送 route，保留 agent 的 SDK、協定、模型、參數與*
 | Qwen Code / Goose | 支援的、由 alc 管理的 Anthropic 或 OpenAI 分支。Qwen 的 Google/Gemini 分支與 Goose 的原生 OpenRouter/Ollama 整合不在觀測範圍內。Goose 的 OpenAI 分拆端點若含 query 或 fragment，量測會被拒絕；一般啟動維持不變。 |
 | Kimi Code CLI | alc 產生的暫存設定裡的 provider 端點，不是使用者自帶的設定。 |
 | Pi | 不支援直接觀測：alc 不會把短命的 listener 寫進持續共用的 `models.json`。 |
-| Antigravity CLI | 不支援直接觀測：agy 跑在它自己的登入上，alc 不碰那個登入。 |
+| Antigravity CLI | 不支援直接觀測：agy 跑在它自己的登入上。跑在那個登入上的其他 agent，會由 alc 的橋接自動觀測。 |
 
 Codex 產生的 provider ID 是 `alc_` 加上 alc profile 名稱，連字號改成底線：
 `openai-work` profile 要用 `model_providers.alc_openai_work.supports_websockets=false`。

@@ -21,7 +21,9 @@ keywords:
 `alc --codex <agent>` 會啟動一個 loopback 轉接器，並把某一個 agent 的 session
 指向它。一次 `codex login` 就夠 alc 啟動的每個 agent 一起用，只有 Antigravity
 CLI 例外，它跑在自己的 Google 登入上（見 [Antigravity
-CLI](./agents.md#antigravity-cli-agy)）。
+CLI](./agents.md#antigravity-cli-agy)）。同一個橋接也能讓其他每個 agent，包括
+Claude Code，跑在那個 Google 登入上：`alc --agy <agent>`（見
+[Antigravity](./providers.md#antigravity)）。
 
 ```sh
 codex login
@@ -104,8 +106,8 @@ alc 也照同樣的方式處理：`standard` 是預設值，永遠不會寫進�
 `alc models` 會印出兩個數字 —— `Codex context: 500K (max 872K)` —— 而 profile
 設成 max 時，`alc doctor` 會在那個 profile 的橋接那一列加上 `/ max context`。
 profile 的選擇會套用到橋接上的每一個 agent，不只 Claude Code。單次執行用的
-`--context` 跟 `--effort` 一樣只屬於 `alc claude`，provider 不是 Codex 時會被
-拒絕。
+`--context` 跟 `--effort` 一樣只屬於 `alc claude`，provider 不是 Codex 或
+Antigravity 時會被拒絕。
 
 ## 換一個起點
 

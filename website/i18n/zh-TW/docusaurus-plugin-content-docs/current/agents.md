@@ -26,7 +26,8 @@ provider 清單，翻譯成你正要啟動的那個 agent 聽得懂的樣子。�
 除了一個例外，每個 agent 也都能靠一次 `codex login`，透過 [Codex
 橋接](./codex-to-claude.md)運作；`alc --codex <agent>` 從頭到尾都是同一個
 指令，所以下面不再重複。例外是 [Antigravity CLI](#antigravity-cli-agy)，它只
-跑在自己的 Google 登入上。
+跑在自己的 Google 登入上 —— 而那個登入反過來也能給其他每個 agent 使用
+（`alc --agy <agent>`）。
 
 ## Claude Code
 
@@ -168,7 +169,8 @@ alc --moonshot kimi
 
 ## Antigravity CLI (agy)
 
-`agy` —— Google 的 Antigravity CLI · 只跑在它自己的 Google 登入上。
+`agy` —— Google 的 Antigravity CLI · 跑在它自己的 Google 登入上，那個登入也能
+給其他每個 agent 使用。
 
 agy 自己登入 Google，所以 alc 沒有端點、金鑰或設定檔要交給它，也完全不碰 agy
 的任何憑證。它跑在初始設定內附的 `antigravity` profile 上，alc 只依那個 profile
@@ -185,16 +187,15 @@ alc models --agy
 
 起始模型是 `claude-opus-5-5-high`，沒有設定強度，所以 agy 用它自己的預設值。
 `alc models --agy` 會列出 `agy models` 回報的模型，保留一天（`--refresh` 會重新
-問一次），問不到 agy 時就用內建的清單；`alc config` 裡 antigravity profile 的
-Model 那一列也是在同一份清單裡切換。舊版 alc 寫出的 `config.toml` 沒有
+問一次），問不到 agy 時就用內建的清單，並把沒有任何模型家族提供的 id 標上
+` (not bridgeable)`：agy 也許能跑，其他 agent 不行。`alc config` 裡 antigravity
+profile 的 Model 那一列也是在同一份清單裡切換。舊版 alc 寫出的 `config.toml` 沒有
 `antigravity` profile，這時 `alc agy` 會給出修法：
 `alc config upsert antigravity --kind antigravity`。
 
-目前還沒有其他 agent 能跑在 Antigravity 登入上：`alc --agy claude` 會被拒絕。
-讓其他 agent 也經由它連線的功能即將推出，而且會是需要你明確選擇開啟的選項，
-因為 Google 曾經停權把那個登入拿給第三方使用的帳號（見 [Google AI Developers
-Forum](https://discuss.ai.google.dev/)）。`alc agy` 本身沒有這種風險：呼叫都是
-agy 自己發出的。
+同一個登入也能透過 alc 的橋接給其他每個 agent 使用：`alc --agy claude`、
+`alc --agy opencode` 等等。alc 借用了什麼、agy 仍管什麼，見
+[Provider](./providers.md#antigravity)。
 
 ## 直接 API 量測
 
@@ -213,7 +214,7 @@ helper 憑證，不是原始服務商金鑰。不加旗標的一般直接啟動�
 | Goose | alc 的 Anthropic/OpenAI 分支，不含原生 OpenRouter/Ollama 整合。OpenAI 分拆端點含 query／fragment 時，量測會被拒絕；一般啟動維持不變。 |
 | Kimi Code CLI | alc 產生的暫存 provider 設定裡的端點，不是使用者的 config／model／provider 覆寫。 |
 | Pi | 不支援直接啟動觀測：端點存在持續共用的 `models.json`，alc 不會讓它指向短命的觀測器。 |
-| Antigravity CLI | 不支援：agy 跑在它自己的登入上，alc 不碰那個登入。 |
+| Antigravity CLI | 不支援：agy 跑在它自己的登入上。跑在那個登入上的其他 agent，會由 alc 的橋接自動觀測。 |
 
 原生 OAuth／登入，以及超出這些設定位置的明確端點／helper／config／provider
 覆寫，不會被偷偷攔截；明確要求 `--metrics` 卻不安全或不支援時，會說明原因並

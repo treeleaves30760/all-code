@@ -133,7 +133,8 @@ Claude Code 會以 `gpt-6.1-sol` 搭配 `low` 推理強度啟動 —— 或是�
 context window，而 `/model` 選單裡會列出每一個 GPT 模型。模型、推理強度
 分級，以及同一個登入上的其他 agent，都在 [Codex 橋接](./codex-to-claude.md)。
 Antigravity CLI 是唯一改用自己登入的 agent：`alc agy`（見 [Antigravity
-CLI](./agents.md#antigravity-cli-agy)）。
+CLI](./agents.md#antigravity-cli-agy)）。那個 Google 登入也能透過同一個橋接給其他
+每個 agent 使用：`alc --agy claude`（見 [Antigravity](./providers.md#antigravity)）。
 
 ## 其他 provider
 

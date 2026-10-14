@@ -110,7 +110,7 @@ alc config remove work
 `--protocol`、`--auth`、`--api-key-env`、`--codex-profile`、`--codex-home`、
 `--claude-config-dir`、`--disable` 與 `--enable`。
 
-`--context standard|max` 只屬於 `codex` profile，用在其他 kind 上會被拒絕。
+`--context standard|max` 只屬於 `codex` 或 `antigravity` profile，用在其他 kind 上會被拒絕。
 `max` 會存成 `context = "max"`；`standard` 是預設值，永遠不會寫進設定。超過
 標準 window 之後，每一輪消耗方案額度的速度會變快 ——
 [Context window](./codex-to-claude.md#context-window) 列出了實際數字。
