@@ -396,7 +396,7 @@ alc doctor
 binaries, every provider profile against all nine agents, the resolved per-agent
 defaults, a leftover GPT model pinned in `~/.claude/settings.json`, the Codex
 bridge's model, effort, context choice, and `codex login` state, the Antigravity
-CLI's binary, whether agy has been set up, and its profile, an enabled
+CLI (binary, set-up state, profile, model source), an enabled
 Ollama, llama.cpp or vLLM profile checked against its running server, and the
 remote-control posture — then a summary of issues with a fix for each. It exits
 non-zero when it finds one.
@@ -447,7 +447,8 @@ and cost per agent and model) and a short legend.
 
 alc asks each login's own vendor what is left: chatgpt.com for a Codex login,
 api.anthropic.com for Claude Code's, and the published balance endpoint for an
-OpenRouter, DeepSeek, Moonshot, MiniMax or Z.ai key. Nothing is ever written
+OpenRouter, DeepSeek, Moonshot, MiniMax or Z.ai key; the `antigravity` row says
+no quota API, because agy keeps its login to itself. Nothing is ever written
 back and no token is refreshed, so a status command cannot invalidate the
 credential a running session is holding.
 
@@ -682,7 +683,8 @@ upsert` when upstream renames or retires a model.
 | Antigravity CLI | `agy` | its own Google login only | `--model`, `--effort` | No (own login) |
 
 `alc` launches agents that are already installed — install the ones you plan to
-use from the links above (Pi is `npm install -g @earendil-works/pi-coding-agent`).
+use from the links above (Pi is `npm install -g @earendil-works/pi-coding-agent`;
+agy you install and sign in per Google's own Antigravity instructions).
 Every agent but agy reaches the Codex bridge with one `codex login` whatever it
 accepts natively; agy runs only on its own Google login. `ALC_CLAUDE_BIN` and its
 siblings, `ALC_AGY_BIN` among them, override a binary path.

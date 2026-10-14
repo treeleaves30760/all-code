@@ -3,7 +3,7 @@ id: getting-started
 title: Getting started
 sidebar_label: Getting started
 sidebar_position: 2
-description: Install alc, run Claude Code on your Codex login, point any agent at another provider, forward arguments, preview a launch, and update.
+description: Install alc, run Claude Code on your Codex login, point any agent but agy at another provider, forward arguments, preview a launch, and update.
 keywords:
   - alc install
   - alc update

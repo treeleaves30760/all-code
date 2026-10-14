@@ -64,8 +64,10 @@ New `openai` profiles also start with `low` reasoning effort. Existing profiles
 keep their saved model and effort.
 
 `antigravity` launches the Antigravity CLI and nothing else, so it is not
-Claude-ready — not yet: routing other agents through that login is coming as an
-explicit opt-in. A `config.toml` written before it existed lacks the profile;
+Claude-ready yet. Routing other agents through that login is coming as an
+explicit opt-in, because Google has suspended accounts for third-party use of
+that login ([Antigravity CLI](./agents.md#antigravity-cli-agy) has the forum
+thread). A `config.toml` written before it existed lacks the profile;
 `alc config upsert antigravity --kind antigravity` adds it.
 
 Model IDs drift faster than alc releases, so treat every starting model as a
