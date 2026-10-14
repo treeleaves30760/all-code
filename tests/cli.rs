@@ -873,7 +873,8 @@ fn a_verified_agent_gets_a_permission_flag_and_an_unverified_one_does_not() {
         .args(["--openrouter", "--dry-run", "--share", "opencode"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("share:"));
+        .stdout(predicate::str::contains("share:"))
+        .stdout(predicate::str::contains("--agent build"));
 
     // Qwen's flags are documentation-derived, so an unasked-for launch adds
     // nothing to its arguments.

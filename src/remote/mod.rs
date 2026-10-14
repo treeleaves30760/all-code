@@ -114,10 +114,7 @@ pub fn share(
     }
     // Parsed before the environment checks below, so a typo in a value the
     // user typed is named whether or not they are at a terminal.
-    let requested = permission
-        .as_deref()
-        .map(str::parse::<caps::SafetyRung>)
-        .transpose()?;
+    let requested = requested_rung(permission.as_deref())?;
     // Checked before any work: a scripted `alc claude -p … > out.txt` must
     // fail loudly here rather than fill that file with escape sequences.
     require_terminal()?;
@@ -447,6 +444,22 @@ pub fn run_pane(port: u16, token: &str) -> ! {
 /// a few lines above it.
 pub fn tmux_status(config_dir: &Path) -> Result<String> {
     tmux::find_for(config_dir).map(|found| found.label())
+}
+
+fn requested_rung(permission: Option<&str>) -> Result<Option<SafetyRung>> {
+    permission.map(str::parse::<SafetyRung>).transpose()
+}
+
+/// Adds to `spec` the permission flags a shared launch would add, for
+/// `--dry-run`.
+///
+/// A shared launch arms the rung before the hub ever sees the spec, so a dry
+/// run that skipped this would print a command line the real run does not
+/// spawn - and the permission flag is the one argument a reader checking a
+/// shared session most needs to see.
+pub fn arm_for_dry_run(spec: &mut LaunchSpec, permission: Option<&str>) -> Result<()> {
+    permission::arm_at_launch(spec, requested_rung(permission)?);
+    Ok(())
 }
 
 /// Whether the user has asked for every session to be shared.

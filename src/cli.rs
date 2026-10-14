@@ -1219,6 +1219,9 @@ fn run_spec(
     }
 
     if dry_run {
+        if share_now {
+            remote::arm_for_dry_run(&mut spec, sharing.permission.as_deref())?;
+        }
         // Computed before the command line is printed, because it is what
         // puts `--settings <path>` in the arguments a real run would spawn -
         // without writing the file or starting the bridge that names it.
