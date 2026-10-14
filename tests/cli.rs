@@ -2048,6 +2048,44 @@ fn bundled_model_catalog_is_available_offline() {
 }
 
 #[test]
+fn bundled_antigravity_models_are_available_offline() {
+    let temp = tempfile::tempdir().unwrap();
+    let assert = alc(&temp)
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["models", "--agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Antigravity model catalog"))
+        .stdout(predicate::str::contains("Codex bridge model catalog").not());
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let source = stdout
+        .lines()
+        .find(|line| line.starts_with("source:"))
+        .expect("a source line");
+    assert!(source.contains("bundled"), "{stdout}");
+    let listed: Vec<_> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("- "))
+        .collect();
+    assert_eq!(listed.len(), 10, "{stdout}");
+    assert_eq!(listed[0], "claude-opus-5-5-high: Claude Opus 5.5 (High)");
+    assert_eq!(listed[9], "gpt-oss-120b-medium: GPT-OSS 120B (Medium)");
+    assert!(
+        !temp.path().join("antigravity-models.json").exists(),
+        "a bundled fallback is not cached"
+    );
+
+    alc(&temp)
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["models", "--antigravity"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gemini-3.8-flash-medium"));
+}
+
+#[test]
 fn pi_dry_run_selects_the_alc_provider_entry() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)

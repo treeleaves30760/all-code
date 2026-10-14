@@ -1226,7 +1226,7 @@ fn pad(value: &str, to: usize, align: Align) -> String {
     }
 }
 
-fn binary_for(agent: Agent) -> std::ffi::OsString {
+pub(crate) fn binary_for(agent: Agent) -> std::ffi::OsString {
     let override_name = match agent {
         Agent::Claude => "ALC_CLAUDE_BIN",
         Agent::Codex => "ALC_CODEX_BIN",
@@ -1241,7 +1241,7 @@ fn binary_for(agent: Agent) -> std::ffi::OsString {
     env::var_os(override_name).unwrap_or_else(|| agent.as_str().into())
 }
 
-fn resolve(binary: &std::ffi::OsStr) -> Option<PathBuf> {
+pub(crate) fn resolve(binary: &std::ffi::OsStr) -> Option<PathBuf> {
     let path = PathBuf::from(binary);
     if path.components().count() > 1 || path.is_absolute() {
         return path.is_file().then_some(path);

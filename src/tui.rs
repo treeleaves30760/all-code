@@ -16,6 +16,7 @@ use ratatui::widgets::{
     Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
 };
 
+use crate::antigravity::{self, AgyModel};
 use crate::config::{
     Agent, AuthStyle, Config, ContextChoice, Protocol, Provider, ProviderKind, ReasoningEffort,
     Store, validate_profile_name,
@@ -29,9 +30,11 @@ type Backend = CrosstermBackend<Stdout>;
 pub fn run(store: &mut Store) -> Result<()> {
     // Refresh before taking over the screen so the model chooser is current.
     let catalog = ModelCatalog::load_and_refresh_if_due(&store.dir, &CodexSource::detect());
+    let agy_models = antigravity::models(&store.dir, false).models;
     let mut terminal = setup_terminal()?;
     let _cleanup = TerminalCleanup;
     let mut app = App::new(store.clone(), catalog);
+    app.agy_models = agy_models;
 
     loop {
         terminal.draw(|frame| draw(frame, &mut app))?;
@@ -136,6 +139,8 @@ impl RemoteRow {
 struct App {
     store: Store,
     catalog: ModelCatalog,
+    /// What the model row cycles through for an Antigravity profile.
+    agy_models: Vec<AgyModel>,
     picker: Option<PickerApp>,
     screen: Screen,
     provider_selected: usize,
@@ -159,6 +164,7 @@ impl App {
         Self {
             store,
             catalog,
+            agy_models: antigravity::bundled(),
             picker: None,
             screen: Screen::Providers,
             provider_selected: 0,
@@ -341,7 +347,14 @@ impl App {
             KeyCode::Enter => self.apply_edit(),
             KeyCode::Tab | KeyCode::Down => form.move_field(1),
             KeyCode::BackTab | KeyCode::Up => form.move_field(-1),
-            KeyCode::Left | KeyCode::Right if form.browses_models() => self.open_model_picker(),
+            KeyCode::Left | KeyCode::Right if form.browses_models() => {
+                if form.provider.kind == ProviderKind::Antigravity {
+                    let delta = if key.code == KeyCode::Left { -1 } else { 1 };
+                    form.step_model(&self.agy_models, delta);
+                } else {
+                    self.open_model_picker();
+                }
+            }
             KeyCode::Left => form.cycle(-1),
             KeyCode::Right => form.cycle(1),
             KeyCode::Backspace => form.backspace(),
@@ -639,10 +652,33 @@ impl EditForm {
             (self.selected as isize + delta).rem_euclid(Self::FIELD_COUNT as isize) as usize;
     }
 
-    /// Codex profiles pick their model from the synchronized catalog instead
-    /// of typing an ID by hand.
+    /// Codex profiles pick their model from the synchronized catalog, and
+    /// Antigravity profiles from agy's own list, instead of typing an ID by
+    /// hand.
     fn browses_models(&self) -> bool {
-        self.selected == 2 && self.provider.kind == ProviderKind::Codex
+        self.selected == 2
+            && matches!(
+                self.provider.kind,
+                ProviderKind::Codex | ProviderKind::Antigravity
+            )
+    }
+
+    /// Moves the model to the neighbouring entry of `models`. A model the
+    /// list does not know starts from its head (or its tail, going left).
+    fn step_model(&mut self, models: &[AgyModel], delta: isize) {
+        if models.is_empty() {
+            return;
+        }
+        let length = models.len() as isize;
+        let next = match models
+            .iter()
+            .position(|model| model.id == self.provider.model)
+        {
+            Some(index) => (index as isize + delta).rem_euclid(length),
+            None if delta > 0 => 0,
+            None => length - 1,
+        };
+        self.provider.model = models[next as usize].id.clone();
     }
 
     /// The context-window choice, directly under the effort it qualifies.
@@ -770,7 +806,10 @@ impl EditForm {
             (
                 "Model",
                 self.provider.model.clone(),
-                if self.provider.kind == ProviderKind::Codex {
+                if matches!(
+                    self.provider.kind,
+                    ProviderKind::Codex | ProviderKind::Antigravity
+                ) {
                     "←/→ browse"
                 } else {
                     "text"
@@ -1180,13 +1219,33 @@ fn draw_edit(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let Some(form) = &app.edit else {
         return;
     };
-    let items = form.fields().into_iter().map(|(label, value, hint)| {
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("{label:<18}"), Style::default().fg(Color::Cyan)),
-            Span::raw(if value.is_empty() { "<empty>" } else { &value }.to_owned()),
-            Span::styled(format!("  [{hint}]"), Style::default().fg(Color::DarkGray)),
-        ]))
-    });
+    let items = form
+        .fields()
+        .into_iter()
+        .enumerate()
+        .map(|(row, (label, value, hint))| {
+            // agy's ids encode the effort tier; its own label says it in
+            // words, so an Antigravity profile's model row shows it, dim.
+            let model_label = (row == 2 && form.provider.kind == ProviderKind::Antigravity)
+                .then(|| app.agy_models.iter().find(|model| model.id == value))
+                .flatten()
+                .map(|model| {
+                    Span::styled(
+                        format!("  {}", model.label),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                });
+            let mut spans = vec![
+                Span::styled(format!("{label:<18}"), Style::default().fg(Color::Cyan)),
+                Span::raw(if value.is_empty() { "<empty>" } else { &value }.to_owned()),
+            ];
+            spans.extend(model_label);
+            spans.push(Span::styled(
+                format!("  [{hint}]"),
+                Style::default().fg(Color::DarkGray),
+            ));
+            ListItem::new(Line::from(spans))
+        });
     let list = List::new(items)
         .block(
             Block::default()
@@ -1511,6 +1570,56 @@ mod tests {
         let mut app = app_editing_codex("gpt-5.6-luna");
         press(&mut app, KeyCode::Right);
         assert_eq!(app.screen, Screen::Model);
+    }
+
+    fn app_editing_antigravity(model: &str) -> App {
+        let mut app = app_editing_codex("unused");
+        let mut provider = Provider::for_kind(ProviderKind::Antigravity);
+        provider.model = model.to_owned();
+        let mut form = EditForm::existing("agy".to_owned(), provider, false);
+        form.selected = 2;
+        app.edit = Some(form);
+        app
+    }
+
+    #[test]
+    fn the_model_field_cycles_the_antigravity_list_in_place() {
+        let mut app = app_editing_antigravity("claude-opus-5-5-high");
+        app.edit.as_mut().unwrap().provider.reasoning_effort = Some(ReasoningEffort::Low);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.screen, Screen::Edit, "no Codex picker for agy");
+        let form = app.edit.as_ref().unwrap();
+        assert_eq!(form.provider.model, "claude-opus-5-5-medium");
+        assert_eq!(
+            form.provider.reasoning_effort,
+            Some(ReasoningEffort::Low),
+            "effort stays its own row"
+        );
+
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(
+            app.edit.as_ref().unwrap().provider.model,
+            "gpt-oss-120b-medium"
+        );
+    }
+
+    #[test]
+    fn an_unlisted_antigravity_model_starts_browsing_at_the_head() {
+        let mut app = app_editing_antigravity("something-agy-added-later");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.edit.as_ref().unwrap().provider.model,
+            "claude-opus-5-5-high"
+        );
+    }
+
+    #[test]
+    fn the_antigravity_model_row_shows_its_label() {
+        let mut app = app_editing_antigravity("gemini-3.8-flash-low");
+        let screen = rendered(&mut app);
+        assert!(screen.contains("Gemini 3.8 Flash (Low)"), "{screen}");
+        assert!(screen.contains("←/→ browse"), "{screen}");
     }
 
     #[test]
