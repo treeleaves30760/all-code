@@ -63,6 +63,18 @@ pub(crate) fn is_claude_code_alias(model: &str) -> bool {
     alias_tier(&model_id(model)).is_some()
 }
 
+/// What every Claude model's full id starts with (`claude-opus-5`,
+/// `claude-3-5-haiku-latest`); a provider's own spelling such as
+/// `anthropic/claude-sonnet-5` does not.
+const CLAUDE_ID_PREFIX: &str = "claude-";
+
+/// Whether `model` names a Claude model in full (`claude-sonnet-5`,
+/// `Claude-Haiku-5[1m]`) - the ids Anthropic, and a gateway in front of it,
+/// serves by name.
+pub(crate) fn is_claude_model_id(model: &str) -> bool {
+    model_id(model).starts_with(CLAUDE_ID_PREFIX)
+}
+
 impl ModelTiers {
     fn tier(&self, tier: Tier) -> &str {
         match tier {
@@ -79,7 +91,7 @@ impl ModelTiers {
         if let Some(tier) = alias_tier(&id) {
             return Some(self.tier(tier));
         }
-        let family = id.strip_prefix("claude-")?;
+        let family = id.strip_prefix(CLAUDE_ID_PREFIX)?;
         if ["fable", "mythos", "opus"]
             .iter()
             .any(|name| family.contains(name))
@@ -162,6 +174,27 @@ mod tests {
             "sonnet-proxy",
         ] {
             assert!(!is_claude_code_alias(model), "{model}");
+        }
+    }
+
+    #[test]
+    fn claude_ids_in_full_are_told_from_other_models() {
+        for model in [
+            "claude-opus-5",
+            "claude-sonnet-5-5",
+            "Claude-Haiku-5[1m]",
+            " claude-3-5-haiku-latest ",
+        ] {
+            assert!(is_claude_model_id(model), "{model}");
+        }
+        for model in [
+            "anthropic/claude-sonnet-5",
+            "sonnet",
+            "claude",
+            "gpt-6-astra",
+            "qwen3-coder",
+        ] {
+            assert!(!is_claude_model_id(model), "{model}");
         }
     }
 
