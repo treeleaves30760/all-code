@@ -488,7 +488,7 @@ pub(crate) struct Fingerprint([u8; 32]);
 impl Fingerprint {
     /// Twelve hex digits, enough to tell two tokens apart in a debug line and
     /// useless for anything else.
-    pub(crate) fn account_id(&self) -> String {
+    pub(crate) fn short_hex(&self) -> String {
         self.0
             .iter()
             .take(6)
@@ -499,7 +499,7 @@ impl Fingerprint {
 
 impl fmt::Debug for Fingerprint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "Fingerprint({})", self.account_id())
+        write!(formatter, "Fingerprint({})", self.short_hex())
     }
 }
 
@@ -564,12 +564,18 @@ pub(crate) enum LoginState {
 }
 
 pub(crate) fn status(store: &dyn CredentialStore, now: i64) -> LoginState {
-    match load(store) {
+    state_of(&load(store), now)
+}
+
+/// The state of a login already read, for a caller that also needs the
+/// token and so reads the store once.
+pub(crate) fn state_of(loaded: &Result<AgyToken, AgyAuthError>, now: i64) -> LoginState {
+    match loaded {
         Ok(token) if token.is_fresh(now) => LoginState::Ready {
             expires_at: token.expires_at(),
         },
         Ok(_) => LoginState::Expired,
-        Err(error) => LoginState::Missing(error),
+        Err(error) => LoginState::Missing(*error),
     }
 }
 
@@ -1041,10 +1047,10 @@ mod tests {
     }
 
     #[test]
-    fn the_fingerprint_is_sha256_and_the_account_id_its_first_twelve_hex_digits() {
+    fn the_fingerprint_is_sha256_and_its_short_form_the_first_twelve_hex_digits() {
         let token = parse_credential(&credential("abc", 3600)).unwrap();
         // sha256("abc") = ba7816bf8f01cfea…
-        assert_eq!(token.fingerprint().account_id(), "ba7816bf8f01");
+        assert_eq!(token.fingerprint().short_hex(), "ba7816bf8f01");
         assert_eq!(
             format!("{:?}", token.fingerprint()),
             "Fingerprint(ba7816bf8f01)"

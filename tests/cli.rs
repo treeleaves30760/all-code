@@ -2403,7 +2403,7 @@ fn doctor_has_an_antigravity_section_that_reads_no_secret() {
     let section = doctor_section(&text, "Antigravity");
     assert!(section.contains("agy"), "{section}");
     assert!(
-        section.contains("not logged in") || section.contains("not found"),
+        section.contains("not logged in; run `agy` and sign in"),
         "{section}"
     );
     assert!(section.contains("bridge"), "{section}");
@@ -3091,6 +3091,7 @@ fn usage_reports_what_is_left_on_the_antigravity_login_by_pool() {
         let lower = request.to_ascii_lowercase();
         assert!(lower.contains("authorization: bearer synthetic-agy-token-never-echo"));
         assert!(lower.contains("user-agent: antigravity/cli/"));
+        assert!(lower.contains("x-goog-api-client: "), "{request}");
         assert!(!request.contains("synthetic-refresh"));
     }
 
@@ -3110,7 +3111,7 @@ fn usage_reports_what_is_left_on_the_antigravity_login_by_pool() {
 #[test]
 fn usage_names_the_fix_when_google_refuses_or_agy_is_signed_out() {
     let temp = tempfile::tempdir().unwrap();
-    let (base, _requests) = serve_agy_quota(("401 Unauthorized", r#"{"error":{"code":401}}"#));
+    let (base, requests) = serve_agy_quota(("401 Unauthorized", r#"{"error":{"code":401}}"#));
     let run = || {
         let output = alc(&temp)
             .env("ALC_AGY_API_BASE", &base)
@@ -3136,6 +3137,29 @@ fn usage_names_the_fix_when_google_refuses_or_agy_is_signed_out() {
             .contains("sign in with agy again"),
         "{refused}"
     );
+
+    // Expired is routine, not signed out, and asks Google nothing.
+    std::fs::write(
+        temp.path().join("agy-login"),
+        serde_json::json!({
+            "auth_method": "consumer",
+            "token": {
+                "access_token": "synthetic-agy-token-never-echo",
+                "token_type": "Bearer",
+                "expiry": "2001-01-01T00:00:00Z",
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let asked = requests.try_iter().count();
+    let expired = run();
+    assert_eq!(expired["state"], "unavailable", "{expired}");
+    assert_eq!(
+        expired["error"],
+        "expired; agy renews it on the next launch"
+    );
+    assert_eq!(requests.try_iter().count(), 0, "asked {asked} before");
 }
 
 #[test]

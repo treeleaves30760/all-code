@@ -513,16 +513,19 @@ fn antigravity(store: &Store, theme: &Theme) {
     let found = resolve(&binary);
     let (login, project) = match agy_auth::AgyLocator::resolve() {
         Ok(locator) => {
-            let store = locator.store();
-            let login = agy_auth::status(&store, agy_auth::now_secs());
+            // One read of the store: the state and, for a fresh token, the
+            // token the project lookup is signed with.
+            let loaded = agy_auth::load(&locator.store());
+            let login = agy_auth::state_of(&loaded, agy_auth::now_secs());
             // One read-only lookup, and only for a fresh token: doctor never renews.
-            let project =
-                matches!(login, LoginState::Ready { .. }).then(|| match agy_auth::load(&store) {
-                    Ok(token) => crate::usage::quota::antigravity_project(&token)
+            let project = match (&login, &loaded) {
+                (LoginState::Ready { .. }, Ok(token)) => Some(
+                    crate::usage::quota::antigravity_project(token)
                         .map(|project| project.is_some())
                         .map_err(|outcome| outcome.error.unwrap_or_else(|| "no answer".to_owned())),
-                    Err(error) => Err(error.message().to_owned()),
-                });
+                ),
+                _ => None,
+            };
             (login, project)
         }
         Err(_) => (LoginState::Missing(AgyAuthError::LoginRequired), None),
@@ -572,8 +575,8 @@ fn antigravity_rows(config: &Config, theme: &Theme, facts: &AgyFacts) -> Vec<Row
     }
 
     // The token's state, read offline; never the token. An expired token is
-    // routine (agy's last about an hour) and only worth a warning: the next
-    // bridged request has agy renew it, which needs agy on PATH.
+    // routine (agy's last about an hour) and healthy as long as agy is on
+    // PATH to renew it at the next launch; without agy it is stranded.
     rows.push(match facts.login {
         LoginState::Ready { .. } => Row::new(
             Status::Good,
@@ -581,12 +584,9 @@ fn antigravity_rows(config: &Config, theme: &Theme, facts: &AgyFacts) -> Vec<Row
             "ready (agy's Google login)".to_owned(),
         ),
         LoginState::Expired if facts.found.is_some() => Row::new(
-            Status::Warn,
+            Status::Good,
             "login",
-            theme.paint(
-                Tone::Warn,
-                "expired; agy renews it on the next bridged request",
-            ),
+            "expired; agy renews it on the next launch".to_owned(),
         ),
         LoginState::Expired => Row::new(
             Status::Warn,
@@ -1531,10 +1531,10 @@ mod tests {
         let ready = login(None, LoginState::Ready { expires_at: 0 });
         assert!(ready.status == Some(Status::Good));
         assert_eq!(ready.detail, "ready (agy's Google login)");
-        // Expired with agy at hand is routine (agy's tokens last an hour): a
-        // warning that says it renews, never a problem.
+        // Expired with agy at hand is routine (agy's tokens last an hour):
+        // healthy, and it says agy renews it.
         let renewable = login(Some(PathBuf::from("/opt/agy")), LoginState::Expired);
-        assert!(renewable.status == Some(Status::Warn));
+        assert!(renewable.status == Some(Status::Good));
         assert!(
             renewable.detail.contains("agy renews it"),
             "{}",

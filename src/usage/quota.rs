@@ -858,13 +858,14 @@ pub(crate) fn antigravity_project(token: &AgyToken) -> Result<Option<String>, Bo
 }
 
 /// What is left on an Antigravity login: the Gemini pool and the Claude/GPT
-/// pool, each by window. Never renews: an expired token is reported, and
-/// the next bridged request (or `agy` itself) renews it.
+/// pool, each by window. Never renews: an expired token is routine (agy's
+/// last about an hour), so it is nothing to read right now rather than a
+/// signed-out login, and the next launch has agy renew it.
 pub(crate) fn fetch_antigravity(token: &AgyToken, now: i64) -> Outcome {
     if !token.is_fresh(now) {
         return Outcome::failed(
-            AccountState::SignedOut,
-            "the Antigravity login has expired; run `agy` once to renew it".to_owned(),
+            AccountState::Unavailable,
+            "expired; agy renews it on the next launch".to_owned(),
         );
     }
     let project = match antigravity_project(token) {
@@ -1205,16 +1206,39 @@ mod tests {
         let quota: AgyQuota =
             serde_json::from_str(&crate::bridge::fixtures::antigravity("quota-summary.json"))
                 .unwrap();
-        assert!(!map_antigravity(quota).windows.is_empty());
+        let windows = map_antigravity(quota).windows;
+        let rows: Vec<_> = windows
+            .iter()
+            .map(|w| (w.scope.clone().unwrap(), w.name.clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Gemini".to_owned(), "5h".to_owned()),
+                ("Gemini".to_owned(), "week".to_owned()),
+                ("Claude/GPT".to_owned(), "5h".to_owned()),
+                ("Claude/GPT".to_owned(), "week".to_owned()),
+            ]
+        );
+        let used: Vec<f64> = windows.iter().map(|w| w.used_percent).collect();
+        for (got, want) in used.iter().zip([0.0, 0.0, 0.0, 0.57448]) {
+            assert!((got - want).abs() < 0.001, "{used:?}");
+        }
+        // 0.9942552 remaining reads as 99% left.
+        assert_eq!((100.0 - used[3]).round(), 99.0);
+        assert!(windows.iter().all(|w| w.resets_at.is_some()), "{windows:?}");
     }
 
     #[test]
-    fn an_expired_antigravity_login_is_signed_out_without_a_request() {
+    fn an_expired_antigravity_login_is_unavailable_without_a_request() {
         use crate::bridge::agy_auth::{now_secs, parse_credential, test_support::credential};
         let token = parse_credential(&credential("tok-a", -10)).unwrap();
         let outcome = fetch_antigravity(&token, now_secs());
-        assert_eq!(outcome.state, Some(AccountState::SignedOut));
-        assert!(outcome.error.unwrap().contains("agy"));
+        assert_eq!(outcome.state, Some(AccountState::Unavailable));
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("expired; agy renews it on the next launch")
+        );
     }
 
     /// The bearer token rides along, so a redirect is refused rather than
