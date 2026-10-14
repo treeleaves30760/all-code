@@ -2,7 +2,7 @@
 id: providers
 title: Provider 相容性
 sidebar_position: 5
-description: 八個 coding agent 各自能搭配哪些 LLM provider，以及十五種內建 provider kind 預設值的端點、金鑰環境變數與起始模型。
+description: 九個 coding agent 各自能搭配哪些 LLM provider，以及十六種內建 provider kind 預設值的端點、金鑰環境變數與起始模型。
 keywords:
   - anthropic messages api
   - openai responses api
@@ -14,7 +14,7 @@ keywords:
 
 # Provider 相容性
 
-這八個 agent 講的模型協定並不相同，所以 alc 會在啟動前先檢查這個組合，而不是
+這九個 agent 講的模型協定並不相同，所以 alc 會在啟動前先檢查這個組合，而不是
 把一個注定失敗的請求送出去。
 
 | Agent | 支援端點 | 協定 |
@@ -27,9 +27,11 @@ keywords:
 | Goose | OpenAI 或 Anthropic 相容端點 | `openai-chat`、`anthropic-messages` |
 | Qwen Code | OpenAI、Anthropic，或 Gemini 相容端點 | `openai-chat`、`anthropic-messages` |
 | Kimi Code CLI | OpenAI 或 Anthropic 相容端點 | `openai-chat`、`anthropic-messages` |
+| Antigravity CLI | 它自己的 Google 登入 | `antigravity-native` |
 
 不論一個 agent 原生支援什麼，它同樣能透過 [Codex 橋接](./codex-to-claude.md)，
-只靠一次 `codex login` 運作。
+只靠一次 `codex login` 運作 —— 只有 Antigravity CLI 例外，它只跑在自己的 Google
+登入上（見 [Antigravity CLI](./agents.md#antigravity-cli-agy)）。
 
 `alc doctor` 會把這張表換成你自己的 profile，印出實際的結果。
 
@@ -44,6 +46,7 @@ keywords:
 | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-6.1-sol` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` |
 | `codex` | —（原生 `codex login`） | — | — |
+| `antigravity` | —（原生 `agy` 登入） | — | `claude-opus-5-5-high` |
 | `ollama` | `http://localhost:11434` | — | `qwen3-coder` |
 | `vllm` | `http://localhost:8000/v1` | — | —（預設為停用狀態） |
 | `llamacpp` | `http://localhost:8080/v1` | `LLAMA_API_KEY` | —（填伺服器列出的名稱） |
@@ -58,6 +61,11 @@ keywords:
 
 新建的 `openai` profile 也會以 `low` 推理強度啟動。既有 profile 已儲存的模型
 與強度維持原樣。
+
+`antigravity` 只會啟動 Antigravity CLI，不會啟動別的，所以它還不能跑 Claude ——
+目前還不行：讓其他 agent 也經由那個登入連線的功能即將推出，而且會是需要你明確
+選擇開啟的選項。在它出現之前寫出的 `config.toml` 沒有這個 profile；
+`alc config upsert antigravity --kind antigravity` 會把它加上。
 
 model ID 換得比 alc 發版還快，所以上面每一個起始模型都只是拿來改的值，不是
 provider 今天真的提供什麼的保證。

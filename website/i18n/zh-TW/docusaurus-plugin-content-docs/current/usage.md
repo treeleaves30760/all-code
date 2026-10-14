@@ -217,6 +217,7 @@ loopback HTTP 轉送 route，保留 agent 的 SDK、協定、模型、參數與*
 | Qwen Code / Goose | 支援的、由 alc 管理的 Anthropic 或 OpenAI 分支。Qwen 的 Google/Gemini 分支與 Goose 的原生 OpenRouter/Ollama 整合不在觀測範圍內。Goose 的 OpenAI 分拆端點若含 query 或 fragment，量測會被拒絕；一般啟動維持不變。 |
 | Kimi Code CLI | alc 產生的暫存設定裡的 provider 端點，不是使用者自帶的設定。 |
 | Pi | 不支援直接觀測：alc 不會把短命的 listener 寫進持續共用的 `models.json`。 |
+| Antigravity CLI | 不支援直接觀測：agy 跑在它自己的登入上，alc 不碰那個登入。 |
 
 Codex 產生的 provider ID 是 `alc_` 加上 alc profile 名稱，連字號改成底線：
 `openai-work` profile 要用 `model_providers.alc_openai_work.supports_websockets=false`。
@@ -341,7 +342,7 @@ PNG 由 Rust 離線繪製，附帶已授權的內嵌字型，不依賴 Python、
 | `--until DATE` | 不含終點，格式相同。要包含選取時區的 10 月 7 日整天，用 `--until 2026-10-08`。 |
 | `--timezone ZONE` | `UTC`（預設）、`local` 或 `Asia/Taipei` 等 IANA 名稱；日期界線、視窗與分桶共用。 |
 | `--filter-profile PROFILE` | 精確比對有紀錄的 alc profile。沒有 profile 的原生紀錄不會符合。 |
-| `--filter-agent AGENT` | 有紀錄的 coding agent：`claude`、`codex`、`opencode`、`pi`、`copilot`、`goose`、`qwen` 或 `kimi`。 |
+| `--filter-agent AGENT` | 有紀錄的 coding agent：`claude`、`codex`、`opencode`、`pi`、`copilot`、`goose`、`qwen`、`kimi` 或 `agy`。 |
 | `--filter-model MODEL` | 精確比對回報的 model ID，不模糊搜尋別名。 |
 | `--claude-dir PATH` | 可重複指定的絕對 Claude **設定根目錄**；讀取底下的 `projects/`。 |
 | `--codex-dir PATH` | 可重複指定的絕對 Codex **home**；讀取底下的 `sessions/` 與 `archived_sessions/`。 |

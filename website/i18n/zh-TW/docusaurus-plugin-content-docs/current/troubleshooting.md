@@ -16,7 +16,8 @@ keywords:
 # 疑難排解
 
 先跑 `alc doctor`。它會回報每個 agent 的執行檔、憑證狀態、每個 provider profile
-以及它各自的 agent 相容性欄位、解析後的預設值，還有 Codex 的登入狀態。
+以及它各自的 agent 相容性欄位、解析後的預設值、Codex 的登入狀態，還有
+Antigravity CLI 是否已經設定好。
 
 ## `'claude' is not installed or not on PATH`
 
@@ -43,6 +44,24 @@ alc 指向某個執行檔。
 ## `Codex credentials were not found`
 
 執行 `codex login`，然後再試一次。[`alc usage`](./usage.md) 會告訴你哪些登入還有效。
+
+## `provider profile or kind 'antigravity' was not found for agy`
+
+你的 `config.toml` 是 Antigravity CLI 出現之前的 alc 寫的，所以裡面沒有
+`antigravity` profile。把它加上，`alc agy` 就能跑：
+
+```sh
+alc config upsert antigravity --kind antigravity
+```
+
+在你加上之前，`alc doctor` 也會以警告的形式給出同一個提示。
+
+## `is not compatible with agy` 或 `drives the Antigravity CLI only`
+
+agy 和 `antigravity` 這個 kind 只屬於彼此：agy 自己登入 Google，所以
+`alc --codex agy` 或 `alc --openrouter agy` 會被拒絕，`alc --agy claude` 也一樣。
+直接跑 `alc agy` 就好。讓其他 agent 也經由 Antigravity 登入連線的功能目前還沒有；
+原因見 [Antigravity CLI](./agents.md#antigravity-cli-agy)。
 
 ## Auto 模式說伺服器端檢查無法使用
 

@@ -1,8 +1,9 @@
 # all-code (`alc`)
 
 **用你已經在付錢的 Codex／ChatGPT 訂閱跑 Claude Code** —— 另外七個 coding
-agent 也一樣，用同一個登入，或是你指給它們的任何一家 provider。任何 session
-都能鏡像到一個網頁，從另一台裝置操作。
+agent 也一樣，用同一個登入，或是你指給它們的任何一家 provider；再加上 Google 的
+Antigravity CLI，用它自己的登入。任何 session 都能鏡像到一個網頁，從另一台裝置
+操作。
 
 [![CI](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml/badge.svg)](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/treeleaves30760/all-code?logo=github)](https://github.com/treeleaves30760/all-code/releases/latest)
@@ -79,8 +80,9 @@ alc 啟動時什麼都不印 —— 只有一種例外：你的 Codex 設定要�
 
 ## 一次登入，每個 agent 都能用
 
-同一次 `codex login` 就能驅動 alc 啟動的每個 agent。不用第二把金鑰，也不用
-逐個 agent 設定。
+同一次 `codex login` 就能驅動 alc 啟動的每個 agent，只有一個例外。不用第二把
+金鑰，也不用逐個 agent 設定。那個例外是 `alc agy`，也就是 Google 的 Antigravity
+CLI：它自己登入 Google，也只跑在那個登入上 —— 見 [Antigravity](#antigravity)。
 
 ```sh
 alc --codex claude       # session 內的 /model 選單
@@ -148,10 +150,10 @@ Id 可以只給任何不會有歧義的前綴，就像 git 的短雜湊那樣。
 legacy 與各保留世代的 owner，以及各自的頁面連結；`attach`、`kill`、`rename`
 會找到 session 真正的 owner。前綴有歧義時直接拒絕，不會送到錯的 hub。
 
-**這個連結能做什麼。** 被共享的 Claude Code、Codex 或 OpenCode session 會以
-**ask** 模式啟動 —— 旗標是 alc 自己傳的，所以連結不會把一個全自主的 agent
-交到別人手上。其他五個 agent 則是以各自的預設值啟動，除非你用 `--permission`
-指定層級。要把 session 放寬到超過你設定的上限，必須在主機的終端機上輸入
+**這個連結能做什麼。** 被共享的 Claude Code、Codex、OpenCode 或 agy session
+會以 **ask** 模式啟動 —— 旗標是 alc 自己傳的（agy 本來預設就會先問，所以不用加
+旗標），所以連結不會把一個全自主的 agent 交到別人手上。Pi、Copilot CLI、Goose、
+Qwen Code 與 Kimi 則是以各自的預設值啟動，除非你用 `--permission` 指定層級。要把 session 放寬到超過你設定的上限，必須在主機的終端機上輸入
 `alc confirm <ticket>`。[遠端控制](#遠端控制)有完整的權限層級與威脅模型。
 
 遠端控制在 macOS、Linux 與 Windows 10／11 上都能用；在 Windows 上搭配 `--tmux`
@@ -217,10 +219,11 @@ host 重啟後舊替代憑證收到 HTTP 401；請重新執行 helper。只在 s
 
 ## 任何 provider 都行，不只 Codex
 
-`codex login` 是最短的一條路，不是唯一的一條。八個 agent 中的任何一個都可以
-指向 Anthropic、OpenAI API、OpenRouter、本機的 Ollama、llama.cpp 或 vLLM 伺服器、
-DeepSeek、Moonshot、Z.ai、MiniMax、Groq、xAI、Google，或任何自訂端點 ——
-也可以只替這一次執行換掉，什麼都不用改。
+`codex login` 是最短的一條路，不是唯一的一條。除了 agy 之外，任何一個 agent 都
+可以指向 Anthropic、OpenAI API、OpenRouter、本機的 Ollama、llama.cpp 或 vLLM
+伺服器、DeepSeek、Moonshot、Z.ai、MiniMax、Groq、xAI、Google，或任何自訂端點
+—— 也可以只替這一次執行換掉，什麼都不用改。agy（Antigravity CLI）則是跑在它
+自己的 Google 登入上（見下方的 [Antigravity](#antigravity)）。
 
 ```sh
 alc config                 # key 和每個 agent 的預設值都在這裡
@@ -235,11 +238,11 @@ alc -p local-vllm opencode
 `--provider`（或 `-p`）接受 profile 名稱；當某個 kind 只有一個 profile 時，
 也可以直接寫 kind。捷徑旗標 `--anthropic`、`--openai`、`--openrouter`、
 `--codex`、`--ollama`、`--vllm`、`--llamacpp`、`--deepseek`、`--moonshot`、
-`--zai`、`--minimax`、`--groq`、`--xai`、`--google` 效果相同。初始設定內含 Anthropic、
-OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本；key 存在
-本機或從環境變數讀取，而環境變數的優先權比較高。
+`--zai`、`--minimax`、`--groq`、`--xai`、`--google`、`--agy` 效果相同。初始設定內含
+Anthropic、OpenAI、OpenRouter、Codex、Antigravity、Ollama，以及一個預設停用的
+vLLM 範本；key 存在本機或從環境變數讀取，而環境變數的優先權比較高。
 
-這八個 agent 講的模型協定並不完全相同，十五種 provider kind 對外提供的協定
+這九個 agent 講的模型協定並不完全相同，十六種 provider kind 對外提供的協定
 也不盡相同，所以 alc 會在啟動前先驗證組合，而不是送出一個注定失敗的請求。
 [Provider 與 agent](#provider-與-agent) 列出每一種 kind 的端點、金鑰環境
 變數與協定。
@@ -257,14 +260,50 @@ Claude 模型 id（例如 `claude-opus-5`，代表這是架在 Anthropic 前面�
 `ANTHROPIC_DEFAULT_SONNET_MODEL`，仍以你的為準；寫在 `~/.claude/settings.json`
 裡的則不會，因為 alc 的設定優先於它。
 
+### Antigravity
+
+`alc agy` 會啟動 Google 的 Antigravity CLI，也就是 `agy`。它是唯一一個既不跑在
+Codex 登入上、也不跑在你指定的 provider 上的 agent：agy 自己登入 Google，alc
+就在那個登入上啟動它，完全不經手任何憑證。初始設定內含一個已啟用的
+`antigravity` profile 給它用，所以只要 agy 登入好了，就沒有別的要設定。
+
+```sh
+alc agy                                   # claude-opus-5-5-high，用 agy 自己的預設強度
+alc agy --model gemini-3.8-flash-low      # 只限這一次
+alc config upsert antigravity --model claude-sonnet-5-5-medium --effort high
+alc models --agy                          # agy 提供的模型
+```
+
+alc 會把 profile 的模型當成 agy 的 `--model` 傳入；profile 有設定推理強度時，
+也會以 `--effort` 傳入。你在 `alc agy` 後面自己寫的 `--model` 或 `--effort` 會
+原封不動轉送，alc 這時就不再送自己的那一個。agy 的強度最高到 `max`，所以設成
+`ultra` 的 profile 會以 `max` 啟動，並印出一行說明。`alc models --agy` 會列出
+`agy models` 回報的模型，保留一天；問不到 agy 時就用內建的清單；`--refresh`
+會立刻重新問一次。在 `alc config` 裡，antigravity profile 的 Model 那一列可以
+用 ←/→ 在同一份清單裡切換。`--agy`（或 `--antigravity`）是
+`--provider antigravity` 的捷徑。
+
+舊版 alc 寫出的 `config.toml` 沒有 `antigravity` profile。這時 `alc agy` 會
+直接說明並給出修法，`alc doctor` 也會用同一行指令提出警告：
+
+```sh
+alc config upsert antigravity --kind antigravity
+```
+
+目前只有 agy 能跑在這個登入上；`alc --agy claude` 會被拒絕。讓其他 agent 也經由
+Antigravity 登入連線的功能即將推出，而且會是需要你明確選擇開啟的選項，因為
+Google 曾經停權把那個登入拿給第三方使用的帳號（見
+[Google AI Developers Forum](https://discuss.ai.google.dev/)）。`alc agy` 本身
+沒有這種風險：呼叫都是 agy 自己發出的。
+
 ## 指令一覽
 
 | 指令 | 作用 |
 | --- | --- |
-| `alc claude`、`codex`、`opencode`、`pi`、`copilot`、`goose`、`qwen`、`kimi` | 用該 agent 設定好的 provider 啟動它 |
+| `alc claude`、`codex`、`opencode`、`pi`、`copilot`、`goose`、`qwen`、`kimi`、`agy` | 用該 agent 設定好的 provider 啟動它 |
 | `alc config` | 設定用的 TUI；另有 `init`、`show`、`path`、`upsert`、`key`、`set-default`、`remove` |
 | `alc doctor` | 執行檔、憑證、相容性、預設值，以及橋接與遠端狀態 |
-| `alc models` | Codex 橋接提供的 GPT 模型；`--refresh`、`--json` |
+| `alc models` | Codex 橋接提供的 GPT 模型，加上 `--agy` 則是 Antigravity CLI 的模型；`--refresh`、`--json` |
 | `alc usage [weekly\|monthly\|yearly]` | 帳號／額度、相容帳本與每日 token／成本統計；`--timezone`、`--chart[=PATH]`、`--wrapped[=PATH]`、`--daily`、`--monthly`、`--details`、`--offline`、`--pricing-file`、`--json` |
 | `alc tps` | 用戶端觀測的 TTFT 與估算／E2E 每秒 token 數；預設最新 20 筆有 timing 的請求，`--include-unmeasured`、`--limit`、`--json` |
 | `alc update` | 驗證並啟用不可變的 alc 世代；`--check`、`--force`、`--download-only`、`--from ... --offline`、`--rollback` |
@@ -311,8 +350,10 @@ alc --codex claude -- --bg --name nightly "run the slow suite"
 
 **預覽。** `alc --codex --dry-run claude` 會印出解析後的 agent 與
 provider、機密已遮蔽的指令、啟動有用到內建轉接器時的那一行，以及它會
-寫入的每一個檔案 —— 而且會說明哪些啟動會被拒絕，不只是列出哪些會成功。
-Dry-run 不啟動 listener，也不寫入任何東西，包含加了 `--metrics` 的情況。
+寫入的每一個檔案 —— 而且會說明哪些啟動會被拒絕，不只是列出哪些會成功。加上
+`--share` 時，指令裡會帶著真正共享時會加上的權限旗標，每個 agent 都一樣；打錯的
+`--permission` 也會讓 dry-run 失敗，就跟真正啟動時一樣。Dry-run 不啟動
+listener，也不寫入任何東西，包含加了 `--metrics` 的情況。
 
 ## 診斷
 
@@ -320,10 +361,11 @@ Dry-run 不啟動 listener，也不寫入任何東西，包含加了 `--metrics`
 alc doctor
 ```
 
-`alc doctor` 會回報環境與憑證路徑、全部八個 agent 的執行檔、每個 provider
-profile 對照全部八個 agent 的結果、解析後的各 agent 預設值、殘留在
+`alc doctor` 會回報環境與憑證路徑、全部九個 agent 的執行檔、每個 provider
+profile 對照全部九個 agent 的結果、解析後的各 agent 預設值、殘留在
 `~/.claude/settings.json` 裡被釘住的 GPT 模型、Codex 橋接的模型、推理強度、
-context window 選擇與 `codex login` 狀態、已啟用的 Ollama、llama.cpp 或 vLLM profile 對照其執行中伺服器的檢查，
+context window 選擇與 `codex login` 狀態、Antigravity CLI 的執行檔、agy 是否已經
+設定好，以及它的 profile、已啟用的 Ollama、llama.cpp 或 vLLM profile 對照其執行中伺服器的檢查，
 以及遠端控制的現況 —— 最後是一份問題摘要，每一項都附上修法。只要找到
 其中一個問題，它就會以非零狀態結束。
 
@@ -474,7 +516,7 @@ alc --openrouter --metrics --dry-run claude
 （profile 的連字號改成底線）；沒帶或為 true 就拒絕。alc 不會強制停用 WebSocket，
 也不宣稱能觀測它；一般沒加 metrics 的 WebSocket 行為不受影響。OpenCode／Copilot、
 Qwen／Goose 支援的 Anthropic/OpenAI 分支，以及 Kimi 產生的暫存設定有支援的設定
-位置。直接 Pi、原生 OAuth／登入、Qwen Google/Gemini、Goose 原生 OpenRouter/Ollama
+位置。直接 Pi、原生 OAuth／登入（包含 agy 的）、Qwen Google/Gemini、Goose 原生 OpenRouter/Ollama
 或含 query／fragment 的 OpenAI 分拆端點，以及超出支援位置的明確端點／helper／
 config／provider 覆寫都不被觀測；明確要求不安全／不支援的 `--metrics` 會被拒絕，
 不會偷偷改道。一般沒加 metrics 的啟動不變。Dry-run 不啟動 listener，也不寫入
@@ -532,6 +574,7 @@ pico-dollar 運算與十進位 USD 字串，不用浮點總數。推理是輸出
 | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | responses, chat | 否 |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | anthropic, responses, chat | 可 |
 | `codex` | —（原生 `codex login`） | — | native | 可（橋接） |
+| `antigravity` | —（原生 `agy` 登入） | — | native（僅限 `agy`） | 尚未支援 |
 | `ollama` | `http://localhost:11434` | — | anthropic, responses, chat | 可 |
 | `vllm` | `http://localhost:8000/v1` | — | responses, chat (+ anthropic) | 可 |
 | `llamacpp` | `http://localhost:8080/v1` | `LLAMA_API_KEY` | anthropic, responses, chat | 可 |
@@ -565,11 +608,13 @@ ID，等上游改名或棄用某個模型時，再用 `alc config upsert` 修改
 | [Goose](https://block.github.io/goose/) | `goose` | OpenAI 或 Anthropic 相容端點 | `GOOSE_*` + provider 金鑰環境變數 | 可 |
 | [Qwen Code](https://github.com/QwenLM/qwen-code) | `qwen` | OpenAI、Anthropic，或 Gemini 相容端點 | `--auth-type` 旗標 + 環境變數 | 可 |
 | [Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli) | `kimi` | OpenAI 或 Anthropic 相容端點 | 暫時的 `--config-file`（合併後的 TOML，執行後即刪除） | 可 |
+| Antigravity CLI | `agy` | 只有它自己的 Google 登入 | `--model`、`--effort` | 否（自己的登入） |
 
 `alc` 只啟動已經安裝好的 agent —— 你打算用的那幾個，請從上面的連結裝起來
 （Pi 是 `npm install -g @earendil-works/pi-coding-agent`）。不論原生支援
-什麼，每個 agent 都只要一次 `codex login` 就能接上 Codex 橋接；而
-`ALC_CLAUDE_BIN` 與它的同類環境變數可以覆寫執行檔路徑。
+什麼，除了 agy 之外的每個 agent 都只要一次 `codex login` 就能接上 Codex 橋接；
+agy 只跑在它自己的 Google 登入上。`ALC_CLAUDE_BIN` 與它的同類環境變數（包含
+`ALC_AGY_BIN`）可以覆寫執行檔路徑。
 
 ## Codex 橋接
 
@@ -858,9 +903,10 @@ alc 有五個層級，越後面越鬆：`plan`（只讀、只規劃，什麼都�
 自己那個沙箱的範圍內自行動作），以及 `full`（完全不設閘門）。`--permission <rung>`
 決定 session 從哪一級開始。
 
-沒有指定 `--permission` 的共享 session，在那三個 alc 拿真正的 `--help` 驗證過旗標的
-agent 上 —— Claude Code、Codex 和 OpenCode —— 會從 **ask** 開始，所以在手機上打開的
-連結，看到的不會是一個自行其是的 agent。另外五個則完全照它們自己的預設啟動：把一個
+沒有指定 `--permission` 的共享 session，在那四個 alc 拿真正的 `--help` 驗證過旗標的
+agent 上 —— Claude Code、Codex、OpenCode 和 agy（agy 自己的預設就會先問，所以 alc
+不替它加旗標）—— 會從 **ask** 開始，所以在手機上打開的連結，看到的不會是一個自行
+其是的 agent。Pi、Copilot CLI、Goose、Qwen Code 與 Kimi 則完全照它們自己的預設啟動：把一個
 沒驗證過的旗標名稱猜進 argv，換來的不是更緊的 session，而是一個根本起不來的
 session。你還是可以用 `--permission` 指名層級，alc 就會照文件把旗標傳過去 —— Pi
 除外，它根本沒有權限模型可設。session 跑著的時候頁面可以改層級，但有一個上限 ——
@@ -877,8 +923,8 @@ alc confirm 7QK2M9XB4T
 ticket 五分鐘後過期，而 `alc confirm` 在沒有控制終端機的情況下會拒絕執行 —— 這正是
 重點：agent 沒辦法自己兌現自己的 ticket。
 
-八個 agent 對「權限模式」是什麼並沒有共識，所以 alc 為每一個都記下：旗標有沒有拿
-真正的 `--help` 驗證過、模式到底能不能在 session 中途改（Kimi 只能重啟換；Pi 沒有
+九個 agent 對「權限模式」是什麼並沒有共識，所以 alc 為每一個都記下：旗標有沒有拿
+真正的 `--help` 驗證過、模式到底能不能在 session 中途改（Kimi 和 agy 只能重啟換；Pi 沒有
 權限模型，也沒有沙箱），以及目前的模式是啟動時設定的、從畫面上讀回來的，還是只是
 假設的。頁面會把 agent 自己的說法擺在 alc 的層級旁邊
 （`auto-edit · Accept edits`），因為只用一個共同標籤會誤導人。

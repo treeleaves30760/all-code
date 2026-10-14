@@ -3,7 +3,7 @@ id: codex-to-claude
 title: Codex 橋接
 sidebar_label: Codex 橋接
 sidebar_position: 3
-description: 一次 codex login，透過內建的橋接就能餵飽全部八個 coding agent —— Claude Code 有 session 內的 GPT 模型選單，其他 agent 則是每個 session 用一個橋接過的模型。
+description: 一次 codex login，透過內建的橋接就能餵飽 Claude Code 和另外七個 coding agent —— Claude Code 有 session 內的 GPT 模型選單，其他 agent 則是每個 session 用一個橋接過的模型。
 keywords:
   - claude code with gpt
   - codex subscription
@@ -19,7 +19,9 @@ keywords:
 # Codex 橋接
 
 `alc --codex <agent>` 會啟動一個 loopback 轉接器，並把某一個 agent 的 session
-指向它。一次 `codex login` 就夠八個 agent 一起用。
+指向它。一次 `codex login` 就夠 alc 啟動的每個 agent 一起用，只有 Antigravity
+CLI 例外，它跑在自己的 Google 登入上（見 [Antigravity
+CLI](./agents.md#antigravity-cli-agy)）。
 
 ```sh
 codex login
