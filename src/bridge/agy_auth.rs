@@ -569,10 +569,14 @@ pub(crate) const REFRESH_TIMEOUT: Duration = Duration::from_secs(25);
 /// How long a renewal waits for another process's.
 pub(crate) const LOCK_WAIT: Duration = Duration::from_secs(30);
 
-/// One process-wide lock file, so two alc processes (a background bridge and
-/// an in-process one, say) never run agy at the same time.
+/// One lock file for every alc on the machine, so two alc processes (a
+/// background bridge and an in-process one, say) never run agy at the same
+/// time. Always the legacy run directory, whatever this process's runtime
+/// scope: agy's login is one per user, so alc processes on different
+/// generations renew the same login and must take the same lock.
 pub(crate) fn refresh_lock_path(config_dir: &Path) -> PathBuf {
-    crate::bridge_host::files::run_dir(config_dir).join("agy-refresh.lock")
+    crate::bridge_host::files::run_dir_for(config_dir, &crate::runtime::RuntimeScope::Legacy)
+        .join("agy-refresh.lock")
 }
 
 /// agy's login as a bridge uses it: read fresh from the store on every call,
@@ -589,6 +593,8 @@ pub(crate) struct AgyCredentials {
 }
 
 impl AgyCredentials {
+    /// agy is resolved here, once (`ALC_AGY_BIN`, else `agy` on PATH): an agy
+    /// installed after the bridge started is used only once it restarts.
     pub(crate) fn new(locator: &AgyLocator, config_dir: &Path) -> Self {
         Self::with_parts(
             Arc::new(locator.store()),
@@ -649,19 +655,29 @@ impl AgyCredentials {
         if let Some(token) = self.usable(rejected).await? {
             return Ok(token);
         }
+        // Before the lock: with no agy, waiting out another process's renewal
+        // could only end in `refresh_busy` instead of the actionable answer.
+        let agy = self.agy.clone().ok_or(AgyAuthError::AgyNotInstalled)?;
         let lock_file = self.lock_file.clone();
         let wait = self.lock_wait;
         let lock = tokio::task::spawn_blocking(move || {
             crate::file_lock::FileLock::acquire_timeout(&lock_file, wait)
         })
         .await
-        .map_err(|_| AgyAuthError::RefreshBusy)?
-        .map_err(|_| AgyAuthError::RefreshBusy)?;
+        .map_err(|_| AgyAuthError::RefreshFailed)?
+        .map_err(|error| {
+            // Busy only when someone else holds the lock; a lock that cannot
+            // be taken at all will not be fixed by trying again.
+            if error.is::<crate::file_lock::LockTimeout>() {
+                AgyAuthError::RefreshBusy
+            } else {
+                AgyAuthError::RefreshFailed
+            }
+        })?;
         // Another process may have renewed while this one waited for the lock.
         if let Some(token) = self.usable(rejected).await? {
             return Ok(token);
         }
-        let agy = self.agy.clone().ok_or(AgyAuthError::AgyNotInstalled)?;
         let timeout = self.refresh_timeout;
         // The lock travels with agy, not with this future: a caller that
         // gives up mid-renewal must not free the lock while agy still runs.
@@ -1205,9 +1221,62 @@ mod tests {
         let agy = fake_agy(dir, renewed.as_deref(), &file, sleep_secs);
         AgyCredentials::with_parts(
             Arc::new(SystemStore::file_only(file)),
-            dir.join("run").join("agy-refresh.lock"),
+            refresh_lock_path(dir),
             Some(agy),
         )
+    }
+
+    #[test]
+    fn the_refresh_lock_is_the_legacy_run_dir_lock() {
+        let dir = Path::new("/config/alc");
+        assert_eq!(
+            refresh_lock_path(dir),
+            dir.join("run").join("agy-refresh.lock")
+        );
+    }
+
+    /// Run in a child by the test below: a runtime scope is set once per
+    /// process, so a generation scope cannot be switched on in this one
+    /// without changing every other test's run directory.
+    #[test]
+    fn refresh_lock_scope_worker() {
+        let Some(dir) = std::env::var_os("ALC_TEST_AGY_LOCK_SCOPE_DIR") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let generation = crate::runtime::RuntimeScope::parse("0123456789ab").unwrap();
+        crate::runtime::initialize(generation.clone(), true).unwrap();
+        // The scope is active: the bridge's own run directory moved...
+        assert_eq!(
+            crate::bridge_host::files::run_dir(&dir),
+            crate::runtime::run_dir_for(&dir, &generation)
+        );
+        // ...and agy's lock did not, because agy's login is one per user.
+        assert_eq!(
+            refresh_lock_path(&dir),
+            dir.join("run").join("agy-refresh.lock")
+        );
+        std::fs::write(dir.join("worker-ran"), b"ok").unwrap();
+    }
+
+    #[test]
+    fn the_refresh_lock_ignores_a_generation_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "bridge::agy_auth::tests::refresh_lock_scope_worker",
+                "--nocapture",
+            ])
+            .env("ALC_TEST_AGY_LOCK_SCOPE_DIR", dir.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status}");
+        // A worker filtered out by a renamed test would also exit 0.
+        assert!(dir.path().join("worker-ran").is_file());
     }
 
     #[test]
@@ -1292,6 +1361,50 @@ mod tests {
         assert_eq!(error, AgyAuthError::AgyNotInstalled);
         assert_eq!(error.code(), "agy_not_installed");
         assert!(error.message().contains("sign in"), "{error}");
+        // Decided before the lock: nothing was created to take it.
+        assert!(!dir.path().join("agy-refresh.lock").exists());
+    }
+
+    /// No agy is the actionable answer even while another process renews:
+    /// waiting out its lock would only end in `refresh_busy`.
+    #[tokio::test]
+    async fn a_missing_agy_is_reported_without_waiting_for_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = refresh_lock_path(dir.path());
+        let _held = crate::file_lock::FileLock::acquire(&lock).unwrap();
+        let credentials = AgyCredentials::with_parts(
+            Arc::new(MemoryStore::with_file(credential("tok-a", -100))),
+            lock,
+            None,
+        );
+        let started = Instant::now();
+        assert_eq!(
+            credentials.token().await.unwrap_err(),
+            AgyAuthError::AgyNotInstalled
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Only a lock someone else holds is `refresh_busy`; a lock that cannot
+    /// be taken at all is a failed renewal, not a reason to try again.
+    #[tokio::test]
+    async fn a_lock_that_cannot_be_created_is_refresh_failed_not_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = renewing(dir.path(), credential("tok-a", 10), None, 0);
+        // A lock under a regular file: its directory can never be created.
+        let credentials = AgyCredentials {
+            lock_file: dir.path().join("login").join("agy-refresh.lock"),
+            ..credentials
+        };
+        assert_eq!(
+            credentials.token().await.unwrap_err(),
+            AgyAuthError::RefreshFailed
+        );
+        assert_eq!(agy_calls(dir.path()), 0);
     }
 
     #[tokio::test]
@@ -1379,9 +1492,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let credentials = renewing(dir.path(), credential("tok-a", 10), None, 0)
             .with_timeouts(REFRESH_TIMEOUT, Duration::from_millis(200));
-        let _held =
-            crate::file_lock::FileLock::acquire(&dir.path().join("run").join("agy-refresh.lock"))
-                .unwrap();
+        let _held = crate::file_lock::FileLock::acquire(&refresh_lock_path(dir.path())).unwrap();
         assert_eq!(
             credentials.token().await.unwrap_err(),
             AgyAuthError::RefreshBusy

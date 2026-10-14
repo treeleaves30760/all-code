@@ -72,7 +72,7 @@ impl FileLock {
                 Ok(false) if started.elapsed() < timeout => {
                     thread::sleep(RETRY_INTERVAL.min(timeout.saturating_sub(started.elapsed())));
                 }
-                Ok(false) => bail!("timed out waiting for lock {}", path.display()),
+                Ok(false) => return Err(LockTimeout { path }.into()),
                 Err(error) => {
                     return Err(error)
                         .with_context(|| format!("could not lock {}", path.display()));
@@ -81,6 +81,27 @@ impl FileLock {
         }
     }
 }
+
+/// The one `acquire_timeout` failure that means another holder still has
+/// the lock. Callers that report "busy, try again" tell it from every other
+/// failure (a directory that cannot be created, a planted link) with
+/// `error.is::<LockTimeout>()`.
+#[derive(Debug)]
+pub struct LockTimeout {
+    path: PathBuf,
+}
+
+impl std::fmt::Display for LockTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "timed out waiting for lock {}",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for LockTimeout {}
 
 impl Drop for FileLock {
     fn drop(&mut self) {
@@ -205,9 +226,20 @@ mod tests {
         let first = FileLock::acquire(&path).unwrap();
         let error = FileLock::acquire_timeout(&path, Duration::from_millis(30)).unwrap_err();
         assert!(error.to_string().contains("timed out"));
+        assert!(error.is::<LockTimeout>());
         drop(first);
         FileLock::acquire_timeout(&path, Duration::ZERO).unwrap();
         assert!(path.is_file());
+    }
+
+    #[test]
+    fn only_contention_is_a_lock_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-file");
+        fs::write(&file, b"").unwrap();
+        // The lock's directory would have to be created under a regular file.
+        let error = FileLock::acquire_timeout(&file.join("x.lock"), Duration::ZERO).unwrap_err();
+        assert!(!error.is::<LockTimeout>(), "{error:#}");
     }
 
     #[test]
