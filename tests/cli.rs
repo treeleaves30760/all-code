@@ -24,6 +24,7 @@ fn alc(temp: &tempfile::TempDir) -> Command {
     command.env("ALC_LITELLM_URL", "off");
     // Never read the login of the machine running the suite: no keyring, and
     // agy's fallback file is one this test owns (absent unless it writes it).
+    // alc honours both only in debug builds, which is what cargo_bin runs.
     command.env("ALC_AGY_NO_KEYRING", "1");
     command.env("ALC_AGY_CREDENTIAL_FILE", temp.path().join("agy-login"));
     // Which bridge a run uses changes the models it offers and what it calls
@@ -1107,6 +1108,8 @@ fn concurrent_starts_produce_exactly_one_hub() {
                 Command::cargo_bin("alc")
                     .expect("alc binary")
                     .env("ALC_CONFIG_DIR", &dir)
+                    .env("ALC_AGY_NO_KEYRING", "1")
+                    .env("ALC_AGY_CREDENTIAL_FILE", dir.join("agy-login"))
                     .timeout(COMMAND_TIMEOUT)
                     .args(["--runtime", "legacy", "hub", "start"])
                     .assert()

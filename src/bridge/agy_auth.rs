@@ -123,13 +123,34 @@ impl AgyLocator {
     }
 }
 
+/// A store's bytes before parsing: a login, so `Debug` shows only how many
+/// bytes there are. Formatting a store's result with `{:?}` cannot leak it.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct RawCredential(Vec<u8>);
+
+impl RawCredential {
+    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for RawCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "RawCredential(<{} bytes>)", self.0.len())
+    }
+}
+
 /// The two places agy can have put its login. A trait so tests inject bytes
 /// instead of touching a real keyring.
 pub(crate) trait CredentialStore: Send + Sync {
     /// The keyring entry's bytes, `Ok(None)` when there is none.
-    fn keyring(&self) -> Result<Option<Vec<u8>>, AgyAuthError>;
+    fn keyring(&self) -> Result<Option<RawCredential>, AgyAuthError>;
     /// The fallback file's bytes, `Ok(None)` when it does not exist.
-    fn file(&self) -> Result<Option<Vec<u8>>, AgyAuthError>;
+    fn file(&self) -> Result<Option<RawCredential>, AgyAuthError>;
 }
 
 /// The real stores.
@@ -166,14 +187,14 @@ fn keyring_enabled() -> bool {
 }
 
 impl CredentialStore for SystemStore {
-    fn keyring(&self) -> Result<Option<Vec<u8>>, AgyAuthError> {
+    fn keyring(&self) -> Result<Option<RawCredential>, AgyAuthError> {
         if !self.keyring {
             return Ok(None);
         }
         read_keyring()
     }
 
-    fn file(&self) -> Result<Option<Vec<u8>>, AgyAuthError> {
+    fn file(&self) -> Result<Option<RawCredential>, AgyAuthError> {
         use std::io::Read as _;
         let file = match std::fs::File::open(&self.file) {
             Ok(file) => file,
@@ -187,19 +208,19 @@ impl CredentialStore for SystemStore {
         if bytes.len() > MAX_CREDENTIAL_BYTES {
             return Err(AgyAuthError::MalformedCredential);
         }
-        Ok(Some(bytes))
+        Ok(Some(RawCredential(bytes)))
     }
 }
 
 #[cfg(windows)]
-fn read_keyring() -> Result<Option<Vec<u8>>, AgyAuthError> {
+fn read_keyring() -> Result<Option<RawCredential>, AgyAuthError> {
     read_windows_credential(KEYRING_TARGET)
 }
 
 /// `CredReadW`, read-only. `ERROR_NOT_FOUND` is "not logged in"; any other
 /// failure is a store alc could not read, which is a different sentence.
 #[cfg(windows)]
-fn read_windows_credential(target: &str) -> Result<Option<Vec<u8>>, AgyAuthError> {
+fn read_windows_credential(target: &str) -> Result<Option<RawCredential>, AgyAuthError> {
     use windows_sys::Win32::Foundation::{ERROR_NOT_FOUND, GetLastError};
     use windows_sys::Win32::Security::Credentials::{
         CRED_TYPE_GENERIC, CREDENTIALW, CredFree, CredReadW,
@@ -242,11 +263,11 @@ fn read_windows_credential(target: &str) -> Result<Option<Vec<u8>>, AgyAuthError
     // SAFETY: `blob` is valid for `size` bytes (see above).
     let bytes = unsafe { std::slice::from_raw_parts(blob, size) }.to_vec();
     drop(freed);
-    Ok(Some(bytes))
+    Ok(Some(RawCredential(bytes)))
 }
 
 #[cfg(target_os = "macos")]
-fn read_keyring() -> Result<Option<Vec<u8>>, AgyAuthError> {
+fn read_keyring() -> Result<Option<RawCredential>, AgyAuthError> {
     keyring_tool(
         "/usr/bin/security",
         &[
@@ -261,9 +282,17 @@ fn read_keyring() -> Result<Option<Vec<u8>>, AgyAuthError> {
 }
 
 #[cfg(target_os = "linux")]
-fn read_keyring() -> Result<Option<Vec<u8>>, AgyAuthError> {
+fn read_keyring() -> Result<Option<RawCredential>, AgyAuthError> {
+    // The distribution's own copy first, so a `secret-tool` earlier on PATH
+    // is not handed the lookup.
+    const SYSTEM_SECRET_TOOL: &str = "/usr/bin/secret-tool";
+    let program = if Path::new(SYSTEM_SECRET_TOOL).is_file() {
+        SYSTEM_SECRET_TOOL
+    } else {
+        "secret-tool"
+    };
     keyring_tool(
-        "secret-tool",
+        program,
         &[
             "lookup",
             "service",
@@ -274,38 +303,91 @@ fn read_keyring() -> Result<Option<Vec<u8>>, AgyAuthError> {
     )
 }
 
-/// Best effort, unverified (go-keyring's convention): a missing tool, a
-/// locked keyring or no item all read as "no keyring entry", and the file
-/// decides.
+/// How long a keyring tool may take. A locked keyring can answer a lookup
+/// with an unlock prompt (gnome-keyring) or an access dialog (Keychain) and
+/// wait for a person who is not there; past this the lookup reads as absent.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn keyring_tool(program: &str, args: &[&str]) -> Result<Option<Vec<u8>>, AgyAuthError> {
+const KEYRING_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn keyring_tool(program: &str, args: &[&str]) -> Result<Option<RawCredential>, AgyAuthError> {
+    keyring_tool_within(program, args, KEYRING_TOOL_TIMEOUT)
+}
+
+/// Best effort, unverified (go-keyring's convention): a missing tool, a
+/// failing one, a locked keyring, no item, or no answer within `timeout` all
+/// read as "no keyring entry", and the file decides. Stdout is read on a
+/// thread, never past [`MAX_CREDENTIAL_BYTES`] + 1; a tool still running at
+/// the deadline is killed and its reader left to finish on its own.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn keyring_tool_within(
+    program: &str,
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> Result<Option<RawCredential>, AgyAuthError> {
+    use std::io::Read as _;
     use std::process::{Command, Stdio};
-    let Ok(output) = Command::new(program)
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + timeout;
+    let Ok(mut child) = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .spawn()
     else {
         return Ok(None);
     };
-    if !output.status.success() {
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(None);
+    };
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let read = stdout
+            .take(MAX_CREDENTIAL_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes);
+        let _ = sender.send(read);
+    });
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(None);
+            }
+        }
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let Ok(Ok(mut bytes)) = receiver.recv_timeout(remaining) else {
+        return Ok(None);
+    };
+    // Before the exit status: a tool cut off mid-answer fails on the closed
+    // pipe, and what it was printing was still too large to be a login.
+    if bytes.len() > MAX_CREDENTIAL_BYTES {
+        return Err(AgyAuthError::MalformedCredential);
+    }
+    if !status.success() {
         return Ok(None);
     }
-    let mut bytes = output.stdout;
     while bytes.last().is_some_and(u8::is_ascii_whitespace) {
         bytes.pop();
     }
     if bytes.is_empty() {
         return Ok(None);
     }
-    if bytes.len() > MAX_CREDENTIAL_BYTES {
-        return Err(AgyAuthError::MalformedCredential);
-    }
-    Ok(Some(bytes))
+    Ok(Some(RawCredential(bytes)))
 }
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-fn read_keyring() -> Result<Option<Vec<u8>>, AgyAuthError> {
+fn read_keyring() -> Result<Option<RawCredential>, AgyAuthError> {
     Ok(None)
 }
 
@@ -433,7 +515,7 @@ pub(crate) fn load(store: &dyn CredentialStore) -> Result<AgyToken, AgyAuthError
     let file = store.file()?;
     match (keyring, file) {
         (Some(_), Some(_)) => Err(AgyAuthError::AmbiguousSources),
-        (Some(raw), None) | (None, Some(raw)) => parse_credential(&raw),
+        (Some(raw), None) | (None, Some(raw)) => parse_credential(raw.as_bytes()),
         (None, None) => Err(AgyAuthError::LoginRequired),
     }
 }
@@ -460,9 +542,9 @@ pub(crate) fn status(store: &dyn CredentialStore, now: i64) -> LoginState {
 pub(crate) mod test_support {
     use std::sync::Mutex;
 
-    use super::{AgyAuthError, CredentialStore};
+    use super::{AgyAuthError, CredentialStore, RawCredential};
 
-    type Slot = Result<Option<Vec<u8>>, AgyAuthError>;
+    type Slot = Result<Option<RawCredential>, AgyAuthError>;
 
     /// Credential bytes held in memory, settable mid-test.
     pub(crate) struct MemoryStore {
@@ -486,7 +568,7 @@ pub(crate) mod test_support {
 
         pub(crate) fn with_keyring(bytes: Vec<u8>) -> Self {
             let store = Self::empty();
-            *store.keyring.lock().unwrap() = Ok(Some(bytes));
+            *store.keyring.lock().unwrap() = Ok(Some(RawCredential::new(bytes)));
             store
         }
 
@@ -503,7 +585,7 @@ pub(crate) mod test_support {
         }
 
         pub(crate) fn set_file(&self, bytes: Vec<u8>) {
-            *self.file.lock().unwrap() = Ok(Some(bytes));
+            *self.file.lock().unwrap() = Ok(Some(RawCredential::new(bytes)));
         }
     }
 
@@ -538,6 +620,8 @@ pub(crate) mod test_support {
 }
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::test_support::{MemoryStore, credential};
     use super::*;
 
@@ -665,6 +749,115 @@ mod tests {
         assert_eq!(load(&store).unwrap().access_token(), "tok-a");
         std::fs::write(&path, vec![b'x'; MAX_CREDENTIAL_BYTES + 1]).unwrap();
         assert_eq!(store.file().unwrap_err(), AgyAuthError::MalformedCredential);
+    }
+
+    #[test]
+    fn raw_store_bytes_show_only_their_length() {
+        let raw = RawCredential::new(credential("tok-a", 3600));
+        let shown = format!("{:?}", Some(raw.clone()));
+        assert!(!shown.contains("tok-a"), "{shown}");
+        assert!(
+            shown.contains(&format!("<{} bytes>", raw.as_bytes().len())),
+            "{shown}"
+        );
+        let store = MemoryStore::with_both(credential("tok-k", 3600), credential("tok-f", 3600));
+        let shown = format!("{:?} {:?}", store.keyring(), store.file());
+        assert!(!shown.contains("tok-"), "{shown}");
+    }
+
+    /// A stand-in for `security` / `secret-tool`. Unix runs the script through
+    /// `/bin/sh` rather than executing it, so a freshly written file cannot hit
+    /// ETXTBSY; Windows runs a `.cmd`.
+    fn fake_tool(dir: &Path, unix: &str, windows: &str) -> (String, Vec<String>) {
+        if cfg!(windows) {
+            let script = dir.join("keyring-tool.cmd");
+            std::fs::write(&script, format!("@echo off\r\n{windows}\r\n")).unwrap();
+            (script.display().to_string(), Vec::new())
+        } else {
+            let script = dir.join("keyring-tool.sh");
+            std::fs::write(&script, format!("{unix}\n")).unwrap();
+            ("/bin/sh".to_owned(), vec![script.display().to_string()])
+        }
+    }
+
+    fn run_fake(
+        tool: &(String, Vec<String>),
+        timeout: Duration,
+    ) -> Result<Option<RawCredential>, AgyAuthError> {
+        let args: Vec<&str> = tool.1.iter().map(String::as_str).collect();
+        keyring_tool_within(&tool.0, &args, timeout)
+    }
+
+    /// A tool that prints the file at `answer`.
+    fn printing_tool(dir: &Path, answer: &Path) -> (String, Vec<String>) {
+        let answer = answer.display();
+        fake_tool(
+            dir,
+            &format!("cat '{answer}'"),
+            &format!("type \"{answer}\""),
+        )
+    }
+
+    #[test]
+    fn a_keyring_tool_answer_is_read_and_trimmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let answer = dir.path().join("answer");
+        let raw = credential("tok-a", 3600);
+        let mut printed = raw.clone();
+        printed.extend_from_slice(b"\r\n");
+        std::fs::write(&answer, printed).unwrap();
+        let tool = printing_tool(dir.path(), &answer);
+        let read = run_fake(&tool, Duration::from_secs(20)).unwrap().unwrap();
+        assert_eq!(read.as_bytes(), raw.as_slice());
+    }
+
+    #[test]
+    fn an_oversized_keyring_answer_is_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let answer = dir.path().join("answer");
+        std::fs::write(&answer, vec![b'x'; MAX_CREDENTIAL_BYTES + 100]).unwrap();
+        let tool = printing_tool(dir.path(), &answer);
+        assert_eq!(
+            run_fake(&tool, Duration::from_secs(20)).unwrap_err(),
+            AgyAuthError::MalformedCredential
+        );
+    }
+
+    #[test]
+    fn a_failing_silent_or_missing_keyring_tool_reads_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let failing = fake_tool(
+            dir.path(),
+            "echo token; exit 44",
+            "echo token\r\nexit /b 44",
+        );
+        assert_eq!(run_fake(&failing, Duration::from_secs(20)).unwrap(), None);
+        let silent = fake_tool(dir.path(), "exit 0", "exit /b 0");
+        assert_eq!(run_fake(&silent, Duration::from_secs(20)).unwrap(), None);
+        let missing = (
+            "alc-test-no-such-keyring-tool-7f3c9e1d".to_owned(),
+            Vec::new(),
+        );
+        assert_eq!(run_fake(&missing, Duration::from_secs(20)).unwrap(), None);
+    }
+
+    /// A keyring that shows an unlock prompt nobody answers must not hold a
+    /// request forever: past the deadline the tool is killed and the keyring
+    /// reads as absent.
+    #[test]
+    fn a_keyring_tool_that_hangs_reads_as_absent_at_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let hanging = fake_tool(dir.path(), "exec sleep 10", "ping -n 11 127.0.0.1 >nul");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            run_fake(&hanging, Duration::from_millis(500)).unwrap(),
+            None
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

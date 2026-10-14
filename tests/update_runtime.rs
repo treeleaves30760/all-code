@@ -258,6 +258,9 @@ fn command(executable: &Path, config: &Path) -> Command {
     let mut command = Command::new(executable);
     command
         .env("ALC_CONFIG_DIR", config)
+        // Never agy's real login (debug builds only honour these).
+        .env("ALC_AGY_NO_KEYRING", "1")
+        .env("ALC_AGY_CREDENTIAL_FILE", config.join("agy-login"))
         .env("ALC_UPDATE_API_URL", "http://127.0.0.1:9/no-network")
         // Fresh debug payloads verified in parallel can outlast the 15 s
         // release limit on a busy runner; that is load, not a hung binary.

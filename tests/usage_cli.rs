@@ -64,6 +64,12 @@ impl Fixture {
         command
             .current_dir(self.temp.path())
             .env("ALC_CONFIG_DIR", &self.alc)
+            // Never agy's real login (debug builds only honour these).
+            .env("ALC_AGY_NO_KEYRING", "1")
+            .env(
+                "ALC_AGY_CREDENTIAL_FILE",
+                self.temp.path().join("agy-login"),
+            )
             .env("CLAUDE_CONFIG_DIR", &self.claude)
             .env("CODEX_HOME", &self.codex)
             .env("HOME", &home)
