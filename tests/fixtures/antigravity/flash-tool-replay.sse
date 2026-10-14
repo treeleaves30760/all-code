@@ -1,0 +1,6 @@
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": "Sunny,"}]}}],"usageMetadata": {"promptTokenCount": 106,"candidatesTokenCount": 2,"totalTokenCount": 108},"modelVersion": "gemini-3.8-flash-n","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": " 21°C."}]}}],"usageMetadata": {"promptTokenCount": 106,"candidatesTokenCount": 8,"totalTokenCount": 114},"modelVersion": "gemini-3.8-flash-n","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"thoughtSignature": "sig-flash-2","text": ""}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 106,"candidatesTokenCount": 8,"totalTokenCount": 114},"modelVersion": "gemini-3.8-flash-n","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+
