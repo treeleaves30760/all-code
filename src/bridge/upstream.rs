@@ -274,10 +274,22 @@ pub(crate) enum InputItem {
         id: String,
         #[serde(default)]
         summary: Vec<Value>,
-        /// Empty, or absent, for an unsigned reasoning item.
-        #[serde(default)]
+        /// Empty, absent or `null` for an unsigned reasoning item; all three
+        /// read as `""`.
+        #[serde(default, deserialize_with = "null_as_empty")]
         encrypted_content: String,
     },
+}
+
+/// A string field a client may send as `null`: Responses clients that
+/// rebuild reasoning items rather than replaying them write
+/// `"encrypted_content": null` for an unsigned one, which is the same
+/// statement as `""` and must not fail the whole request.
+fn null_as_empty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// `output` of a `function_call_output`: a bare string, or content parts.
@@ -1224,6 +1236,22 @@ mod tests {
     use super::*;
     use crate::bridge::fixtures::Case;
     use serde_json::json;
+
+    #[test]
+    fn a_reasoning_item_with_null_or_absent_encrypted_content_reads_as_unsigned() {
+        for item in [
+            json!({"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": null}),
+            json!({"type": "reasoning", "id": "rs_1", "summary": []}),
+        ] {
+            let parsed: InputItem = serde_json::from_value(item).unwrap();
+            match parsed {
+                InputItem::Reasoning {
+                    encrypted_content, ..
+                } => assert_eq!(encrypted_content, ""),
+                other => panic!("not a reasoning item: {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn usage_keeps_optional_cache_details_and_inclusive_totals() {

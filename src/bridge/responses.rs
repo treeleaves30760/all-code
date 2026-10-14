@@ -36,18 +36,33 @@
 //! captured success: `responses-passthrough-input-list` and
 //! `responses-passthrough-input-string` are one prompt sent two ways, and
 //! normalising either produces the same legal body.
+//!
+//! All of the above is the Codex upstream. On Antigravity there is nothing to
+//! pass through: Code Assist speaks Gemini, so the body is read into the
+//! bridge's internal request ([`antigravity_request`]) and the shared
+//! translator carries it from there, the way the other two surfaces travel.
+//! What comes back is already Responses events, relayed under their own
+//! `event:` names or folded as [`fold_response`] folds chatgpt.com's. A
+//! reasoning item's `encrypted_content` is the sealed Gemini signature both
+//! ways, so a client that replays its items verbatim keeps the model's chain;
+//! one that drops them is signed from the call-id cache instead.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderName, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use futures_util::{Stream, StreamExt};
 use serde_json::{Value, json};
 
-use super::upstream::{self, Lane};
+use super::upstream::{
+    self, ContentPart, Effort, FunctionCallOutput, InputItem, Lane, Reasoning, TextOptions, Tool,
+    UpstreamRequest, UpstreamStream,
+};
 use super::{BridgeError, BridgeState};
+use crate::config::ReasoningEffort;
 use crate::usage::observer::{RequestObservation, StreamObservation};
 use crate::usage::records::Outcome;
 
@@ -116,6 +131,9 @@ async fn relay(state: &BridgeState, body: Bytes) -> Result<Response, BridgeError
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    if matches!(state.upstream, super::Upstream::Antigravity(_)) {
+        return relay_antigravity(state, &request, streaming).await;
+    }
     normalise(&mut request);
     let observed = upstream::observation(
         state,
@@ -169,6 +187,280 @@ async fn relay(state: &BridgeState, body: Bytes) -> Result<Response, BridgeError
         }
     }
     unreachable!("the loop returns on the last attempt")
+}
+
+/// A Responses request, for Antigravity: unlike chatgpt.com, Code Assist
+/// speaks nothing of the Responses API, so the body is read into the
+/// bridge's internal model and translated rather than forwarded.
+///
+/// Only function tools travel - hosted ones (`web_search`, `file_search`)
+/// have no Gemini counterpart behind this endpoint. The request's
+/// `reasoning.effort` outranks the launch pin, as on the other surfaces.
+pub(crate) fn antigravity_request(
+    body: &Value,
+    pinned: Option<ReasoningEffort>,
+) -> Result<UpstreamRequest, BridgeError> {
+    let model = requested_model(body)?;
+    let mut input = Vec::new();
+    let tools: Vec<Tool> = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|tool| tool.get("type").and_then(Value::as_str) == Some("function"))
+        .filter_map(|tool| {
+            Some(Tool {
+                kind: "function".to_owned(),
+                name: tool.get("name")?.as_str()?.to_owned(),
+                description: tool
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                strict: false,
+                parameters: tool
+                    .get("parameters")
+                    .filter(|parameters| parameters.is_object())
+                    .cloned()
+                    .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
+            })
+        })
+        .collect();
+    if !tools.is_empty() {
+        input.push(InputItem::AdditionalTools {
+            role: "developer".to_owned(),
+            tools,
+        });
+    }
+    match body.get("input") {
+        Some(Value::String(text)) => input.push(InputItem::Message {
+            role: "user".to_owned(),
+            content: vec![ContentPart::InputText { text: text.clone() }],
+        }),
+        Some(Value::Array(items)) => input.extend(items.iter().filter_map(input_item)),
+        Some(item @ Value::Object(_)) => input.extend(input_item(item)),
+        _ => return Err(BridgeError::invalid("the request has no 'input' to send")),
+    }
+    let effort = match body.pointer("/reasoning/effort").and_then(Value::as_str) {
+        Some(word) => effort_word(word),
+        None => pinned.map(Effort::from),
+    };
+    Ok(UpstreamRequest {
+        model,
+        kind: None,
+        store: false,
+        stream: Some(true),
+        parallel_tool_calls: false,
+        reasoning: Some(Reasoning {
+            effort,
+            context: None,
+            summary: None,
+        }),
+        text: TextOptions {
+            verbosity: None,
+            format: None,
+        },
+        client_metadata: None,
+        instructions: body
+            .get("instructions")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        include: None,
+        tool_choice: None,
+        prompt_cache_key: None,
+        input,
+        max_output_tokens: body.get("max_output_tokens").and_then(Value::as_u64),
+        temperature: body.get("temperature").and_then(Value::as_f64),
+    })
+}
+
+/// A Responses effort word on alc's ladder; one it does not know leaves the
+/// effort to the model's default rather than refusing the turn.
+fn effort_word(word: &str) -> Option<Effort> {
+    match word.trim().to_ascii_lowercase().as_str() {
+        "none" => Some(Effort::None),
+        "minimal" | "low" => Some(Effort::Low),
+        "medium" => Some(Effort::Medium),
+        "high" => Some(Effort::High),
+        "xhigh" => Some(Effort::Xhigh),
+        "max" | "ultra" => Some(Effort::Max),
+        _ => None,
+    }
+}
+
+/// One Responses input item, or `None` for a kind Antigravity has no place
+/// for (hosted tool calls, item references).
+///
+/// A reasoning item whose `encrypted_content` is absent or `null` is read as
+/// unsigned (`""`), as [`InputItem`]'s own parse reads it; the translator
+/// drops an unsigned one rather than forging a signature for it.
+fn input_item(item: &Value) -> Option<InputItem> {
+    let text = |key: &str| item.get(key).and_then(Value::as_str).map(str::to_owned);
+    match item.get("type").and_then(Value::as_str) {
+        Some("message") | None => {
+            let role = text("role")?;
+            let assistant = role == "assistant";
+            let to_part = |text: String| {
+                if assistant {
+                    ContentPart::OutputText { text }
+                } else {
+                    ContentPart::InputText { text }
+                }
+            };
+            let content: Vec<ContentPart> = match item.get("content") {
+                Some(Value::String(body)) => vec![to_part(body.clone())],
+                Some(Value::Array(parts)) => parts
+                    .iter()
+                    .filter_map(|part| match part.get("type").and_then(Value::as_str) {
+                        Some("input_text" | "output_text" | "text") => part
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .map(|text| to_part(text.to_owned())),
+                        Some("input_image") => part
+                            .get("image_url")
+                            .and_then(|url| url.as_str().or_else(|| url.get("url")?.as_str()))
+                            .map(|url| ContentPart::InputImage {
+                                image_url: url.to_owned(),
+                                detail: None,
+                            }),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            (!content.is_empty()).then_some(InputItem::Message { role, content })
+        }
+        Some("function_call") => Some(InputItem::FunctionCall {
+            id: None,
+            call_id: text("call_id")?,
+            name: text("name")?,
+            arguments: text("arguments").unwrap_or_else(|| "{}".to_owned()),
+        }),
+        Some("function_call_output") => {
+            let output = match item.get("output") {
+                Some(Value::String(body)) => body.clone(),
+                Some(Value::Array(parts)) => parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Some(other) => other.to_string(),
+                None => String::new(),
+            };
+            Some(InputItem::FunctionCallOutput {
+                call_id: text("call_id")?,
+                output: FunctionCallOutput::Text(output),
+            })
+        }
+        Some("reasoning") => Some(InputItem::Reasoning {
+            id: text("id").unwrap_or_else(|| "rs".to_owned()),
+            summary: item
+                .get("summary")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            encrypted_content: text("encrypted_content").unwrap_or_default(),
+        }),
+        _ => None,
+    }
+}
+
+/// The Antigravity half of [`relay`]: translate, send, then relay or fold.
+///
+/// The wire id is resolved here, before the ledger row is opened, so the row
+/// names the model that actually ran (`gemini-3.8-flash-low`, not the
+/// family the client asked for); [`upstream::send_with_affinity`] resolving
+/// it again is a no-op on a wire id.
+async fn relay_antigravity(
+    state: &BridgeState,
+    body: &Value,
+    streaming: bool,
+) -> Result<Response, BridgeError> {
+    let mut request = antigravity_request(body, state.config.effort)?;
+    request.model = super::gemini::wire_model(
+        &request.model,
+        request
+            .reasoning
+            .as_ref()
+            .and_then(|reasoning| reasoning.effort),
+        state.config.claude_tiers.as_ref(),
+    )?;
+    let observed = upstream::observation(
+        state,
+        &request.model,
+        streaming,
+        None,
+        crate::usage::records::OutputBasis::Unknown,
+    );
+    let stream = upstream::send_with_affinity(state, request, None, observed).await?;
+    if streaming {
+        Ok(stream_antigravity(stream))
+    } else {
+        fold_antigravity(stream).await
+    }
+}
+
+/// The translated events as Responses SSE, each under its own `event:` name.
+///
+/// A failure after the first frame can only be told in the stream itself, as
+/// the Responses `error` event; nothing is retried by then (see
+/// [`super::gemini_stream::AgyStream`]). A `SAFETY` or `RECITATION` stop is
+/// not one of those: it arrives as the turn's own `response.failed`.
+fn stream_antigravity(stream: UpstreamStream) -> Response {
+    let body = futures_util::stream::unfold(Some(stream), |state| async move {
+        let mut stream = state?;
+        match stream.next().await {
+            Some(Ok(frame)) => {
+                let kind = serde_json::from_str::<Value>(&frame.raw)
+                    .ok()
+                    .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
+                    .unwrap_or_else(|| "message".to_owned());
+                Some((
+                    Ok::<_, Infallible>(format!("event: {kind}\ndata: {}\n\n", frame.raw)),
+                    Some(stream),
+                ))
+            }
+            Some(Err(error)) => {
+                let event = json!({"type": "error", "code": error.kind,
+                    "message": error.message, "param": null});
+                Some((Ok(format!("event: error\ndata: {event}\n\n")), None))
+            }
+            None => None,
+        }
+    });
+    let mut response = Response::new(Body::from_stream(body));
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/event-stream"),
+    );
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+    response
+}
+
+/// The same events folded into one Responses object, as [`fold_response`]
+/// does for chatgpt.com: a failed or incomplete turn is that object with its
+/// `status` and `error` saying so, not an empty answer.
+async fn fold_antigravity(mut stream: UpstreamStream) -> Result<Response, BridgeError> {
+    let mut output = Vec::new();
+    let mut completed = None;
+    while let Some(frame) = stream.next().await {
+        collect_frame(&frame?.raw, &mut output, &mut completed);
+        if completed.is_some() {
+            break;
+        }
+    }
+    let Some(mut response) = completed else {
+        return Err(BridgeError::upstream(
+            StatusCode::BAD_GATEWAY,
+            "Antigravity ended the stream without completing the response",
+        ));
+    };
+    if let Some(object) = response.as_object_mut() {
+        object.insert("output".to_owned(), Value::Array(output));
+    }
+    Ok(axum::Json(response).into_response())
 }
 
 fn serialise(request: &Value, model: &str) -> Result<Bytes, BridgeError> {
@@ -892,5 +1184,226 @@ mod tests {
                 .contains("not valid JSON"),
             "{body}"
         );
+    }
+
+    use crate::bridge::agy_fake::{FakeCodeAssist, Reply, agy_bridge, post_json};
+    use crate::bridge::upstream::InputItem;
+
+    const CALL: &str = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"Paris\"},\"id\":\"call-1\"},\"thoughtSignature\":\"S2\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":4,\"totalTokenCount\":13}}}\n\n";
+    const DONE: &str = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Sunny.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":12,\"candidatesTokenCount\":2,\"totalTokenCount\":14}}}\n\n";
+
+    fn project() -> Reply {
+        Reply::json(
+            200,
+            serde_json::json!({"cloudaicompanionProject": "test-project"}),
+        )
+    }
+
+    fn tools() -> Value {
+        serde_json::json!([{"type": "function", "name": "get_weather", "description": "Weather",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}},
+            {"type": "web_search"}])
+    }
+
+    fn generated(fake: &FakeCodeAssist) -> Vec<Value> {
+        fake.requests()
+            .into_iter()
+            .filter(|request| request.path.contains("streamGenerate"))
+            .map(|request| request.body)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_responses_client_runs_a_signed_tool_round_on_antigravity() {
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(CALL), Reply::sse(DONE)]);
+        let state = agy_bridge(&fake, None, None);
+        let first = serde_json::json!({"model": "gemini-3.8-flash", "stream": true, "tools": tools(),
+            "reasoning": {"effort": "low"}, "input": "Weather in Paris?"});
+        let (status, body) = post_json(Arc::clone(&state), "/v1/responses", first).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("event: response.output_item.done"), "{body}");
+        assert!(
+            body.contains("\"encrypted_content\":\"agy1:gemini-3.8-flash-low:S2\""),
+            "{body}"
+        );
+        assert!(body.contains("event: response.completed"), "{body}");
+
+        let second = serde_json::json!({"model": "gemini-3.8-flash", "stream": false, "tools": tools(),
+            "reasoning": {"effort": "low"}, "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Weather in Paris?"}]},
+                {"type": "reasoning", "id": "rs_0", "summary": [], "encrypted_content": "agy1:gemini-3.8-flash-low:S2"},
+                {"type": "function_call", "call_id": "call-1", "name": "get_weather", "arguments": "{\"city\":\"Paris\"}"},
+                {"type": "function_call_output", "call_id": "call-1", "output": "Sunny, 21 C"}]});
+        let (status, body) = post_json(state, "/v1/responses", second).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let folded: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(folded["status"], "completed");
+        assert_eq!(folded["output"][0]["content"][0]["text"], "Sunny.");
+        let sent = generated(&fake).into_iter().nth(1).unwrap();
+        assert_eq!(sent["model"], "gemini-3.8-flash-low");
+        assert_eq!(
+            sent["request"]["contents"][1]["parts"][0]["thoughtSignature"],
+            "S2"
+        );
+        assert_eq!(
+            sent["request"]["tools"][0]["functionDeclarations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "non-function tools are not sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_that_drops_reasoning_items_still_replays_through_the_lru() {
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(CALL), Reply::sse(DONE)]);
+        let state = agy_bridge(&fake, None, None);
+        let first = serde_json::json!({"model": "gemini-3.8-flash-low", "tools": tools(), "input": "Weather in Paris?"});
+        post_json(Arc::clone(&state), "/v1/responses", first).await;
+        let second = serde_json::json!({"model": "gemini-3.8-flash-low", "tools": tools(), "input": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"type": "function_call", "call_id": "call-1", "name": "get_weather", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call-1", "output": "Sunny"}]});
+        let (status, body) = post_json(state, "/v1/responses", second).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let sent = generated(&fake).into_iter().nth(1).unwrap();
+        assert_eq!(
+            sent["request"]["contents"][1]["parts"][0]["thoughtSignature"],
+            "S2"
+        );
+    }
+
+    #[tokio::test]
+    async fn effort_and_output_cap_reach_the_wire_and_a_pin_applies_when_none_is_asked() {
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(DONE)]);
+        let asked = serde_json::json!({"model": "gemini-3.8-flash", "reasoning": {"effort": "xhigh"},
+            "max_output_tokens": 500, "temperature": 0.3, "instructions": "Be brief.", "input": "hi"});
+        post_json(agy_bridge(&fake, None, None), "/v1/responses", asked).await;
+        let pinned = serde_json::json!({"model": "gemini-3.8-flash", "input": "hi"});
+        post_json(
+            agy_bridge(&fake, None, Some(crate::config::ReasoningEffort::Low)),
+            "/v1/responses",
+            pinned,
+        )
+        .await;
+        let sent = generated(&fake);
+        assert_eq!(sent[0]["model"], "gemini-3.8-flash-high");
+        assert_eq!(
+            sent[0]["request"]["generationConfig"]["maxOutputTokens"],
+            500
+        );
+        assert_eq!(sent[0]["request"]["generationConfig"]["temperature"], 0.3);
+        assert_eq!(
+            sent[0]["request"]["systemInstruction"]["parts"][0]["text"],
+            "Be brief."
+        );
+        assert_eq!(sent[1]["model"], "gemini-3.8-flash-low");
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_fails_mid_turn_ends_with_an_error_event() {
+        let fake = FakeCodeAssist::start(
+            vec![project()],
+            vec![Reply::sse(
+                "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"x\"}]},\"finishReason\":\"RECITATION\"}],\"usageMetadata\":{}}}\n\n",
+            )],
+        );
+        let (status, body) = post_json(
+            agy_bridge(&fake, None, None),
+            "/v1/responses",
+            serde_json::json!({"model": "gemini-3.8-flash", "stream": true, "input": "hi"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("event: response.failed"), "{body}");
+        assert!(body.contains("RECITATION"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_folded_turn_that_safety_stopped_comes_back_failed_and_saying_why() {
+        let stopped = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"SAFETY\"}],\"usageMetadata\":{}}}\n\n";
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(stopped)]);
+        let (status, body) = post_json(
+            agy_bridge(&fake, None, None),
+            "/v1/responses",
+            serde_json::json!({"model": "gemini-3.8-flash", "input": "hi"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let folded: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(folded["status"], "failed", "{body}");
+        assert_eq!(folded["error"]["code"], "SAFETY", "{body}");
+        assert!(
+            folded["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("safety filter"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_cut_off_after_its_first_frame_ends_with_an_error_event_not_a_retry() {
+        let partial = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Sun\"}]}}]}}\n\n";
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(partial).truncated()]);
+        let (status, body) = post_json(
+            agy_bridge(&fake, None, None),
+            "/v1/responses",
+            serde_json::json!({"model": "gemini-3.8-flash", "stream": true, "input": "hi"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("event: response.output_text.delta"), "{body}");
+        assert!(body.contains("event: error\n"), "{body}");
+        assert!(!body.contains("event: response.completed"), "{body}");
+        assert_eq!(
+            fake.count("streamGenerateContent"),
+            1,
+            "no retry after output"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_antigravity_cannot_serve_is_refused_in_the_openai_envelope() {
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(DONE)]);
+        let (status, body) = post_json(
+            agy_bridge(&fake, None, None),
+            "/v1/responses",
+            serde_json::json!({"model": "gpt-6-sol", "input": "hi"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(fake.count("streamGenerateContent"), 0);
+    }
+
+    #[test]
+    fn a_reasoning_item_whose_encrypted_content_is_null_reads_as_unsigned() {
+        let body = serde_json::json!({"model": "gemini-3.8-flash", "input": [
+            {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": null},
+            {"type": "reasoning", "id": "rs_2", "summary": []},
+            {"role": "user", "content": "hi"}]});
+        let request = antigravity_request(&body, None).unwrap();
+        let sealed: Vec<&str> = request
+            .input
+            .iter()
+            .filter_map(|item| match item {
+                InputItem::Reasoning {
+                    encrypted_content, ..
+                } => Some(encrypted_content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sealed, ["", ""]);
+    }
+
+    #[test]
+    fn a_body_without_input_is_refused_before_upstream() {
+        let error = antigravity_request(&serde_json::json!({"model": "gemini-3.8-flash"}), None)
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("input"), "{}", error.message);
     }
 }

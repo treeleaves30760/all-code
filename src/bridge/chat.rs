@@ -28,10 +28,12 @@
 //!
 //! One deliberate asymmetry: fields this endpoint has nowhere to put are
 //! dropped rather than refused. `temperature`, `top_p`, `max_tokens`, `user`
-//! and a message's `name` reach no field here and travel no further —
-//! chatgpt.com refuses the first four outright, so there is nothing to relay
-//! them into. The bridge being replaced answered 400 for every one of them,
-//! which is defensible against a spec and useless against an agent that sends
+//! and a message's `name` reach no field on the Codex upstream and travel no
+//! further — chatgpt.com refuses the first four outright, so there is nothing
+//! to relay them into; on Antigravity `max_tokens` (or
+//! `max_completion_tokens`) and `temperature` reach `generationConfig`. The
+//! bridge being replaced answered 400 for every one of them, which is
+//! defensible against a spec and useless against an agent that sends
 //! `temperature` on every request and cannot be told not to. The choice is
 //! between dropping them and refusing turns over them.
 
@@ -88,6 +90,14 @@ pub(crate) struct ChatRequest {
     pub tools: Vec<ChatTool>,
     #[serde(default)]
     pub tool_choice: Option<Value>,
+    /// Antigravity's `maxOutputTokens` (`max_completion_tokens` wins when both
+    /// are sent); chatgpt.com refuses both, so the Codex body never carries them.
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
+    #[serde(default)]
+    pub max_completion_tokens: Option<u64>,
+    #[serde(default)]
+    pub temperature: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -333,8 +343,8 @@ pub(crate) fn to_upstream(
         },
         prompt_cache_key: None,
         input,
-        max_output_tokens: None,
-        temperature: None,
+        max_output_tokens: request.max_completion_tokens.or(request.max_tokens),
+        temperature: request.temperature,
     })
 }
 
@@ -1236,7 +1246,19 @@ async fn respond(state: &BridgeState, body: Bytes) -> Result<Response, BridgeErr
             "the request body is not a Chat Completions request: {error}"
         ))
     })?;
-    let upstream_request = to_upstream(&request, &state.config)?;
+    let mut upstream_request = to_upstream(&request, &state.config)?;
+    // Resolved before the label and the ledger row below are taken, so both
+    // name the model that ran rather than the family that was asked for.
+    if matches!(state.upstream, super::Upstream::Antigravity(_)) {
+        upstream_request.model = super::gemini::wire_model(
+            &upstream_request.model,
+            upstream_request
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| reasoning.effort),
+            state.config.claude_tiers.as_ref(),
+        )?;
+    }
     // The model the *answer* is labelled with, before upstream names its own:
     // a client that pinned a slug should see that slug come back even on the
     // paths where the response object never arrives.
@@ -1887,6 +1909,143 @@ mod tests {
         assert_eq!(
             completion.choices[0].message.content.as_deref(),
             Some("fine")
+        );
+    }
+
+    use crate::bridge::agy_fake::{FakeCodeAssist, Reply, agy_bridge, post_json};
+
+    const SIGNED_CALL: &str = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"Paris\"}},\"thoughtSignature\":\"S3\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":4,\"totalTokenCount\":13}}}\n\n";
+
+    fn project() -> Reply {
+        Reply::json(200, json!({"cloudaicompanionProject": "test-project"}))
+    }
+
+    fn weather_tool() -> Value {
+        json!([{"type": "function", "function": {"name": "get_weather",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}])
+    }
+
+    fn generated(fake: &FakeCodeAssist) -> Vec<Value> {
+        fake.requests()
+            .into_iter()
+            .filter(|request| request.path.contains("streamGenerate"))
+            .map(|request| request.body)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_chat_client_gets_a_tool_call_from_antigravity_and_its_caps_reach_the_wire() {
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(SIGNED_CALL)]);
+        let body = json!({"model": "gemini-3.8-flash", "stream": false, "max_tokens": 700, "temperature": 0.1,
+            "tools": weather_tool(),
+            "messages": [{"role": "user", "content": "Weather in Paris?"}]});
+        let (status, answer) = post_json(
+            agy_bridge(&fake, None, Some(ReasoningEffort::High)),
+            "/v1/chat/completions",
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        let completion: Value = serde_json::from_str(&answer).unwrap();
+        let call = &completion["choices"][0]["message"]["tool_calls"][0];
+        assert_eq!(call["function"]["name"], "get_weather");
+        assert!(call["id"].as_str().unwrap().starts_with("ag_"));
+        assert_eq!(completion["choices"][0]["finish_reason"], "tool_calls");
+        let sent = generated(&fake).into_iter().next().unwrap();
+        assert_eq!(sent["model"], "gemini-3.8-flash-high");
+        assert_eq!(sent["request"]["generationConfig"]["maxOutputTokens"], 700);
+        assert_eq!(sent["request"]["generationConfig"]["temperature"], 0.1);
+    }
+
+    #[tokio::test]
+    async fn a_chat_tool_round_is_signed_again_from_the_cache_by_its_call_id() {
+        let done = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Sunny.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":12,\"candidatesTokenCount\":2,\"totalTokenCount\":14}}}\n\n";
+        let fake = FakeCodeAssist::start(
+            vec![project()],
+            vec![Reply::sse(SIGNED_CALL), Reply::sse(done)],
+        );
+        let state = agy_bridge(&fake, None, None);
+        let first = json!({"model": "gemini-3.8-flash-low", "tools": weather_tool(),
+            "messages": [{"role": "user", "content": "Weather in Paris?"}]});
+        let (_, answer) = post_json(Arc::clone(&state), "/v1/chat/completions", first).await;
+        let completion: Value = serde_json::from_str(&answer).unwrap();
+        let call = completion["choices"][0]["message"]["tool_calls"][0].clone();
+        let call_id = call["id"].as_str().unwrap().to_owned();
+
+        let second = json!({"model": "gemini-3.8-flash-low", "tools": weather_tool(), "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant", "content": null, "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": call_id, "content": "Sunny, 21 C"}]});
+        let (status, answer) = post_json(state, "/v1/chat/completions", second).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        let completion: Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!(completion["choices"][0]["message"]["content"], "Sunny.");
+        let sent = generated(&fake).into_iter().nth(1).unwrap();
+        let part = &sent["request"]["contents"][1]["parts"][0];
+        assert_eq!(part["thoughtSignature"], "S3", "{sent}");
+        assert!(
+            part["functionCall"].get("id").is_none(),
+            "a minted id is not Antigravity's to see: {sent}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_antigravity_stopped_for_safety_is_an_error_not_an_empty_completion() {
+        let stopped = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"SAFETY\"}],\"usageMetadata\":{}}}\n\n";
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(stopped)]);
+        let state = agy_bridge(&fake, None, None);
+        let ask = |stream: bool| {
+            json!({"model": "gemini-3.8-flash", "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}]})
+        };
+        let (status, answer) =
+            post_json(Arc::clone(&state), "/v1/chat/completions", ask(false)).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{answer}");
+        let error: Value = serde_json::from_str(&answer).unwrap();
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("SAFETY"),
+            "{answer}"
+        );
+
+        let (status, streamed) = post_json(state, "/v1/chat/completions", ask(true)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(streamed.contains("\"error\""), "{streamed}");
+        assert!(streamed.contains("SAFETY"), "{streamed}");
+        assert!(streamed.ends_with(DONE_FRAME), "{streamed}");
+    }
+
+    #[test]
+    fn the_codex_body_never_carries_max_tokens_or_temperature() {
+        let mut request: ChatRequest = serde_json::from_value(
+            json!({"model": "gpt-6-sol", "max_tokens": 5, "temperature": 0.5,
+            "messages": [{"role": "user", "content": "hi"}]}),
+        )
+        .unwrap();
+        request.stream = true;
+        let built = to_upstream(&request, &config(None)).unwrap();
+        assert_eq!(built.max_output_tokens, Some(5));
+        assert_eq!(built.temperature, Some(0.5));
+        let wire = serde_json::to_value(&built).unwrap();
+        assert!(
+            wire.get("max_output_tokens").is_none() && wire.get("temperature").is_none(),
+            "{wire}"
+        );
+    }
+
+    #[test]
+    fn max_completion_tokens_outranks_max_tokens() {
+        let request: ChatRequest = serde_json::from_value(json!({"model": "gemini-3.8-flash",
+            "max_tokens": 5, "max_completion_tokens": 9,
+            "messages": [{"role": "user", "content": "hi"}]}))
+        .unwrap();
+        assert_eq!(
+            to_upstream(&request, &config(None))
+                .unwrap()
+                .max_output_tokens,
+            Some(9)
         );
     }
 }

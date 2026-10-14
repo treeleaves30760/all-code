@@ -138,7 +138,6 @@ pub fn effort_word(effort: Option<ReasoningEffort>) -> &'static str {
 
 /// The wire id for `effort` on `family`, or the family's only rung when it
 /// does not serve that one (GPT-OSS serves `medium` alone).
-#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
 pub fn wire_model(family: &AgyFamily, effort: &str) -> String {
     let effort = if family.thinking.contains_key(effort) {
         effort
