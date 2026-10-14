@@ -886,6 +886,29 @@ fn a_verified_agent_gets_a_permission_flag_and_an_unverified_one_does_not() {
         .stdout(predicate::str::contains("--approval-mode").not());
 }
 
+/// agy's own default already asks, so a shared agy with no rung named gets
+/// no flag at all; a named rung gets exactly the flags `agy --help` lists.
+#[test]
+fn a_shared_agy_session_gets_a_permission_flag_only_when_asked() {
+    let temp = tempfile::tempdir().unwrap();
+    ephemeral_remote(&temp);
+    alc(&temp)
+        .args(["--share", "--dry-run", "agy"])
+        .assert()
+        .success()
+        // `--mode ` with its space: `--model`, which every agy launch
+        // carries, contains the bare word.
+        .stdout(predicate::str::contains("--mode ").not())
+        .stdout(predicate::str::contains("--dangerously").not());
+    alc(&temp)
+        .args(["--share", "--permission", "auto", "--dry-run", "agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--sandbox --dangerously-skip-permissions",
+        ));
+}
+
 #[test]
 fn remote_status_reports_the_permission_ceiling() {
     let temp = tempfile::tempdir().unwrap();

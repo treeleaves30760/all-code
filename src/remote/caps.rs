@@ -453,6 +453,51 @@ const COPILOT_MODES: &[NativeMode] = &[
     },
 ];
 
+// Verified against `agy --help` (2026-10-14). agy has no flag for its own
+// default, which already asks before acting, so the Ask row adds nothing:
+// a shared agy with no rung named starts exactly as a bare `agy` would.
+const AGY_MODES: &[NativeMode] = &[
+    NativeMode {
+        label: "plan",
+        cli: &["--mode", "plan"],
+        env: None,
+        rung: SafetyRung::Plan,
+        escalation: false,
+    },
+    NativeMode {
+        label: "default",
+        cli: &[],
+        env: None,
+        rung: SafetyRung::Ask,
+        escalation: false,
+    },
+    NativeMode {
+        label: "accept-edits",
+        cli: &["--mode", "accept-edits"],
+        env: None,
+        rung: SafetyRung::AutoEdit,
+        escalation: false,
+    },
+    // Skipping the prompts inside agy's own sandbox is what the Auto rung
+    // means ("acts without asking, inside whatever sandbox the agent has"),
+    // the same shape as Codex's workspace-write with no approvals - so it
+    // is gated by the ceiling, not marked as a free pass.
+    NativeMode {
+        label: "sandboxed auto",
+        cli: &["--sandbox", "--dangerously-skip-permissions"],
+        env: None,
+        rung: SafetyRung::Auto,
+        escalation: false,
+    },
+    NativeMode {
+        label: "skip permissions",
+        cli: &["--dangerously-skip-permissions"],
+        env: None,
+        rung: SafetyRung::Full,
+        escalation: true,
+    },
+];
+
 /// The nine rows. Ordered as `Agent::ALL`, and a test asserts that.
 pub(crate) const CAPS: [AgentCaps; 9] = [
     AgentCaps {
@@ -589,16 +634,17 @@ pub(crate) const CAPS: [AgentCaps; 9] = [
         ],
         mobile_hint: None,
     },
-    // A placeholder until the Antigravity CLI's own permission flags are
-    // checked against a real `agy --help`: no modes, so the page offers no
-    // control and alc injects no flag it has not seen work.
     AgentCaps {
         agent: Agent::Agy,
+        // agy asks before acting unless told otherwise, so it is not the
+        // gates-nothing case the badge exists for.
         sandboxed: true,
-        flags_verified: false,
+        flags_verified: true,
         set_verified: false,
-        axes: &[],
-        modes: &[],
+        axes: &["mode"],
+        modes: AGY_MODES,
+        // `--mode` is a launch flag; no in-session command for it has been
+        // confirmed, so the page offers a relaunch rather than a keystroke.
         set: SetMethod::RelaunchOnly,
         probe: &[],
         mobile_hint: None,
@@ -704,7 +750,7 @@ mod tests {
     #[test]
     fn an_agent_with_no_verified_flags_is_never_treated_as_confirmed() {
         // alc injects a permission flag at launch only for verified rows.
-        // These six come from documentation, and a wrong flag name in argv
+        // These five come from documentation, and a wrong flag name in argv
         // is a session that will not start.
         for agent in [
             Agent::Pi,
@@ -712,14 +758,37 @@ mod tests {
             Agent::Goose,
             Agent::Qwen,
             Agent::Kimi,
-            Agent::Agy,
         ] {
             assert!(!caps(agent).flags_verified, "{agent} claims verification");
         }
-        for agent in [Agent::Claude, Agent::Codex, Agent::Opencode] {
+        for agent in [Agent::Claude, Agent::Codex, Agent::Opencode, Agent::Agy] {
             assert!(!caps(agent).modes.is_empty(), "{agent} has no modes");
             assert!(caps(agent).flags_verified, "{agent} was verified by hand");
         }
+    }
+
+    #[test]
+    fn agy_rungs_map_to_verified_flags() {
+        let caps = caps(Agent::Agy);
+        assert!(caps.flags_verified);
+        let cli_for = |rung| {
+            caps.modes
+                .iter()
+                .find(|m| m.rung == rung)
+                .map(|m| m.cli)
+                .unwrap()
+        };
+        assert_eq!(cli_for(SafetyRung::Plan), ["--mode", "plan"]);
+        assert_eq!(cli_for(SafetyRung::Ask), [] as [&str; 0]);
+        assert_eq!(cli_for(SafetyRung::AutoEdit), ["--mode", "accept-edits"]);
+        assert_eq!(
+            cli_for(SafetyRung::Auto),
+            ["--sandbox", "--dangerously-skip-permissions"]
+        );
+        assert_eq!(
+            cli_for(SafetyRung::Full),
+            ["--dangerously-skip-permissions"]
+        );
     }
 
     #[test]

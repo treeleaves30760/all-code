@@ -630,6 +630,25 @@ mod launch_tests {
         );
     }
 
+    /// agy's own default already asks and has no flag of its own, so the
+    /// shared default adds nothing - yet alc still knows the rung, because
+    /// it is the one a bare `agy` starts in.
+    #[test]
+    fn a_shared_agy_starts_at_ask_with_nothing_added() {
+        let mut spec = launch_spec(Agent::Agy);
+        let state = arm_at_launch(&mut spec, None);
+        assert!(spec.args.is_empty());
+        assert_eq!(state.rung, Some(SafetyRung::Ask));
+        assert_eq!(state.confidence, Confidence::Launched);
+
+        let mut spec = launch_spec(Agent::Agy);
+        arm_at_launch(&mut spec, Some(SafetyRung::Auto));
+        assert_eq!(
+            spec.args,
+            ["--sandbox", "--dangerously-skip-permissions"].map(OsString::from)
+        );
+    }
+
     #[test]
     fn an_agent_that_takes_its_mode_from_the_environment_gets_it_there() {
         let mut spec = launch_spec(Agent::Goose);
