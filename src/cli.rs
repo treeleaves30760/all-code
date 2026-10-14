@@ -1457,6 +1457,27 @@ fn run_bridge(store: &Store, args: BridgeArgs) -> Result<u8> {
     }
 }
 
+/// One row of `alc models --agy`: the id, its label, and its windows. A live
+/// `agy models` can list ids no family serves (`gemini-4-argon-disabled` on
+/// a plan without Argon, `gemini-3.8-flash-tiered`); those are marked, so
+/// nobody pins a profile to a model the bridge cannot run.
+fn agy_model_line(model: &antigravity::AgyModel) -> String {
+    let suffix = match antigravity::split_wire_id(&model.id) {
+        Some((family, _)) => {
+            let standard = family.context_window / 1_000;
+            let maximum = family.max_context_window / 1_000;
+            if maximum > standard {
+                format!(" (context {standard}K, max {maximum}K)")
+            } else {
+                format!(" (context {standard}K)")
+            }
+        }
+        None if antigravity::family_of_model(&model.id).is_none() => " (not bridgeable)".to_owned(),
+        None => String::new(),
+    };
+    format!("{}: {}{suffix}", model.id, model.label)
+}
+
 fn run_antigravity_models(store: &Store, args: &ModelsArgs) -> Result<u8> {
     let catalog = antigravity::models(&store.dir, args.refresh);
     if args.json {
@@ -1466,21 +1487,7 @@ fn run_antigravity_models(store: &Store, args: &ModelsArgs) -> Result<u8> {
     println!("Antigravity model catalog");
     println!("source: {}", catalog.source);
     for model in &catalog.models {
-        let windows = antigravity::split_wire_id(&model.id).map(|(family, _)| {
-            let standard = family.context_window / 1_000;
-            let maximum = family.max_context_window / 1_000;
-            if maximum > standard {
-                format!(" (context {standard}K, max {maximum}K)")
-            } else {
-                format!(" (context {standard}K)")
-            }
-        });
-        println!(
-            "- {}: {}{}",
-            model.id,
-            model.label,
-            windows.unwrap_or_default()
-        );
+        println!("- {}", agy_model_line(model));
     }
     println!("Auto-sync: once a day from `agy models`; run `alc models --agy --refresh` to");
     println!("sync now.");
@@ -1788,6 +1795,35 @@ mod tests {
         provider.model = model.to_owned();
         provider.reasoning_effort = effort;
         provider
+    }
+
+    /// A live `agy models` lists ids no family serves (an Ultra-gated model
+    /// shows as `-disabled`, Flash has a `-tiered` entry); the bridge cannot
+    /// run those, so the list says so instead of offering them.
+    #[test]
+    fn agy_model_lines_mark_ids_outside_the_families() {
+        let line = |id: &str, label: &str| {
+            agy_model_line(&antigravity::AgyModel {
+                id: id.to_owned(),
+                label: label.to_owned(),
+            })
+        };
+        assert_eq!(
+            line("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
+            "claude-opus-5-5-high: Claude Opus 5.5 (High) (context 256K, max 840K)"
+        );
+        assert_eq!(
+            line("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+            "gpt-oss-120b-medium: GPT-OSS 120B (Medium) (context 131K)"
+        );
+        assert_eq!(
+            line("gemini-4-argon-disabled", "Gemini 4 Argon"),
+            "gemini-4-argon-disabled: Gemini 4 Argon (not bridgeable)"
+        );
+        assert_eq!(
+            line("gemini-3.8-flash-tiered", "Gemini 3.8 Flash"),
+            "gemini-3.8-flash-tiered: Gemini 3.8 Flash (not bridgeable)"
+        );
     }
 
     #[test]
