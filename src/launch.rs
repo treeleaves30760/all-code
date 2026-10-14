@@ -2214,6 +2214,47 @@ mod tests {
         );
     }
 
+    /// Auto mode's classifier pin follows the provider: a hosted gateway gets
+    /// it on the profile's model, while an API key on the anthropic kind still
+    /// reaches Anthropic, whose server classifier and aliases stay in charge -
+    /// pinning `sonnet` there would send the literal id `sonnet`.
+    #[test]
+    fn only_a_non_anthropic_keyed_profile_pins_auto_modes_classifier() {
+        let mut credentials = Credentials::default();
+        for profile in ["openrouter", "anthropic"] {
+            credentials
+                .api_keys
+                .insert(profile.into(), format!("secret-{profile}-key"));
+        }
+        let store = store(Config::default(), credentials);
+        let launch = |profile: &str| {
+            let spec = build(
+                &store,
+                Agent::Claude,
+                Some(profile),
+                &[],
+                &LaunchOverrides::default(),
+            )
+            .unwrap();
+            assert!(
+                plan_of(&spec).document.get("apiKeyHelper").is_some(),
+                "{profile} is a keyed launch"
+            );
+            document_env(&spec)
+        };
+
+        let openrouter = launch("openrouter");
+        assert_eq!(
+            openrouter["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+            openrouter["ANTHROPIC_MODEL"]
+        );
+        assert_eq!(openrouter["CLAUDE_CODE_AUTO_MODE_SERVER"], "0");
+
+        let anthropic = launch("anthropic");
+        assert!(!anthropic.contains_key("ANTHROPIC_DEFAULT_SONNET_MODEL"));
+        assert!(!anthropic.contains_key("CLAUDE_CODE_AUTO_MODE_SERVER"));
+    }
+
     fn ollama_claude_env(
         config: Config,
         overrides: &LaunchOverrides,

@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::bridge::tiers::ModelTiers;
+use crate::bridge::tiers::{ModelTiers, is_claude_code_alias};
 use crate::bridge_host::files::{RouteRecord, valid_route_id};
 use crate::config::validate_profile_name;
 use crate::model_catalog::ModelInfo;
@@ -195,6 +195,10 @@ pub(crate) struct KeyedDocument<'a> {
     /// still reaches Claude Code directly, as it always has.
     pub key_env: Option<&'a str>,
     pub helper: String,
+    /// Whether auto mode's classifier is pinned to this profile's model. Off
+    /// for the anthropic kind, which reaches Anthropic's API and so keeps its
+    /// server classifier and its own aliases, as Claude Code's login does.
+    pub pin_auto_mode: bool,
 }
 
 /// A hosted provider with an API key. It serves its own models or maps
@@ -211,7 +215,9 @@ pub(crate) fn keyed_document(inputs: &KeyedDocument<'_>) -> Value {
         put(&mut env, name, "");
     }
     put(&mut env, "ANTHROPIC_MODEL", inputs.model);
-    pin_auto_mode_classifier(&mut env, inputs.model);
+    if inputs.pin_auto_mode {
+        pin_auto_mode_classifier(&mut env, inputs.model);
+    }
     if let Some(small) = inputs.small_model {
         put(&mut env, "ANTHROPIC_SMALL_FAST_MODEL", small);
     }
@@ -317,10 +323,18 @@ pub(crate) fn local_document(inputs: &LocalDocument<'_>) -> Value {
 /// Anthropic's API the server-side one answers nothing, so Claude Code runs
 /// its own - on the `sonnet` alias, which only Anthropic serves by that name.
 /// Pinning the alias to the profile's model is what makes auto mode work on
-/// every provider; `CLAUDE_CODE_AUTO_MODE_SERVER=0` skips the server attempt
-/// and the request field a strict endpoint may refuse.
+/// every other provider; `CLAUDE_CODE_AUTO_MODE_SERVER=0` skips the server
+/// attempt and the request field a strict endpoint may refuse. Only for a
+/// document whose endpoint is not Anthropic's: the native document and the
+/// anthropic kind's keyed one keep the real server classifier.
+///
+/// A profile model that is itself one of Claude Code's aliases is not pinned:
+/// Claude Code resolves `sonnet` through this very variable and sends its value
+/// verbatim, so `sonnet` pinned to `opus` would ask for a model named `opus`.
 fn pin_auto_mode_classifier(env: &mut Map<String, Value>, model: &str) {
-    put(env, "ANTHROPIC_DEFAULT_SONNET_MODEL", model);
+    if !is_claude_code_alias(model) {
+        put(env, "ANTHROPIC_DEFAULT_SONNET_MODEL", model);
+    }
     put(env, "CLAUDE_CODE_AUTO_MODE_SERVER", "0");
 }
 
@@ -909,6 +923,7 @@ mod tests {
             context_window: None,
             key_env: Some("OPENROUTER_API_KEY"),
             helper: "HELPER".to_owned(),
+            pin_auto_mode: true,
         });
         let env = env(&document);
         assert_eq!(env["ANTHROPIC_BASE_URL"], "https://openrouter.ai/api");
@@ -933,6 +948,7 @@ mod tests {
             context_window: None,
             key_env: Some("ANTHROPIC_API_KEY"),
             helper: "HELPER".to_owned(),
+            pin_auto_mode: false,
         });
         assert!(!self::env(&anthropic).contains_key("ANTHROPIC_API_KEY"));
         assert_eq!(self::env(&anthropic)["ANTHROPIC_AUTH_TOKEN"], "");
@@ -966,6 +982,8 @@ mod tests {
         assert_eq!(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "65536");
         assert_eq!(env["CLAUDE_CODE_DISABLE_FAST_MODE"], "1");
         assert_eq!(env["API_FORCE_IDLE_TIMEOUT"], "0");
+        // The local-server pins and `local_env` leave auto mode's switch on.
+        assert_eq!(env["CLAUDE_CODE_AUTO_MODE_SERVER"], "0");
         assert!(
             !env.contains_key("API_TIMEOUT_MS"),
             "a timeout the user set is theirs"
@@ -994,6 +1012,7 @@ mod tests {
             context_window: None,
             key_env: Some("OPENROUTER_API_KEY"),
             helper: "HELPER".to_owned(),
+            pin_auto_mode: true,
         });
         let env = env(&document);
         // Claude Code's local classifier asks for the Sonnet alias; without
@@ -1023,6 +1042,64 @@ mod tests {
         assert_eq!(env["CLAUDE_CODE_AUTO_MODE_SERVER"], "0");
     }
 
+    /// An API key on Anthropic's own kind still reaches Anthropic, which runs
+    /// the real server classifier and serves the aliases by their own names.
+    #[test]
+    fn a_keyed_anthropic_document_keeps_anthropics_server_classifier() {
+        let document = keyed_document(&KeyedDocument {
+            base_url: "https://api.anthropic.com",
+            model: "sonnet",
+            small_model: None,
+            context_window: None,
+            key_env: Some("ANTHROPIC_API_KEY"),
+            helper: "HELPER".to_owned(),
+            pin_auto_mode: false,
+        });
+        let env = env(&document);
+        assert_eq!(env["ANTHROPIC_MODEL"], "sonnet");
+        assert!(!env.contains_key("CLAUDE_CODE_AUTO_MODE_SERVER"));
+        assert!(!env.contains_key("ANTHROPIC_DEFAULT_SONNET_MODEL"));
+    }
+
+    /// A gateway configured with one of Claude Code's own aliases already
+    /// gets the alias resolved by Claude Code; pinning `sonnet` to `opus`
+    /// would send the literal id `opus` instead.
+    #[test]
+    fn a_profile_model_that_is_an_alias_is_not_pinned() {
+        for model in [
+            "sonnet", "opus", "Haiku", "fable", "best", "opusplan", "opus[1m]", "default",
+        ] {
+            let keyed = keyed_document(&KeyedDocument {
+                base_url: "https://gateway.test",
+                model,
+                small_model: None,
+                context_window: None,
+                key_env: Some("GATEWAY_KEY"),
+                helper: "HELPER".to_owned(),
+                pin_auto_mode: true,
+            });
+            let keyless = local_document(&LocalDocument {
+                base_url: "http://gateway.test",
+                model,
+                small_model: None,
+                context_window: None,
+                placeholder: "alc",
+                local_server: false,
+                local_env: &[],
+            });
+            for document in [&keyed, &keyless] {
+                let env = env(document);
+                assert_eq!(env["ANTHROPIC_MODEL"], model);
+                assert!(
+                    !env.contains_key("ANTHROPIC_DEFAULT_SONNET_MODEL"),
+                    "{model}"
+                );
+                // Off Anthropic's API the server attempt still answers nothing.
+                assert_eq!(env["CLAUDE_CODE_AUTO_MODE_SERVER"], "0", "{model}");
+            }
+        }
+    }
+
     #[test]
     fn the_native_document_keeps_anthropics_server_classifier() {
         let document = native_document(&NativeDocument {
@@ -1045,6 +1122,7 @@ mod tests {
             context_window: None,
             key_env: Some("OPENROUTER_API_KEY"),
             helper: "HELPER".to_owned(),
+            pin_auto_mode: true,
         });
         merge_user_settings(
             &mut document,

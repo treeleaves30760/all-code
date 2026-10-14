@@ -26,23 +26,58 @@ pub(crate) struct ModelTiers {
     pub cheapest: String,
 }
 
+/// One of Claude's three tiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    Strongest,
+    Default,
+    Cheapest,
+}
+
+/// `model` lowercased, trimmed, and without a `[1m]` suffix. The suffix asks
+/// for a context window, not another model, so the tier is the one the name in
+/// front of it picks: `opus[1m]` is Opus. Matching the whole string left every
+/// bracketed alias unrecognised and relayed it to chatgpt.com, which serves
+/// none of Claude's.
+fn model_id(model: &str) -> String {
+    let asked = model.trim().to_ascii_lowercase();
+    match asked.split_once('[') {
+        Some((name, _)) => name.to_owned(),
+        None => asked,
+    }
+}
+
+/// The tier a Claude Code alias picks, or `None` when `id` is not one.
+fn alias_tier(id: &str) -> Option<Tier> {
+    match id {
+        "opus" | "fable" | "best" | "opusplan" => Some(Tier::Strongest),
+        "haiku" => Some(Tier::Cheapest),
+        "sonnet" | "default" => Some(Tier::Default),
+        _ => None,
+    }
+}
+
+/// Whether `model` is one of the aliases Claude Code resolves itself
+/// (`sonnet`, `opus`, `opusplan[1m]`, ...) rather than a model id.
+pub(crate) fn is_claude_code_alias(model: &str) -> bool {
+    alias_tier(&model_id(model)).is_some()
+}
+
 impl ModelTiers {
+    fn tier(&self, tier: Tier) -> &str {
+        match tier {
+            Tier::Strongest => &self.strongest,
+            Tier::Default => &self.default,
+            Tier::Cheapest => &self.cheapest,
+        }
+    }
+
     /// The Codex model to send upstream for `model`, or `None` to send it as
     /// it came.
     pub(crate) fn serve_as(&self, model: &str) -> Option<&str> {
-        let asked = model.trim().to_ascii_lowercase();
-        // A `[1m]` suffix asks for a context window, not another model, so the
-        // tier is the one the name in front of it picks: `opus[1m]` is Opus.
-        // Matching the whole string left every bracketed alias unrecognised
-        // and relayed it to chatgpt.com, which serves none of Claude's.
-        let id = asked
-            .split_once('[')
-            .map_or(asked.as_str(), |(name, _)| name);
-        match id {
-            "opus" | "fable" | "best" | "opusplan" => return Some(&self.strongest),
-            "haiku" => return Some(&self.cheapest),
-            "sonnet" | "default" => return Some(&self.default),
-            _ => {}
+        let id = model_id(model);
+        if let Some(tier) = alias_tier(&id) {
+            return Some(self.tier(tier));
         }
         let family = id.strip_prefix("claude-")?;
         if ["fable", "mythos", "opus"]
@@ -101,6 +136,32 @@ mod tests {
             ("claude-sonnet-4-5[1m]", "gpt-5.6-terra"),
         ] {
             assert_eq!(tiers.serve_as(asked), Some(served), "{asked}");
+        }
+    }
+
+    #[test]
+    fn claude_codes_aliases_are_told_from_model_ids() {
+        for alias in [
+            "sonnet",
+            "Opus",
+            "haiku",
+            "fable",
+            "best",
+            "opusplan",
+            "default",
+            "opus[1m]",
+            "sonnet[1m]",
+        ] {
+            assert!(is_claude_code_alias(alias), "{alias}");
+        }
+        for model in [
+            "claude-sonnet-5",
+            "anthropic/claude-sonnet-5",
+            "gpt-6-astra",
+            "qwen3-coder",
+            "sonnet-proxy",
+        ] {
+            assert!(!is_claude_code_alias(model), "{model}");
         }
     }
 

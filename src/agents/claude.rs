@@ -306,6 +306,7 @@ fn provider_document(
         context_window: overrides.context_window,
         key_env: provider.api_key_env.as_deref(),
         helper: helper(store, &format!("profile:{profile_name}"))?,
+        pin_auto_mode: provider.kind != ProviderKind::Anthropic,
     });
     // A local server's pins follow the kind, not the auth style, as Ollama's
     // always have: a llama.cpp started with `--api-key`, or an Ollama behind
