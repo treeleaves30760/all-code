@@ -1310,6 +1310,46 @@ fn incompatible_provider_has_actionable_error() {
 }
 
 #[test]
+fn agy_refuses_every_other_kind() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "--dry-run", "agy"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("antigravity"));
+}
+
+#[test]
+fn the_antigravity_kind_runs_only_agy_for_now() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--agy", "--dry-run", "claude"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("antigravity"))
+        .stderr(predicate::str::contains("alc agy"));
+}
+
+/// A config.toml written before the antigravity kind existed has no profile
+/// for agy, and "run `alc config`" alone does not say which command adds it.
+#[test]
+fn agy_on_a_config_without_the_antigravity_profile_names_the_command_that_adds_it() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "version = 1\n\n[defaults]\n\n[providers.codex]\nkind = \"codex\"\nmodel = \"\"\nprotocol = \"codex-native\"\nauth = \"native\"\nenabled = true\n",
+    )
+    .unwrap();
+    alc(&temp)
+        .args(["--dry-run", "agy"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "alc config upsert antigravity --kind antigravity",
+        ));
+}
+
+#[test]
 fn codex_to_claude_accepts_explicit_model_and_effort() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)

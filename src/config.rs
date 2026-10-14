@@ -896,6 +896,15 @@ impl Config {
             .collect();
         match matches.as_slice() {
             [(name, provider)] => Ok((name.as_str(), *provider)),
+            // A config.toml from before the antigravity kind has no profile
+            // for agy, and `alc config` alone does not say which one to add.
+            [] if kind == Some(ProviderKind::Antigravity) && agent == Agent::Agy => bail!(
+                "provider profile or kind '{requested}' was not found for {agent}; run `alc config upsert antigravity --kind antigravity`"
+            ),
+            // No antigravity profile could serve another agent anyway.
+            [] if kind == Some(ProviderKind::Antigravity) => {
+                bail!("{}", antigravity_drives_only_agy(requested))
+            }
             [] => bail!(
                 "provider profile or kind '{requested}' was not found for {agent}; run `alc config`"
             ),
@@ -1646,6 +1655,40 @@ enabled = true
         let error = config.validate().unwrap_err().to_string();
         assert!(
             error.contains("drives the Antigravity CLI only: run `alc agy`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_config_from_before_the_antigravity_kind_names_the_command_that_adds_it() {
+        let mut config = Config::default();
+        config.providers.remove("antigravity");
+        for requested in [None, Some("antigravity"), Some("agy")] {
+            let error = config
+                .resolve(Agent::Agy, requested)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("run `alc config upsert antigravity --kind antigravity`"),
+                "{requested:?}: {error}"
+            );
+        }
+        // Another agent is not sent to add a profile it could not use.
+        let error = config
+            .resolve(Agent::Claude, Some("antigravity"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("drives the Antigravity CLI only: run `alc agy`"),
+            "{error}"
+        );
+        // Every other missing kind keeps the general pointer.
+        let error = config
+            .resolve(Agent::Claude, Some("deepseek"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.ends_with("was not found for claude; run `alc config`"),
             "{error}"
         );
     }
