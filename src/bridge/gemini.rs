@@ -14,7 +14,10 @@
 //! it minted, so only there is a round in progress with no usable signature
 //! refused with [`NEW_SESSION`]; alc never invents one. A Claude turn the
 //! server did not sign is replayed as it was received (the live replay of
-//! one was served).
+//! one was served). The round in progress is what follows the last user turn
+//! that says more than tool results, so a user turn mixing tool results with
+//! text closes the round before it (Gemini's own notion of the current turn):
+//! an unsigned Gemini round there is replayed as text, not refused.
 //!
 //! Schemas. Agents ship JSON Schema richer than Gemini's subset, so schemas
 //! are rewritten, not refused: what has a Gemini spelling gets it, the rest
@@ -79,7 +82,9 @@ impl SignatureCache {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (map, order) = &mut *guard;
-        if map.insert(call_id.to_owned(), sealed.to_owned()).is_none() {
+        if map.insert(call_id.to_owned(), sealed.to_owned()).is_some() {
+            touch(order, call_id);
+        } else {
             order.push_back(call_id.to_owned());
         }
         while order.len() > self.capacity {
@@ -89,13 +94,27 @@ impl SignatureCache {
         }
     }
 
+    /// The sealed signature for `call_id`, which becomes the most recently
+    /// used entry.
     pub(crate) fn recall(&self, call_id: &str) -> Option<String> {
-        self.inner
+        let mut guard = self
+            .inner
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0
-            .get(call_id)
-            .cloned()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (map, order) = &mut *guard;
+        let sealed = map.get(call_id).cloned()?;
+        touch(order, call_id);
+        Some(sealed)
+    }
+}
+
+/// Moves `call_id` to the most recently used end. A linear scan: the cache
+/// holds a few thousand short ids and is touched once per tool call.
+fn touch(order: &mut VecDeque<String>, call_id: &str) {
+    if let Some(position) = order.iter().position(|id| id == call_id)
+        && let Some(id) = order.remove(position)
+    {
+        order.push_back(id);
     }
 }
 
@@ -400,18 +419,16 @@ impl<'a> Contents<'a> {
             }
         }
         // The round in progress: every turn after the last user turn that
-        // says something other than tool results.
-        let active_from = self
-            .turns
-            .iter()
-            .rposition(|turn| {
-                turn.role == "user"
-                    && turn
-                        .parts
-                        .iter()
-                        .any(|(_, part)| part.get("functionResponse").is_none())
-            })
-            .unwrap_or(0);
+        // says something other than tool results - or every turn, when no
+        // user turn says anything else.
+        let last_said = self.turns.iter().rposition(|turn| {
+            turn.role == "user"
+                && turn
+                    .parts
+                    .iter()
+                    .any(|(_, part)| part.get("functionResponse").is_none())
+        });
+        let in_progress = |index: usize| last_said.is_none_or(|said| index > said);
         // Only a signing family's unsigned rounds need care; every other
         // family's turns are replayed exactly as they were received.
         let signing = SIGNING_FAMILIES
@@ -431,7 +448,7 @@ impl<'a> Contents<'a> {
         let mut as_text = vec![false; self.turns.len()];
         for (index, turn) in self.turns.iter().enumerate() {
             if signing && unsigned_round(turn) {
-                if index > active_from {
+                if in_progress(index) {
                     return Err(BridgeError::new(
                         StatusCode::BAD_REQUEST,
                         "invalid_request_error",
@@ -517,7 +534,7 @@ pub(crate) fn translate_schema(schema: &Value, dropped: &mut BTreeSet<String>) -
         .or_else(|| schema.get("definitions"))
         .cloned()
         .unwrap_or(Value::Null);
-    let mut out = convert(schema, &definitions, 0, dropped);
+    let mut out = convert(schema, &definitions, &mut Vec::new(), dropped);
     if let Some(object) = out.as_object_mut()
         && !object.contains_key("type")
         && !object.contains_key("anyOf")
@@ -527,23 +544,62 @@ pub(crate) fn translate_schema(schema: &Value, dropped: &mut BTreeSet<String>) -
     out
 }
 
+/// Keywords dropped without a report: they constrain or annotate nothing
+/// Gemini would act on.
+const SILENTLY_DROPPED: [&str; 7] = [
+    "$schema",
+    "additionalProperties",
+    "default",
+    "title",
+    "examples",
+    "$defs",
+    "definitions",
+];
+
+/// The `format`s Gemini's function-declaration validator accepts, by type.
+/// Any other (zod's `.url()` emits `uri`) draws a 400, so it is dropped and
+/// reported as `format`.
+const KEPT_FORMATS: [(&str, &str); 6] = [
+    ("STRING", "enum"),
+    ("STRING", "date-time"),
+    ("INTEGER", "int32"),
+    ("INTEGER", "int64"),
+    ("NUMBER", "float"),
+    ("NUMBER", "double"),
+];
+
+/// `path` holds the definitions being expanded above `node`: a `$ref` back
+/// into one of them is a cycle and stops at once, so a definition that
+/// refers to itself k times costs k copies, not k^depth. [`MAX_REF_DEPTH`]
+/// stays as a backstop for long acyclic chains.
 fn convert(
     node: &Value,
     definitions: &Value,
-    depth: usize,
+    path: &mut Vec<String>,
     dropped: &mut BTreeSet<String>,
 ) -> Value {
     let Some(object) = node.as_object() else {
         return json!({});
     };
     if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+        // A `$ref`'s siblings are not merged into what it points at.
+        for key in object.keys() {
+            if key != "$ref" && !SILENTLY_DROPPED.contains(&key.as_str()) {
+                dropped.insert(key.clone());
+            }
+        }
         let target = reference
             .strip_prefix("#/$defs/")
             .or_else(|| reference.strip_prefix("#/definitions/"))
-            .and_then(|name| definitions.get(name));
+            .and_then(|name| Some((name, definitions.get(name)?)));
         return match target {
-            Some(target) if depth < MAX_REF_DEPTH => {
-                convert(target, definitions, depth + 1, dropped)
+            Some((name, target))
+                if path.len() < MAX_REF_DEPTH && !path.iter().any(|seen| seen == name) =>
+            {
+                path.push(name.to_owned());
+                let converted = convert(target, definitions, path, dropped);
+                path.pop();
+                converted
             }
             _ => {
                 dropped.insert("$ref".to_owned());
@@ -552,6 +608,7 @@ fn convert(
         };
     }
     let mut out = Map::new();
+    let mut format = None;
     for (key, value) in object {
         match key.as_str() {
             "type" => apply_type(value, &mut out),
@@ -560,7 +617,7 @@ fn convert(
                     let converted = properties
                         .iter()
                         .map(|(name, schema)| {
-                            (name.clone(), convert(schema, definitions, depth, dropped))
+                            (name.clone(), convert(schema, definitions, path, dropped))
                         })
                         .collect();
                     out.insert("properties".to_owned(), Value::Object(converted));
@@ -573,14 +630,14 @@ fn convert(
                 };
                 out.insert(
                     "items".to_owned(),
-                    convert(&first, definitions, depth, dropped),
+                    convert(&first, definitions, path, dropped),
                 );
             }
             "anyOf" | "oneOf" => {
                 if let Some(options) = value.as_array() {
                     let converted = options
                         .iter()
-                        .map(|option| convert(option, definitions, depth, dropped))
+                        .map(|option| convert(option, definitions, path, dropped))
                         .collect();
                     out.insert("anyOf".to_owned(), Value::Array(converted));
                 }
@@ -588,20 +645,27 @@ fn convert(
             "const" => {
                 out.insert("enum".to_owned(), json!([value]));
             }
+            "format" => format = Some(value),
             "required" | "enum" | "description" | "nullable" | "minimum" | "maximum"
-            | "minItems" | "maxItems" | "format" => {
+            | "minItems" | "maxItems" => {
                 out.insert(key.clone(), value.clone());
             }
-            "$schema"
-            | "additionalProperties"
-            | "default"
-            | "title"
-            | "examples"
-            | "$defs"
-            | "definitions" => {}
+            silent if SILENTLY_DROPPED.contains(&silent) => {}
             other => {
                 dropped.insert(other.to_owned());
             }
+        }
+    }
+    // Judged after the loop: `type` may come after `format` in the object.
+    if let Some(format) = format {
+        let kind = out.get("type").and_then(Value::as_str);
+        let kept = KEPT_FORMATS
+            .iter()
+            .any(|(of, name)| kind == Some(*of) && format.as_str() == Some(*name));
+        if kept {
+            out.insert("format".to_owned(), format.clone());
+        } else {
+            dropped.insert("format".to_owned());
         }
     }
     Value::Object(out)
@@ -857,7 +921,9 @@ pub(crate) mod tests {
                 "either": {"oneOf": [{"type": "string"}, {"type": "integer", "minimum": 0}]},
                 "items": {"type": "array", "items": {"$ref": "#/$defs/Item"}, "minItems": 1},
                 "pattern": {"type": "string", "pattern": "^a", "minLength": 2, "examples": ["ab"]},
-                "many": {"type": ["string", "number"]}
+                "many": {"type": ["string", "number"]},
+                "url": {"type": "string", "format": "uri"},
+                "when": {"format": "date-time", "type": "string"}
             },
             "required": ["mode"],
             "$defs": {"Item": {"type": "object", "properties": {"id": {"type": "integer", "format": "int64"}}}}
@@ -872,14 +938,99 @@ pub(crate) mod tests {
                     "either": {"anyOf": [{"type": "STRING"}, {"type": "INTEGER", "minimum": 0}]},
                     "items": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"id": {"type": "INTEGER", "format": "int64"}}}, "minItems": 1},
                     "pattern": {"type": "STRING"},
-                    "many": {"anyOf": [{"type": "STRING"}, {"type": "NUMBER"}]}
+                    "many": {"anyOf": [{"type": "STRING"}, {"type": "NUMBER"}]},
+                    "url": {"type": "STRING"},
+                    "when": {"type": "STRING", "format": "date-time"}
                 },
                 "required": ["mode"]
             })
         );
         assert_eq!(
             dropped,
-            BTreeSet::from(["minLength".to_owned(), "pattern".to_owned()])
+            BTreeSet::from([
+                "format".to_owned(),
+                "minLength".to_owned(),
+                "pattern".to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn only_the_formats_gemini_accepts_are_kept_and_only_on_their_type() {
+        let kept = |schema: Value| {
+            let mut dropped = BTreeSet::new();
+            let out = translate_schema(
+                &json!({"type": "object", "properties": {"x": schema}}),
+                &mut dropped,
+            );
+            (
+                out["properties"]["x"].get("format").cloned(),
+                dropped.contains("format"),
+            )
+        };
+        for (kind, format) in [
+            ("string", "enum"),
+            ("string", "date-time"),
+            ("integer", "int32"),
+            ("integer", "int64"),
+            ("number", "float"),
+            ("number", "double"),
+        ] {
+            assert_eq!(
+                kept(json!({"type": kind, "format": format})),
+                (Some(json!(format)), false),
+                "{kind}/{format}"
+            );
+        }
+        assert_eq!(
+            kept(json!({"type": ["string", "null"], "format": "date-time"})),
+            (Some(json!("date-time")), false)
+        );
+        for schema in [
+            json!({"type": "string", "format": "uri"}),
+            json!({"type": "string", "format": "email"}),
+            json!({"type": "integer", "format": "date-time"}),
+            json!({"type": "number", "format": "int64"}),
+            json!({"format": "date-time"}),
+        ] {
+            assert_eq!(kept(schema.clone()), (None, true), "{schema}");
+        }
+    }
+
+    #[test]
+    fn a_definition_referring_to_itself_many_times_stays_small() {
+        let mut dropped = BTreeSet::new();
+        let node = json!({"$ref": "#/$defs/Node"});
+        let schema = json!({"type": "object", "properties": {"root": node},
+            "$defs": {"Node": {"type": "object", "properties": {"a": node, "b": node, "c": node, "d": node}}}});
+        let out = translate_schema(&schema, &mut dropped);
+        let leaf = json!({"type": "OBJECT"});
+        assert_eq!(
+            out["properties"]["root"],
+            json!({"type": "OBJECT", "properties": {"a": leaf, "b": leaf, "c": leaf, "d": leaf}}),
+            "the cycle is cut at its first revisit, not at the depth cap"
+        );
+        assert!(out.to_string().len() < 300, "{out}");
+        assert_eq!(dropped, BTreeSet::from(["$ref".to_owned()]));
+    }
+
+    #[test]
+    fn an_acyclic_chain_is_inlined_and_a_ref_s_siblings_are_reported() {
+        let mut dropped = BTreeSet::new();
+        let schema = json!({"type": "object",
+            "properties": {"pair": {"$ref": "#/$defs/Pair", "description": "Two leaves", "title": "P"}},
+            "$defs": {"Pair": {"type": "object", "properties": {"left": {"$ref": "#/$defs/Leaf"}, "right": {"$ref": "#/$defs/Leaf"}}},
+                      "Leaf": {"type": "integer"}}});
+        let out = translate_schema(&schema, &mut dropped);
+        assert_eq!(
+            out["properties"]["pair"],
+            json!({"type": "OBJECT", "properties": {"left": {"type": "INTEGER"}, "right": {"type": "INTEGER"}}}),
+            "a definition used twice on sibling paths is not a cycle"
+        );
+        assert_eq!(
+            dropped,
+            BTreeSet::from(["description".to_owned()]),
+            "title stays silent"
         );
     }
 
@@ -1283,5 +1434,73 @@ pub(crate) mod tests {
         assert_eq!(cache.recall("a"), None);
         assert_eq!(cache.recall("b").as_deref(), Some("2"));
         assert_eq!(cache.recall("c").as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn the_lru_keeps_what_was_recalled_or_remembered_again() {
+        let cache = SignatureCache::new(2);
+        cache.remember("a", "1");
+        cache.remember("b", "2");
+        assert_eq!(cache.recall("a").as_deref(), Some("1"));
+        cache.remember("c", "3");
+        assert_eq!(cache.recall("b"), None, "b was the least recently used");
+        assert_eq!(cache.recall("a").as_deref(), Some("1"));
+
+        cache.remember("c", "3'");
+        cache.remember("d", "4");
+        assert_eq!(
+            cache.recall("a"),
+            None,
+            "re-remembering c made a the oldest"
+        );
+        assert_eq!(cache.recall("c").as_deref(), Some("3'"));
+        assert_eq!(cache.recall("d").as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn a_history_that_opens_with_an_unsigned_gemini_call_is_in_progress() {
+        let wire = "gemini-3.8-flash-low";
+        let error =
+            translated(wire, vec![call("call-1", "{}"), output("call-1", "x")]).unwrap_err();
+        assert_eq!(error.message, NEW_SESSION);
+        // Text the model said is not user text: still in progress.
+        let error = translated(
+            wire,
+            vec![
+                text("assistant", "Let me look."),
+                call("call-1", "{}"),
+                output("call-1", "x"),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(error.message, NEW_SESSION);
+    }
+
+    #[test]
+    fn a_user_turn_mixing_tool_results_with_text_closes_the_round_before_it() {
+        let body = translated(
+            "gemini-3.8-flash-low",
+            vec![
+                text("user", "go"),
+                call("call-1", "{}"),
+                output("call-1", "x"),
+                text("user", "and now?"),
+            ],
+        )
+        .unwrap();
+        let contents = body["contents"].as_array().unwrap();
+        assert_eq!(
+            contents.len(),
+            3,
+            "the result and the text share one user turn"
+        );
+        assert_eq!(
+            contents[1]["parts"][0],
+            json!({"text": "[called tool get_weather with {}]"})
+        );
+        assert_eq!(
+            contents[2]["parts"],
+            json!([{"text": "[tool get_weather returned]\nx"}, {"text": "and now?"}])
+        );
     }
 }
