@@ -54,7 +54,8 @@ alc 指向某個執行檔。
 alc config upsert antigravity --kind antigravity
 ```
 
-在你加上之前，`alc doctor` 也會以警告的形式給出同一個提示。
+在你加上之前，`alc doctor` 會以警告的形式給出同一個提示，`alc config` 的
+Agent defaults 畫面也會。
 
 ## `is not compatible with agy` 或 `drives the Antigravity CLI only`
 
@@ -62,6 +63,15 @@ agy 和 `antigravity` 這個 kind 只屬於彼此：agy 自己登入 Google，�
 `alc --codex agy` 或 `alc --openrouter agy` 會被拒絕，`alc --agy claude` 也一樣。
 直接跑 `alc agy` 就好。讓其他 agent 也經由 Antigravity 登入連線的功能目前還沒有；
 原因見 [Antigravity CLI](./agents.md#antigravity-cli-agy)。
+
+如果你自己已經有一個名叫 `antigravity` 的 profile，請保留它：
+`alc config upsert antigravity` 會把它改寫成新的 kind，base URL 和模型都會不見，
+所以這時 alc 不會建議這個指令。改用別的名字加上這個登入，並把它設成 agy 的預設：
+
+```sh
+alc config upsert google-agy --kind antigravity
+alc config set-default agy google-agy
+```
 
 ## Auto 模式說伺服器端檢查無法使用
 
