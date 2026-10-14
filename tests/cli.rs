@@ -1162,6 +1162,129 @@ fn a_codex_profile_on_max_context_hands_claude_code_the_larger_window() {
                 "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"{window}\""
             )));
     }
+
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "codex",
+            "--kind",
+            "codex",
+            "--context",
+            "max",
+        ])
+        .assert()
+        .success();
+    for model in ["gpt-6.1-sol", "gpt-6-sol"] {
+        alc(&temp)
+            .env("CODEX_HOME", codex_home.path())
+            .args(["--codex", "--dry-run", "claude", "--model", model])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"872000\"",
+            ));
+    }
+}
+
+#[test]
+fn context_flag_needs_a_codex_provider() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--openrouter", "--dry-run", "claude", "--context", "max"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--context"))
+        .stderr(predicate::str::contains("alc --codex claude"));
+}
+
+/// `--context` on its own changes only the run it is given to; with `--save`
+/// it becomes the profile's choice, which later runs then start with.
+#[test]
+fn context_can_be_chosen_for_one_run_and_saved() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("CODEX_HOME", codex_home.path())
+        .args([
+            "--codex",
+            "--dry-run",
+            "claude",
+            "--model",
+            "gpt-6-sol",
+            "--context",
+            "max",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"872000\"",
+        ));
+    alc(&temp)
+        .env("CODEX_HOME", codex_home.path())
+        .args(["--codex", "--dry-run", "claude", "--model", "gpt-6-sol"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"272000\"",
+        ));
+
+    // `--save` writes nothing under `--dry-run`, so the save is a real launch
+    // against a stand-in for Claude Code.
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    let codex = temp.path().join("codex-history");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(codex.join("auth.json"), "{}").unwrap();
+    std::fs::write(temp.path().join("codex-models.json"), r#"{"schema_version":1,"refreshed_at":4102444800,"source":"test","models":[{"id":"gpt-6-sol","name":"GPT-6-Sol","description":"test","context_window":272000,"max_context_window":872000,"default_effort":"low","supported_efforts":["low","medium","high","xhigh","max"]}]}"#).unwrap();
+    let _stop = StopTheBridge(&temp);
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args([
+            "--codex",
+            "--no-share",
+            "claude",
+            "--model",
+            "gpt-6-sol",
+            "--context",
+            "max",
+            "--save",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Saved gpt-6-sol / low / max context as the default",
+        ));
+
+    alc(&temp)
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("context = \"max\""));
+    alc(&temp)
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model gpt-6-sol"))
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"872000\"",
+        ));
+
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "work",
+            "--kind",
+            "openrouter",
+            "--context",
+            "max",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("context"));
 }
 
 /// Nothing chosen anywhere - no model on the alc profile, none in the Codex
@@ -1409,7 +1532,7 @@ fn codex_to_claude_can_save_defaults_without_picker() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Saved gpt-5.6-luna / low as the default",
+            "Saved gpt-5.6-luna / low / standard context as the default",
         ));
 
     alc(&temp)

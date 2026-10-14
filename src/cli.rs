@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 use crate::config::{
-    Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
+    Agent, AuthStyle, ContextChoice, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
     validate_profile_name,
 };
 use crate::model_catalog::{CodexSource, ModelCatalog, ModelInfo};
@@ -245,12 +245,17 @@ struct ClaudeArgs {
     #[arg(long, value_name = "LEVEL")]
     effort: Option<ReasoningEffort>,
 
+    /// How much of the model's window to use: standard, or max (uses plan
+    /// limits faster past the standard window).
+    #[arg(long, value_name = "CHOICE")]
+    context: Option<ContextChoice>,
+
     /// Deprecated and ignored; Claude Code now picks the model in-session.
     /// Kept so old scripts do not forward it to Claude Code, which rejects it.
     #[arg(long, hide = true)]
     no_picker: bool,
 
-    /// Save this run's model and effort as the provider's defaults.
+    /// Save this run's model, effort and context as the provider's defaults.
     #[arg(long)]
     save: bool,
 
@@ -505,6 +510,11 @@ struct UpsertArgs {
     #[arg(long)]
     clear_effort: bool,
 
+    /// How much of a Codex model's window to use: standard, or max (uses
+    /// plan limits faster past the standard window).
+    #[arg(long, value_name = "CHOICE")]
+    context: Option<ContextChoice>,
+
     /// Optional small/fast model ID.
     #[arg(long)]
     small_model: Option<String>,
@@ -688,6 +698,7 @@ pub fn run() -> Result<u8> {
                     ClaudeArgs {
                         model: None,
                         effort: None,
+                        context: None,
                         no_picker: false,
                         save: false,
                         args: args.args,
@@ -900,8 +911,10 @@ fn run_claude(
     reject_swallowed_flags(&args.args, Agent::Claude, saw_escape())?;
     if let Some(why) = crate::agents::claude::runs_directly(&args.args) {
         let command = args.args[0].to_string_lossy().into_owned();
-        if args.model.is_some() || args.effort.is_some() || args.save {
-            bail!("--model, --effort and --save do not apply to `claude {command}`, which {why}");
+        if args.model.is_some() || args.effort.is_some() || args.context.is_some() || args.save {
+            bail!(
+                "--model, --effort, --context and --save do not apply to `claude {command}`, which {why}"
+            );
         }
         if sharing.enabled {
             bail!("`claude {command}` {why} and runs in this terminal; it cannot be shared");
@@ -914,9 +927,9 @@ fn run_claude(
     };
 
     if provider.kind != ProviderKind::Codex {
-        if args.effort.is_some() || args.save {
+        if args.effort.is_some() || args.context.is_some() || args.save {
             bail!(
-                "--effort and --save are available with a Codex provider; use `alc --codex claude`"
+                "--effort, --context and --save are available with a Codex provider; use `alc --codex claude`"
             );
         }
         // A local server can say how much context it really gives the model,
@@ -950,10 +963,19 @@ fn run_claude(
     // its own `codex_home` launches against a different login, and the models
     // it is offered have to come from the account it will actually sign with.
     let source = CodexSource::for_provider(&provider);
-    let overrides = if args.model.is_some() || args.effort.is_some() || args.save {
+    let overrides = if args.model.is_some()
+        || args.effort.is_some()
+        || args.context.is_some()
+        || args.save
+    {
         let catalog = load_codex_catalog(store, &source, dry_run);
         let (model, effort) =
             resolve_codex_defaults(&provider, &catalog, args.model.as_deref(), args.effort)?;
+        // This run's choice goes through the provider, so the one place that
+        // turns a choice into a window decides it for this run too.
+        let mut provider = provider;
+        provider.context = args.context.unwrap_or(provider.context);
+        let choice = provider.context;
 
         if args.save && !dry_run {
             let entry = store
@@ -963,8 +985,11 @@ fn run_claude(
                 .context("selected Codex provider disappeared from the config")?;
             entry.model = model.clone();
             entry.reasoning_effort = Some(effort);
+            entry.context = choice;
             store.save()?;
-            println!("Saved {model} / {effort} as the default for '{profile_name}'.");
+            println!(
+                "Saved {model} / {effort} / {choice} context as the default for '{profile_name}'."
+            );
         }
 
         let catalog = codex_catalog_for(store, catalog, &model, &source, dry_run);
@@ -1477,6 +1502,9 @@ fn upsert(store: &mut Store, args: UpsertArgs) -> Result<()> {
         provider.reasoning_effort = Some(effort);
     } else if args.clear_effort {
         provider.reasoning_effort = None;
+    }
+    if let Some(choice) = args.context {
+        provider.context = choice;
     }
     if let Some(model) = args.small_model {
         provider.small_model = non_empty(model);
