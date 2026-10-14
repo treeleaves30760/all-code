@@ -40,9 +40,9 @@ error: 'claude' is not installed or not on PATH; install it first, then retry `a
 
 **你會得到什麼。** Claude Code 會以 `gpt-6.1-sol`、`low` 強度啟動 ——
 如果你以前用過 Codex CLI，就以你自己的 `~/.codex/config.toml` 裡已經寫好的
-模型與強度啟動 —— 帶著 Codex 真正的 272k context window，而不是 Claude Code
-對它不認得的 model ID 假設的 200k，而且 Codex 提供的每個 GPT 模型都會出現在
-它自己的 `/model` 選單裡：
+模型與強度啟動 —— 帶著該模型在 Codex 上真正的 context window（GPT-6.1 Sol
+是 500K，其他模型是 272K），而不是 Claude Code 對它不認得的 model ID 假設的
+200k，而且 Codex 提供的每個 GPT 模型都會出現在它自己的 `/model` 選單裡：
 
 | 模型 | 適合的情境 | Codex 預設強度 |
 | --- | --- | --- |
@@ -59,7 +59,12 @@ error: 'claude' is not installed or not on PATH; install it first, then retry `a
 
 ```sh
 alc --codex claude --model gpt-6-luna --effort low
+alc --codex claude --context max
 ```
+
+`--context max` 會把任何一個模型拉到它最大的 872K window。超過標準 window
+之後，每一輪消耗方案額度的速度會變快，所以這要你自己選擇開啟；取捨寫在
+[Codex 橋接](#codex-橋接)。
 
 **之後你直接跑 `claude`，還是會連到 Anthropic。** 那個選單會把你的選擇寫進
 `~/.claude/settings.json`，而這台機器上每一個 Claude Code session 都會讀到
@@ -239,6 +244,16 @@ OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本�
 [Provider 與 agent](#provider-與-agent) 列出每一種 kind 的端點、金鑰環境
 變數與協定。
 
+**Auto 模式在每個 provider 上都能用。** Claude Code 的 Auto 模式會用一個分類器
+檢查每一次工具呼叫。Anthropic 在自己的伺服器上執行這個檢查，其他 provider 都
+做不到，所以在其他每個 provider 上，alc 會讓 Claude Code 改用本機的分類器，並
+跑在 profile 的模型上：它把分類器使用的 `sonnet` 別名釘到那個模型（所以
+`/model sonnet` 也會指向它），並跳過伺服器端的嘗試。這樣 Auto 模式就能運作，
+分類器請求使用的是那個 provider 的額度。`anthropic` 這個 kind —— 你自己的
+Claude 登入或 API key —— 則保留 Anthropic 的伺服器端檢查。如果 profile 的模型
+本身就是 Claude Code 的別名（例如 `sonnet`），就不會被釘住；你自己的
+`--settings` 若指定了 `ANTHROPIC_DEFAULT_SONNET_MODEL`，仍以你的為準。
+
 ## 指令一覽
 
 | 指令 | 作用 |
@@ -264,8 +279,8 @@ OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本�
 
 ## 執行 agent
 
-**參數轉送。** 除了 Claude 專用的 `--model`、`--effort`、`--save` 之外，
-agent 名稱後的參數會原封不動傳入：
+**參數轉送。** 除了 Claude 專用的 `--model`、`--effort`、`--context`、`--save`
+之外，agent 名稱後的參數會原封不動傳入：
 
 ```sh
 alc --codex codex exec "review this repository"
@@ -304,8 +319,8 @@ alc doctor
 
 `alc doctor` 會回報環境與憑證路徑、全部八個 agent 的執行檔、每個 provider
 profile 對照全部八個 agent 的結果、解析後的各 agent 預設值、殘留在
-`~/.claude/settings.json` 裡被釘住的 GPT 模型、Codex 橋接的模型、推理強度
-與 `codex login` 狀態、已啟用的 Ollama、llama.cpp 或 vLLM profile 對照其執行中伺服器的檢查，
+`~/.claude/settings.json` 裡被釘住的 GPT 模型、Codex 橋接的模型、推理強度、
+context window 選擇與 `codex login` 狀態、已啟用的 Ollama、llama.cpp 或 vLLM profile 對照其執行中伺服器的檢查，
 以及遠端控制的現況 —— 最後是一份問題摘要，每一項都附上修法。只要找到
 其中一個問題，它就會以非零狀態結束。
 
@@ -572,6 +587,25 @@ chatgpt.com 決定，所以一個 alc 沒被教過的模型，仍然可以在 Co
 [GPT-6.1 Sol 說明](https://developers.openai.com/api/docs/models/gpt-6.1-sol)與
 [Luna 說明](https://developers.openai.com/api/docs/models/gpt-6-luna)。
 
+**Context window。** 每個模型一開始用的是 Codex 自己給它的 window：GPT-6.1 Sol
+是 500K token，其他模型是 272K。它們每一個都能用到 872K，`--context max` 就是
+要這個：
+
+```sh
+alc --codex claude --context max         # 只有這一次
+alc config upsert codex --context max    # Codex profile 的預設值
+```
+
+超過標準 window 之後，每一輪消耗方案額度的速度會變快。OpenAI 在 Codex 裡也把
+較大的 window 寫成要自己選擇開啟（Codex 自己設定裡的 `model_context_window`），
+alc 也照同樣的方式處理：`standard` 是預設值，永遠不會寫進設定；`max` 會以
+`context = "max"` 存在 Codex profile 上，`alc config` 裡緊接在 Reasoning effort
+後面也有一個 **Context** 欄位可以切換。`alc models` 會印出兩個數字 ——
+`Codex context: 500K (max 872K)` —— 而 profile 設成 max 時，`alc doctor` 會在
+那個 profile 的橋接那一列加上 `/ max context`。profile 的選擇會套用到橋接上的
+每一個 agent，不只 Claude Code。單次執行用的 `--context` 跟 `--effort` 一樣只
+屬於 `alc claude`，provider 不是 Codex 時會被拒絕。
+
 **挑選預設值。** 只有在沒有選定模型與強度時，才會以 GPT-6.1 Sol、`low` 作為
 起點；你已儲存的選擇維持原樣。
 
@@ -579,15 +613,19 @@ chatgpt.com 決定，所以一個 alc 沒被教過的模型，仍然可以在 Co
 alc --codex claude --model gpt-6.1-sol --effort low --save
 ```
 
-`--save` 會把兩者都存進選定的 alc provider。沒有這些參數時，session 的起始值
-依序取自 alc provider、選定的 Codex profile、模型自己文件上的預設值。放在 `--`
-之後的 `--model` 或 `--effort` 會原樣交給 Claude Code，並蓋過 alc 原本要注入的
-值；你自己傳的 `--settings` 則會被合併進 alc 那一份，衝突時以你的為準，因為
-Claude Code 只讀一份。用 `/model` 選的模型只影響那一次 session；下次啟動又會從
-alc 的預設值開始，所以 `alc config` 仍然是唯一的真實來源。
+`--save` 會把模型、強度與 context 選擇都存進選定的 alc provider。沒有這些
+參數時，session 的起始值依序取自 alc provider、選定的 Codex profile、模型自己
+文件上的預設值；context 選擇只看 `--context` 與 alc provider，兩者都沒有時就是
+標準 window。放在 `--` 之後的 `--model` 或 `--effort` 會原樣交給 Claude Code，
+並蓋過 alc 原本要注入的值；你自己傳的 `--settings` 則會被合併進 alc 那一份，
+衝突時以你的為準，因為 Claude Code 只讀一份。用 `/model` 選的模型只影響那一次
+session；下次啟動又會從 alc 的預設值開始，所以 `alc config` 仍然是唯一的真實
+來源。
 
-**Auto 模式與快取。** 不用額外設定或旗標。Auto 模式仍然可用，但分類器請求會
-使用 Codex 額度。alc 也會自動讓同一個 session 保持穩定的快取路由；`alc usage`
+**Auto 模式與快取。** 不用額外設定或旗標。Auto 模式在這裡和在每個 provider 上
+一樣可用（見[任何 provider 都行](#任何-provider-都行不只-codex)）：Claude Code
+的分類器跑在這次 session 的模型上，請求會使用 Codex 額度。alc 也會自動讓同一個
+session 保持穩定的快取路由；`alc usage`
 會顯示 Codex 實際重用了多少輸入。快取重用是盡力而為，不保證節省額度或費用。
 詳情請見 [透過 Claude Code 使用 Codex](https://treeleaves30760.github.io/all-code/zh-TW/codex-to-claude)。
 你自己的 `--settings` 仍會優先於 alc 的 Claude Code 預設值。
@@ -636,10 +674,11 @@ alc models --refresh
 alc models --json
 ```
 
-同步到的 Codex context window 也會透過 Claude Code 官方文件上的
+Codex context window —— 模型的標準 window，或 profile 設成 `max` 時的最大
+window —— 會透過 Claude Code 官方文件上的
 [`CLAUDE_CODE_MAX_CONTEXT_TOKENS`](https://code.claude.com/docs/en/env-vars)
-gateway 設定傳入，讓它不認得的 GPT ID 依照 Codex 的正確上限壓縮對話，而不是用
-Claude 的通用預設值。
+gateway 設定傳給它，其他每個 agent 則透過各自的 window 欄位拿到同一個數字，讓
+agent 不認得的 GPT ID 依照 Codex 的正確上限壓縮對話，而不是用通用的預設值。
 
 ### 橋接怎麼運作
 
@@ -912,7 +951,8 @@ TUI 每個畫面底部都會顯示可用按鍵。`Tab`／`Shift+Tab`，或直接
 `3`，可以在標題列列出的三個畫面之間切換 —— Providers、Agent defaults 與
 Sharing & remote。在 Codex profile 上，把游標移到 Model 欄位並按 `←`/`→`，
 會開啟引導式的 GPT 模型與推理強度選擇畫面，寫入 `alc --codex claude` 的啟
-動預設值。
+動預設值；緊接在 Reasoning effort 後面的 Context 欄位按 `←`/`→`，則會在
+`standard` 與 `max` window 之間切換。
 
 憑證的優先順序、`alc config upsert` 的完整旗標清單，以及 Codex 到 Claude
 的設定優先順序，都寫在

@@ -83,6 +83,28 @@ session](./background-sessions.md#每一個-claude-模型都變成-codex-模型)
 則不行。alc 會在啟動時把它降到 `max` 並明說，而不是讓請求在 session 進行到一半
 才被拒絕。
 
+## Context window
+
+每個模型一開始用的是 Codex 自己給它的 window：GPT-6.1 Sol 是 500K token，其他
+模型是 272K。它們每一個都能用到 872K，`--context max` 就是要這個：
+
+```sh
+alc --codex claude --context max         # 只有這一次
+alc config upsert codex --context max    # Codex profile 的預設值
+```
+
+超過標準 window 之後，每一輪消耗方案額度的速度會變快。OpenAI 在 Codex 裡也把
+較大的 window 寫成要自己選擇開啟（Codex 自己設定裡的 `model_context_window`），
+alc 也照同樣的方式處理：`standard` 是預設值，永遠不會寫進設定；`max` 會以
+`context = "max"` 存在 Codex profile 上，[設定用的 TUI](./configuration.md#設定用的-tui)
+裡緊接在 Reasoning effort 後面也有一個 **Context** 欄位可以切換。
+
+`alc models` 會印出兩個數字 —— `Codex context: 500K (max 872K)` —— 而 profile
+設成 max 時，`alc doctor` 會在那個 profile 的橋接那一列加上 `/ max context`。
+profile 的選擇會套用到橋接上的每一個 agent，不只 Claude Code。單次執行用的
+`--context` 跟 `--effort` 一樣只屬於 `alc claude`，provider 不是 Codex 時會被
+拒絕。
+
 ## 換一個起點
 
 沒有設定過的 session 會以 GPT-6.1 Sol、`low` 強度啟動。你已在 alc profile 或
@@ -91,11 +113,13 @@ Codex 設定裡選好的模型與強度仍然優先。
 ```sh
 alc --codex claude --model gpt-6-luna --effort low
 alc --codex claude --model gpt-6.1-sol --effort low --save
+alc --codex claude --context max --save
 ```
 
-`--save` 會把兩者一起存進 provider profile。沒有這些參數時，session 的起始值
-依序取自 profile 的設定、選定的 Codex profile，最後是模型自己的預設值。放在
-`--` 之後的東西會原封不動交給 agent，而且蓋過前面所有來源。
+`--save` 會把模型、強度與 context 選擇一起存進 provider profile。沒有這些參數
+時，session 的起始值依序取自 profile 的設定、選定的 Codex profile，最後是模型
+自己的預設值；context 選擇只看 `--context` 與 profile，兩者都沒有時就是標準
+window。放在 `--` 之後的東西會原封不動交給 agent，而且蓋過前面所有來源。
 
 用 `/model` 選的模型只對那一次 session 有效；下次啟動又會從 profile 的值開始。
 
@@ -123,9 +147,9 @@ alc 會在啟動前把那一個欄位讀下來，並在 session 結束時放回�
 `codex debug models`，而執行檔內建的那份清單是兩者都不能低於的底線：同步回來的
 清單只能新增模型，不能拿掉。同步每天一次，Codex 一升級就會立刻再同步一次。
 
-alc 宣告的 Codex client 版本至少是 `0.159.1`，也就是第一個內含 GPT-6.1 Sol 的
-穩定版；已安裝的版本更新時，則使用那個版本。這個運作上的版本底線，與上游模型
-那一列實際填的 `minimal_client_version` 值 `0.153.0` 是兩件事；不必只為了
+alc 宣告的 Codex client 版本至少是 `0.160.0`，也就是擷取內建模型目錄時所用的
+client 版本；已安裝的版本更新時，則使用那個版本。這個運作上的版本底線，與上游
+模型那一列實際填的 `minimal_client_version` 值 `0.153.0` 是兩件事；不必只為了
 看見內建的模型就升級 Codex。
 
 ```sh
@@ -134,17 +158,21 @@ alc models --refresh
 alc models --json
 ```
 
-同步到的 context window 會以
+profile 選定的 window —— 模型的標準 window，或 `context = "max"` 時的最大
+window —— 會以
 [`CLAUDE_CODE_MAX_CONTEXT_TOKENS`](https://code.claude.com/docs/en/env-vars)
 傳給 Claude Code，讓 GPT 模型依 Codex 的實際上限壓縮對話，而不是照 Claude Code
-對不認得的 ID 假設的 200k。
+對不認得的 ID 假設的 200k。其他 agent 會在各自的 window 欄位拿到同一個數字，
+`alc --codex --dry-run claude` 也會在它要傳入的設定裡顯示這個值。
 
 ## Auto 模式與提示快取
 
 不用額外設定或旗標。
 
 **Auto 模式仍然可用。** Codex 無法執行 Claude Code 的伺服器端檢查，因此 Claude Code
-會改用自己的分類器。分類器請求會經過 Codex，也會使用 Codex 額度。
+會改用自己的分類器，跑在這次 session 的模型上。分類器請求會經過 Codex，也會使用
+Codex 額度。除了 `anthropic` 這個 kind，其他每個 provider 也都是這樣運作 —— 見
+[Auto 模式在每個 provider 上都能用](./providers.md#auto-模式在每個-provider-上都能用)。
 
 **提示快取路由會自動設定。** alc 會讓同一個 Claude Code session 保持穩定的 Codex
 快取路由。快取重用仍需要相同的提示前綴；切換模型或 effort、修改工具或提示、壓縮

@@ -129,9 +129,9 @@ error: 'claude' is not installed or not on PATH; install it first, then retry `a
 ```
 
 Claude Code 會以 `gpt-6.1-sol` 搭配 `low` 推理強度啟動 —— 或是你自己
-`~/.codex/config.toml` 裡指定的那一組 —— 而 `/model` 選單裡會列出每一個 GPT
-模型。模型、推理強度分級，以及另外七個 agent，都在 [Codex
-橋接](./codex-to-claude.md)。
+`~/.codex/config.toml` 裡指定的那一組 —— 用的是該模型在 Codex 上真正的
+context window，而 `/model` 選單裡會列出每一個 GPT 模型。模型、推理強度
+分級，以及另外七個 agent，都在 [Codex 橋接](./codex-to-claude.md)。
 
 ## 其他 provider
 
@@ -154,8 +154,8 @@ alc -p local-vllm opencode
 
 ## 參數傳遞
 
-除了 Claude 專用、屬於 alc 的 `--model`、`--effort`、`--save` 之外，agent
-名稱後面的參數都會原封不動傳給 agent：
+除了 Claude 專用、屬於 alc 的 `--model`、`--effort`、`--context`、`--save`
+之外，agent 名稱後面的參數都會原封不動傳給 agent：
 
 ```sh
 alc --codex codex exec "review this repository"

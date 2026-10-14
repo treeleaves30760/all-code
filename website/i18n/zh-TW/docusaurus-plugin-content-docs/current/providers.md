@@ -80,3 +80,25 @@ Ollama、llama.cpp 與 vLLM 都在根路徑上提供 Anthropic Messages，和 Op
 並列，所以不論 profile 替其他 agent 指定哪一種 OpenAI 協定，Claude Code 在這三者
 上都能跑。[本機模型](./local-models.md)說明 alc 替每一種設定了什麼，以及怎麼讓
 第一輪不要拖太久。
+
+## Auto 模式在每個 provider 上都能用
+
+Claude Code 的 Auto 模式會用一個分類器檢查每一次工具呼叫。Anthropic 在自己的
+伺服器上執行這個檢查，其他 provider 都做不到，所以在其他每個 provider 上，alc
+會讓 Claude Code 改用本機的分類器，並跑在 profile 的模型上：它把分類器使用的
+`sonnet` 別名（`ANTHROPIC_DEFAULT_SONNET_MODEL`）釘到那個模型，並設定
+`CLAUDE_CODE_AUTO_MODE_SERVER=0` 跳過伺服器端的嘗試。這樣 Auto 模式在
+OpenRouter、DeepSeek、自訂端點，或任何 Claude Code 連得到的地方都能運作，分類器
+請求使用的是那個 provider 的額度。`/model sonnet` 也會指向 profile 的模型。
+
+有三種情況不會動：
+
+- `anthropic` 這個 kind —— 你自己的 Claude 登入或 API key —— 保留 Anthropic
+  的伺服器端檢查與它的別名對照表。
+- profile 的模型本身就是 Claude Code 的別名（例如 `sonnet` 或 `opus`）時不會
+  被釘住：否則 Claude Code 會把那個別名原封不動當成模型名稱送出。
+- 你自己的 `--settings` 若指定了 `ANTHROPIC_DEFAULT_SONNET_MODEL`，仍以你的
+  為準。
+
+[Codex 橋接](./codex-to-claude.md#auto-模式與提示快取)與本機伺服器原本就是這樣
+運作。
