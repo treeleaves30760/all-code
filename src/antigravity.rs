@@ -90,6 +90,17 @@ pub fn models(config_dir: &Path, refresh: bool) -> AgyCatalog {
     models_with(config_dir, refresh, run_agy_models)
 }
 
+/// Where the list `alc agy` would show comes from, read off the disk alone:
+/// the cache of an earlier ask, else the bundled list. Never runs agy and
+/// never writes, so `alc doctor` can report it without a network round trip;
+/// a stale cache is still named, since it is what is on disk.
+pub fn source_on_disk(config_dir: &Path) -> String {
+    match read_cache(config_dir) {
+        Some(cache) => format!("cache ({})", cache.source),
+        None => "bundled".to_owned(),
+    }
+}
+
 /// [`models`] with the `agy models` call injected; `run` gets the resolved
 /// agy binary and returns its stdout.
 pub fn models_with(
@@ -544,6 +555,23 @@ aardvark-1\tAardvark 1\n";
                 "aardvark-1",
             ]
         );
+    }
+
+    /// What `alc doctor` shows: read off the disk, never by asking agy.
+    #[test]
+    fn the_source_on_disk_is_read_without_running_agy() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(source_on_disk(temp.path()), "bundled");
+        models_from(
+            temp.path(),
+            false,
+            Some(PathBuf::from("agy")),
+            |_| Ok(REAL_SHAPE.to_owned()),
+            1_000,
+        );
+        assert_eq!(source_on_disk(temp.path()), "cache (agy models)");
+        std::fs::write(temp.path().join(CACHE_FILE), "{not json").unwrap();
+        assert_eq!(source_on_disk(temp.path()), "bundled");
     }
 
     #[test]

@@ -2019,6 +2019,60 @@ fn a_dry_run_does_not_touch_claude_codes_own_settings() {
 }
 
 #[test]
+fn doctor_has_an_antigravity_section_that_reads_no_secret() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = alc(&temp)
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["doctor"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    let section = doctor_section(&text, "Antigravity");
+    assert!(section.contains("agy"), "{section}");
+    assert!(
+        section.contains("not set up") || section.contains("not found"),
+        "{section}"
+    );
+    assert!(section.contains("claude-opus-5-5-high"), "{section}");
+    // Doctor never asks agy for its models, so a run leaves no cache behind.
+    assert!(!temp.path().join("antigravity-models.json").exists());
+}
+
+/// A config.toml written before the antigravity kind has no profile for agy.
+/// That is an upgrade, not a mistake, so doctor says how to add it without
+/// failing over it.
+#[test]
+fn doctor_on_a_config_without_the_antigravity_profile_warns_with_the_command_that_adds_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "version = 1\n\n[defaults]\n\n[providers.codex]\nkind = \"codex\"\nmodel = \"\"\nprotocol = \"codex-native\"\nauth = \"native\"\nenabled = true\n",
+    )
+    .unwrap();
+    let assert = alc(&temp)
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["doctor"])
+        .assert()
+        .success();
+    let text = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let hint = "run `alc config upsert antigravity --kind antigravity`";
+    assert!(doctor_section(&text, "Defaults").contains(hint), "{text}");
+    assert!(
+        doctor_section(&text, "Antigravity").contains(hint),
+        "{text}"
+    );
+    assert!(!text.contains("needs attention"), "{text}");
+}
+
+#[test]
 fn doctor_lists_every_agent() {
     let temp = tempfile::tempdir().unwrap();
     let assert = alc(&temp).args(["doctor"]).assert();
