@@ -32,6 +32,7 @@ use crate::config::ReasoningEffort;
 
 pub(crate) mod affinity;
 pub(crate) mod agy_auth;
+pub(crate) mod agy_upstream;
 pub(crate) mod auth;
 pub(crate) mod chat;
 pub(crate) mod messages;
@@ -43,6 +44,9 @@ pub(crate) mod upstream;
 
 #[cfg(test)]
 pub(crate) mod fixtures;
+
+#[cfg(test)]
+pub(crate) mod agy_fake;
 
 /// What a bridge session needs to serve one agent.
 ///

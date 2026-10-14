@@ -706,7 +706,9 @@ impl AgyCredentials {
 
     /// [`Self::current`] on the blocking pool, so a keyring tool that waits
     /// for an unlock prompt holds a blocking thread and not an async worker.
-    async fn read(&self) -> Result<AgyToken, AgyAuthError> {
+    /// Never renews, which is what the transport's account-switch guard
+    /// needs: it asks who is signed in now, not for a usable token.
+    pub(crate) async fn read(&self) -> Result<AgyToken, AgyAuthError> {
         let store = Arc::clone(&self.store);
         tokio::task::spawn_blocking(move || load(store.as_ref()))
             .await
