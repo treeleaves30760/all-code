@@ -39,7 +39,7 @@ pub fn build(
         Agent::Goose => goose::build(spec, store, profile_name, provider, passthrough, overrides),
         Agent::Qwen => qwen::build(spec, store, profile_name, provider, passthrough, overrides),
         Agent::Kimi => kimi::build(spec, store, profile_name, provider, passthrough, overrides),
-        Agent::Agy => agy::build(spec, provider, passthrough),
+        Agent::Agy => agy::build(spec, provider, passthrough, overrides),
     }
 }
 

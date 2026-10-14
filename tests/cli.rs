@@ -1350,6 +1350,66 @@ fn agy_on_a_config_without_the_antigravity_profile_names_the_command_that_adds_i
 }
 
 #[test]
+fn agy_dry_run_runs_natively_on_the_antigravity_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--dry-run", "agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "provider: antigravity (antigravity)",
+        ))
+        .stdout(predicate::str::contains("--model claude-opus-5-5-high"))
+        .stdout(predicate::str::contains("--effort").not());
+
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "antigravity",
+            "--kind",
+            "antigravity",
+            "--effort",
+            "high",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .args(["--dry-run", "agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--model claude-opus-5-5-high --effort high",
+        ));
+}
+
+/// The profile's `ultra` is past what agy accepts; the launch runs at `max`
+/// and says so once, instead of agy refusing the flag.
+#[test]
+fn an_ultra_antigravity_profile_launches_agy_at_max_out_loud() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "antigravity",
+            "--kind",
+            "antigravity",
+            "--effort",
+            "ultra",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .args(["--dry-run", "agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--effort max"))
+        .stdout(predicate::str::contains("ultra").not())
+        .stderr(predicate::str::contains("tops out at 'max'"));
+}
+
+#[test]
 fn codex_to_claude_accepts_explicit_model_and_effort() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
