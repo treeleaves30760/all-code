@@ -836,10 +836,6 @@ pub(crate) fn normalize_codex_model(model: &str) -> String {
 
 /// The window a Codex session is handed: the model's standard window, or
 /// its maximum when the profile opted in and one larger is known.
-// Only the tests call this until the launch paths read the profile's choice;
-// the expectation fails the build once they do, so it cannot outlive its
-// reason.
-#[cfg_attr(not(test), expect(dead_code))]
 pub fn codex_context_window(provider: &Provider, entry: &ModelInfo) -> u64 {
     match provider.context {
         ContextChoice::Standard => entry.context_window,

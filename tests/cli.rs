@@ -1146,6 +1146,24 @@ fn codex_to_claude_accepts_explicit_model_and_effort() {
         ));
 }
 
+/// The profile's context choice decides what Claude Code is told the window
+/// is: standard by default, the model's maximum on request.
+#[test]
+fn a_codex_profile_on_max_context_hands_claude_code_the_larger_window() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    for (model, window) in [("gpt-6.1-sol", "500000"), ("gpt-6-sol", "272000")] {
+        alc(&temp)
+            .env("CODEX_HOME", codex_home.path())
+            .args(["--codex", "--dry-run", "claude", "--model", model])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!(
+                "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"{window}\""
+            )));
+    }
+}
+
 /// Nothing chosen anywhere - no model on the alc profile, none in the Codex
 /// config - starts Claude Code on GPT-6.1 Sol at its own default effort. The
 /// Codex home is a fresh directory, so the developer's own

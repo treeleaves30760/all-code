@@ -968,13 +968,7 @@ fn run_claude(
         }
 
         let catalog = codex_catalog_for(store, catalog, &model, &source, dry_run);
-        let context_window = catalog.find(&model).map(|entry| entry.context_window);
-        launch::LaunchOverrides {
-            model: Some(model),
-            reasoning_effort: Some(effort),
-            context_window,
-            model_options: routable_model_options(&catalog),
-        }
+        codex_session_overrides(&provider, &catalog, model, effort)
     } else {
         codex_launch_overrides(store, &provider, dry_run)?
     };
@@ -1088,13 +1082,35 @@ fn codex_launch_overrides(
     let catalog = load_codex_catalog(store, &source, dry_run);
     let (model, effort) = resolve_codex_defaults(provider, &catalog, None, None)?;
     let catalog = codex_catalog_for(store, catalog, &model, &source, dry_run);
-    let context_window = catalog.find(&model).map(|entry| entry.context_window);
-    Ok(launch::LaunchOverrides {
+    Ok(codex_session_overrides(provider, &catalog, model, effort))
+}
+
+/// What a Codex-bridged session is launched with once its model and effort
+/// are settled. Every launch-time read of a catalog window happens here, so
+/// the profile's context choice reaches the starting model and each model the
+/// agent's own picker offers alike.
+fn codex_session_overrides(
+    provider: &Provider,
+    catalog: &ModelCatalog,
+    model: String,
+    effort: ReasoningEffort,
+) -> launch::LaunchOverrides {
+    let context_window = catalog
+        .find(&model)
+        .map(|entry| launch::codex_context_window(provider, entry));
+    let model_options = routable_model_options(catalog)
+        .into_iter()
+        .map(|mut option| {
+            option.context_window = launch::codex_context_window(provider, &option);
+            option
+        })
+        .collect();
+    launch::LaunchOverrides {
         model: Some(model),
         reasoning_effort: Some(effort),
         context_window,
-        model_options: routable_model_options(&catalog),
-    })
+        model_options,
+    }
 }
 
 /// The catalog entries the bundled bridge can actually route.
@@ -1608,6 +1624,7 @@ fn non_empty(value: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ContextChoice;
 
     fn codex_provider(model: &str, effort: Option<ReasoningEffort>) -> Provider {
         let mut provider = Provider::for_kind(ProviderKind::Codex);
@@ -1674,6 +1691,56 @@ mod tests {
         assert!(sol.supported_efforts.contains(&ReasoningEffort::Ultra));
         // Most capable first, so a picker's first row is the best model.
         assert_eq!(catalog.models[0].id, "gpt-6.1-sol");
+    }
+
+    #[test]
+    fn a_codex_session_is_handed_the_window_its_profile_chose() {
+        let catalog = ModelCatalog::built_in();
+        let mut provider = codex_provider("gpt-6.1-sol", None);
+        let standard = codex_session_overrides(
+            &provider,
+            &catalog,
+            "gpt-6.1-sol".to_owned(),
+            ReasoningEffort::Low,
+        );
+        assert_eq!(standard.context_window, Some(500_000));
+
+        provider.context = ContextChoice::Max;
+        let max = codex_session_overrides(
+            &provider,
+            &catalog,
+            "gpt-6.1-sol".to_owned(),
+            ReasoningEffort::Low,
+        );
+        assert_eq!(max.context_window, Some(872_000));
+    }
+
+    #[test]
+    fn every_offered_model_carries_the_window_its_profile_chose() {
+        // Pi pins each picker row's window in its own config, so a row left
+        // on the standard window would undo the choice on a model switch.
+        let catalog = ModelCatalog::built_in();
+        let mut provider = codex_provider("gpt-6.1-sol", None);
+        provider.context = ContextChoice::Max;
+        let overrides = codex_session_overrides(
+            &provider,
+            &catalog,
+            "gpt-6.1-sol".to_owned(),
+            ReasoningEffort::Low,
+        );
+        assert_eq!(overrides.model_options.len(), catalog.models.len());
+        for option in &overrides.model_options {
+            assert_eq!(option.context_window, option.max_window(), "{}", option.id);
+        }
+
+        provider.context = ContextChoice::Standard;
+        let overrides = codex_session_overrides(
+            &provider,
+            &catalog,
+            "gpt-6.1-sol".to_owned(),
+            ReasoningEffort::Low,
+        );
+        assert_eq!(overrides.model_options, catalog.models);
     }
 
     #[test]
