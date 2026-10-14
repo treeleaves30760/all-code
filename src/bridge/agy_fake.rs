@@ -24,6 +24,8 @@ pub(crate) struct Reply {
     headers: Vec<(String, String)>,
     content_type: &'static str,
     body: String,
+    /// Bytes promised in `content-length` but never sent: a body that breaks off.
+    missing: usize,
 }
 
 impl Reply {
@@ -33,6 +35,7 @@ impl Reply {
             headers: Vec::new(),
             content_type: "application/json",
             body: body.to_string(),
+            missing: 0,
         }
     }
 
@@ -42,7 +45,14 @@ impl Reply {
             headers: Vec::new(),
             content_type: "text/event-stream",
             body: body.to_owned(),
+            missing: 0,
         }
+    }
+
+    /// Promises 64 bytes more than it sends, then closes.
+    pub(crate) fn truncated(mut self) -> Self {
+        self.missing = 64;
+        self
     }
 
     pub(crate) fn with_header(mut self, name: &str, value: &str) -> Self {
@@ -189,7 +199,7 @@ fn answer(mut stream: TcpStream, reply: Reply) {
         "HTTP/1.1 {} X\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n",
         reply.status,
         reply.content_type,
-        reply.body.len()
+        reply.body.len() + reply.missing
     );
     for (name, value) in &reply.headers {
         head.push_str(&format!("{name}: {value}\r\n"));

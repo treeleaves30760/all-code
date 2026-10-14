@@ -317,6 +317,7 @@ impl AgyUpstream {
                         .map_err(auth_error)?;
                 }
                 Attempt::Unauthorized(_) => {
+                    self.forget_project();
                     return Err(BridgeError::auth(
                         "Antigravity refused agy's login even after agy renewed it; \
                          run `agy` and sign in again",
@@ -381,8 +382,14 @@ impl AgyUpstream {
             if response.status() != StatusCode::OK {
                 return Err(refusal(response, &token, None).await);
             }
-            let body = read_capped(response).await.map_err(Attempt::Final)?;
-            let answer: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let body = read_capped(response).await?;
+            let Ok(answer) = serde_json::from_slice::<Value>(&body) else {
+                return Err(Attempt::Final(BridgeError::upstream(
+                    StatusCode::BAD_GATEWAY,
+                    "Antigravity's project lookup answered with something that is not JSON \
+                     (answer not understood)",
+                )));
+            };
             let Some(project) = project_from(&answer) else {
                 return Err(Attempt::Final(BridgeError::new(
                     StatusCode::FORBIDDEN,
@@ -505,9 +512,8 @@ async fn refusal(
         .headers()
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .map(Duration::from_secs);
-    let body = read_capped(response).await.unwrap_or_default();
+        .and_then(|value| retry_after_from(value, chrono::Utc::now()));
+    let body = read_capped(response).await.ok().unwrap_or_default();
     let secret = token.access_token();
     let body = if secret.is_empty() {
         body
@@ -543,6 +549,10 @@ async fn refusal(
             ),
             retry_after,
         },
+        200..=299 => Attempt::Final(BridgeError::upstream(
+            StatusCode::BAD_GATEWAY,
+            format!("Antigravity gave an unexpected answer ({status}) where alc expects 200"),
+        )),
         300..=399 => Attempt::Final(BridgeError::upstream(
             StatusCode::BAD_GATEWAY,
             "Antigravity answered with a redirect, which alc never follows",
@@ -568,29 +578,52 @@ async fn refusal(
     }
 }
 
+/// `Retry-After` in either of its forms: delay-seconds, or an HTTP-date
+/// (RFC 2822 parsing accepts the `GMT` zone it is written in), which becomes
+/// the wait from `now`, zero when it has already passed.
+fn retry_after_from(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let date = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    Some(
+        date.with_timezone(&chrono::Utc)
+            .signed_duration_since(now)
+            .to_std()
+            .unwrap_or(Duration::ZERO),
+    )
+}
+
 /// A whole JSON answer, at most [`BODY_LIMIT`] of it, within
-/// [`HEADER_TIMEOUT`]: a body that stalls is as good as none.
-async fn read_capped(mut response: reqwest::Response) -> Result<Vec<u8>, BridgeError> {
+/// [`HEADER_TIMEOUT`]: a body that stalls is as good as none. A body that
+/// breaks off or stalls is a transport failure, retryable on these
+/// idempotent calls; one over the limit is final, since asking again would
+/// get the same answer.
+async fn read_capped(mut response: reqwest::Response) -> Result<Vec<u8>, Attempt> {
     let read = async {
         let mut body = Vec::new();
         loop {
             match response.chunk().await {
                 Ok(Some(chunk)) => {
                     if body.len() + chunk.len() > BODY_LIMIT {
-                        return Err(BridgeError::upstream(
+                        return Err(Attempt::Final(BridgeError::upstream(
                             StatusCode::BAD_GATEWAY,
                             "Antigravity sent an answer larger than 4 MiB, which is not one alc \
                              asked for",
-                        ));
+                        )));
                     }
                     body.extend_from_slice(&chunk);
                 }
                 Ok(None) => return Ok(body),
                 Err(error) => {
-                    return Err(BridgeError::upstream(
-                        StatusCode::BAD_GATEWAY,
-                        format!("the Antigravity answer broke off: {}", describe(&error)),
-                    ));
+                    return Err(Attempt::Retryable {
+                        error: BridgeError::upstream(
+                            StatusCode::BAD_GATEWAY,
+                            format!("the Antigravity answer broke off: {}", describe(&error)),
+                        ),
+                        retry_after: None,
+                    });
                 }
             }
         }
@@ -598,14 +631,17 @@ async fn read_capped(mut response: reqwest::Response) -> Result<Vec<u8>, BridgeE
     tokio::time::timeout(HEADER_TIMEOUT, read)
         .await
         .unwrap_or_else(|_| {
-            Err(BridgeError::new(
-                StatusCode::GATEWAY_TIMEOUT,
-                "api_error",
-                format!(
-                    "Antigravity did not finish its answer within {}s",
-                    HEADER_TIMEOUT.as_secs()
+            Err(Attempt::Retryable {
+                error: BridgeError::new(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "api_error",
+                    format!(
+                        "Antigravity did not finish its answer within {}s",
+                        HEADER_TIMEOUT.as_secs()
+                    ),
                 ),
-            ))
+                retry_after: None,
+            })
         })
 }
 
@@ -668,11 +704,8 @@ fn stream_error(error: &Value) -> BridgeError {
     let message = format!("Antigravity reported an error mid-turn ({code}): {reason}");
     match code {
         429 => BridgeError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", message),
-        401 | 403 => BridgeError::new(
-            StatusCode::from_u16(code).unwrap_or(StatusCode::UNAUTHORIZED),
-            "authentication_error",
-            message,
-        ),
+        401 => BridgeError::new(StatusCode::UNAUTHORIZED, "authentication_error", message),
+        403 => BridgeError::new(StatusCode::FORBIDDEN, "permission_error", message),
         _ => BridgeError::upstream(StatusCode::BAD_GATEWAY, message),
     }
 }
@@ -999,7 +1032,8 @@ mod tests {
             Some(agy),
         );
         let fake = FakeCodeAssist::start(vec![project()], vec![Reply::json(401, json!({}))]);
-        let error = upstream(&fake, credentials)
+        let upstream = upstream(&fake, credentials);
+        let error = upstream
             .stream_generate("gemini-3.8-flash-low", request())
             .await
             .unwrap_err();
@@ -1007,6 +1041,10 @@ mod tests {
         assert_eq!(fake.count("streamGenerateContent"), 2);
         assert!(!error.message.contains("tok-"), "{error}");
         assert_eq!(agy_calls(dir.path()), 1);
+        assert!(
+            upstream.project.lock().unwrap().is_none(),
+            "any 401 drops the cached project"
+        );
     }
 
     #[tokio::test]
@@ -1058,6 +1096,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_403_is_neither_retried_nor_renewed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("login");
+        std::fs::write(&file, credential("tok-a", 3600)).unwrap();
+        let agy = fake_agy(
+            dir.path(),
+            Some(credential("tok-b", 3600).as_slice()),
+            &file,
+            0,
+        );
+        let credentials = AgyCredentials::with_parts(
+            Arc::new(SystemStore::file_only(file)),
+            dir.path().join("lock"),
+            Some(agy),
+        );
         let fake = FakeCodeAssist::start(
             vec![project()],
             vec![Reply::json(
@@ -1065,14 +1117,37 @@ mod tests {
                 json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "The caller does not have permission"}}),
             )],
         );
+        let error = upstream(&fake, credentials)
+            .stream_generate("gemini-3.8-flash-low", request())
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
+        assert_eq!(error.kind, "permission_error");
+        assert!(error.message.contains("may be restricted"), "{error}");
+        assert!(error.message.contains("PERMISSION_DENIED"), "{error}");
+        assert_eq!(fake.count("loadCodeAssist"), 1);
+        assert_eq!(fake.count("streamGenerateContent"), 1);
+        assert_eq!(agy_calls(dir.path()), 0, "a 403 never runs agy");
+    }
+
+    #[tokio::test]
+    async fn a_403_on_the_project_lookup_is_neither_retried_nor_renewed() {
+        let fake = FakeCodeAssist::start(
+            vec![Reply::json(
+                403,
+                json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "no"}}),
+            )],
+            vec![Reply::sse(DONE)],
+        );
         let error = upstream(&fake, memory("tok-a"))
             .stream_generate("gemini-3.8-flash-low", request())
             .await
             .unwrap_err();
         assert_eq!(error.status, StatusCode::FORBIDDEN);
-        assert!(error.message.contains("may be restricted"), "{error}");
-        assert!(error.message.contains("PERMISSION_DENIED"), "{error}");
-        assert_eq!(fake.count("streamGenerateContent"), 1);
+        assert_eq!(error.kind, "permission_error");
+        assert!(error.message.contains("PERMISSION_DENIED: no"), "{error}");
+        assert_eq!(fake.count("loadCodeAssist"), 1);
+        assert_eq!(fake.count("streamGenerateContent"), 0);
     }
 
     #[tokio::test]
@@ -1310,6 +1385,13 @@ mod tests {
         );
         assert!(decode_event(&"x".repeat(EVENT_LIMIT + 1)).is_err());
         assert!(decode_event("not json").is_err());
+        let forbidden =
+            decode_event(r#"{"error":{"code":403,"status":"PERMISSION_DENIED","message":"no"}}"#)
+                .unwrap_err();
+        assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
+        assert_eq!(forbidden.kind, "permission_error");
+        let unauthorized = decode_event(r#"{"error":{"code":401,"message":"no"}}"#).unwrap_err();
+        assert_eq!(unauthorized.kind, "authentication_error");
     }
 
     #[tokio::test]
@@ -1396,6 +1478,153 @@ mod tests {
         assert!(events.next().await.unwrap().is_ok());
         let error = events.next().await.unwrap().unwrap_err();
         assert!(error.message.contains("INTERNAL: boom"), "{error}");
+        assert!(events.next().await.is_none());
+    }
+
+    fn agy_upstream_with_real_backoff() -> AgyUpstream {
+        // Never contacted: `delay` is arithmetic.
+        AgyUpstream::with_base(memory("tok-a"), "http://127.0.0.1:9/v1internal:".to_owned())
+            .unwrap()
+    }
+
+    #[test]
+    fn the_delay_honours_retry_after_up_to_the_cap() {
+        let upstream = agy_upstream_with_real_backoff();
+        let secs = Duration::from_secs;
+        assert!(upstream.delay(0, Some(secs(5))).unwrap() >= secs(5));
+        assert!(upstream.delay(2, Some(secs(5))).unwrap() >= secs(5));
+        assert_eq!(upstream.delay(0, Some(secs(31))), None);
+        assert!(upstream.delay(0, Some(BACKOFF_CAP)).is_some());
+        for attempt in 0..40 {
+            let delay = upstream.delay(attempt, None).unwrap();
+            assert!(delay <= BACKOFF_CAP, "attempt {attempt}: {delay:?}");
+            assert!(delay >= BACKOFF_BASE / 2, "attempt {attempt}: {delay:?}");
+        }
+    }
+
+    #[test]
+    fn retry_after_is_read_as_seconds_or_as_an_http_date() {
+        let now = chrono::Utc::now();
+        let http_date = |offset: i64| {
+            (now + chrono::TimeDelta::seconds(offset))
+                .format("%a, %d %b %Y %H:%M:%S GMT")
+                .to_string()
+        };
+        assert_eq!(retry_after_from("7", now), Some(Duration::from_secs(7)));
+        assert_eq!(retry_after_from(" 0 ", now), Some(Duration::ZERO));
+        let ahead = retry_after_from(&http_date(10), now).unwrap();
+        assert!(
+            ahead >= Duration::from_secs(9) && ahead <= Duration::from_secs(10),
+            "{ahead:?}"
+        );
+        assert!(
+            agy_upstream_with_real_backoff()
+                .delay(0, Some(ahead))
+                .unwrap()
+                >= Duration::from_secs(9)
+        );
+        assert_eq!(retry_after_from(&http_date(-30), now), Some(Duration::ZERO));
+        assert_eq!(retry_after_from("soon", now), None);
+        assert_eq!(retry_after_from("-5", now), None);
+    }
+
+    #[tokio::test]
+    async fn an_http_date_retry_after_past_the_cap_is_not_waited_for() {
+        let date = (chrono::Utc::now() + chrono::TimeDelta::seconds(120))
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        let fake = FakeCodeAssist::start(
+            vec![project()],
+            vec![Reply::json(429, json!({})).with_header("retry-after", &date)],
+        );
+        let error = upstream(&fake, memory("tok-a"))
+            .stream_generate("gemini-3.8-flash-low", request())
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(fake.count("streamGenerateContent"), 1);
+    }
+
+    #[tokio::test]
+    async fn a_project_answer_that_breaks_off_is_retried() {
+        let fake = FakeCodeAssist::start(
+            vec![project().truncated(), project()],
+            vec![Reply::sse(DONE)],
+        );
+        upstream(&fake, memory("tok-a"))
+            .stream_generate("gemini-3.8-flash-low", request())
+            .await
+            .unwrap();
+        assert_eq!(fake.count("loadCodeAssist"), 2);
+        assert_eq!(fake.count("streamGenerateContent"), 1);
+    }
+
+    #[tokio::test]
+    async fn a_project_answer_that_is_not_json_is_not_called_unonboarded() {
+        let fake =
+            FakeCodeAssist::start(vec![Reply::sse("<html>hi</html>")], vec![Reply::sse(DONE)]);
+        let error = upstream(&fake, memory("tok-a"))
+            .stream_generate("gemini-3.8-flash-low", request())
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_GATEWAY);
+        assert!(!error.message.contains("open agy once"), "{error}");
+        assert!(error.message.contains("not understood"), "{error}");
+        assert_eq!(fake.count("streamGenerateContent"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_project_answer_over_the_body_limit_is_refused() {
+        let fake = FakeCodeAssist::start(
+            vec![Reply::json(
+                200,
+                json!({"cloudaicompanionProject": "p", "pad": "x".repeat(BODY_LIMIT)}),
+            )],
+            vec![Reply::sse(DONE)],
+        );
+        let error = upstream(&fake, memory("tok-a"))
+            .stream_generate("gemini-3.8-flash-low", request())
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_GATEWAY);
+        assert!(error.message.contains("4 MiB"), "{error}");
+        assert_eq!(
+            fake.count("loadCodeAssist"),
+            1,
+            "an oversize answer is not retried"
+        );
+        assert_eq!(fake.count("streamGenerateContent"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_success_status_other_than_200_is_an_unexpected_answer() {
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::json(202, json!({}))]);
+        let error = upstream(&fake, memory("tok-a"))
+            .stream_generate("gemini-3.8-flash-low", request())
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_GATEWAY);
+        assert!(error.message.contains("unexpected"), "{error}");
+        assert_eq!(fake.count("streamGenerateContent"), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unterminated_stream_event_over_the_limit_ends_the_reader() {
+        let fake = FakeCodeAssist::start(
+            vec![project()],
+            vec![Reply::sse(&format!(
+                "data: {}",
+                "x".repeat(EVENT_LIMIT + 16)
+            ))],
+        );
+        let response = upstream(&fake, memory("tok-a"))
+            .stream_generate("gemini-3.8-flash-low", request())
+            .await
+            .unwrap();
+        let mut events = GeminiEvents::new(response);
+        let error = events.next().await.unwrap().unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_GATEWAY);
+        assert!(error.message.contains("1 MiB"), "{error}");
         assert!(events.next().await.is_none());
     }
 }
