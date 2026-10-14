@@ -129,7 +129,7 @@ alc --no-share claude        # opt one launch out
 
 ## 權限模式
 
-這八個 agent 對「權限模式是什麼」、「那些模式叫什麼名字」、「啟動之後還能不能
+這九個 agent 對「權限模式是什麼」、「那些模式叫什麼名字」、「啟動之後還能不能
 改」，看法都不一樣。頁面畫出來的，是眼前這個 agent 真正做得到的事：可以直接
 指定模式的給下拉選單，只能循環切換的給一個循環按鈕，而根本沒有這個概念的
 agent，給的是一個停用的控制項，上面寫著原因。它會同時顯示 alc 的層級和 agent
@@ -146,9 +146,13 @@ agent，給的是一個停用的控制項，上面寫著原因。它會同時顯
 | kimi | `--plan`、`--yolo` | 只能重新啟動 |
 | copilot | `--mode plan\|interactive`、`--allow-all-tools` | `/permissions` 會開啟它的選單 |
 | pi | — | 不支援：Pi 刻意沒有權限模式，也沒有沙箱 |
+| agy | `--mode plan`、`--mode accept-edits`、`--sandbox --dangerously-skip-permissions`、`--dangerously-skip-permissions` | 只能重新啟動 |
 
 alc 只對已經拿真實的 `--help` 核對過的 agent 注入權限旗標；其餘的，除非你用
-`--permission` 開口，否則它什麼都不動。每張卡片都會說 alc 對自己顯示的東西有
+`--permission` 開口，否則它什麼都不動。agy 核對過了，但它自己的預設本來就會先
+問，所以它的 `ask` 層級不加任何旗標：沒有指定 `--permission` 的共享 agy，啟動起來
+就跟直接跑 `agy` 一模一樣。共享的 `--dry-run` 會印出真正共享時會加上的旗標，每個
+agent 都一樣。每張卡片都會說 alc 對自己顯示的東西有
 多少把握：`launched`、`reported`，或者一個代表用猜的 `?`。
 
 `remote.toml` 裡的 `max_permission`（預設 `auto-edit`）是頁面自己能達到的

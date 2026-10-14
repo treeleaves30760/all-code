@@ -11,7 +11,7 @@ use crate::config::{
 };
 use crate::model_catalog::{CodexSource, ModelCatalog, ModelInfo};
 use crate::remote::RemoteCommand;
-use crate::{doctor, launch, ollama, openai_server, remote, tui, update, usage};
+use crate::{antigravity, doctor, launch, ollama, openai_server, remote, tui, update, usage};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -81,6 +81,10 @@ struct Cli {
     /// Shortcut for --provider google.
     #[arg(long, global = true)]
     google: bool,
+
+    /// Shortcut for --provider antigravity.
+    #[arg(long, global = true, visible_alias = "antigravity")]
+    agy: bool,
 
     /// Print the resolved command and environment without launching it.
     #[arg(long, global = true)]
@@ -164,7 +168,8 @@ enum Command {
     Usage(usage::query::UsageOptions),
     /// Show client-observed TTFT and tokens per second for recent requests.
     Tps(usage::query::TpsOptions),
-    /// Show or refresh the GPT models available through the Codex bridge.
+    /// Show or refresh the GPT models available through the Codex bridge, or
+    /// with --agy the models the Antigravity CLI offers.
     Models(ModelsArgs),
     /// Check for and install the latest alc release.
     Update(UpdateArgs),
@@ -210,6 +215,8 @@ enum Command {
     Qwen(Passthrough),
     /// Launch Kimi Code CLI.
     Kimi(Passthrough),
+    /// Launch the Antigravity CLI (agy).
+    Agy(Passthrough),
     /// Starts a `--tmux` session's agent from inside its tmux pane, on
     /// Windows. Not for people: the hub puts this on the pane's command line.
     #[command(name = remote::PANE_SUBCOMMAND, hide = true)]
@@ -270,7 +277,7 @@ struct ClaudeArgs {
 
 #[derive(Debug, Args)]
 struct ShareArgs {
-    /// claude, codex, opencode, pi, copilot, goose, qwen, or kimi.
+    /// claude, codex, opencode, pi, copilot, goose, qwen, kimi, or agy.
     agent: Agent,
 
     /// Arguments passed unchanged to the coding agent.
@@ -413,7 +420,8 @@ struct RemoteTokenArgs {
 
 #[derive(Debug, Args)]
 struct ModelsArgs {
-    /// Sync the catalog from your ChatGPT account now.
+    /// Sync the catalog from your ChatGPT account now (with --agy, ask
+    /// `agy models` now).
     #[arg(long)]
     refresh: bool,
 
@@ -480,7 +488,7 @@ enum ConfigCommand {
     },
     /// Change an agent's default provider profile.
     SetDefault {
-        /// claude, codex, opencode, pi, copilot, goose, qwen, or kimi.
+        /// claude, codex, opencode, pi, copilot, goose, qwen, kimi, or agy.
         agent: Agent,
         /// Provider profile name.
         provider: String,
@@ -644,7 +652,25 @@ pub fn run() -> Result<u8> {
         Command::Doctor => Ok(if doctor::run(&store)? { 0 } else { 1 }),
         Command::Usage(args) => usage::run_statistics(&store, requested_provider.as_deref(), &args),
         Command::Tps(_) => unreachable!("tps is handled without credentials"),
-        Command::Models(args) => run_models(&store, args),
+        Command::Models(args) => {
+            // `--agy` is the global provider shortcut, so `alc models --agy`
+            // and `alc --provider <an antigravity profile> models` both mean
+            // the Antigravity list. `--provider` is resolved as a launch of
+            // agy would resolve it: a profile name, or a kind with exactly
+            // one profile.
+            let antigravity = cli.agy
+                || requested_provider.as_deref().is_some_and(|name| {
+                    store
+                        .config
+                        .resolve(Agent::Agy, Some(name))
+                        .is_ok_and(|(_, provider)| provider.kind == ProviderKind::Antigravity)
+                });
+            if antigravity {
+                run_antigravity_models(&store, &args)
+            } else {
+                run_models(&store, args)
+            }
+        }
         Command::Update(_) => unreachable!("update is handled before config loading"),
         Command::Install(_) => unreachable!("installation is handled before config loading"),
         Command::TmuxPane(_) => unreachable!("the pane launcher is handled before config loading"),
@@ -779,6 +805,14 @@ pub fn run() -> Result<u8> {
             cli.dry_run,
             sharing,
         ),
+        Command::Agy(args) => run_agent(
+            &store,
+            Agent::Agy,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+            sharing,
+        ),
     }
 }
 
@@ -798,6 +832,7 @@ fn provider_selector(cli: &Cli) -> Result<Option<String>> {
         (cli.groq, "groq"),
         (cli.xai, "xai"),
         (cli.google, "google"),
+        (cli.agy, "antigravity"),
     ];
     let selected: Vec<_> = shortcuts
         .into_iter()
@@ -1204,6 +1239,9 @@ fn run_spec(
     }
 
     if dry_run {
+        if share_now {
+            remote::arm_for_dry_run(&mut spec, sharing.permission.as_deref())?;
+        }
         // Computed before the command line is printed, because it is what
         // puts `--settings <path>` in the arguments a real run would spawn -
         // without writing the file or starting the bridge that names it.
@@ -1356,6 +1394,22 @@ fn run_bridge(store: &Store, args: BridgeArgs) -> Result<u8> {
         }
         Some(BridgeCommand::Serve) => crate::bridge_host::serve(&store.dir),
     }
+}
+
+fn run_antigravity_models(store: &Store, args: &ModelsArgs) -> Result<u8> {
+    let catalog = antigravity::models(&store.dir, args.refresh);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&catalog)?);
+        return Ok(0);
+    }
+    println!("Antigravity model catalog");
+    println!("source: {}", catalog.source);
+    for model in &catalog.models {
+        println!("- {}: {}", model.id, model.label);
+    }
+    println!("Auto-sync: once a day from `agy models`; run `alc models --agy --refresh` to");
+    println!("sync now.");
+    Ok(0)
 }
 
 fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {

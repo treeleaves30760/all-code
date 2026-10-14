@@ -873,7 +873,8 @@ fn a_verified_agent_gets_a_permission_flag_and_an_unverified_one_does_not() {
         .args(["--openrouter", "--dry-run", "--share", "opencode"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("share:"));
+        .stdout(predicate::str::contains("share:"))
+        .stdout(predicate::str::contains("--agent build"));
 
     // Qwen's flags are documentation-derived, so an unasked-for launch adds
     // nothing to its arguments.
@@ -883,6 +884,29 @@ fn a_verified_agent_gets_a_permission_flag_and_an_unverified_one_does_not() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--approval-mode").not());
+}
+
+/// agy's own default already asks, so a shared agy with no rung named gets
+/// no flag at all; a named rung gets exactly the flags `agy --help` lists.
+#[test]
+fn a_shared_agy_session_gets_a_permission_flag_only_when_asked() {
+    let temp = tempfile::tempdir().unwrap();
+    ephemeral_remote(&temp);
+    alc(&temp)
+        .args(["--share", "--dry-run", "agy"])
+        .assert()
+        .success()
+        // `--mode ` with its space: `--model`, which every agy launch
+        // carries, contains the bare word.
+        .stdout(predicate::str::contains("--mode ").not())
+        .stdout(predicate::str::contains("--dangerously").not());
+    alc(&temp)
+        .args(["--share", "--permission", "auto", "--dry-run", "agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--sandbox --dangerously-skip-permissions",
+        ));
 }
 
 #[test]
@@ -1307,6 +1331,106 @@ fn incompatible_provider_has_actionable_error() {
         .stderr(predicate::str::contains(
             "Claude Code needs an Anthropic-compatible endpoint",
         ));
+}
+
+#[test]
+fn agy_refuses_every_other_kind() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "--dry-run", "agy"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("antigravity"));
+}
+
+#[test]
+fn the_antigravity_kind_runs_only_agy_for_now() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--agy", "--dry-run", "claude"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("antigravity"))
+        .stderr(predicate::str::contains("alc agy"));
+}
+
+/// A config.toml written before the antigravity kind existed has no profile
+/// for agy, and "run `alc config`" alone does not say which command adds it.
+#[test]
+fn agy_on_a_config_without_the_antigravity_profile_names_the_command_that_adds_it() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "version = 1\n\n[defaults]\n\n[providers.codex]\nkind = \"codex\"\nmodel = \"\"\nprotocol = \"codex-native\"\nauth = \"native\"\nenabled = true\n",
+    )
+    .unwrap();
+    alc(&temp)
+        .args(["--dry-run", "agy"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "alc config upsert antigravity --kind antigravity",
+        ));
+}
+
+#[test]
+fn agy_dry_run_runs_natively_on_the_antigravity_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--dry-run", "agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "provider: antigravity (antigravity)",
+        ))
+        .stdout(predicate::str::contains("--model claude-opus-5-5-high"))
+        .stdout(predicate::str::contains("--effort").not());
+
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "antigravity",
+            "--kind",
+            "antigravity",
+            "--effort",
+            "high",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .args(["--dry-run", "agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--model claude-opus-5-5-high --effort high",
+        ));
+}
+
+/// The profile's `ultra` is past what agy accepts; the launch runs at `max`
+/// and says so once, instead of agy refusing the flag.
+#[test]
+fn an_ultra_antigravity_profile_launches_agy_at_max_out_loud() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "antigravity",
+            "--kind",
+            "antigravity",
+            "--effort",
+            "ultra",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .args(["--dry-run", "agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--effort max"))
+        .stdout(predicate::str::contains("ultra").not())
+        .stderr(predicate::str::contains("tops out at 'max'"));
 }
 
 #[test]
@@ -1895,12 +2019,66 @@ fn a_dry_run_does_not_touch_claude_codes_own_settings() {
 }
 
 #[test]
+fn doctor_has_an_antigravity_section_that_reads_no_secret() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = alc(&temp)
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["doctor"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    let section = doctor_section(&text, "Antigravity");
+    assert!(section.contains("agy"), "{section}");
+    assert!(
+        section.contains("not set up") || section.contains("not found"),
+        "{section}"
+    );
+    assert!(section.contains("claude-opus-5-5-high"), "{section}");
+    // Doctor never asks agy for its models, so a run leaves no cache behind.
+    assert!(!temp.path().join("antigravity-models.json").exists());
+}
+
+/// A config.toml written before the antigravity kind has no profile for agy.
+/// That is an upgrade, not a mistake, so doctor says how to add it without
+/// failing over it.
+#[test]
+fn doctor_on_a_config_without_the_antigravity_profile_warns_with_the_command_that_adds_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "version = 1\n\n[defaults]\n\n[providers.codex]\nkind = \"codex\"\nmodel = \"\"\nprotocol = \"codex-native\"\nauth = \"native\"\nenabled = true\n",
+    )
+    .unwrap();
+    let assert = alc(&temp)
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["doctor"])
+        .assert()
+        .success();
+    let text = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let hint = "run `alc config upsert antigravity --kind antigravity`";
+    assert!(doctor_section(&text, "Defaults").contains(hint), "{text}");
+    assert!(
+        doctor_section(&text, "Antigravity").contains(hint),
+        "{text}"
+    );
+    assert!(!text.contains("needs attention"), "{text}");
+}
+
+#[test]
 fn doctor_lists_every_agent() {
     let temp = tempfile::tempdir().unwrap();
     let assert = alc(&temp).args(["doctor"]).assert();
     let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     for agent in [
-        "claude", "codex", "opencode", "pi", "copilot", "goose", "qwen", "kimi",
+        "claude", "codex", "opencode", "pi", "copilot", "goose", "qwen", "kimi", "agy",
     ] {
         assert!(output.contains(agent), "{agent} missing from doctor output");
     }
@@ -1921,6 +2099,63 @@ fn bundled_model_catalog_is_available_offline() {
         .stdout(predicate::str::contains("gpt-5.6-sol"))
         .stdout(predicate::str::contains("Codex context: 500K (max 872K)"))
         .stdout(predicate::str::contains("low, medium, high, xhigh, max"));
+}
+
+#[test]
+fn bundled_antigravity_models_are_available_offline() {
+    let temp = tempfile::tempdir().unwrap();
+    let assert = alc(&temp)
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["models", "--agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Antigravity model catalog"))
+        .stdout(predicate::str::contains("Codex bridge model catalog").not());
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let source = stdout
+        .lines()
+        .find(|line| line.starts_with("source:"))
+        .expect("a source line");
+    assert!(source.contains("bundled"), "{stdout}");
+    let listed: Vec<_> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("- "))
+        .collect();
+    assert_eq!(listed.len(), 10, "{stdout}");
+    assert_eq!(listed[0], "claude-opus-5-5-high: Claude Opus 5.5 (High)");
+    assert_eq!(listed[9], "gpt-oss-120b-medium: GPT-OSS 120B (Medium)");
+    assert!(
+        !temp.path().join("antigravity-models.json").exists(),
+        "with no agy to run nothing was attempted, so nothing is recorded"
+    );
+    assert!(source.contains("agy not found"), "{stdout}");
+
+    alc(&temp)
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["models", "--antigravity"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gemini-3.8-flash-medium"));
+
+    // `--provider` takes a profile name or a kind with exactly one profile,
+    // the same as a launch.
+    for provider in ["antigravity", "agy"] {
+        alc(&temp)
+            .env("PATH", "")
+            .env_remove("ALC_AGY_BIN")
+            .args(["--provider", provider, "models"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Antigravity model catalog"));
+    }
+    alc(&temp)
+        .env("PATH", "")
+        .args(["--provider", "codex", "models"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Codex bridge model catalog"));
 }
 
 #[test]

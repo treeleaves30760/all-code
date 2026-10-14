@@ -4,7 +4,7 @@ slug: /
 title: all-code (alc)
 sidebar_label: 總覽
 sidebar_position: 1
-description: 用你已經在付費的 Codex／ChatGPT 訂閱跑 Claude Code，再加上另外七個 coding agent，任何 provider 都行，一行指令就好。
+description: 用你已經在付費的 Codex／ChatGPT 訂閱跑 Claude Code，另外七個 coding agent 用同一個登入或任何 provider，再加上用自己登入的 Antigravity CLI，一行指令就好。
 keywords:
   - claude code
   - codex cli
@@ -15,6 +15,7 @@ keywords:
   - goose
   - qwen code
   - kimi code cli
+  - antigravity cli
   - llm provider
   - coding agent
   - 中文
@@ -30,7 +31,7 @@ pagination_prev: null
 
 <h1 className="alc-hero__title">用你的 <em>ChatGPT 方案</em>跑 Claude Code。</h1>
 
-<p className="alc-hero__lead">一次 <code>codex login</code>，alc 啟動的每個 coding agent —— Claude Code 和另外七個 —— 都能用那份訂閱，或是用你指定的任何 provider。</p>
+<p className="alc-hero__lead">一次 <code>codex login</code>，Claude Code 和另外七個 coding agent 都能用那份訂閱，或是用你指定的任何 provider —— Google 的 Antigravity CLI 則用它自己的登入。</p>
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/treeleaves30760/all-code/main/install.sh | sh
@@ -108,6 +109,7 @@ MiniMax、Groq、xAI、Google，或你自己的端點。加一個旗標就能只
 [Goose](./agents.md#goose)
 [Qwen Code](./agents.md#qwen-code)
 [Kimi Code CLI](./agents.md#kimi-code-cli)
+[Antigravity CLI](./agents.md#antigravity-cli-agy)
 
 </div>
 

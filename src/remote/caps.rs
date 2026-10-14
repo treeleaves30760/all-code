@@ -1,6 +1,6 @@
 //! What each coding agent can be told about permissions, and how.
 //!
-//! This is the crux of driving eight agents through one control. They do not
+//! This is the crux of driving nine agents through one control. They do not
 //! agree on what a permission mode is, what the modes are called, whether
 //! one can be changed mid-session, or even whether the concept exists - so
 //! the page cannot show one dropdown and hope. It shows whatever this table
@@ -453,8 +453,53 @@ const COPILOT_MODES: &[NativeMode] = &[
     },
 ];
 
-/// The eight rows. Ordered as `Agent::ALL`, and a test asserts that.
-pub(crate) const CAPS: [AgentCaps; 8] = [
+// Verified against `agy --help` (2026-10-14). agy has no flag for its own
+// default, which already asks before acting, so the Ask row adds nothing:
+// a shared agy with no rung named starts exactly as a bare `agy` would.
+const AGY_MODES: &[NativeMode] = &[
+    NativeMode {
+        label: "plan",
+        cli: &["--mode", "plan"],
+        env: None,
+        rung: SafetyRung::Plan,
+        escalation: false,
+    },
+    NativeMode {
+        label: "default",
+        cli: &[],
+        env: None,
+        rung: SafetyRung::Ask,
+        escalation: false,
+    },
+    NativeMode {
+        label: "accept-edits",
+        cli: &["--mode", "accept-edits"],
+        env: None,
+        rung: SafetyRung::AutoEdit,
+        escalation: false,
+    },
+    // Skipping the prompts inside agy's own sandbox is what the Auto rung
+    // means ("acts without asking, inside whatever sandbox the agent has"),
+    // the same shape as Codex's workspace-write with no approvals - so it
+    // is gated by the ceiling, not marked as a free pass.
+    NativeMode {
+        label: "sandboxed auto",
+        cli: &["--sandbox", "--dangerously-skip-permissions"],
+        env: None,
+        rung: SafetyRung::Auto,
+        escalation: false,
+    },
+    NativeMode {
+        label: "skip permissions",
+        cli: &["--dangerously-skip-permissions"],
+        env: None,
+        rung: SafetyRung::Full,
+        escalation: true,
+    },
+];
+
+/// The nine rows. Ordered as `Agent::ALL`, and a test asserts that.
+pub(crate) const CAPS: [AgentCaps; 9] = [
     AgentCaps {
         agent: Agent::Claude,
         sandboxed: true,
@@ -589,6 +634,21 @@ pub(crate) const CAPS: [AgentCaps; 8] = [
         ],
         mobile_hint: None,
     },
+    AgentCaps {
+        agent: Agent::Agy,
+        // agy asks before acting unless told otherwise, so it is not the
+        // gates-nothing case the badge exists for.
+        sandboxed: true,
+        flags_verified: true,
+        set_verified: false,
+        axes: &["mode"],
+        modes: AGY_MODES,
+        // `--mode` is a launch flag; no in-session command for it has been
+        // confirmed, so the page offers a relaunch rather than a keystroke.
+        set: SetMethod::RelaunchOnly,
+        probe: &[],
+        mobile_hint: None,
+    },
 ];
 
 pub(crate) fn caps(agent: Agent) -> &'static AgentCaps {
@@ -701,10 +761,34 @@ mod tests {
         ] {
             assert!(!caps(agent).flags_verified, "{agent} claims verification");
         }
-        for agent in [Agent::Claude, Agent::Codex, Agent::Opencode] {
+        for agent in [Agent::Claude, Agent::Codex, Agent::Opencode, Agent::Agy] {
             assert!(!caps(agent).modes.is_empty(), "{agent} has no modes");
             assert!(caps(agent).flags_verified, "{agent} was verified by hand");
         }
+    }
+
+    #[test]
+    fn agy_rungs_map_to_verified_flags() {
+        let caps = caps(Agent::Agy);
+        assert!(caps.flags_verified);
+        let cli_for = |rung| {
+            caps.modes
+                .iter()
+                .find(|m| m.rung == rung)
+                .map(|m| m.cli)
+                .unwrap()
+        };
+        assert_eq!(cli_for(SafetyRung::Plan), ["--mode", "plan"]);
+        assert_eq!(cli_for(SafetyRung::Ask), [] as [&str; 0]);
+        assert_eq!(cli_for(SafetyRung::AutoEdit), ["--mode", "accept-edits"]);
+        assert_eq!(
+            cli_for(SafetyRung::Auto),
+            ["--sandbox", "--dangerously-skip-permissions"]
+        );
+        assert_eq!(
+            cli_for(SafetyRung::Full),
+            ["--dangerously-skip-permissions"]
+        );
     }
 
     #[test]

@@ -7,7 +7,8 @@ use anyhow::Result;
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::{
-    Agent, AuthStyle, ContextChoice, Provider, ProviderKind, ReasoningEffort, Store,
+    ADD_ANTIGRAVITY, Agent, AuthStyle, Config, ContextChoice, Provider, ProviderKind,
+    ReasoningEffort, Store,
 };
 use crate::model_catalog::{CodexSource, ModelCatalog};
 use crate::{ollama, openai_server};
@@ -34,6 +35,7 @@ pub fn run(store: &Store) -> Result<bool> {
     if codex_bridge_enabled {
         codex_bridge(store, &theme, &mut issues);
     }
+    antigravity(store, &theme);
     claude_code_default_model(store, &theme, &mut issues);
     background_sessions(store, &theme);
     local_models(store, &theme, &mut issues);
@@ -185,31 +187,51 @@ fn profiles(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
 /// only points at which agent is affected instead of counting the problem twice.
 fn defaults(store: &Store, theme: &Theme) {
     heading(theme, "Defaults");
-    let rows = Agent::ALL.map(|agent| {
-        let name = store.config.defaults.get(agent);
-        match store.config.providers.get(name) {
-            Some(provider) if provider.supports(agent) => {
-                Row::new(Status::Good, agent, name.to_owned())
-            }
-            Some(_) => Row::new(
-                Status::Bad,
-                agent,
-                format!(
-                    "{name}{GUTTER}{}",
-                    theme.paint(Tone::Bad, "(cannot run this agent)")
-                ),
-            ),
-            None => Row::new(
-                Status::Bad,
-                agent,
-                format!(
-                    "{name}{GUTTER}{}",
-                    theme.paint(Tone::Bad, "(no such profile)")
-                ),
-            ),
-        }
-    });
+    let rows = Agent::ALL.map(|agent| default_row(&store.config, theme, agent));
     marked(theme, &rows);
+}
+
+fn default_row(config: &Config, theme: &Theme, agent: Agent) -> Row {
+    let name = config.defaults.get(agent);
+    match config.providers.get(name) {
+        Some(provider) if provider.supports(agent) => {
+            Row::new(Status::Good, agent, name.to_owned())
+        }
+        Some(_) => Row::new(
+            Status::Bad,
+            agent,
+            format!(
+                "{name}{GUTTER}{}",
+                theme.paint(Tone::Bad, "(cannot run this agent)")
+            ),
+        ),
+        // Every config.toml written before the antigravity kind lacks the
+        // profile agy falls back to. That is an upgrade, not a mistake, so it
+        // is a warning carrying the command that adds it - unless a profile
+        // of the kind under another name already serves the launch, which is
+        // what `resolve` does next.
+        None if agent == Agent::Agy && !config.defaults.is_explicit(agent) => {
+            match config.resolve(agent, None) {
+                Ok((resolved, _)) => Row::new(Status::Good, agent, resolved.to_owned()),
+                Err(_) => Row::new(
+                    Status::Warn,
+                    agent,
+                    format!(
+                        "{name}{GUTTER}{}",
+                        theme.paint(Tone::Warn, &format!("(no such profile; {ADD_ANTIGRAVITY})"))
+                    ),
+                ),
+            }
+        }
+        None => Row::new(
+            Status::Bad,
+            agent,
+            format!(
+                "{name}{GUTTER}{}",
+                theme.paint(Tone::Bad, "(no such profile)")
+            ),
+        ),
+    }
 }
 
 /// Reports a Codex-only model left pinned as Claude Code's own default.
@@ -466,6 +488,133 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     }
 
     marked(theme, &rows);
+}
+
+/// The Antigravity CLI: is agy installed, has it been set up, and which
+/// profile, model and effort `alc agy` would launch it on.
+///
+/// Raises no issue of its own. A missing agy that is an explicit default is
+/// already one in the binaries section, and an explicit default naming a
+/// profile that is gone is already one from `Config::validate`; counting
+/// either again here would double the summary.
+fn antigravity(store: &Store, theme: &Theme) {
+    heading(theme, "Antigravity");
+    println!(
+        "{INDENT}{}",
+        theme.paint(
+            Tone::Dim,
+            "agy holds its own Google login; alc only checks it was set up"
+        )
+    );
+    let binary = binary_for(Agent::Agy);
+    let found = resolve(&binary);
+    let home = crate::launch::home_dir();
+    let facts = AgyFacts {
+        binary,
+        found,
+        home: home.as_deref(),
+        // Off the disk only: asking agy is a network round trip, and doctor
+        // stays fast and writes nothing.
+        models: crate::antigravity::source_on_disk(&store.dir),
+    };
+    marked(theme, &antigravity_rows(&store.config, theme, &facts));
+}
+
+/// What the Antigravity section reports on, gathered by the caller so the
+/// rows can be built without touching PATH or the home directory.
+struct AgyFacts<'a> {
+    binary: std::ffi::OsString,
+    found: Option<PathBuf>,
+    home: Option<&'a Path>,
+    models: String,
+}
+
+fn antigravity_rows(config: &Config, theme: &Theme, facts: &AgyFacts<'_>) -> Vec<Row> {
+    let mut rows = Vec::new();
+    let explicit = config.defaults.is_explicit(Agent::Agy);
+
+    match &facts.found {
+        Some(path) => rows.push(Row::new(Status::Good, "agy", path.display().to_string())),
+        None => {
+            // The same rule, and words, as the binaries section.
+            let status = if explicit { Status::Bad } else { Status::Warn };
+            let name = facts.binary.to_string_lossy();
+            rows.push(Row::new(
+                status,
+                "agy",
+                theme.paint(status.tone(), &format!("not found ({name})")),
+            ));
+        }
+    }
+
+    // Presence only: agy writes settings.json the first time it runs, and
+    // keeps the login itself in the system keyring, which alc never reads.
+    // So this says agy was set up here, never that its login is still good.
+    let set_up = facts.home.is_some_and(|home| {
+        home.join(".gemini")
+            .join("antigravity-cli")
+            .join("settings.json")
+            .is_file()
+    });
+    rows.push(if set_up {
+        Row::new(
+            Status::Good,
+            "login",
+            "set up (~/.gemini/antigravity-cli)".to_owned(),
+        )
+    } else {
+        Row::new(
+            Status::Warn,
+            "login",
+            theme.paint(Tone::Warn, "not set up; run `agy` once and sign in"),
+        )
+    });
+
+    rows.push(match config.resolve(Agent::Agy, None) {
+        Ok((name, provider)) => {
+            let model = match provider.model.trim() {
+                "" => "agy's default model",
+                model => model,
+            };
+            // Shown as the launch sends it: agy has no `ultra`.
+            let effort = provider
+                .reasoning_effort
+                .map(crate::agents::agy::clamp_for_agy)
+                .map_or_else(|| "agy's default effort".to_owned(), |e| e.to_string());
+            Row::new(
+                Status::Good,
+                "profile",
+                format!(
+                    "{name}{GUTTER}{model}{}",
+                    theme.paint(Tone::Dim, &format!(" / {effort}"))
+                ),
+            )
+        }
+        Err(error) => {
+            let status = if explicit { Status::Bad } else { Status::Warn };
+            let none_of_the_kind = !config
+                .providers
+                .values()
+                .any(|provider| provider.kind == ProviderKind::Antigravity);
+            // The upsert hint only where the name is free: `upsert` on a
+            // taken name rewrites that profile for the new kind.
+            let taken = config.providers.get("antigravity");
+            let detail = match taken {
+                None if none_of_the_kind && !explicit => {
+                    format!("no antigravity profile; {ADD_ANTIGRAVITY}")
+                }
+                Some(other) if !explicit && other.kind != ProviderKind::Antigravity => format!(
+                    "the profile named 'antigravity' is {}, not the antigravity kind; add one under another name with `alc config upsert <name> --kind antigravity` and make it agy's default with `alc config set-default agy <name>`",
+                    other.kind
+                ),
+                _ => error.to_string(),
+            };
+            Row::new(status, "profile", theme.paint(status.tone(), &detail))
+        }
+    });
+
+    rows.push(Row::blank("models", theme.paint(Tone::Dim, &facts.models)));
+    rows
 }
 
 /// The installed Codex's own version string, for the one row that reports it.
@@ -1226,7 +1375,7 @@ fn pad(value: &str, to: usize, align: Align) -> String {
     }
 }
 
-fn binary_for(agent: Agent) -> std::ffi::OsString {
+pub(crate) fn binary_for(agent: Agent) -> std::ffi::OsString {
     let override_name = match agent {
         Agent::Claude => "ALC_CLAUDE_BIN",
         Agent::Codex => "ALC_CODEX_BIN",
@@ -1236,11 +1385,12 @@ fn binary_for(agent: Agent) -> std::ffi::OsString {
         Agent::Goose => "ALC_GOOSE_BIN",
         Agent::Qwen => "ALC_QWEN_BIN",
         Agent::Kimi => "ALC_KIMI_BIN",
+        Agent::Agy => "ALC_AGY_BIN",
     };
     env::var_os(override_name).unwrap_or_else(|| agent.as_str().into())
 }
 
-fn resolve(binary: &std::ffi::OsStr) -> Option<PathBuf> {
+pub(crate) fn resolve(binary: &std::ffi::OsStr) -> Option<PathBuf> {
     let path = PathBuf::from(binary);
     if path.components().count() > 1 || path.is_absolute() {
         return path.is_file().then_some(path);
@@ -1279,6 +1429,172 @@ mod tests {
             color: false,
             unicode: true,
         }
+    }
+
+    fn upgraded_config() -> Config {
+        let mut config = Config::default();
+        config.providers.remove("antigravity");
+        config
+    }
+
+    fn facts(found: Option<PathBuf>, home: Option<&Path>) -> AgyFacts<'_> {
+        AgyFacts {
+            binary: "agy".into(),
+            found,
+            home,
+            models: "bundled".to_owned(),
+        }
+    }
+
+    fn row<'a>(rows: &'a [Row], name: &str) -> &'a Row {
+        rows.iter()
+            .find(|row| row.name == name)
+            .unwrap_or_else(|| panic!("no {name} row"))
+    }
+
+    #[test]
+    fn the_antigravity_login_row_reports_only_that_agy_was_set_up() {
+        let home = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        let rows = antigravity_rows(&config, &plain(), &facts(None, Some(home.path())));
+        let login = row(&rows, "login");
+        assert!(login.status == Some(Status::Warn));
+        assert_eq!(login.detail, "not set up; run `agy` once and sign in");
+
+        let settings = home.path().join(".gemini").join("antigravity-cli");
+        std::fs::create_dir_all(&settings).unwrap();
+        std::fs::write(settings.join("settings.json"), "{}").unwrap();
+        let rows = antigravity_rows(&config, &plain(), &facts(None, Some(home.path())));
+        let login = row(&rows, "login");
+        assert!(login.status == Some(Status::Good));
+        assert_eq!(login.detail, "set up (~/.gemini/antigravity-cli)");
+
+        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        assert!(row(&rows, "login").status == Some(Status::Warn));
+    }
+
+    #[test]
+    fn a_missing_agy_is_a_problem_only_when_agy_is_an_explicit_default() {
+        let rows = antigravity_rows(&Config::default(), &plain(), &facts(None, None));
+        let agy = row(&rows, "agy");
+        assert!(agy.status == Some(Status::Warn));
+        assert_eq!(agy.detail, "not found (agy)");
+
+        let mut config = Config::default();
+        config.defaults.set(Agent::Agy, "antigravity");
+        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        assert!(row(&rows, "agy").status == Some(Status::Bad));
+
+        let found = PathBuf::from("/opt/agy/bin/agy");
+        let rows = antigravity_rows(&config, &plain(), &facts(Some(found.clone()), None));
+        let agy = row(&rows, "agy");
+        assert!(agy.status == Some(Status::Good));
+        assert_eq!(agy.detail, found.display().to_string());
+    }
+
+    #[test]
+    fn the_antigravity_profile_row_shows_its_model_and_effort() {
+        let mut config = Config::default();
+        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        let profile = row(&rows, "profile");
+        assert!(profile.status == Some(Status::Good));
+        assert!(profile.detail.contains("antigravity"), "{}", profile.detail);
+        assert!(
+            profile.detail.contains("claude-opus-5-5-high"),
+            "{}",
+            profile.detail
+        );
+        assert!(
+            profile.detail.contains("agy's default effort"),
+            "{}",
+            profile.detail
+        );
+
+        config
+            .providers
+            .get_mut("antigravity")
+            .unwrap()
+            .reasoning_effort = Some(ReasoningEffort::Xhigh);
+        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        assert!(row(&rows, "profile").detail.contains("/ xhigh"));
+        assert_eq!(row(&rows, "models").detail, "bundled");
+    }
+
+    #[test]
+    fn a_config_from_before_the_antigravity_kind_is_warned_with_the_command_that_adds_it() {
+        let rows = antigravity_rows(&upgraded_config(), &plain(), &facts(None, None));
+        let profile = row(&rows, "profile");
+        assert!(profile.status == Some(Status::Warn));
+        assert!(
+            profile
+                .detail
+                .contains("run `alc config upsert antigravity --kind antigravity`"),
+            "{}",
+            profile.detail
+        );
+
+        let default = default_row(&upgraded_config(), &plain(), Agent::Agy);
+        assert!(default.status == Some(Status::Warn));
+        assert!(
+            default
+                .detail
+                .contains("run `alc config upsert antigravity --kind antigravity`"),
+            "{}",
+            default.detail
+        );
+    }
+
+    #[test]
+    fn a_profile_named_antigravity_of_another_kind_is_not_offered_the_upsert_that_replaces_it() {
+        let mut config = upgraded_config();
+        config.providers.insert(
+            "antigravity".to_owned(),
+            Provider::for_kind(ProviderKind::Openrouter),
+        );
+        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        let profile = row(&rows, "profile");
+        assert!(profile.status == Some(Status::Warn));
+        assert!(
+            !profile.detail.contains("upsert antigravity"),
+            "{}",
+            profile.detail
+        );
+        assert!(
+            profile.detail.contains(
+                "the profile named 'antigravity' is openrouter, not the antigravity kind"
+            ),
+            "{}",
+            profile.detail
+        );
+    }
+
+    #[test]
+    fn an_explicit_default_that_does_not_exist_stays_a_problem() {
+        let mut config = upgraded_config();
+        config.defaults.set(Agent::Agy, "antigravity");
+        let default = default_row(&config, &plain(), Agent::Agy);
+        assert!(default.status == Some(Status::Bad));
+        assert!(default.detail.contains("(no such profile)"));
+        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        assert!(row(&rows, "profile").status == Some(Status::Bad));
+
+        let mut config = Config::default();
+        config.defaults.set(Agent::Pi, "nowhere");
+        assert!(default_row(&config, &plain(), Agent::Pi).status == Some(Status::Bad));
+    }
+
+    #[test]
+    fn an_antigravity_profile_under_another_name_serves_the_implicit_default() {
+        let mut config = upgraded_config();
+        config.providers.insert(
+            "work-agy".to_owned(),
+            Provider::for_kind(ProviderKind::Antigravity),
+        );
+        let default = default_row(&config, &plain(), Agent::Agy);
+        assert!(default.status == Some(Status::Good));
+        assert!(default.detail.contains("work-agy"), "{}", default.detail);
+        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        assert!(row(&rows, "profile").detail.contains("work-agy"));
     }
 
     #[test]

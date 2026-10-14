@@ -3,7 +3,7 @@ id: getting-started
 title: 快速上手
 sidebar_label: 快速上手
 sidebar_position: 2
-description: 安裝 alc、用你的 Codex 登入跑 Claude Code、把任何 agent 指向別的 provider、傳遞參數、啟動前先預覽，以及更新。
+description: 安裝 alc、用你的 Codex 登入跑 Claude Code、把 agy 以外的任何 agent 指向別的 provider、傳遞參數、啟動前先預覽，以及更新。
 keywords:
   - alc install
   - alc update
@@ -131,7 +131,9 @@ error: 'claude' is not installed or not on PATH; install it first, then retry `a
 Claude Code 會以 `gpt-6.1-sol` 搭配 `low` 推理強度啟動 —— 或是你自己
 `~/.codex/config.toml` 裡指定的那一組 —— 用的是該模型在 Codex 上真正的
 context window，而 `/model` 選單裡會列出每一個 GPT 模型。模型、推理強度
-分級，以及另外七個 agent，都在 [Codex 橋接](./codex-to-claude.md)。
+分級，以及同一個登入上的其他 agent，都在 [Codex 橋接](./codex-to-claude.md)。
+Antigravity CLI 是唯一改用自己登入的 agent：`alc agy`（見 [Antigravity
+CLI](./agents.md#antigravity-cli-agy)）。
 
 ## 其他 provider
 
@@ -148,7 +150,7 @@ alc -p local-vllm opencode
 `--provider`（`-p`）接受 profile 名稱；當某個 kind 只有一個 profile
 時，也可以直接寫 kind。`--anthropic`、`--openai`、`--openrouter`、`--codex`、
 `--ollama`、`--vllm`、`--llamacpp`、`--deepseek`、`--moonshot`、`--zai`、
-`--minimax`、`--groq`、`--xai`、`--google` 則是捷徑。金鑰可以存在本機，也可以從環境變數
+`--minimax`、`--groq`、`--xai`、`--google`、`--agy` 則是捷徑。金鑰可以存在本機，也可以從環境變數
 讀取；環境變數優先。各個 kind 講的是什麼協定見 [Provider
 相容性](./providers.md)，檔案放在哪裡見[設定](./configuration.md)。
 

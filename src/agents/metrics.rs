@@ -158,6 +158,9 @@ pub fn plan(spec: &LaunchSpec, store: &Store) -> Result<ForwardPlan> {
         Agent::Pi => bail!(
             "--metrics is unavailable for direct Pi launches: its endpoint lives in a persistent shared models.json; alc will not leave an ephemeral metrics endpoint there"
         ),
+        Agent::Agy => {
+            bail!("--metrics is unavailable for the Antigravity CLI, which runs on its own login")
+        }
     };
     validate_endpoint(&result.upstream, result.durable)?;
     Ok(result)

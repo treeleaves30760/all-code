@@ -422,6 +422,10 @@ pub fn build(
         .or_else(|| overrides.model.clone())
         .or_else(|| (!provider.model.trim().is_empty()).then(|| provider.model.clone()));
     spec.effort = overrides.reasoning_effort.or(provider.reasoning_effort);
+    // agy has no `ultra`; its builder sent `max`, so that is what ran.
+    if agent == Agent::Agy {
+        spec.effort = spec.effort.map(agents::agy::clamp_for_agy);
+    }
     Ok(spec)
 }
 
@@ -1020,6 +1024,7 @@ fn agent_binary_override(agent: Agent) -> Option<OsString> {
         Agent::Goose => "ALC_GOOSE_BIN",
         Agent::Qwen => "ALC_QWEN_BIN",
         Agent::Kimi => "ALC_KIMI_BIN",
+        Agent::Agy => "ALC_AGY_BIN",
     };
     env::var_os(name).filter(|value| !value.is_empty())
 }
@@ -2908,6 +2913,40 @@ mod tests {
         );
         assert_eq!(spec.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(spec.effort, Some(ReasoningEffort::High));
+    }
+
+    #[test]
+    fn build_records_the_effort_agy_runs_at_rather_than_the_profiles_ultra() {
+        // agy has no `ultra` and runs at `max`; a shared session card that
+        // said `ultra` would describe a session that is not happening.
+        let mut config = Config::default();
+        config
+            .providers
+            .get_mut("antigravity")
+            .unwrap()
+            .reasoning_effort = Some(ReasoningEffort::Ultra);
+        let spec = build(
+            &store(config, Credentials::default()),
+            Agent::Agy,
+            None,
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
+        assert_eq!(spec.effort, Some(ReasoningEffort::Max));
+
+        let spec = build(
+            &store(Config::default(), Credentials::default()),
+            Agent::Agy,
+            None,
+            &[],
+            &LaunchOverrides {
+                reasoning_effort: Some(ReasoningEffort::Ultra),
+                ..LaunchOverrides::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(spec.effort, Some(ReasoningEffort::Max));
     }
 
     #[test]

@@ -3,7 +3,7 @@ id: codex-to-claude
 title: Codex bridge
 sidebar_label: Codex bridge
 sidebar_position: 3
-description: One codex login reaches all eight coding agents through the bundled bridge — Claude Code with an in-session GPT model picker, and every other agent through one bridged model per session.
+description: One codex login reaches Claude Code and seven other coding agents through the bundled bridge — Claude Code with an in-session GPT model picker, and the others through one bridged model per session.
 keywords:
   - claude code with gpt
   - codex subscription
@@ -18,7 +18,9 @@ keywords:
 # Codex bridge
 
 `alc --codex <agent>` starts a loopback adapter and points one agent's session
-at it. One `codex login` serves all eight.
+at it. One `codex login` serves every agent alc launches except the Antigravity
+CLI, which runs on its own Google login ([Antigravity
+CLI](./agents.md#antigravity-cli-agy)).
 
 ```sh
 codex login

@@ -16,9 +16,10 @@ use ratatui::widgets::{
     Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
 };
 
+use crate::antigravity::{self, AgyModel};
 use crate::config::{
-    Agent, AuthStyle, Config, ContextChoice, Protocol, Provider, ProviderKind, ReasoningEffort,
-    Store, validate_profile_name,
+    ADD_ANTIGRAVITY, Agent, AuthStyle, Config, ContextChoice, Protocol, Provider, ProviderKind,
+    ReasoningEffort, Store, validate_profile_name,
 };
 use crate::model_catalog::{CodexSource, ModelCatalog};
 use crate::model_picker::{PickerApp, PickerRequest};
@@ -136,6 +137,11 @@ impl RemoteRow {
 struct App {
     store: Store,
     catalog: ModelCatalog,
+    /// What the model row cycles through for an Antigravity profile; `None`
+    /// until it is first browsed. Asking agy spawns it and goes to the
+    /// network, and the default config gives everyone an Antigravity
+    /// profile, so opening `alc config` must not be what pays for it.
+    agy_models: Option<Vec<AgyModel>>,
     picker: Option<PickerApp>,
     screen: Screen,
     provider_selected: usize,
@@ -159,6 +165,7 @@ impl App {
         Self {
             store,
             catalog,
+            agy_models: None,
             picker: None,
             screen: Screen::Providers,
             provider_selected: 0,
@@ -341,7 +348,17 @@ impl App {
             KeyCode::Enter => self.apply_edit(),
             KeyCode::Tab | KeyCode::Down => form.move_field(1),
             KeyCode::BackTab | KeyCode::Up => form.move_field(-1),
-            KeyCode::Left | KeyCode::Right if form.browses_models() => self.open_model_picker(),
+            KeyCode::Left | KeyCode::Right if form.browses_models() => {
+                if form.provider.kind == ProviderKind::Antigravity {
+                    let delta = if key.code == KeyCode::Left { -1 } else { 1 };
+                    let models = self
+                        .agy_models
+                        .get_or_insert_with(|| antigravity::models(&self.store.dir, false).models);
+                    form.step_model(models, delta);
+                } else {
+                    self.open_model_picker();
+                }
+            }
             KeyCode::Left => form.cycle(-1),
             KeyCode::Right => form.cycle(1),
             KeyCode::Backspace => form.backspace(),
@@ -456,7 +473,20 @@ impl App {
             .map(|(name, _)| name.clone())
             .collect();
         if compatible.is_empty() {
-            self.set_status(format!("No compatible provider exists for {agent}."), true);
+            // agy's profile is missing from every config.toml written before
+            // the antigravity kind; say which command adds it, unless the
+            // name is taken and `upsert` would rewrite that profile.
+            let hint = if agent == Agent::Agy
+                && !self.store.config.providers.contains_key("antigravity")
+            {
+                format!(" To add one, {ADD_ANTIGRAVITY}.")
+            } else {
+                String::new()
+            };
+            self.set_status(
+                format!("No compatible provider exists for {agent}.{hint}"),
+                true,
+            );
             return;
         }
         let current = self.store.config.defaults.get(agent);
@@ -639,10 +669,33 @@ impl EditForm {
             (self.selected as isize + delta).rem_euclid(Self::FIELD_COUNT as isize) as usize;
     }
 
-    /// Codex profiles pick their model from the synchronized catalog instead
-    /// of typing an ID by hand.
+    /// Codex profiles pick their model from the synchronized catalog, and
+    /// Antigravity profiles from agy's own list, instead of typing an ID by
+    /// hand.
     fn browses_models(&self) -> bool {
-        self.selected == 2 && self.provider.kind == ProviderKind::Codex
+        self.selected == 2
+            && matches!(
+                self.provider.kind,
+                ProviderKind::Codex | ProviderKind::Antigravity
+            )
+    }
+
+    /// Moves the model to the neighbouring entry of `models`. A model the
+    /// list does not know starts from its head (or its tail, going left).
+    fn step_model(&mut self, models: &[AgyModel], delta: isize) {
+        if models.is_empty() {
+            return;
+        }
+        let length = models.len() as isize;
+        let next = match models
+            .iter()
+            .position(|model| model.id == self.provider.model)
+        {
+            Some(index) => (index as isize + delta).rem_euclid(length),
+            None if delta > 0 => 0,
+            None => length - 1,
+        };
+        self.provider.model = models[next as usize].id.clone();
     }
 
     /// The context-window choice, directly under the effort it qualifies.
@@ -770,7 +823,10 @@ impl EditForm {
             (
                 "Model",
                 self.provider.model.clone(),
-                if self.provider.kind == ProviderKind::Codex {
+                if matches!(
+                    self.provider.kind,
+                    ProviderKind::Codex | ProviderKind::Antigravity
+                ) {
                     "←/→ browse"
                 } else {
                     "text"
@@ -1130,6 +1186,15 @@ fn draw_remote(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut state);
 }
 
+/// The Compatibility column for an agent's default profile.
+fn default_compatibility(config: &Config, agent: Agent) -> &'static str {
+    match config.providers.get(config.defaults.get(agent)) {
+        Some(provider) if provider.supports(agent) => "ready",
+        Some(_) => "incompatible",
+        None => "missing",
+    }
+}
+
 fn draw_defaults(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let header = Row::new(["Agent", "Default provider", "Compatibility"])
         .style(
@@ -1140,16 +1205,10 @@ fn draw_defaults(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
         .bottom_margin(1);
     let rows = Agent::ALL.into_iter().map(|agent| {
         let name = app.store.config.defaults.get(agent);
-        let compatible = app
-            .store
-            .config
-            .providers
-            .get(name)
-            .is_some_and(|provider| provider.supports(agent));
         Row::new([
             Cell::from(agent.to_string()),
             Cell::from(name.to_owned()),
-            Cell::from(if compatible { "ready" } else { "incompatible" }),
+            Cell::from(default_compatibility(&app.store.config, agent)),
         ])
     });
     let table = Table::new(
@@ -1180,13 +1239,43 @@ fn draw_edit(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let Some(form) = &app.edit else {
         return;
     };
-    let items = form.fields().into_iter().map(|(label, value, hint)| {
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("{label:<18}"), Style::default().fg(Color::Cyan)),
-            Span::raw(if value.is_empty() { "<empty>" } else { &value }.to_owned()),
-            Span::styled(format!("  [{hint}]"), Style::default().fg(Color::DarkGray)),
-        ]))
-    });
+    let items = form
+        .fields()
+        .into_iter()
+        .enumerate()
+        .map(|(row, (label, value, hint))| {
+            // agy's ids encode the effort tier; its own label says it in
+            // words, so an Antigravity profile's model row shows it, dim.
+            let model_label = (row == 2 && form.provider.kind == ProviderKind::Antigravity)
+                .then(|| {
+                    // Before the first browse the shipped list names the
+                    // models; it costs a parse, not a process.
+                    let bundled;
+                    let models = match app.agy_models.as_deref() {
+                        Some(models) => models,
+                        None => {
+                            bundled = antigravity::bundled();
+                            &bundled
+                        }
+                    };
+                    models
+                        .iter()
+                        .find(|model| model.id == value)
+                        .map(|model| format!("  {}", model.label))
+                })
+                .flatten()
+                .map(|label| Span::styled(label, Style::default().fg(Color::DarkGray)));
+            let mut spans = vec![
+                Span::styled(format!("{label:<18}"), Style::default().fg(Color::Cyan)),
+                Span::raw(if value.is_empty() { "<empty>" } else { &value }.to_owned()),
+            ];
+            spans.extend(model_label);
+            spans.push(Span::styled(
+                format!("  [{hint}]"),
+                Style::default().fg(Color::DarkGray),
+            ));
+            ListItem::new(Line::from(spans))
+        });
     let list = List::new(items)
         .block(
             Block::default()
@@ -1506,11 +1595,138 @@ mod tests {
         );
     }
 
+    /// A config.toml from before the antigravity kind has no profile for
+    /// agy. That is an upgrade, not a broken profile, and the defaults
+    /// screen says what is missing and which command adds it.
+    #[test]
+    fn the_defaults_screen_names_the_missing_antigravity_profile_and_its_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.store.config.providers.remove("antigravity");
+        app.screen = Screen::Defaults;
+        assert_eq!(
+            default_compatibility(&app.store.config, Agent::Agy),
+            "missing"
+        );
+        let screen = rendered(&mut app);
+        assert!(screen.contains("missing"), "{screen}");
+        assert!(!screen.contains("incompatible"), "{screen}");
+
+        app.default_selected = Agent::ALL.iter().position(|a| *a == Agent::Agy).unwrap();
+        press(&mut app, KeyCode::Right);
+        assert!(app.status_error);
+        assert!(app.status.contains(ADD_ANTIGRAVITY), "{}", app.status);
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn a_profile_named_antigravity_of_another_kind_is_incompatible_and_gets_no_upsert_hint() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app_on_remote_screen(temp.path());
+        app.store.config.providers.insert(
+            "antigravity".to_owned(),
+            Provider::for_kind(ProviderKind::Openrouter),
+        );
+        app.screen = Screen::Defaults;
+        assert_eq!(
+            default_compatibility(&app.store.config, Agent::Agy),
+            "incompatible"
+        );
+        app.default_selected = Agent::ALL.iter().position(|a| *a == Agent::Agy).unwrap();
+        press(&mut app, KeyCode::Right);
+        assert!(app.status_error);
+        assert!(!app.status.contains("upsert antigravity"), "{}", app.status);
+    }
+
     #[test]
     fn the_model_field_browses_the_catalog_for_codex_providers() {
         let mut app = app_editing_codex("gpt-5.6-luna");
         press(&mut app, KeyCode::Right);
         assert_eq!(app.screen, Screen::Model);
+    }
+
+    fn app_editing_antigravity(model: &str) -> App {
+        let mut app = app_editing_codex("unused");
+        let mut provider = Provider::for_kind(ProviderKind::Antigravity);
+        provider.model = model.to_owned();
+        let mut form = EditForm::existing("agy".to_owned(), provider, false);
+        form.selected = 2;
+        app.edit = Some(form);
+        // Loaded up front so a test never reaches for the real agy.
+        app.agy_models = Some(antigravity::bundled());
+        app
+    }
+
+    /// Asking agy is a process spawn and a network call, and the default
+    /// config carries an Antigravity profile for everyone, so the list is
+    /// fetched only once someone actually browses it.
+    #[test]
+    fn the_antigravity_list_is_loaded_on_the_first_browse() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("antigravity-models.json"),
+            format!(
+                r#"{{"schema_version":1,"source":"agy models","refreshed_at":{},"models":[{{"id":"only-from-the-cache","label":"Cached"}}]}}"#,
+                crate::usage::ledger::now_unix()
+            ),
+        )
+        .unwrap();
+        let mut app = app_editing_antigravity("claude-opus-5-5-high");
+        app.store.dir = temp.path().to_path_buf();
+        app.agy_models = None;
+        assert!(
+            App::new(app.store.clone(), ModelCatalog::built_in())
+                .agy_models
+                .is_none(),
+            "opening alc config asks agy for nothing"
+        );
+
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.edit.as_ref().unwrap().provider.model,
+            "only-from-the-cache"
+        );
+        assert!(app.agy_models.is_some());
+    }
+
+    #[test]
+    fn the_model_field_cycles_the_antigravity_list_in_place() {
+        let mut app = app_editing_antigravity("claude-opus-5-5-high");
+        app.edit.as_mut().unwrap().provider.reasoning_effort = Some(ReasoningEffort::Low);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.screen, Screen::Edit, "no Codex picker for agy");
+        let form = app.edit.as_ref().unwrap();
+        assert_eq!(form.provider.model, "claude-opus-5-5-medium");
+        assert_eq!(
+            form.provider.reasoning_effort,
+            Some(ReasoningEffort::Low),
+            "effort stays its own row"
+        );
+
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(
+            app.edit.as_ref().unwrap().provider.model,
+            "gpt-oss-120b-medium"
+        );
+    }
+
+    #[test]
+    fn an_unlisted_antigravity_model_starts_browsing_at_the_head() {
+        let mut app = app_editing_antigravity("something-agy-added-later");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.edit.as_ref().unwrap().provider.model,
+            "claude-opus-5-5-high"
+        );
+    }
+
+    #[test]
+    fn the_antigravity_model_row_shows_its_label() {
+        let mut app = app_editing_antigravity("gemini-3.8-flash-low");
+        let screen = rendered(&mut app);
+        assert!(screen.contains("Gemini 3.8 Flash (Low)"), "{screen}");
+        assert!(screen.contains("←/→ browse"), "{screen}");
     }
 
     #[test]

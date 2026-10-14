@@ -132,10 +132,12 @@ pub enum Agent {
     Goose,
     Qwen,
     Kimi,
+    /// Google's Antigravity CLI, which runs on its own Google login.
+    Agy,
 }
 
 impl Agent {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Claude,
         Self::Codex,
         Self::Opencode,
@@ -144,6 +146,7 @@ impl Agent {
         Self::Goose,
         Self::Qwen,
         Self::Kimi,
+        Self::Agy,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -156,6 +159,7 @@ impl Agent {
             Self::Goose => "goose",
             Self::Qwen => "qwen",
             Self::Kimi => "kimi",
+            Self::Agy => "agy",
         }
     }
 
@@ -166,6 +170,7 @@ impl Agent {
             Self::Codex => "codex",
             Self::Opencode | Self::Copilot | Self::Goose => "openrouter",
             Self::Qwen | Self::Kimi => "openai",
+            Self::Agy => "antigravity",
         }
     }
 
@@ -180,6 +185,9 @@ impl Agent {
             Self::Goose => "Goose needs an OpenAI- or Anthropic-compatible endpoint",
             Self::Qwen => "Qwen Code needs an OpenAI-, Anthropic-, or Gemini-compatible endpoint",
             Self::Kimi => "Kimi Code CLI needs an OpenAI- or Anthropic-compatible endpoint",
+            Self::Agy => {
+                "the Antigravity CLI runs only on the antigravity kind (its own Google login)"
+            }
         }
     }
 }
@@ -203,8 +211,9 @@ impl std::str::FromStr for Agent {
             "goose" => Ok(Self::Goose),
             "qwen" | "qwen-code" => Ok(Self::Qwen),
             "kimi" | "kimi-cli" | "kimi-code" => Ok(Self::Kimi),
+            "agy" | "antigravity" | "antigravity-cli" => Ok(Self::Agy),
             _ => bail!(
-                "unknown agent '{value}'; expected claude, codex, opencode, pi, copilot, goose, qwen, or kimi"
+                "unknown agent '{value}'; expected claude, codex, opencode, pi, copilot, goose, qwen, kimi, or agy"
             ),
         }
     }
@@ -228,10 +237,12 @@ pub enum ProviderKind {
     Xai,
     Google,
     Custom,
+    /// Google's Antigravity login, which the Antigravity CLI holds itself.
+    Antigravity,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Anthropic,
         Self::Openai,
         Self::Openrouter,
@@ -247,6 +258,7 @@ impl ProviderKind {
         Self::Xai,
         Self::Google,
         Self::Custom,
+        Self::Antigravity,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -266,6 +278,7 @@ impl ProviderKind {
             Self::Xai => "xai",
             Self::Google => "google",
             Self::Custom => "custom",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -286,6 +299,7 @@ impl ProviderKind {
             | Self::Xai
             | Self::Google => Protocol::OpenaiChat,
             Self::Custom => Protocol::OpenaiResponses,
+            Self::Antigravity => Protocol::AntigravityNative,
         }
     }
 
@@ -304,7 +318,7 @@ impl ProviderKind {
             Self::Groq => Some("https://api.groq.com/openai/v1"),
             Self::Xai => Some("https://api.x.ai/v1"),
             Self::Google => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
-            Self::Codex | Self::Custom => None,
+            Self::Codex | Self::Custom | Self::Antigravity => None,
         }
     }
 
@@ -335,7 +349,7 @@ impl ProviderKind {
             // The variable llama-server itself reads `--api-key` from, so a
             // key exported for the server reaches the agents too.
             Self::Llamacpp => Some("LLAMA_API_KEY"),
-            Self::Codex | Self::Ollama | Self::Vllm | Self::Custom => None,
+            Self::Codex | Self::Ollama | Self::Vllm | Self::Custom | Self::Antigravity => None,
         }
     }
 
@@ -377,8 +391,9 @@ impl std::str::FromStr for ProviderKind {
             "xai" | "x-ai" | "grok" => Ok(Self::Xai),
             "google" | "gemini" => Ok(Self::Google),
             "custom" => Ok(Self::Custom),
+            "antigravity" | "agy" => Ok(Self::Antigravity),
             _ => bail!(
-                "unknown provider kind '{value}'; expected anthropic, openai, openrouter, codex, ollama, vllm, llamacpp, deepseek, moonshot, zai, minimax, groq, xai, google, or custom"
+                "unknown provider kind '{value}'; expected anthropic, openai, openrouter, codex, ollama, vllm, llamacpp, deepseek, moonshot, zai, minimax, groq, xai, google, custom, or antigravity"
             ),
         }
     }
@@ -392,15 +407,19 @@ pub enum Protocol {
     OpenaiChat,
     CodexNative,
     Dual,
+    /// The Antigravity CLI talking to Google with its own login; meaningful
+    /// only on the antigravity kind.
+    AntigravityNative,
 }
 
 impl Protocol {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::AnthropicMessages,
         Self::OpenaiResponses,
         Self::OpenaiChat,
         Self::CodexNative,
         Self::Dual,
+        Self::AntigravityNative,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -410,6 +429,7 @@ impl Protocol {
             Self::OpenaiChat => "openai-chat",
             Self::CodexNative => "codex-native",
             Self::Dual => "dual",
+            Self::AntigravityNative => "antigravity-native",
         }
     }
 
@@ -438,8 +458,9 @@ impl std::str::FromStr for Protocol {
             "openai-chat" | "chat" | "chat-completions" => Ok(Self::OpenaiChat),
             "codex" | "codex-native" | "native" => Ok(Self::CodexNative),
             "dual" | "both" => Ok(Self::Dual),
+            "antigravity" | "antigravity-native" => Ok(Self::AntigravityNative),
             _ => bail!(
-                "unknown protocol '{value}'; expected anthropic-messages, openai-responses, openai-chat, codex-native, or dual"
+                "unknown protocol '{value}'; expected anthropic-messages, openai-responses, openai-chat, codex-native, dual, or antigravity-native"
             ),
         }
     }
@@ -543,6 +564,7 @@ impl Provider {
             ProviderKind::Groq => "llama-3.3-70b-versatile",
             ProviderKind::Xai => "grok-build-0.1",
             ProviderKind::Google => "gemini-3.7-flash",
+            ProviderKind::Antigravity => "claude-opus-5-5-high",
             ProviderKind::Vllm | ProviderKind::Llamacpp | ProviderKind::Custom => "",
         };
         let auth = match kind {
@@ -556,7 +578,7 @@ impl Provider {
             | ProviderKind::Groq
             | ProviderKind::Xai
             | ProviderKind::Google => AuthStyle::Bearer,
-            ProviderKind::Codex => AuthStyle::Native,
+            ProviderKind::Codex | ProviderKind::Antigravity => AuthStyle::Native,
             ProviderKind::Ollama
             | ProviderKind::Vllm
             | ProviderKind::Llamacpp
@@ -673,6 +695,18 @@ impl Provider {
         if !self.enabled {
             return false;
         }
+        if self.kind == ProviderKind::Antigravity {
+            // Native for the Antigravity CLI; the bridge for other agents
+            // arrives with the antigravity upstream (not yet).
+            return agent == Agent::Agy;
+        }
+        if agent == Agent::Agy {
+            return false;
+        }
+        if self.protocol == Protocol::AntigravityNative {
+            // antigravity-native is only meaningful on the antigravity kind.
+            return false;
+        }
         if self.kind == ProviderKind::Codex {
             // Native for Codex CLI; the bundled bridge for every other agent.
             return true;
@@ -691,6 +725,8 @@ impl Provider {
             Agent::Copilot | Agent::Goose | Agent::Qwen => {
                 self.speaks_chat() || self.speaks_anthropic()
             }
+            // Answered above: only the antigravity kind runs it.
+            Agent::Agy => false,
         }
     }
 }
@@ -744,6 +780,7 @@ impl Default for Config {
             ("codex", ProviderKind::Codex),
             ("ollama", ProviderKind::Ollama),
             ("vllm", ProviderKind::Vllm),
+            ("antigravity", ProviderKind::Antigravity),
         ]
         .into_iter()
         .map(|(name, kind)| (name.to_owned(), Provider::for_kind(kind)))
@@ -795,6 +832,13 @@ impl Config {
             let default_name = self.defaults.get(agent);
             match self.providers.get(default_name) {
                 Some(provider) if provider.supports(agent) => {}
+                Some(provider)
+                    if self.defaults.is_explicit(agent)
+                        && provider.enabled
+                        && provider.kind == ProviderKind::Antigravity =>
+                {
+                    bail!("{}", antigravity_drives_only_agy(default_name))
+                }
                 Some(provider) if self.defaults.is_explicit(agent) => bail!(
                     "provider '{default_name}' ({}) cannot be used with {agent}; {}",
                     provider.kind,
@@ -832,6 +876,9 @@ impl Config {
                 );
             }
             if !provider.supports(agent) {
+                if provider.kind == ProviderKind::Antigravity {
+                    bail!("{}", antigravity_drives_only_agy(name));
+                }
                 bail!(
                     "provider '{name}' ({}) is not compatible with {agent}; {}. Run `alc doctor` for the compatibility matrix",
                     provider.kind,
@@ -849,6 +896,22 @@ impl Config {
             .collect();
         match matches.as_slice() {
             [(name, provider)] => Ok((name.as_str(), *provider)),
+            // A config.toml from before the antigravity kind has no profile
+            // for agy, and `alc config` alone does not say which one to add.
+            // Not when the name is taken: `upsert` would rewrite that
+            // profile for the new kind, base URL and model gone.
+            [] if kind == Some(ProviderKind::Antigravity)
+                && agent == Agent::Agy
+                && !self.providers.contains_key("antigravity") =>
+            {
+                bail!(
+                    "provider profile or kind '{requested}' was not found for {agent}; {ADD_ANTIGRAVITY}"
+                )
+            }
+            // No antigravity profile could serve another agent anyway.
+            [] if kind == Some(ProviderKind::Antigravity) && agent != Agent::Agy => {
+                bail!("{}", antigravity_drives_only_agy(requested))
+            }
             [] => bail!(
                 "provider profile or kind '{requested}' was not found for {agent}; run `alc config`"
             ),
@@ -857,6 +920,18 @@ impl Config {
             ),
         }
     }
+}
+
+/// What adds the profile agy runs on to a config.toml written before it.
+pub const ADD_ANTIGRAVITY: &str = "run `alc config upsert antigravity --kind antigravity`";
+
+/// The antigravity kind is a login only the Antigravity CLI holds, so naming
+/// it for another agent is a wrong turn rather than a protocol mismatch, and
+/// the error says where to go instead.
+fn antigravity_drives_only_agy(name: &str) -> String {
+    format!(
+        "provider '{name}' (antigravity) drives the Antigravity CLI only: run `alc agy`; routing other agents through this login is not available yet"
+    )
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1240,9 +1315,14 @@ enabled = true
     #[test]
     fn compatibility_matrix_matches_the_documented_capabilities() {
         let by_kind = |kind| Provider::for_kind(kind);
+        // The Antigravity CLI runs on its own login and nowhere else.
+        let every_agent_but_agy: Vec<Agent> = Agent::ALL
+            .into_iter()
+            .filter(|agent| *agent != Agent::Agy)
+            .collect();
         let cases: &[(Provider, &[Agent])] = &[
-            // codex login reaches every agent through the bridge
-            (by_kind(ProviderKind::Codex), &Agent::ALL),
+            // codex login reaches every agent but agy through the bridge
+            (by_kind(ProviderKind::Codex), every_agent_but_agy.as_slice()),
             // anthropic: everything except codex CLI
             (
                 by_kind(ProviderKind::Anthropic),
@@ -1269,8 +1349,13 @@ enabled = true
                     Agent::Kimi,
                 ],
             ),
-            // openrouter (dual): all eight
-            (by_kind(ProviderKind::Openrouter), &Agent::ALL),
+            // openrouter (dual): every agent but agy
+            (
+                by_kind(ProviderKind::Openrouter),
+                every_agent_but_agy.as_slice(),
+            ),
+            // antigravity: the Antigravity CLI only
+            (by_kind(ProviderKind::Antigravity), &[Agent::Agy]),
         ];
         for (provider, expected) in cases {
             for agent in Agent::ALL {
@@ -1472,7 +1557,8 @@ enabled = true
         let mut provider = Provider::for_kind(ProviderKind::Llamacpp);
         provider.model = "qwen3.8-27b".into();
         for agent in Agent::ALL {
-            assert!(provider.supports(agent), "{agent}");
+            // The Antigravity CLI runs only on its own login.
+            assert_eq!(provider.supports(agent), agent != Agent::Agy, "{agent}");
         }
         // A chat-only profile still gives up Codex, which needs Responses.
         provider.protocol = Protocol::OpenaiChat;
@@ -1508,6 +1594,138 @@ enabled = true
         );
         assert_eq!("MAX".parse::<ContextChoice>().unwrap(), ContextChoice::Max);
         assert!("huge".parse::<ContextChoice>().is_err());
+    }
+
+    #[test]
+    fn the_antigravity_kind_and_the_agy_agent_round_trip() {
+        assert_eq!("agy".parse::<Agent>().unwrap(), Agent::Agy);
+        assert_eq!("antigravity".parse::<Agent>().unwrap(), Agent::Agy);
+        assert_eq!("antigravity-cli".parse::<Agent>().unwrap(), Agent::Agy);
+        assert_eq!(Agent::Agy.as_str(), "agy");
+        assert_eq!(Agent::Agy.default_provider(), "antigravity");
+        assert_eq!(
+            "antigravity".parse::<ProviderKind>().unwrap(),
+            ProviderKind::Antigravity
+        );
+        assert_eq!(
+            "agy".parse::<ProviderKind>().unwrap(),
+            ProviderKind::Antigravity
+        );
+        assert_eq!(ProviderKind::Antigravity.as_str(), "antigravity");
+        assert_eq!(Protocol::AntigravityNative.as_str(), "antigravity-native");
+        let provider = Provider::for_kind(ProviderKind::Antigravity);
+        assert_eq!(provider.model, "claude-opus-5-5-high");
+        assert_eq!(provider.auth, AuthStyle::Native);
+        assert_eq!(provider.protocol, Protocol::AntigravityNative);
+        assert!(provider.base_url.is_none() && provider.api_key_env.is_none());
+        assert!(Config::default().providers.contains_key("antigravity"));
+    }
+
+    #[test]
+    fn agy_runs_only_on_the_antigravity_kind_and_the_kind_runs_only_agy() {
+        let antigravity = Provider::for_kind(ProviderKind::Antigravity);
+        assert!(antigravity.supports(Agent::Agy));
+        for agent in Agent::ALL.into_iter().filter(|agent| *agent != Agent::Agy) {
+            assert!(!antigravity.supports(agent), "{agent}");
+        }
+        for kind in ProviderKind::ALL
+            .into_iter()
+            .filter(|kind| *kind != ProviderKind::Antigravity)
+        {
+            assert!(!Provider::for_kind(kind).supports(Agent::Agy), "{kind}");
+        }
+        let mut wrong = Provider::for_kind(ProviderKind::Openai);
+        wrong.protocol = Protocol::AntigravityNative;
+        assert!(
+            !wrong.supports(Agent::Codex),
+            "antigravity-native is meaningless off its kind"
+        );
+    }
+
+    #[test]
+    fn another_agent_on_the_antigravity_profile_is_pointed_at_alc_agy() {
+        let config = Config::default();
+        let error = config
+            .resolve(Agent::Claude, Some("antigravity"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "provider 'antigravity' (antigravity) drives the Antigravity CLI only: run `alc agy`; routing other agents through this login is not available yet"
+            ),
+            "{error}"
+        );
+        let (name, provider) = config.resolve(Agent::Agy, None).unwrap();
+        assert_eq!(name, "antigravity");
+        assert_eq!(provider.kind, ProviderKind::Antigravity);
+
+        // Saving it as another agent's default is refused the same way.
+        let mut config = Config::default();
+        config.defaults.set(Agent::Codex, "antigravity");
+        let error = config.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("drives the Antigravity CLI only: run `alc agy`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_config_from_before_the_antigravity_kind_names_the_command_that_adds_it() {
+        let mut config = Config::default();
+        config.providers.remove("antigravity");
+        for requested in [None, Some("antigravity"), Some("agy")] {
+            let error = config
+                .resolve(Agent::Agy, requested)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("run `alc config upsert antigravity --kind antigravity`"),
+                "{requested:?}: {error}"
+            );
+        }
+        // Another agent is not sent to add a profile it could not use.
+        let error = config
+            .resolve(Agent::Claude, Some("antigravity"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("drives the Antigravity CLI only: run `alc agy`"),
+            "{error}"
+        );
+        // Every other missing kind keeps the general pointer.
+        let error = config
+            .resolve(Agent::Claude, Some("deepseek"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.ends_with("was not found for claude; run `alc config`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_profile_named_antigravity_of_another_kind_is_not_offered_the_upsert_that_replaces_it() {
+        // `upsert` on an existing name rewrites it for the new kind, so the
+        // hint would cost a custom gateway its base URL and model.
+        let mut config = Config::default();
+        config.providers.insert(
+            "antigravity".to_owned(),
+            Provider::for_kind(ProviderKind::Openrouter),
+        );
+        for requested in ["agy", "ANTIGRAVITY"] {
+            let error = config
+                .resolve(Agent::Agy, Some(requested))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                !error.contains("upsert antigravity"),
+                "{requested}: {error}"
+            );
+            assert!(
+                error.ends_with("was not found for agy; run `alc config`"),
+                "{requested}: {error}"
+            );
+        }
     }
 
     #[test]

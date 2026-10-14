@@ -1,3 +1,4 @@
+pub mod agy;
 pub mod claude;
 pub mod claude_settings;
 pub mod codex;
@@ -38,6 +39,7 @@ pub fn build(
         Agent::Goose => goose::build(spec, store, profile_name, provider, passthrough, overrides),
         Agent::Qwen => qwen::build(spec, store, profile_name, provider, passthrough, overrides),
         Agent::Kimi => kimi::build(spec, store, profile_name, provider, passthrough, overrides),
+        Agent::Agy => agy::build(spec, provider, passthrough, overrides),
     }
 }
 
@@ -61,5 +63,7 @@ pub fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) ->
         Agent::Goose => goose::apply_bridge(spec, base_url, plan),
         Agent::Qwen => qwen::apply_bridge(spec, base_url, plan),
         Agent::Kimi => kimi::apply_bridge(spec, base_url, plan),
+        // The Antigravity CLI runs on its own login and is never bridged.
+        Agent::Agy => Ok(()),
     }
 }

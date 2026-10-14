@@ -56,6 +56,11 @@ pub(crate) fn build(
         | ProviderKind::Google
         | ProviderKind::Custom => (format!("alc-{profile_name}"), true),
         ProviderKind::Codex => unreachable!(),
+        // `Provider::supports` keeps OpenCode off this kind; said here too so
+        // a caller that skips it gets an error rather than a broken config.
+        ProviderKind::Antigravity => bail!(
+            "provider '{profile_name}' is an Antigravity login, which only the Antigravity CLI can use"
+        ),
     };
 
     let key = store.credentials.key_for(profile_name, provider);
@@ -97,6 +102,9 @@ pub(crate) fn build(
             (_, Protocol::CodexNative) => {
                 bail!("provider '{profile_name}' uses codex-native, which OpenCode cannot load")
             }
+            (_, Protocol::AntigravityNative) => bail!(
+                "provider '{profile_name}' uses antigravity-native, which OpenCode cannot load"
+            ),
         };
         let mut options = Map::new();
         options.insert("baseURL".to_owned(), Value::String(base_url.to_owned()));
