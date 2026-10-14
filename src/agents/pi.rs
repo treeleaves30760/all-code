@@ -85,7 +85,8 @@ pub(crate) fn build(
 
 /// Wires the bundled Codex bridge (listening on `base_url`) into Pi's
 /// `models.json` as an `alc-codex` OpenAI-Responses provider, pinning every
-/// catalog model's context window so Pi's own picker can offer them.
+/// offered model's context window (the one the profile chose) so Pi's own
+/// picker can offer them.
 pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
     let models: Vec<Value> = if plan.options.is_empty() {
         vec![bridge_model_entry(

@@ -17,8 +17,8 @@ use ratatui::widgets::{
 };
 
 use crate::config::{
-    Agent, AuthStyle, Config, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
-    validate_profile_name,
+    Agent, AuthStyle, Config, ContextChoice, Protocol, Provider, ProviderKind, ReasoningEffort,
+    Store, validate_profile_name,
 };
 use crate::model_catalog::{CodexSource, ModelCatalog};
 use crate::model_picker::{PickerApp, PickerRequest};
@@ -608,7 +608,7 @@ struct EditForm {
 }
 
 impl EditForm {
-    const FIELD_COUNT: usize = 13;
+    const FIELD_COUNT: usize = 14;
 
     fn new(name: String) -> Self {
         Self {
@@ -645,6 +645,11 @@ impl EditForm {
         self.selected == 2 && self.provider.kind == ProviderKind::Codex
     }
 
+    /// The context-window choice, directly under the effort it qualifies.
+    fn context_row(&self) -> usize {
+        4
+    }
+
     fn cycle(&mut self, delta: isize) {
         match self.selected {
             1 => {
@@ -671,7 +676,17 @@ impl EditForm {
                 let next = (index as isize + delta).rem_euclid(choices.len() as isize);
                 self.provider.reasoning_effort = choices[next as usize];
             }
-            7 => {
+            // Only a Codex profile may leave the standard window; elsewhere
+            // the row is shown but holds still.
+            row if row == self.context_row() && self.provider.kind == ProviderKind::Codex => {
+                let index = ContextChoice::ALL
+                    .iter()
+                    .position(|context| *context == self.provider.context)
+                    .unwrap_or(0);
+                let next = (index as isize + delta).rem_euclid(ContextChoice::ALL.len() as isize);
+                self.provider.context = ContextChoice::ALL[next as usize];
+            }
+            8 => {
                 let index = Protocol::ALL
                     .iter()
                     .position(|protocol| *protocol == self.provider.protocol)
@@ -679,7 +694,7 @@ impl EditForm {
                 let next = (index as isize + delta).rem_euclid(Protocol::ALL.len() as isize);
                 self.provider.protocol = Protocol::ALL[next as usize];
             }
-            8 => {
+            9 => {
                 let index = AuthStyle::ALL
                     .iter()
                     .position(|auth| *auth == self.provider.auth)
@@ -687,7 +702,7 @@ impl EditForm {
                 let next = (index as isize + delta).rem_euclid(AuthStyle::ALL.len() as isize);
                 self.provider.auth = AuthStyle::ALL[next as usize];
             }
-            12 => self.provider.enabled = !self.provider.enabled,
+            13 => self.provider.enabled = !self.provider.enabled,
             _ => {}
         }
     }
@@ -714,18 +729,18 @@ impl EditForm {
         match self.selected {
             0 => Some(&mut self.name),
             2 => Some(&mut self.provider.model),
-            4 => Some(self.provider.small_model.get_or_insert_default()),
-            5 => Some(self.provider.base_url.get_or_insert_default()),
-            6 => Some(self.provider.anthropic_base_url.get_or_insert_default()),
-            9 => Some(self.provider.api_key_env.get_or_insert_default()),
-            10 => {
+            5 => Some(self.provider.small_model.get_or_insert_default()),
+            6 => Some(self.provider.base_url.get_or_insert_default()),
+            7 => Some(self.provider.anthropic_base_url.get_or_insert_default()),
+            10 => Some(self.provider.api_key_env.get_or_insert_default()),
+            11 => {
                 if !self.secret_touched {
                     self.secret.clear();
                     self.secret_touched = true;
                 }
                 Some(&mut self.secret)
             }
-            11 => Some(self.provider.codex_profile.get_or_insert_default()),
+            12 => Some(self.provider.codex_profile.get_or_insert_default()),
             _ => None,
         }
     }
@@ -767,6 +782,15 @@ impl EditForm {
                     .reasoning_effort
                     .map_or_else(|| "auto".to_owned(), |effort| effort.to_string()),
                 "←/→",
+            ),
+            (
+                "Context",
+                self.provider.context.to_string(),
+                if self.provider.kind == ProviderKind::Codex {
+                    "←/→"
+                } else {
+                    "codex only"
+                },
             ),
             (
                 "Small model",
@@ -1533,7 +1557,7 @@ mod tests {
             true,
         );
         assert!(form.secret.is_empty());
-        assert!(form.fields()[10].1.contains("saved"));
+        assert!(form.fields()[11].1.contains("saved"));
     }
 
     #[test]
@@ -1549,5 +1573,104 @@ mod tests {
         assert_eq!(form.provider.reasoning_effort, Some(ReasoningEffort::Max));
         form.cycle(1);
         assert_eq!(form.provider.reasoning_effort, None);
+    }
+
+    fn codex_form() -> EditForm {
+        EditForm::existing(
+            "codex".to_owned(),
+            Provider::for_kind(ProviderKind::Codex),
+            false,
+        )
+    }
+
+    #[test]
+    fn context_cycles_between_standard_and_max_on_a_codex_profile() {
+        let mut form = codex_form();
+        form.selected = form.context_row();
+        assert_eq!(form.provider.context, ContextChoice::Standard);
+        form.cycle(1);
+        assert_eq!(form.provider.context, ContextChoice::Max);
+        form.cycle(1);
+        assert_eq!(form.provider.context, ContextChoice::Standard);
+        // Left wraps the other way round.
+        form.cycle(-1);
+        assert_eq!(form.provider.context, ContextChoice::Max);
+    }
+
+    /// The row sits next to the effort it qualifies, and says what it holds.
+    #[test]
+    fn the_context_row_follows_reasoning_effort() {
+        let mut form = codex_form();
+        form.provider.context = ContextChoice::Max;
+        let fields = form.fields();
+        assert_eq!(fields[form.context_row() - 1].0, "Reasoning effort");
+        assert_eq!(fields[form.context_row()].0, "Context");
+        assert_eq!(fields[form.context_row()].1, "max");
+        assert_eq!(fields[form.context_row()].2, "←/→");
+    }
+
+    /// Only a Codex profile may leave the standard window, so on any other
+    /// kind the row is shown but cannot be changed.
+    #[test]
+    fn the_context_row_is_read_only_off_codex() {
+        let mut form = EditForm::new("test".to_owned());
+        assert_ne!(form.provider.kind, ProviderKind::Codex);
+        form.selected = form.context_row();
+        form.cycle(1);
+        assert_eq!(form.provider.context, ContextChoice::Standard);
+        form.cycle(-1);
+        assert_eq!(form.provider.context, ContextChoice::Standard);
+        assert_eq!(form.fields()[form.context_row()].2, "codex only");
+    }
+
+    /// Every row the form draws is one the cursor can reach, and no further.
+    #[test]
+    fn the_cursor_reaches_every_field_and_wraps() {
+        let mut form = codex_form();
+        assert_eq!(form.fields().len(), EditForm::FIELD_COUNT);
+        form.move_field(-1);
+        assert_eq!(form.selected, EditForm::FIELD_COUNT - 1);
+        assert_eq!(form.fields()[form.selected].0, "Enabled");
+    }
+
+    /// The rows after the new one moved down by one; the keys that act on
+    /// them must have moved with them.
+    #[test]
+    fn rows_after_context_keep_their_behaviour() {
+        let mut form = codex_form();
+        let label = |form: &EditForm| form.fields()[form.selected].0;
+
+        form.selected = 5;
+        assert_eq!(label(&form), "Small model");
+        form.push('s');
+        assert_eq!(form.provider.small_model.as_deref(), Some("s"));
+
+        form.selected = 8;
+        assert_eq!(label(&form), "Protocol");
+        let protocol = form.provider.protocol;
+        form.cycle(1);
+        assert_ne!(form.provider.protocol, protocol);
+
+        form.selected = 9;
+        assert_eq!(label(&form), "Auth");
+        let auth = form.provider.auth;
+        form.cycle(1);
+        assert_ne!(form.provider.auth, auth);
+
+        form.selected = 11;
+        assert_eq!(label(&form), "Saved API key");
+        form.push('k');
+        assert_eq!(form.secret, "k");
+
+        form.selected = 12;
+        assert_eq!(label(&form), "Codex profile");
+        form.push('p');
+        assert_eq!(form.provider.codex_profile.as_deref(), Some("p"));
+
+        form.selected = 13;
+        assert_eq!(label(&form), "Enabled");
+        let enabled = form.provider.enabled;
+        form.cycle(1);
+        assert_ne!(form.provider.enabled, enabled);
     }
 }

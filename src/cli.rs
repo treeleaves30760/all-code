@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 use crate::config::{
-    Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
+    Agent, AuthStyle, ContextChoice, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
     validate_profile_name,
 };
 use crate::model_catalog::{CodexSource, ModelCatalog, ModelInfo};
@@ -245,12 +245,17 @@ struct ClaudeArgs {
     #[arg(long, value_name = "LEVEL")]
     effort: Option<ReasoningEffort>,
 
+    /// How much of the model's window to use: standard, or max (uses plan
+    /// limits faster past the standard window).
+    #[arg(long, value_name = "CHOICE")]
+    context: Option<ContextChoice>,
+
     /// Deprecated and ignored; Claude Code now picks the model in-session.
     /// Kept so old scripts do not forward it to Claude Code, which rejects it.
     #[arg(long, hide = true)]
     no_picker: bool,
 
-    /// Save this run's model and effort as the provider's defaults.
+    /// Save this run's model, effort and context as the provider's defaults.
     #[arg(long)]
     save: bool,
 
@@ -505,6 +510,11 @@ struct UpsertArgs {
     #[arg(long)]
     clear_effort: bool,
 
+    /// How much of a Codex model's window to use: standard, or max (uses
+    /// plan limits faster past the standard window).
+    #[arg(long, value_name = "CHOICE")]
+    context: Option<ContextChoice>,
+
     /// Optional small/fast model ID.
     #[arg(long)]
     small_model: Option<String>,
@@ -688,6 +698,7 @@ pub fn run() -> Result<u8> {
                     ClaudeArgs {
                         model: None,
                         effort: None,
+                        context: None,
                         no_picker: false,
                         save: false,
                         args: args.args,
@@ -900,8 +911,10 @@ fn run_claude(
     reject_swallowed_flags(&args.args, Agent::Claude, saw_escape())?;
     if let Some(why) = crate::agents::claude::runs_directly(&args.args) {
         let command = args.args[0].to_string_lossy().into_owned();
-        if args.model.is_some() || args.effort.is_some() || args.save {
-            bail!("--model, --effort and --save do not apply to `claude {command}`, which {why}");
+        if args.model.is_some() || args.effort.is_some() || args.context.is_some() || args.save {
+            bail!(
+                "--model, --effort, --context and --save do not apply to `claude {command}`, which {why}"
+            );
         }
         if sharing.enabled {
             bail!("`claude {command}` {why} and runs in this terminal; it cannot be shared");
@@ -914,9 +927,9 @@ fn run_claude(
     };
 
     if provider.kind != ProviderKind::Codex {
-        if args.effort.is_some() || args.save {
+        if args.effort.is_some() || args.context.is_some() || args.save {
             bail!(
-                "--effort and --save are available with a Codex provider; use `alc --codex claude`"
+                "--effort, --context and --save are available with a Codex provider; use `alc --codex claude`"
             );
         }
         // A local server can say how much context it really gives the model,
@@ -950,10 +963,19 @@ fn run_claude(
     // its own `codex_home` launches against a different login, and the models
     // it is offered have to come from the account it will actually sign with.
     let source = CodexSource::for_provider(&provider);
-    let overrides = if args.model.is_some() || args.effort.is_some() || args.save {
+    let overrides = if args.model.is_some()
+        || args.effort.is_some()
+        || args.context.is_some()
+        || args.save
+    {
         let catalog = load_codex_catalog(store, &source, dry_run);
         let (model, effort) =
             resolve_codex_defaults(&provider, &catalog, args.model.as_deref(), args.effort)?;
+        // This run's choice goes through the provider, so the one place that
+        // turns a choice into a window decides it for this run too.
+        let mut provider = provider;
+        provider.context = args.context.unwrap_or(provider.context);
+        let choice = provider.context;
 
         if args.save && !dry_run {
             let entry = store
@@ -963,18 +985,15 @@ fn run_claude(
                 .context("selected Codex provider disappeared from the config")?;
             entry.model = model.clone();
             entry.reasoning_effort = Some(effort);
+            entry.context = choice;
             store.save()?;
-            println!("Saved {model} / {effort} as the default for '{profile_name}'.");
+            println!(
+                "Saved {model} / {effort} / {choice} context as the default for '{profile_name}'."
+            );
         }
 
         let catalog = codex_catalog_for(store, catalog, &model, &source, dry_run);
-        let context_window = catalog.find(&model).map(|entry| entry.context_window);
-        launch::LaunchOverrides {
-            model: Some(model),
-            reasoning_effort: Some(effort),
-            context_window,
-            model_options: routable_model_options(&catalog),
-        }
+        codex_session_overrides(&provider, &catalog, model, effort)
     } else {
         codex_launch_overrides(store, &provider, dry_run)?
     };
@@ -1088,13 +1107,35 @@ fn codex_launch_overrides(
     let catalog = load_codex_catalog(store, &source, dry_run);
     let (model, effort) = resolve_codex_defaults(provider, &catalog, None, None)?;
     let catalog = codex_catalog_for(store, catalog, &model, &source, dry_run);
-    let context_window = catalog.find(&model).map(|entry| entry.context_window);
-    Ok(launch::LaunchOverrides {
+    Ok(codex_session_overrides(provider, &catalog, model, effort))
+}
+
+/// What a Codex-bridged session is launched with once its model and effort
+/// are settled. Every launch-time read of a catalog window happens here, so
+/// the profile's context choice reaches the starting model and each model the
+/// agent's own picker offers alike.
+fn codex_session_overrides(
+    provider: &Provider,
+    catalog: &ModelCatalog,
+    model: String,
+    effort: ReasoningEffort,
+) -> launch::LaunchOverrides {
+    let context_window = catalog
+        .find(&model)
+        .map(|entry| launch::codex_context_window(provider, entry));
+    let model_options = routable_model_options(catalog)
+        .into_iter()
+        .map(|mut option| {
+            option.context_window = launch::codex_context_window(provider, &option);
+            option
+        })
+        .collect();
+    launch::LaunchOverrides {
         model: Some(model),
         reasoning_effort: Some(effort),
         context_window,
-        model_options: routable_model_options(&catalog),
-    })
+        model_options,
+    }
 }
 
 /// The catalog entries the bundled bridge can actually route.
@@ -1338,11 +1379,17 @@ fn run_models(store: &Store, args: ModelsArgs) -> Result<u8> {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
+        let maximum = if model.max_window() > model.context_window {
+            format!(" (max {}K)", model.max_window() / 1_000)
+        } else {
+            String::new()
+        };
         println!(
-            "- {}: {} (Codex context: {}K; default: {}; efforts: {})",
+            "- {}: {} (Codex context: {}K{}; default: {}; efforts: {})",
             model.id,
             model.description,
             model.context_window / 1_000,
+            maximum,
             model.default_effort,
             efforts
         );
@@ -1455,6 +1502,9 @@ fn upsert(store: &mut Store, args: UpsertArgs) -> Result<()> {
         provider.reasoning_effort = Some(effort);
     } else if args.clear_effort {
         provider.reasoning_effort = None;
+    }
+    if let Some(choice) = args.context {
+        provider.context = choice;
     }
     if let Some(model) = args.small_model {
         provider.small_model = non_empty(model);
@@ -1602,6 +1652,7 @@ fn non_empty(value: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ContextChoice;
 
     fn codex_provider(model: &str, effort: Option<ReasoningEffort>) -> Provider {
         let mut provider = Provider::for_kind(ProviderKind::Codex);
@@ -1668,6 +1719,56 @@ mod tests {
         assert!(sol.supported_efforts.contains(&ReasoningEffort::Ultra));
         // Most capable first, so a picker's first row is the best model.
         assert_eq!(catalog.models[0].id, "gpt-6.1-sol");
+    }
+
+    #[test]
+    fn a_codex_session_is_handed_the_window_its_profile_chose() {
+        let catalog = ModelCatalog::built_in();
+        let mut provider = codex_provider("gpt-6.1-sol", None);
+        let standard = codex_session_overrides(
+            &provider,
+            &catalog,
+            "gpt-6.1-sol".to_owned(),
+            ReasoningEffort::Low,
+        );
+        assert_eq!(standard.context_window, Some(500_000));
+
+        provider.context = ContextChoice::Max;
+        let max = codex_session_overrides(
+            &provider,
+            &catalog,
+            "gpt-6.1-sol".to_owned(),
+            ReasoningEffort::Low,
+        );
+        assert_eq!(max.context_window, Some(872_000));
+    }
+
+    #[test]
+    fn every_offered_model_carries_the_window_its_profile_chose() {
+        // Pi pins each picker row's window in its own config, so a row left
+        // on the standard window would undo the choice on a model switch.
+        let catalog = ModelCatalog::built_in();
+        let mut provider = codex_provider("gpt-6.1-sol", None);
+        provider.context = ContextChoice::Max;
+        let overrides = codex_session_overrides(
+            &provider,
+            &catalog,
+            "gpt-6.1-sol".to_owned(),
+            ReasoningEffort::Low,
+        );
+        assert_eq!(overrides.model_options.len(), catalog.models.len());
+        for option in &overrides.model_options {
+            assert_eq!(option.context_window, option.max_window(), "{}", option.id);
+        }
+
+        provider.context = ContextChoice::Standard;
+        let overrides = codex_session_overrides(
+            &provider,
+            &catalog,
+            "gpt-6.1-sol".to_owned(),
+            ReasoningEffort::Low,
+        );
+        assert_eq!(overrides.model_options, catalog.models);
     }
 
     #[test]

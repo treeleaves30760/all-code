@@ -132,7 +132,8 @@ error: 'claude' is not installed or not on PATH; install it first, then retry `a
 ```
 
 Claude Code starts on `gpt-6.1-sol` at `low` effort — or on whatever your
-own `~/.codex/config.toml` names — with every GPT model in its `/model` picker.
+own `~/.codex/config.toml` names — on the model's real Codex context window,
+with every GPT model in its `/model` picker.
 [Codex bridge](./codex-to-claude.md) has the models, the effort tiers, and the
 other seven agents.
 
@@ -159,7 +160,7 @@ from environment variables; the environment wins. See
 ## Forwarding arguments
 
 Arguments after the agent name go to the agent unchanged, except Claude's
-alc-specific `--model`, `--effort`, and `--save`:
+alc-specific `--model`, `--effort`, `--context`, and `--save`:
 
 ```sh
 alc --codex codex exec "review this repository"

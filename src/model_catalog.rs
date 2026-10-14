@@ -45,10 +45,11 @@ const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 /// chatgpt.com gates each model on a `minimal_client_version` and believes
 /// whatever version the caller declares, so this number decides how much of
 /// the catalog comes back. GPT-6.1 Sol's upstream row literally carries
-/// 0.153.0, but 0.159.1 is the first stable Codex bundle containing it, so
-/// that is alc's operational floor. The two versions answer different
-/// questions and are kept separate. A user whose Codex is newer still asks
-/// as that newer client; this is a floor, not a pin.
+/// 0.153.0, and 0.159.1 was the first stable Codex bundle containing it. The
+/// floor is 0.160.0, the client the catalog alc ships was captured with on
+/// 2026-10-13. What a row says it needs and what alc declares answer
+/// different questions and are kept separate. A user whose Codex is newer
+/// still asks as that newer client; this is a floor, not a pin.
 ///
 /// Nothing in alc can notice that on its own: a model held back by a
 /// `minimal_client_version` above this number is absent from the answer, and
@@ -58,7 +59,7 @@ const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 /// `codex debug models`. So the weekly job checks this constant directly,
 /// against the version of the Codex it just installed from npm, and says so
 /// when alc has fallen behind it.
-const CODEX_CLIENT_VERSION_FLOOR: &str = "0.159.1";
+const CODEX_CLIENT_VERSION_FLOOR: &str = "0.160.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,6 +97,15 @@ pub struct ModelInfo {
     pub name: String,
     pub description: String,
     pub context_window: u64,
+    /// The largest window chatgpt.com lets this model be driven at, when
+    /// Codex is told to (`model_context_window` in its own config). Larger
+    /// than `context_window` for every model alc ships; 0 when the source did
+    /// not say, which `max_window` reads as "no larger window is known".
+    ///
+    /// Left out when 0, so an entry with no known maximum still parses under
+    /// an older alc's `deny_unknown_fields`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub max_context_window: u64,
     pub default_effort: ReasoningEffort,
     pub supported_efforts: Vec<ReasoningEffort>,
     /// Codex's own capability rank, ascending, as the source that answered
@@ -108,6 +118,18 @@ pub struct ModelInfo {
     /// that on every read - including reads that never touch a source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i64>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+impl ModelInfo {
+    /// The window `ContextChoice::Max` resolves to: the maximum when one is
+    /// known and larger, otherwise the standard window.
+    pub fn max_window(&self) -> u64 {
+        self.max_context_window.max(self.context_window)
+    }
 }
 
 /// Where this machine's Codex login and Codex state live.
@@ -240,7 +262,17 @@ impl ModelCatalog {
         let mut merged = Vec::with_capacity(self.models.len() + floor.len());
         for bundled in &floor {
             match self.models.iter().find(|model| model.id == bundled.id) {
-                Some(known) => merged.push(known.clone()),
+                Some(known) => {
+                    let mut known = known.clone();
+                    // A cache written before alc knew about maximum windows
+                    // has none, and must not hide the one alc ships until a
+                    // sync happens to succeed - the rule `enrich` applies to
+                    // a source, applied to the cache.
+                    if known.max_context_window == 0 {
+                        known.max_context_window = bundled.max_context_window;
+                    }
+                    merged.push(known);
+                }
                 None => {
                     restored.push(bundled.id.clone());
                     merged.push(bundled.clone());
@@ -561,6 +593,7 @@ fn discovered_models(raw: &CodexCatalogPayload, floor: &[ModelInfo]) -> Vec<Mode
                         name: non_empty(&model.display_name).unwrap_or_else(|| model.slug.clone()),
                         description: model.description.clone(),
                         context_window: model.context_window,
+                        max_context_window: model.max_context_window,
                         default_effort,
                         supported_efforts: supported,
                         priority: Some(priority),
@@ -608,6 +641,11 @@ fn enrich(model: &CodexModel, base: &ModelInfo, supported: Vec<ReasoningEffort>)
             base.context_window
         } else {
             model.context_window
+        },
+        max_context_window: if model.max_context_window == 0 {
+            base.max_context_window
+        } else {
+            model.max_context_window
         },
         default_effort,
         supported_efforts,
@@ -674,6 +712,7 @@ struct CodexModel {
     display_name: String,
     description: String,
     context_window: u64,
+    max_context_window: u64,
     default_reasoning_level: String,
     supported_reasoning_levels: Vec<CodexEffort>,
     /// `"list"` or `"hide"`. `gpt-reserve` and `codex-auto-review` come back
@@ -736,22 +775,21 @@ fn refresh_due(catalog: &ModelCatalog, stamp: Option<&str>, now: u64) -> bool {
 mod tests {
     use super::*;
 
-    /// Trimmed real-answer fixture, extended with the upstream GPT-6.1 Sol
-    /// row supplied for this release. The older rows were captured from
-    /// chatgpt.com on 2026-09-23 with client 0.156.0. Only the per-model prompt
-    /// text and fields alc never reads are gone. Sol's literal upstream
-    /// minimum is not alc's operational client-version floor.
+    /// Trimmed real-answer fixture, captured from chatgpt.com on 2026-10-13
+    /// with client 0.160.0. Only the per-model prompt text and fields alc
+    /// never reads are gone. Sol's literal upstream minimum is not alc's
+    /// operational client-version floor.
     const CODEX_CURRENT: &str = r#"{"models":[
-      {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","description":"Latest workhorse model for coding and everyday work.","context_window":272000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1,"minimal_client_version":"0.153.0"},
-      {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","description":"Frontier intelligence for the most demanding work.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1,"minimal_client_version":"0.153.0"},
-      {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","description":"Workhorse model for coding and everyday work.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":2,"minimal_client_version":"0.155.0"},
-      {"slug":"gpt-6-luna","display_name":"GPT-6-Luna","description":"Fast and affordable model for easier tasks.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"list","priority":3,"minimal_client_version":"0.155.0"},
-      {"slug":"gpt-reserve","display_name":"GPT-Reserve","description":"Fast and affordable agentic coding model.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"hide","priority":3,"minimal_client_version":"0.144.0"},
-      {"slug":"gpt-5.6-sol","display_name":"GPT-5.6-Sol","description":"Older coding model for complex work.","context_window":272000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":4,"minimal_client_version":"0.144.0"},
-      {"slug":"gpt-5.6-terra","display_name":"GPT-5.6-Terra","description":"Older balanced model for straightforward work.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":7,"minimal_client_version":"0.144.0"},
-      {"slug":"gpt-5.6-luna","display_name":"GPT-5.6-Luna","description":"Older fast and efficient model.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"list","priority":8,"minimal_client_version":"0.144.0"},
-      {"slug":"gpt-5.5","display_name":"GPT-5.5","description":"Legacy coding model.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"visibility":"list","priority":12,"minimal_client_version":"0.124.0"},
-      {"slug":"codex-auto-review","display_name":"Codex Auto Review","description":"Automatic approval review model for Codex.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"hide","priority":43,"minimal_client_version":"0.98.0"}
+      {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","description":"Latest workhorse model for coding and everyday work.","context_window":500000,"max_context_window":872000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1,"minimal_client_version":"0.153.0"},
+      {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","description":"Frontier intelligence for the most demanding work.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1,"minimal_client_version":"0.153.0"},
+      {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","description":"Previous generation workhorse model.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":2,"minimal_client_version":"0.155.0"},
+      {"slug":"gpt-6-luna","display_name":"GPT-6-Luna","description":"Fast and affordable model for easier tasks.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"list","priority":3,"minimal_client_version":"0.155.0"},
+      {"slug":"gpt-reserve","display_name":"GPT-Reserve","description":"Fast and affordable agentic coding model.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"hide","priority":3,"minimal_client_version":"0.144.0"},
+      {"slug":"gpt-5.6-sol","display_name":"GPT-5.6-Sol","description":"Older generation workhorse model.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":4,"minimal_client_version":"0.144.0"},
+      {"slug":"gpt-5.6-terra","display_name":"GPT-5.6-Terra","description":"Older balanced model for straightforward work.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":7,"minimal_client_version":"0.144.0"},
+      {"slug":"gpt-5.6-luna","display_name":"GPT-5.6-Luna","description":"Older fast and efficient model.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"list","priority":8,"minimal_client_version":"0.144.0"},
+      {"slug":"gpt-5.5","display_name":"GPT-5.5","description":"Legacy coding model.","context_window":272000,"max_context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"visibility":"hide","priority":12,"minimal_client_version":"0.124.0"},
+      {"slug":"codex-auto-review","display_name":"Codex Auto Review","description":"Automatic approval review model for Codex.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"hide","priority":43,"minimal_client_version":"0.98.0"}
     ]}"#;
 
     /// What `codex debug models` answered on 0.154.0 before GPT-6 Sol
@@ -775,6 +813,19 @@ mod tests {
       {"slug":"gpt-5.6-luna","display_name":"GPT-5.6-Luna","description":"Fast and affordable.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"list","priority":8},
       {"slug":"gpt-5.5","display_name":"GPT-5.5","description":"Previous generation.","context_window":272000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"visibility":"list","priority":12}
     ]}"#;
+
+    /// [`CODEX_CURRENT`] with GPT-5.5 still listed, as every answer before
+    /// 2026-10-13 had it: a superseded generation ranked below everything alc
+    /// ships, which is the row the ordering rules have to hold against now
+    /// that chatgpt.com hides it.
+    fn codex_current_listing_gpt_5_5() -> String {
+        let listed = CODEX_CURRENT.replace(
+            "\"visibility\":\"hide\",\"priority\":12",
+            "\"visibility\":\"list\",\"priority\":12",
+        );
+        assert_ne!(listed, CODEX_CURRENT, "the fixture no longer hides GPT-5.5");
+        listed
+    }
 
     fn ids(catalog: &ModelCatalog) -> Vec<&str> {
         catalog
@@ -867,7 +918,7 @@ mod tests {
             sol.description,
             "Latest workhorse model for coding and everyday work."
         );
-        assert_eq!(sol.context_window, 272_000);
+        assert_eq!(sol.context_window, 500_000);
         assert_eq!(sol.default_effort, ReasoningEffort::Low);
         assert_eq!(
             sol.supported_efforts,
@@ -931,6 +982,11 @@ mod tests {
                 row["context_window"].as_u64(),
                 "{id}: context window"
             );
+            assert_eq!(
+                Some(model.max_context_window),
+                row["max_context_window"].as_u64(),
+                "{id}: max context window"
+            );
         }
     }
 
@@ -982,7 +1038,7 @@ mod tests {
     /// is not a longer picker, it is a quiet downgrade.
     #[test]
     fn a_model_ranked_below_everything_alc_ships_is_not_appended() {
-        let catalog = catalog_from(CODEX_CURRENT);
+        let catalog = catalog_from(&codex_current_listing_gpt_5_5());
         assert!(catalog.find("gpt-5.5").is_none());
         assert_eq!(
             ids(&catalog),
@@ -1021,15 +1077,16 @@ mod tests {
     /// it `budget` in the picker.
     #[test]
     fn a_new_model_is_ranked_among_the_models_alc_ships() {
-        let json = CODEX_CURRENT
+        let json = codex_current_listing_gpt_5_5()
             .replace("\"gpt-5.5\"", "\"gpt-7-nova\"")
             .replace("\"priority\":12", "\"priority\":5")
-            .replace("\"context_window\":272000,\"default_reasoning_level\":\"medium\",\"supported_reasoning_levels\":[{\"effort\":\"low\"},{\"effort\":\"medium\"},{\"effort\":\"high\"},{\"effort\":\"xhigh\"}]", "\"context_window\":400000,\"default_reasoning_level\":\"high\",\"supported_reasoning_levels\":[{\"effort\":\"low\"},{\"effort\":\"medium\"},{\"effort\":\"high\"}]");
+            .replace("\"context_window\":272000,\"max_context_window\":272000,\"default_reasoning_level\":\"medium\",\"supported_reasoning_levels\":[{\"effort\":\"low\"},{\"effort\":\"medium\"},{\"effort\":\"high\"},{\"effort\":\"xhigh\"}]", "\"context_window\":400000,\"max_context_window\":1000000,\"default_reasoning_level\":\"high\",\"supported_reasoning_levels\":[{\"effort\":\"low\"},{\"effort\":\"medium\"},{\"effort\":\"high\"}]");
         let catalog = catalog_from(&json);
         let entry = catalog
             .find("gpt-7-nova")
             .expect("a model Codex ranks alongside alc's own");
         assert_eq!(entry.context_window, 400_000);
+        assert_eq!(entry.max_context_window, 1_000_000);
         assert_eq!(entry.default_effort, ReasoningEffort::High);
         // Priority 5 sits between GPT-5.6 Sol (4) and Terra (7), and the
         // cheapest model alc ships keeps the last slot.
@@ -1061,6 +1118,7 @@ mod tests {
             name: "GPT-7 Nova".to_owned(),
             description: "Brand new.".to_owned(),
             context_window: 400_000,
+            max_context_window: 0,
             default_effort: ReasoningEffort::Medium,
             supported_efforts: vec![ReasoningEffort::Medium],
             priority: None,
@@ -1089,7 +1147,7 @@ mod tests {
     #[test]
     fn discovery_can_never_move_a_new_model_into_the_haiku_slot() {
         for priority in ["1", "5", "8"] {
-            let json = CODEX_CURRENT
+            let json = codex_current_listing_gpt_5_5()
                 .replace("\"gpt-5.5\"", "\"gpt-7-nova\"")
                 .replace("\"priority\":12", &format!("\"priority\":{priority}"));
             let catalog = catalog_from(&json);
@@ -1253,8 +1311,9 @@ mod tests {
         }
     }
 
-    /// 0.159.1 is the first stable Codex bundle containing GPT-6.1 Sol.
-    /// Its operational floor is deliberately newer than the row's literal
+    /// 0.159.1 was the first stable Codex bundle containing GPT-6.1 Sol, and
+    /// 0.160.0 the client the shipped catalog was captured with. The
+    /// operational floor is deliberately newer than the row's literal
     /// upstream minimum, so an old or missing Codex cannot under-declare.
     #[test]
     fn alc_never_declares_a_client_version_older_than_the_one_it_knows_works() {
@@ -1263,11 +1322,12 @@ mod tests {
             Some("0.149.1"),
             Some("0.156.0"),
             Some("0.159.0"),
-            Some("0.159.1-alpha.1"),
             Some("0.159.1"),
+            Some("0.160.0-alpha.1"),
+            Some("0.160.0"),
             Some("not-a-version"),
         ] {
-            assert_eq!(declared_client_version(stamp), "0.159.1", "{stamp:?}");
+            assert_eq!(declared_client_version(stamp), "0.160.0", "{stamp:?}");
         }
         assert_eq!(declared_client_version(Some("0.160.2")), "0.160.2");
     }
@@ -1291,5 +1351,83 @@ mod tests {
             home: Some(dir.path().join("nowhere")),
         };
         assert_eq!(missing.cache_stamp(), None);
+    }
+
+    #[test]
+    fn the_bundled_catalog_carries_the_live_windows() {
+        let catalog = ModelCatalog::built_in();
+        let sol = catalog.find("gpt-6.1-sol").unwrap();
+        assert_eq!(sol.context_window, 500_000);
+        assert_eq!(sol.max_context_window, 872_000);
+        for id in [
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ] {
+            let model = catalog.find(id).unwrap();
+            assert_eq!(model.context_window, 272_000, "{id}");
+            assert_eq!(model.max_context_window, 872_000, "{id}");
+        }
+    }
+
+    #[test]
+    fn a_cache_without_a_maximum_reads_as_standard() {
+        let json = r#"{"id":"gpt-6-sol","name":"GPT-6 Sol","description":"d","context_window":272000,"default_effort":"medium","supported_efforts":["low"]}"#;
+        let model: ModelInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(model.max_context_window, 0);
+        assert_eq!(model.max_window(), 272_000);
+    }
+
+    /// Every user upgrading from alc 2.1.0 has a cache with no
+    /// `max_context_window` in it, and a sync that may not succeed for a day
+    /// or ever. Until one does, the maximum alc ships still has to apply.
+    #[test]
+    fn a_cache_from_before_the_maximum_window_still_gets_the_shipped_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cached = serde_json::to_value(ModelCatalog::built_in()).unwrap();
+        cached["source"] = "installed Codex CLI (`codex debug models`)".into();
+        for model in cached["models"].as_array_mut().unwrap() {
+            model
+                .as_object_mut()
+                .unwrap()
+                .remove("max_context_window")
+                .expect("the shipped entry carries a maximum");
+        }
+        fs::write(
+            dir.path().join(CACHE_FILE),
+            serde_json::to_vec_pretty(&cached).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = ModelCatalog::load(dir.path());
+        assert_eq!(loaded.source, "installed Codex CLI (`codex debug models`)");
+        assert_eq!(loaded.find("gpt-6-sol").unwrap().max_window(), 872_000);
+    }
+
+    #[test]
+    fn a_model_with_no_known_maximum_is_written_without_one() {
+        let mut model = ModelCatalog::built_in().models.remove(0);
+        model.max_context_window = 0;
+        let json = serde_json::to_value(&model).unwrap();
+        assert!(json.get("max_context_window").is_none(), "{json}");
+    }
+
+    #[test]
+    fn discovery_carries_the_maximum_window_and_keeps_a_known_one() {
+        let catalog = catalog_from(CODEX_CURRENT);
+        assert_eq!(
+            catalog.find("gpt-6.1-sol").unwrap().max_context_window,
+            872_000
+        );
+        // A source that omits the field must not zero what alc ships.
+        let without = CODEX_CURRENT.replace(",\"max_context_window\":872000", "");
+        let catalog = catalog_from(&without);
+        assert_eq!(
+            catalog.find("gpt-6-sol").unwrap().max_context_window,
+            872_000
+        );
     }
 }

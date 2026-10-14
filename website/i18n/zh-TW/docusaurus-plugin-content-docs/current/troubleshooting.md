@@ -47,9 +47,13 @@ alc 指向某個執行檔。
 ## Auto 模式說伺服器端檢查無法使用
 
 升級 alc 並開啟新的 session。不需要額外旗標；已在執行的背景 session 會保留啟動時
-的設定。如果訊息仍然出現，請檢查你自己的 `--settings` 是否覆寫了 alc 的預設值。
-[Auto 模式與提示快取](./codex-to-claude.md#auto-模式與提示快取)說明這個備援方式：
-Auto 模式仍然可用，但分類器請求會使用 Codex 額度。
+的設定。除了 `anthropic` 這個 kind，alc 在每個 provider 上都會讓 Claude Code 的
+本機分類器跑在 profile 的模型上，所以 Auto 模式仍然可用，分類器請求使用的是那個
+provider 的額度 —— 經過橋接時就是 Codex 額度。如果訊息仍然出現，請檢查你自己的
+`--settings` 是否覆寫了 alc 的預設值，例如設定了 `ANTHROPIC_DEFAULT_SONNET_MODEL`
+或 `CLAUDE_CODE_AUTO_MODE_SERVER`。[Auto 模式在每個 provider
+上都能用](./providers.md#auto-模式在每個-provider-上都能用)與
+[Auto 模式與提示快取](./codex-to-claude.md#auto-模式與提示快取)說明這個備援方式。
 
 ## `CACHED` 是零或 `—`
 

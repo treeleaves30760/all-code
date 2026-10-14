@@ -43,9 +43,10 @@ error: 'claude' is not installed or not on PATH; install it first, then retry `a
 
 **What you get.** Claude Code starts on `gpt-6.1-sol` at `low` effort — or
 on whatever model and effort your own `~/.codex/config.toml` already names, if
-you have used Codex CLI before — with the real 272k Codex context window rather
-than the 200k Claude Code assumes for a model ID it does not recognize, and
-every GPT model Codex serves in its own `/model` picker:
+you have used Codex CLI before — with the model's real Codex context window
+(500K for GPT-6.1 Sol, 272K for the others) rather than the 200k Claude Code
+assumes for a model ID it does not recognize, and every GPT model Codex serves
+in its own `/model` picker:
 
 | Model | Beginner-friendly use case | Codex default effort |
 | --- | --- | --- |
@@ -63,7 +64,12 @@ one run, or in scripts:
 
 ```sh
 alc --codex claude --model gpt-6-luna --effort low
+alc --codex claude --context max
 ```
+
+`--context max` raises any of them to its 872K maximum window. Past the
+standard window a turn uses your plan limits faster, so that is opt-in;
+[Codex bridge](#codex-bridge) has the trade.
 
 **Your plain `claude` still reaches Anthropic afterwards.** That picker writes
 its choice to `~/.claude/settings.json`, which every Claude Code session on the
@@ -263,6 +269,20 @@ before launch instead of sending a request that cannot work.
 [Providers and agents](#providers-and-agents) has the endpoint, key variable,
 and protocol for every kind.
 
+**Auto mode works on every provider.** Claude Code's auto mode checks each tool
+call with a classifier. Anthropic runs that check on its own servers, which no
+other provider can, so everywhere else alc has Claude Code run its local
+classifier on the profile's model: it pins the `sonnet` alias the classifier
+uses to that model (so `/model sonnet` names it too) and skips the server
+attempt. Auto mode then works, and its classifier calls spend that provider's
+quota. The `anthropic` kind — your own Claude login or API key — keeps
+Anthropic's server-side check. A profile whose model is itself a Claude Code
+alias, such as `sonnet`, is not pinned, nor is one whose model is a Claude id in
+full, such as `claude-opus-5` — a gateway in front of Anthropic that already
+serves Sonnet by name. A `--settings` of your own that names
+`ANTHROPIC_DEFAULT_SONNET_MODEL` still wins; one in `~/.claude/settings.json`
+does not, because alc's settings take precedence over it.
+
 ## Command reference
 
 | Command | What it does |
@@ -288,8 +308,9 @@ and protocol for every kind.
 
 ## Running agents
 
-**Forwarding.** Apart from Claude's alc-specific `--model`, `--effort`, and
-`--save`, arguments after the agent name are forwarded unchanged:
+**Forwarding.** Apart from Claude's alc-specific `--model`, `--effort`,
+`--context`, and `--save`, arguments after the agent name are forwarded
+unchanged:
 
 ```sh
 alc --codex codex exec "review this repository"
@@ -330,9 +351,10 @@ alc doctor
 `alc doctor` reports the environment and credential paths, all eight agent
 binaries, every provider profile against all eight agents, the resolved per-agent
 defaults, a leftover GPT model pinned in `~/.claude/settings.json`, the Codex
-bridge's model, effort, and `codex login` state, an enabled Ollama, llama.cpp or
-vLLM profile checked against its running server, and the remote-control posture — then a
-summary of issues with a fix for each. It exits non-zero when it finds one.
+bridge's model, effort, context choice, and `codex login` state, an enabled
+Ollama, llama.cpp or vLLM profile checked against its running server, and the
+remote-control posture — then a summary of issues with a fix for each. It exits
+non-zero when it finds one.
 
 For named errors and their fixes, see the
 [troubleshooting guide](https://treeleaves30760.github.io/all-code/troubleshooting).
@@ -639,6 +661,26 @@ See OpenAI's [model selection guide](https://developers.openai.com/api/docs/guid
 and [Luna reference](https://developers.openai.com/api/docs/models/gpt-6-luna)
 for current upstream details.
 
+**Context window.** Each model starts on the window Codex itself gives it:
+500K tokens for GPT-6.1 Sol, 272K for the others. Every one of them can run
+with up to 872K, and `--context max` asks for that:
+
+```sh
+alc --codex claude --context max         # this run only
+alc config upsert codex --context max    # the Codex profile's default
+```
+
+Past the standard window a turn uses your plan limits faster. OpenAI documents
+the larger window as opt-in in Codex too (`model_context_window` in Codex's own
+config), and alc keeps it opt-in the same way: `standard` is the default and is
+never written, `max` is saved as `context = "max"` on the Codex profile, and
+`alc config` has a **Context** row for it right after Reasoning effort.
+`alc models` prints both numbers — `Codex context: 500K (max 872K)` — and
+`alc doctor` adds `/ max context` to the bridge row of a profile set to it. The
+profile's choice reaches every agent on the bridge, not only Claude Code. The
+per-run `--context`, like `--effort`, belongs to `alc claude` and is refused
+off a Codex provider.
+
 **Choosing the defaults.** GPT-6.1 Sol at `low` is the fallback only when no
 model or effort has been chosen; your saved selections stay as they are.
 
@@ -646,18 +688,22 @@ model or effort has been chosen; your saved selections stay as they are.
 alc --codex claude --model gpt-6.1-sol --effort low --save
 ```
 
-`--save` stores both in the selected alc provider. Without them the session
-starts on the alc provider's values, then the selected Codex profile's, then the
-model's documented default. A `--model` or `--effort` placed after `--` is
+`--save` stores the model, the effort and the context choice in the selected
+alc provider. Without them the session starts on the alc provider's values,
+then the selected Codex profile's, then the model's documented default; the
+context choice comes only from `--context` or the alc provider, and is the
+standard window otherwise. A `--model` or `--effort` placed after `--` is
 forwarded to Claude Code untouched and wins over what alc would inject; a
 `--settings` of your own is merged into alc's, yours winning, because Claude Code
 reads only one. A model chosen with `/model` applies to that session only; the
 next launch starts from the alc default again, so `alc config` stays the source
 of truth.
 
-**Auto mode and caching.** No extra setup is needed. Auto mode still works; its
-classifier calls use Codex quota. alc also keeps each session on a stable cache
-route automatically, and `alc usage` shows how much input Codex actually reused.
+**Auto mode and caching.** No extra setup is needed. Auto mode works here as on
+every provider ([Any provider](#any-provider-not-just-codex)): Claude Code's
+classifier runs on the session's model, and its calls use Codex quota. alc also
+keeps each session on a stable cache route automatically, and `alc usage` shows
+how much input Codex actually reused.
 Cache reuse is best-effort, not guaranteed quota or billing savings. See
 [Codex through Claude Code](https://treeleaves30760.github.io/all-code/codex-to-claude)
 for details. Your own `--settings` still wins over alc's Claude Code defaults.
@@ -712,11 +758,12 @@ alc models --refresh
 alc models --json
 ```
 
-The synchronized Codex context window is also passed to Claude Code through its
-documented
+The Codex context window — the model's standard one, or its maximum on a
+profile set to `max` — is passed to Claude Code through its documented
 [`CLAUDE_CODE_MAX_CONTEXT_TOKENS`](https://code.claude.com/docs/en/env-vars)
-gateway setting, so unknown GPT IDs compact at the correct Codex limit instead of
-Claude's generic fallback.
+gateway setting, and to every other agent through its own window field, so a GPT
+ID the agent does not recognize compacts at the correct Codex limit instead of a
+generic fallback.
 
 ### How the bridge works
 
@@ -1025,7 +1072,8 @@ The TUI keys are shown at the bottom of every screen. `Tab`/`Shift+Tab`, or
 `1`/`2`/`3`, move between the three screens named in the header — Providers,
 Agent defaults, and Sharing & remote. On a Codex profile, `←`/`→` on the Model
 field opens the guided GPT model and effort chooser, which writes the launch
-defaults for `alc --codex claude`.
+defaults for `alc --codex claude`, and `←`/`→` on the Context row right after
+Reasoning effort switches between the `standard` and `max` window.
 
 Credential precedence, the full `alc config upsert` flag list, and the
 Codex-to-Claude setting precedence are in the

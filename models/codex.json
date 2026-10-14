@@ -7,7 +7,8 @@
       "id": "gpt-6.1-sol",
       "name": "GPT-6.1 Sol",
       "description": "Latest workhorse model for coding and everyday work.",
-      "context_window": 272000,
+      "context_window": 500000,
+      "max_context_window": 872000,
       "default_effort": "low",
       "supported_efforts": [
         "low",
@@ -21,8 +22,9 @@
     {
       "id": "gpt-6-astra",
       "name": "GPT-6 Astra",
-      "description": "Most capable model for complex, demanding work.",
+      "description": "Frontier intelligence for the most demanding work.",
       "context_window": 272000,
+      "max_context_window": 872000,
       "default_effort": "medium",
       "supported_efforts": [
         "low",
@@ -36,8 +38,9 @@
     {
       "id": "gpt-6-sol",
       "name": "GPT-6 Sol",
-      "description": "Workhorse model for everyday coding and agentic work.",
+      "description": "Previous generation workhorse model.",
       "context_window": 272000,
+      "max_context_window": 872000,
       "default_effort": "medium",
       "supported_efforts": [
         "low",
@@ -51,8 +54,9 @@
     {
       "id": "gpt-5.6-sol",
       "name": "GPT-5.6 Sol",
-      "description": "Previous-generation model for complex professional work.",
+      "description": "Older generation workhorse model.",
       "context_window": 272000,
+      "max_context_window": 872000,
       "default_effort": "low",
       "supported_efforts": [
         "low",
@@ -66,8 +70,9 @@
     {
       "id": "gpt-5.6-terra",
       "name": "GPT-5.6 Terra",
-      "description": "Previous-generation balance of intelligence, speed, and cost.",
+      "description": "Older balanced model for straightforward work.",
       "context_window": 272000,
+      "max_context_window": 872000,
       "default_effort": "medium",
       "supported_efforts": [
         "low",
@@ -81,8 +86,9 @@
     {
       "id": "gpt-5.6-luna",
       "name": "GPT-5.6 Luna",
-      "description": "Previous-generation efficient model for high-volume work.",
+      "description": "Older fast and efficient model.",
       "context_window": 272000,
+      "max_context_window": 872000,
       "default_effort": "medium",
       "supported_efforts": [
         "low",
@@ -95,8 +101,9 @@
     {
       "id": "gpt-6-luna",
       "name": "GPT-6 Luna",
-      "description": "Fast, most affordable model for focused, high-volume work.",
+      "description": "Fast and affordable model for easier tasks.",
       "context_window": 272000,
+      "max_context_window": 872000,
       "default_effort": "medium",
       "supported_efforts": [
         "low",

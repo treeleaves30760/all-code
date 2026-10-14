@@ -87,6 +87,9 @@ alc config
 - 在 Codex profile 上，把游標移到 Model 欄位按 `←`/`→`，會開啟 GPT
   模型與推理強度的引導式選單，選好的結果就寫成 `alc --codex claude`
   的啟動預設值。
+- 在 Codex profile 上，緊接在 Reasoning effort 後面的 Context 欄位按
+  `←`/`→`，會在模型的 `standard` window 與 `max` window 之間切換；其他
+  kind 在這一欄會顯示 `codex only`。
 - `s`：儲存；`q`：儲存並離開；`Ctrl+C`：不儲存離開。
 
 ## 用指令設定
@@ -103,9 +106,14 @@ alc config remove work
 ```
 
 `alc config upsert` 支援 `--kind`、`--model`、`--effort`、`--clear-effort`、
-`--small-model`、`--base-url`、`--anthropic-base-url`、`--protocol`、`--auth`、
-`--api-key-env`、`--codex-profile`、`--codex-home`、`--claude-config-dir`、
-`--disable` 與 `--enable`。
+`--context`、`--small-model`、`--base-url`、`--anthropic-base-url`、
+`--protocol`、`--auth`、`--api-key-env`、`--codex-profile`、`--codex-home`、
+`--claude-config-dir`、`--disable` 與 `--enable`。
+
+`--context standard|max` 只屬於 `codex` profile，用在其他 kind 上會被拒絕。
+`max` 會存成 `context = "max"`；`standard` 是預設值，永遠不會寫進設定。超過
+標準 window 之後，每一輪消耗方案額度的速度會變快 ——
+[Context window](./codex-to-claude.md#context-window) 列出了實際數字。
 
 ## 同一種的多個登入
 
@@ -190,9 +198,12 @@ Ollama 這類本機執行環境都屬於這種。
 
 ## Codex 橋接的設定優先順序
 
-1. 這次執行的 `--model` / `--effort`
+1. 這次執行的 `--model` / `--effort` / `--context`
 2. alc 的 provider profile
 3. `<codex_home>/<profile>.config.toml`，接著 `<codex_home>/config.toml`
    —— 這裡的 `codex_home` 取 profile 自己的欄位，沒有就取 `CODEX_HOME`，
    再沒有就是 `~/.codex`
 4. 模型目錄記載的預設值
+
+context 選擇只到第 2 步為止：既沒有 `--context`，profile 上也沒有
+`context = "max"` 時，session 用的就是模型的標準 window。

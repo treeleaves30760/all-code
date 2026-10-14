@@ -17,7 +17,8 @@ use crate::agents;
 use crate::agents::claude_settings;
 use crate::bridge::BridgeConfig;
 use crate::config::{
-    Agent, AuthStyle, Protocol, Provider, ProviderKind, ReasoningEffort, Store, atomic_write,
+    Agent, AuthStyle, ContextChoice, Protocol, Provider, ProviderKind, ReasoningEffort, Store,
+    atomic_write,
 };
 use crate::model_catalog::ModelInfo;
 
@@ -830,6 +831,15 @@ pub(crate) fn normalize_codex_model(model: &str) -> String {
         "gpt-5.6-sol".to_owned()
     } else {
         model.to_owned()
+    }
+}
+
+/// The window a Codex session is handed: the model's standard window, or
+/// its maximum when the profile opted in and one larger is known.
+pub fn codex_context_window(provider: &Provider, entry: &ModelInfo) -> u64 {
+    match provider.context {
+        ContextChoice::Standard => entry.context_window,
+        ContextChoice::Max => entry.max_window(),
     }
 }
 
@@ -2204,6 +2214,47 @@ mod tests {
         );
     }
 
+    /// Auto mode's classifier pin follows the provider: a hosted gateway gets
+    /// it on the profile's model, while an API key on the anthropic kind still
+    /// reaches Anthropic, whose server classifier and aliases stay in charge -
+    /// pinning `sonnet` there would send the literal id `sonnet`.
+    #[test]
+    fn only_a_non_anthropic_keyed_profile_pins_auto_modes_classifier() {
+        let mut credentials = Credentials::default();
+        for profile in ["openrouter", "anthropic"] {
+            credentials
+                .api_keys
+                .insert(profile.into(), format!("secret-{profile}-key"));
+        }
+        let store = store(Config::default(), credentials);
+        let launch = |profile: &str| {
+            let spec = build(
+                &store,
+                Agent::Claude,
+                Some(profile),
+                &[],
+                &LaunchOverrides::default(),
+            )
+            .unwrap();
+            assert!(
+                plan_of(&spec).document.get("apiKeyHelper").is_some(),
+                "{profile} is a keyed launch"
+            );
+            document_env(&spec)
+        };
+
+        let openrouter = launch("openrouter");
+        assert_eq!(
+            openrouter["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+            openrouter["ANTHROPIC_MODEL"]
+        );
+        assert_eq!(openrouter["CLAUDE_CODE_AUTO_MODE_SERVER"], "0");
+
+        let anthropic = launch("anthropic");
+        assert!(!anthropic.contains_key("ANTHROPIC_DEFAULT_SONNET_MODEL"));
+        assert!(!anthropic.contains_key("CLAUDE_CODE_AUTO_MODE_SERVER"));
+    }
+
     fn ollama_claude_env(
         config: Config,
         overrides: &LaunchOverrides,
@@ -3124,5 +3175,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn max_falls_back_to_standard_when_no_larger_window_is_known() {
+        let mut provider = Provider::for_kind(ProviderKind::Codex);
+        let mut entry = ModelCatalog::built_in().models[0].clone();
+        entry.context_window = 500_000;
+        entry.max_context_window = 872_000;
+        assert_eq!(codex_context_window(&provider, &entry), 500_000);
+        provider.context = ContextChoice::Max;
+        assert_eq!(codex_context_window(&provider, &entry), 872_000);
+        entry.max_context_window = 0;
+        assert_eq!(codex_context_window(&provider, &entry), 500_000);
+        entry.max_context_window = 100_000;
+        assert_eq!(codex_context_window(&provider, &entry), 500_000);
     }
 }

@@ -132,9 +132,13 @@ fn the_fake_server_reader_waits_for_a_late_request_on_an_inherited_nonblocking_a
 /// side shut, then anything the client still sends read off until it hangs
 /// up, so no byte is left unread when the socket goes - on Windows that
 /// would turn the close into a reset.
-fn respond(mut stream: std::net::TcpStream, status: &str, body: &str) {
+fn respond(stream: std::net::TcpStream, status: &str, body: &str) {
+    respond_as(stream, status, "application/json", body);
+}
+
+fn respond_as(mut stream: std::net::TcpStream, status: &str, content_type: &str, body: &str) {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes());
@@ -257,6 +261,187 @@ fn serve_llamacpp() -> String {
         }
     });
     format!("http://{address}/v1")
+}
+
+/// Each request's model, and whether it was the auto-mode classifier's.
+type RecordedModels = std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>;
+
+/// A stand-in Anthropic Messages endpoint for a real Claude Code in auto
+/// mode. Its first turn asks for one Bash call auto mode will not allow on
+/// its own, so the classifier runs; the classifier - the request whose system
+/// prompt is Claude Code's security monitor - is answered `<block>no</block>`,
+/// the allow verdict that prompt asks for; any other turn ends with `done`.
+/// It serves until the test process exits.
+fn serve_recording_anthropic() -> (String, RecordedModels) {
+    use serde_json::{Value, json};
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Anthropic");
+    let address = listener.local_addr().expect("fake Anthropic address");
+    let models = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = models.clone();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let recorded = recorded.clone();
+            // One thread per connection: `respond` waits for the client to hang
+            // up, and Claude Code may already be sending its next request.
+            thread::spawn(move || {
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .expect("a bounded read");
+                let request = read_request(&mut stream);
+                let body = request.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+                let body: Value = serde_json::from_str(body).unwrap_or_default();
+                // Anything without a model - a model listing, say - gets an empty one.
+                let Some(model) = body["model"].as_str() else {
+                    respond(stream, "200 OK", r#"{"data":[],"has_more":false}"#);
+                    return;
+                };
+                let classifier = body["system"].to_string().contains("security monitor");
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((model.to_owned(), classifier));
+                let offers_bash = body["tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "Bash"));
+                let (block, stop) = if classifier {
+                    (
+                        json!({"type":"text","text":"<block>no</block>"}),
+                        "end_turn",
+                    )
+                } else if offers_bash && !request.contains(r#""tool_result""#) {
+                    let input = json!({"command":"curl -s -o probe.html https://example.com","description":"probe"});
+                    (
+                        json!({"type":"tool_use","id":"toolu_probe","name":"Bash","input":input}),
+                        "tool_use",
+                    )
+                } else {
+                    (json!({"type":"text","text":"done"}), "end_turn")
+                };
+                if body["stream"] != true {
+                    let message = json!({"id":"msg_probe","type":"message","role":"assistant","model":model,
+                        "content":[block],"stop_reason":stop,"stop_sequence":null,
+                        "usage":{"input_tokens":10,"output_tokens":5}});
+                    respond(stream, "200 OK", &message.to_string());
+                    return;
+                }
+                let (opening, delta) = if block["type"] == "tool_use" {
+                    let mut opening = block.clone();
+                    opening["input"] = json!({});
+                    let delta = json!({"type":"input_json_delta","partial_json":block["input"].to_string()});
+                    (opening, delta)
+                } else {
+                    let delta = json!({"type":"text_delta","text":block["text"]});
+                    (json!({"type":"text","text":""}), delta)
+                };
+                let events = [
+                    json!({"type":"message_start","message":{"id":"msg_probe","type":"message",
+                        "role":"assistant","model":model,"content":[],"stop_reason":null,
+                        "stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}),
+                    json!({"type":"content_block_start","index":0,"content_block":opening}),
+                    json!({"type":"content_block_delta","index":0,"delta":delta}),
+                    json!({"type":"content_block_stop","index":0}),
+                    json!({"type":"message_delta","delta":{"stop_reason":stop,"stop_sequence":null},
+                        "usage":{"output_tokens":5}}),
+                    json!({"type":"message_stop"}),
+                ];
+                let stream_body: String = events
+                    .iter()
+                    .map(|event| {
+                        format!(
+                            "event: {}\ndata: {event}\n\n",
+                            event["type"].as_str().unwrap()
+                        )
+                    })
+                    .collect();
+                respond_as(stream, "200 OK", "text/event-stream", &stream_body);
+            });
+        }
+    });
+    (format!("http://{address}"), models)
+}
+
+/// Auto mode on a provider that is not Anthropic: the classifier must ask
+/// for the profile's model, not Claude Code's own `claude-sonnet-5`.
+#[test]
+#[ignore = "needs a real `claude` on PATH; run with --ignored"]
+fn auto_mode_classifies_on_the_profiles_model_through_a_custom_provider() {
+    if which::which("claude").is_err() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (base_url, models) = serve_recording_anthropic();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "probe",
+            "--kind",
+            "custom",
+            "--protocol",
+            "anthropic",
+            "--base-url",
+            &base_url,
+            "--model",
+            "fake-model",
+            "--api-key-env",
+            "PROBE_KEY",
+        ])
+        .assert()
+        .success();
+    // Past onboarding, with auto mode's consent already given.
+    let claude_config = tempfile::tempdir().unwrap();
+    std::fs::write(
+        claude_config.path().join(".claude.json"),
+        r#"{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":true,"autoModeAccepted":true}"#,
+    )
+    .unwrap();
+    // Where the Bash call writes its probe.html.
+    let workdir = tempfile::tempdir().unwrap();
+    let mut command = alc(&temp);
+    // This suite may itself run under Claude Code; nothing of that session
+    // may reach the one under test.
+    for (name, _) in std::env::vars_os() {
+        let upper = name.to_string_lossy().to_ascii_uppercase();
+        if upper.starts_with("CLAUDE") || upper.starts_with("ANTHROPIC") {
+            command.env_remove(name);
+        }
+    }
+    command
+        .current_dir(workdir.path())
+        .env("CLAUDE_CONFIG_DIR", claude_config.path())
+        .env("PROBE_KEY", "k")
+        .args([
+            "-p",
+            "probe",
+            "claude",
+            "--",
+            "-p",
+            "run echo with Bash",
+            "--permission-mode",
+            "auto",
+            "--output-format",
+            "json",
+            "--max-turns",
+            "3",
+        ])
+        // Claude Code's own start-up takes seconds; still a deadline.
+        .timeout(std::time::Duration::from_secs(120))
+        .assert()
+        .success();
+    let seen = models.lock().unwrap();
+    assert!(
+        seen.iter().any(|(_, classifier)| *classifier),
+        "the classifier never ran: {seen:?}"
+    );
+    // The classifier included: every request names the profile's model, so
+    // none falls back to a `claude-*` one the provider does not serve.
+    assert!(
+        seen.iter().all(|(model, _)| model == "fake-model"),
+        "{seen:?}"
+    );
 }
 
 fn llamacpp_profile(temp: &tempfile::TempDir, base_url: &str, key: Option<&str>) {
@@ -1146,6 +1331,147 @@ fn codex_to_claude_accepts_explicit_model_and_effort() {
         ));
 }
 
+/// The profile's context choice decides what Claude Code is told the window
+/// is: standard by default, the model's maximum on request.
+#[test]
+fn a_codex_profile_on_max_context_hands_claude_code_the_larger_window() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    for (model, window) in [("gpt-6.1-sol", "500000"), ("gpt-6-sol", "272000")] {
+        alc(&temp)
+            .env("CODEX_HOME", codex_home.path())
+            .args(["--codex", "--dry-run", "claude", "--model", model])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!(
+                "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"{window}\""
+            )));
+    }
+
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "codex",
+            "--kind",
+            "codex",
+            "--context",
+            "max",
+        ])
+        .assert()
+        .success();
+    for model in ["gpt-6.1-sol", "gpt-6-sol"] {
+        alc(&temp)
+            .env("CODEX_HOME", codex_home.path())
+            .args(["--codex", "--dry-run", "claude", "--model", model])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"872000\"",
+            ));
+    }
+}
+
+#[test]
+fn context_flag_needs_a_codex_provider() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--openrouter", "--dry-run", "claude", "--context", "max"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--context"))
+        .stderr(predicate::str::contains("alc --codex claude"));
+}
+
+/// `--context` on its own changes only the run it is given to; with `--save`
+/// it becomes the profile's choice, which later runs then start with.
+#[test]
+fn context_can_be_chosen_for_one_run_and_saved() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .env("CODEX_HOME", codex_home.path())
+        .args([
+            "--codex",
+            "--dry-run",
+            "claude",
+            "--model",
+            "gpt-6-sol",
+            "--context",
+            "max",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"872000\"",
+        ));
+    alc(&temp)
+        .env("CODEX_HOME", codex_home.path())
+        .args(["--codex", "--dry-run", "claude", "--model", "gpt-6-sol"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"272000\"",
+        ));
+
+    // `--save` writes nothing under `--dry-run`, so the save is a real launch
+    // against a stand-in for Claude Code.
+    let work = tempfile::tempdir().unwrap();
+    let fake = fake_claude(work.path());
+    let codex = temp.path().join("codex-history");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(codex.join("auth.json"), "{}").unwrap();
+    std::fs::write(temp.path().join("codex-models.json"), r#"{"schema_version":1,"refreshed_at":4102444800,"source":"test","models":[{"id":"gpt-6-sol","name":"GPT-6-Sol","description":"test","context_window":272000,"max_context_window":872000,"default_effort":"low","supported_efforts":["low","medium","high","xhigh","max"]}]}"#).unwrap();
+    let _stop = StopTheBridge(&temp);
+    alc(&temp)
+        .env("ALC_CLAUDE_BIN", &fake)
+        .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
+        .env("ALC_FAKE_ENV", work.path().join("env.txt"))
+        .args([
+            "--codex",
+            "--no-share",
+            "claude",
+            "--model",
+            "gpt-6-sol",
+            "--context",
+            "max",
+            "--save",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Saved gpt-6-sol / low / max context as the default",
+        ));
+
+    alc(&temp)
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("context = \"max\""));
+    alc(&temp)
+        .args(["--codex", "--dry-run", "claude"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model gpt-6-sol"))
+        .stdout(predicate::str::contains(
+            "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"872000\"",
+        ));
+
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "work",
+            "--kind",
+            "openrouter",
+            "--context",
+            "max",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("context"));
+}
+
 /// Nothing chosen anywhere - no model on the alc profile, none in the Codex
 /// config - starts Claude Code on GPT-6.1 Sol at its own default effort. The
 /// Codex home is a fresh directory, so the developer's own
@@ -1391,7 +1717,7 @@ fn codex_to_claude_can_save_defaults_without_picker() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Saved gpt-5.6-luna / low as the default",
+            "Saved gpt-5.6-luna / low / standard context as the default",
         ));
 
     alc(&temp)
@@ -1457,6 +1783,43 @@ fn doctor_section<'a>(output: &'a str, heading: &str) -> &'a str {
     after
         .split_once("\n\n")
         .map_or(after, |(section, _)| section)
+}
+
+/// A Codex profile on its model's maximum window uses plan limits faster
+/// past the standard one, so doctor names the choice next to the effort.
+#[test]
+fn doctor_reports_the_codex_context_choice() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "codex",
+            "--kind",
+            "codex",
+            "--context",
+            "max",
+        ])
+        .assert()
+        .success();
+    let output = alc(&temp).args(["doctor"]).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        doctor_section(&text, "Codex bridge").contains("max context"),
+        "{text}"
+    );
+
+    // The standard window is the default and goes unmentioned.
+    alc(&temp)
+        .args(["config", "upsert", "codex", "--context", "standard"])
+        .assert()
+        .success();
+    let output = alc(&temp).args(["doctor"]).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !doctor_section(&text, "Codex bridge").contains("context"),
+        "{text}"
+    );
 }
 
 /// A bridge that is not up is the normal state between sessions, so the
@@ -1556,6 +1919,7 @@ fn bundled_model_catalog_is_available_offline() {
         .stdout(predicate::str::contains("gpt-5.6-luna"))
         .stdout(predicate::str::contains("gpt-5.6-terra"))
         .stdout(predicate::str::contains("gpt-5.6-sol"))
+        .stdout(predicate::str::contains("Codex context: 500K (max 872K)"))
         .stdout(predicate::str::contains("low, medium, high, xhigh, max"));
 }
 

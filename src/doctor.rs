@@ -6,7 +6,9 @@ use std::process::{Command, Stdio};
 use anyhow::Result;
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::{Agent, AuthStyle, Provider, ProviderKind, ReasoningEffort, Store};
+use crate::config::{
+    Agent, AuthStyle, ContextChoice, Provider, ProviderKind, ReasoningEffort, Store,
+};
 use crate::model_catalog::{CodexSource, ModelCatalog};
 use crate::{ollama, openai_server};
 
@@ -365,6 +367,13 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
             .flatten()
             .or_else(|| catalog.find(&model).map(|entry| entry.default_effort))
             .unwrap_or(ReasoningEffort::Medium);
+        // The standard window is Codex's own default and goes unsaid; the
+        // maximum spends plan limits faster past it, so it is named.
+        let context = if provider.context == ContextChoice::Max {
+            theme.paint(Tone::Dim, " / max context")
+        } else {
+            String::new()
+        };
         let note = if unroutable {
             theme.paint(Tone::Bad, "  bridge cannot route this")
         } else {
@@ -374,7 +383,7 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
             status,
             name.clone(),
             format!(
-                "{model}{}{note}",
+                "{model}{}{context}{note}",
                 theme.paint(Tone::Dim, &format!(" / {effort}"))
             ),
         ));

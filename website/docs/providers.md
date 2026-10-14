@@ -81,3 +81,35 @@ Ollama, llama.cpp and vLLM each answer Anthropic Messages at their root, beside
 the OpenAI routes, so Claude Code runs on all three whichever OpenAI protocol a
 profile names for the other agents. [Local models](./local-models.md) covers
 what alc sets for each and how to keep the first turn short.
+
+## Auto mode on every provider
+
+Claude Code's auto mode checks each tool call with a classifier. Anthropic runs
+that check on its own servers, which no other provider can, so on every other
+provider alc has Claude Code run its local classifier on the profile's model:
+it pins `ANTHROPIC_DEFAULT_SONNET_MODEL` — the `sonnet` alias the classifier
+uses — to that model and sets `CLAUDE_CODE_AUTO_MODE_SERVER=0` to skip the
+server attempt. Auto mode then works on OpenRouter, DeepSeek, a custom endpoint
+or anything else Claude Code can reach, and its classifier calls spend that
+provider's quota. `/model sonnet` names the profile's model too.
+
+Four cases differ:
+
+- The `anthropic` kind — your own Claude login or API key — keeps Anthropic's
+  server-side check and its alias table.
+- A profile whose model is itself a Claude Code alias, such as `sonnet` or
+  `opus`, is not pinned: Claude Code would send that alias verbatim as the
+  model's name. The server attempt is still skipped.
+- A profile whose model is a Claude id in full, such as `claude-opus-5`, is not
+  pinned either: its endpoint is a gateway in front of Anthropic (LiteLLM, a
+  corporate proxy) that already serves `claude-sonnet-*` by name, so `/model
+  sonnet` and every subagent declared `model: sonnet` keep Claude Sonnet. The
+  server attempt is still skipped. A provider's own spelling, such as
+  OpenRouter's `anthropic/claude-sonnet-5`, is not a Claude id in full and is
+  pinned.
+- A `--settings` of your own that names `ANTHROPIC_DEFAULT_SONNET_MODEL` still
+  wins over alc's. One set in `~/.claude/settings.json` does not: alc's
+  settings take precedence over it.
+
+The [Codex bridge](./codex-to-claude.md#auto-mode-and-prompt-caching) and local
+servers already worked this way.
