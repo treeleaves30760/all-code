@@ -207,6 +207,14 @@ fn resolve(
             },
             CredentialSource::Key,
         ),
+        // The Antigravity CLI holds its own Google login, and alc has no
+        // way to ask Google for its quota yet.
+        ProviderKind::Antigravity => (
+            Credential::None {
+                reason: "no quota API without the Antigravity bridge".to_owned(),
+            },
+            CredentialSource::None,
+        ),
         kind => match KeyVendor::for_kind(kind) {
             None => (
                 Credential::None {

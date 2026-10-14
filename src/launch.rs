@@ -1020,6 +1020,7 @@ fn agent_binary_override(agent: Agent) -> Option<OsString> {
         Agent::Goose => "ALC_GOOSE_BIN",
         Agent::Qwen => "ALC_QWEN_BIN",
         Agent::Kimi => "ALC_KIMI_BIN",
+        Agent::Agy => "ALC_AGY_BIN",
     };
     env::var_os(name).filter(|value| !value.is_empty())
 }

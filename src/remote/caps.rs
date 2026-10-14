@@ -1,6 +1,6 @@
 //! What each coding agent can be told about permissions, and how.
 //!
-//! This is the crux of driving eight agents through one control. They do not
+//! This is the crux of driving nine agents through one control. They do not
 //! agree on what a permission mode is, what the modes are called, whether
 //! one can be changed mid-session, or even whether the concept exists - so
 //! the page cannot show one dropdown and hope. It shows whatever this table
@@ -453,8 +453,8 @@ const COPILOT_MODES: &[NativeMode] = &[
     },
 ];
 
-/// The eight rows. Ordered as `Agent::ALL`, and a test asserts that.
-pub(crate) const CAPS: [AgentCaps; 8] = [
+/// The nine rows. Ordered as `Agent::ALL`, and a test asserts that.
+pub(crate) const CAPS: [AgentCaps; 9] = [
     AgentCaps {
         agent: Agent::Claude,
         sandboxed: true,
@@ -589,6 +589,20 @@ pub(crate) const CAPS: [AgentCaps; 8] = [
         ],
         mobile_hint: None,
     },
+    // A placeholder until the Antigravity CLI's own permission flags are
+    // checked against a real `agy --help`: no modes, so the page offers no
+    // control and alc injects no flag it has not seen work.
+    AgentCaps {
+        agent: Agent::Agy,
+        sandboxed: true,
+        flags_verified: false,
+        set_verified: false,
+        axes: &[],
+        modes: &[],
+        set: SetMethod::RelaunchOnly,
+        probe: &[],
+        mobile_hint: None,
+    },
 ];
 
 pub(crate) fn caps(agent: Agent) -> &'static AgentCaps {
@@ -690,7 +704,7 @@ mod tests {
     #[test]
     fn an_agent_with_no_verified_flags_is_never_treated_as_confirmed() {
         // alc injects a permission flag at launch only for verified rows.
-        // These five come from documentation, and a wrong flag name in argv
+        // These six come from documentation, and a wrong flag name in argv
         // is a session that will not start.
         for agent in [
             Agent::Pi,
@@ -698,6 +712,7 @@ mod tests {
             Agent::Goose,
             Agent::Qwen,
             Agent::Kimi,
+            Agent::Agy,
         ] {
             assert!(!caps(agent).flags_verified, "{agent} claims verification");
         }

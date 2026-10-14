@@ -1900,7 +1900,7 @@ fn doctor_lists_every_agent() {
     let assert = alc(&temp).args(["doctor"]).assert();
     let output = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     for agent in [
-        "claude", "codex", "opencode", "pi", "copilot", "goose", "qwen", "kimi",
+        "claude", "codex", "opencode", "pi", "copilot", "goose", "qwen", "kimi", "agy",
     ] {
         assert!(output.contains(agent), "{agent} missing from doctor output");
     }

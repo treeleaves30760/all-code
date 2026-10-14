@@ -82,6 +82,10 @@ struct Cli {
     #[arg(long, global = true)]
     google: bool,
 
+    /// Shortcut for --provider antigravity.
+    #[arg(long, global = true, visible_alias = "antigravity")]
+    agy: bool,
+
     /// Print the resolved command and environment without launching it.
     #[arg(long, global = true)]
     dry_run: bool,
@@ -210,6 +214,8 @@ enum Command {
     Qwen(Passthrough),
     /// Launch Kimi Code CLI.
     Kimi(Passthrough),
+    /// Launch the Antigravity CLI (agy).
+    Agy(Passthrough),
     /// Starts a `--tmux` session's agent from inside its tmux pane, on
     /// Windows. Not for people: the hub puts this on the pane's command line.
     #[command(name = remote::PANE_SUBCOMMAND, hide = true)]
@@ -270,7 +276,7 @@ struct ClaudeArgs {
 
 #[derive(Debug, Args)]
 struct ShareArgs {
-    /// claude, codex, opencode, pi, copilot, goose, qwen, or kimi.
+    /// claude, codex, opencode, pi, copilot, goose, qwen, kimi, or agy.
     agent: Agent,
 
     /// Arguments passed unchanged to the coding agent.
@@ -480,7 +486,7 @@ enum ConfigCommand {
     },
     /// Change an agent's default provider profile.
     SetDefault {
-        /// claude, codex, opencode, pi, copilot, goose, qwen, or kimi.
+        /// claude, codex, opencode, pi, copilot, goose, qwen, kimi, or agy.
         agent: Agent,
         /// Provider profile name.
         provider: String,
@@ -779,6 +785,14 @@ pub fn run() -> Result<u8> {
             cli.dry_run,
             sharing,
         ),
+        Command::Agy(args) => run_agent(
+            &store,
+            Agent::Agy,
+            requested_provider.as_deref(),
+            args.args,
+            cli.dry_run,
+            sharing,
+        ),
     }
 }
 
@@ -798,6 +812,7 @@ fn provider_selector(cli: &Cli) -> Result<Option<String>> {
         (cli.groq, "groq"),
         (cli.xai, "xai"),
         (cli.google, "google"),
+        (cli.agy, "antigravity"),
     ];
     let selected: Vec<_> = shortcuts
         .into_iter()

@@ -704,6 +704,7 @@ fn binary_override(agent: Agent) -> &'static str {
         Agent::Goose => "ALC_GOOSE_BIN",
         Agent::Qwen => "ALC_QWEN_BIN",
         Agent::Kimi => "ALC_KIMI_BIN",
+        Agent::Agy => "ALC_AGY_BIN",
     }
 }
 
