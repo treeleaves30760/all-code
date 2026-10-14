@@ -31,6 +31,7 @@ use tokio::net::TcpListener;
 use crate::config::ReasoningEffort;
 
 pub(crate) mod affinity;
+pub(crate) mod agy_auth;
 pub(crate) mod auth;
 pub(crate) mod chat;
 pub(crate) mod messages;

@@ -22,6 +22,10 @@ fn alc(temp: &tempfile::TempDir) -> Command {
     command.env("CODEX_HOME", temp.path().join("codex-history"));
     // Never fetch LiteLLM's live price map from a test.
     command.env("ALC_LITELLM_URL", "off");
+    // Never read the login of the machine running the suite: no keyring, and
+    // agy's fallback file is one this test owns (absent unless it writes it).
+    command.env("ALC_AGY_NO_KEYRING", "1");
+    command.env("ALC_AGY_CREDENTIAL_FILE", temp.path().join("agy-login"));
     // Which bridge a run uses changes the models it offers and what it calls
     // its adapter, so a developer who has been exercising the native one must
     // not see different results from CI.
