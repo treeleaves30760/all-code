@@ -2,7 +2,7 @@
 id: providers
 title: Provider compatibility
 sidebar_position: 5
-description: Which LLM providers work with each of the eight coding agents, the fifteen built-in provider-kind presets and their default URLs, key envs and models.
+description: Which LLM providers work with each of the nine coding agents, the sixteen built-in provider-kind presets and their default URLs, key envs and models.
 keywords:
   - anthropic messages api
   - openai responses api
@@ -13,7 +13,7 @@ keywords:
 
 # Provider compatibility
 
-The eight agents do not all speak the same model protocol, so alc checks the
+The nine agents do not all speak the same model protocol, so alc checks the
 pair before launch instead of sending a request that cannot work.
 
 | Agent | Accepts | Protocol |
@@ -26,9 +26,12 @@ pair before launch instead of sending a request that cannot work.
 | Goose | OpenAI- or Anthropic-compatible | `openai-chat`, `anthropic-messages` |
 | Qwen Code | OpenAI-, Anthropic-, or Gemini-compatible | `openai-chat`, `anthropic-messages` |
 | Kimi Code CLI | OpenAI- or Anthropic-compatible | `openai-chat`, `anthropic-messages` |
+| Antigravity CLI | Its own Google login | `antigravity-native` |
 
 Whatever an agent accepts natively, it also runs on one `codex login` through
-the [Codex bridge](./codex-to-claude.md).
+the [Codex bridge](./codex-to-claude.md) — every agent but the Antigravity CLI,
+which runs only on its own Google login ([Antigravity
+CLI](./agents.md#antigravity-cli-agy)).
 
 `alc doctor` prints this matrix resolved against your own profiles.
 
@@ -44,6 +47,7 @@ overrides.
 | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-6.1-sol` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` |
 | `codex` | — (native `codex login`) | — | — |
+| `antigravity` | — (native `agy` login) | — | `claude-opus-5-5-high` |
 | `ollama` | `http://localhost:11434` | — | `qwen3-coder` |
 | `vllm` | `http://localhost:8000/v1` | — | — (ships disabled) |
 | `llamacpp` | `http://localhost:8080/v1` | `LLAMA_API_KEY` | — (the name the server lists) |
@@ -58,6 +62,11 @@ overrides.
 
 New `openai` profiles also start with `low` reasoning effort. Existing profiles
 keep their saved model and effort.
+
+`antigravity` launches the Antigravity CLI and nothing else, so it is not
+Claude-ready — not yet: routing other agents through that login is coming as an
+explicit opt-in. A `config.toml` written before it existed lacks the profile;
+`alc config upsert antigravity --kind antigravity` adds it.
 
 Model IDs drift faster than alc releases, so treat every starting model as a
 value to edit rather than a promise about what the provider serves today.

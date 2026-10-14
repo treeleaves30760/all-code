@@ -2,8 +2,8 @@
 
 **Run Claude Code on the Codex/ChatGPT subscription you already pay for** — and
 seven other coding agents besides, on that same login or on any provider you
-point them at. Any session can be mirrored to a browser page and driven from
-another device.
+point them at, plus Google's Antigravity CLI on its own login. Any session can
+be mirrored to a browser page and driven from another device.
 
 [![CI](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml/badge.svg)](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/treeleaves30760/all-code?logo=github)](https://github.com/treeleaves30760/all-code/releases/latest)
@@ -86,8 +86,10 @@ provider terms before routing subscription credentials through it.
 
 ## One login, every agent
 
-The same `codex login` drives every agent alc launches. No second key, no
-per-agent setup.
+The same `codex login` drives every agent alc launches but one. No second key,
+no per-agent setup. The one is `alc agy`, Google's Antigravity CLI, which signs
+in to Google itself and runs only on that login — see
+[Antigravity](#antigravity).
 
 ```sh
 alc --codex claude       # in-session /model picker
@@ -161,9 +163,10 @@ lists legacy and retained-generation owners with each owner's page link;
 `attach`, `kill`, and `rename` find the session's actual owner. An ambiguous
 prefix is refused rather than sent to the wrong hub.
 
-**What the link can do.** A shared Claude Code, Codex, or OpenCode session starts
-in **ask** mode — alc passes the flag itself, so the link does not hand anyone an
-autonomous agent. The other five agents start on their own defaults unless you
+**What the link can do.** A shared Claude Code, Codex, OpenCode, or agy session
+starts in **ask** mode — alc passes the flag itself (agy already asks by default,
+so it gets none), so the link does not hand anyone an autonomous agent. Pi,
+Copilot CLI, Goose, Qwen Code, and Kimi start on their own defaults unless you
 name a rung with `--permission`. Loosening a session past the ceiling you
 configure needs `alc confirm <ticket>` typed at a terminal on the host machine.
 [Remote control](#remote-control) has the permission ladder and the threat model.
@@ -239,10 +242,11 @@ performance](#ttft-tps-and-estimated-cost) explains what is measured.
 
 ## Any provider, not just Codex
 
-`codex login` is the shortest path, not the only one. Point any of the eight
-agents at Anthropic, the OpenAI API, OpenRouter, a local Ollama, llama.cpp or
-vLLM server, DeepSeek, Moonshot, Z.ai, MiniMax, Groq, xAI, Google, or a custom
-endpoint — and change it for a single run without editing anything.
+`codex login` is the shortest path, not the only one. Point any agent but agy at
+Anthropic, the OpenAI API, OpenRouter, a local Ollama, llama.cpp or vLLM server,
+DeepSeek, Moonshot, Z.ai, MiniMax, Groq, xAI, Google, or a custom endpoint — and
+change it for a single run without editing anything. agy, the Antigravity CLI,
+runs on its own Google login instead ([Antigravity](#antigravity), below).
 
 ```sh
 alc config                 # keys and per-agent defaults live here
@@ -257,13 +261,13 @@ alc -p local-vllm opencode
 `--provider` (or `-p`) takes a profile name, or a provider kind when only one
 profile of that kind exists. The shortcut flags `--anthropic`, `--openai`,
 `--openrouter`, `--codex`, `--ollama`, `--vllm`, `--llamacpp`, `--deepseek`,
-`--moonshot`, `--zai`, `--minimax`, `--groq`, `--xai`, and `--google` are
-equivalent. The
-starter configuration ships Anthropic, OpenAI, OpenRouter, Codex, Ollama, and a
-disabled vLLM template; keys are saved locally or read from environment
-variables, and environment variables win.
+`--moonshot`, `--zai`, `--minimax`, `--groq`, `--xai`, `--google`, and `--agy`
+are equivalent. The
+starter configuration ships Anthropic, OpenAI, OpenRouter, Codex, Antigravity,
+Ollama, and a disabled vLLM template; keys are saved locally or read from
+environment variables, and environment variables win.
 
-The eight agents do not all speak the same model protocol, and the fifteen
+The nine agents do not all speak the same model protocol, and the sixteen
 provider kinds do not all expose the same one, so alc checks the combination
 before launch instead of sending a request that cannot work.
 [Providers and agents](#providers-and-agents) has the endpoint, key variable,
@@ -283,14 +287,52 @@ serves Sonnet by name. A `--settings` of your own that names
 `ANTHROPIC_DEFAULT_SONNET_MODEL` still wins; one in `~/.claude/settings.json`
 does not, because alc's settings take precedence over it.
 
+### Antigravity
+
+`alc agy` launches Google's Antigravity CLI, `agy`. It is the one agent that
+runs neither on the Codex login nor on a provider you point it at: agy signs in
+to Google itself, and alc launches it on that login without handling any
+credential. The starter configuration ships an enabled `antigravity` profile for
+it, so once agy is signed in there is nothing to set up.
+
+```sh
+alc agy                                   # claude-opus-5-5-high, at agy's own default effort
+alc agy --model gemini-3.8-flash-low      # this run only
+alc config upsert antigravity --model claude-sonnet-5-5-medium --effort high
+alc models --agy                          # the models agy offers
+```
+
+alc passes the profile's model as agy's `--model` and, when the profile sets
+one, its effort as `--effort`; a `--model` or `--effort` you put after
+`alc agy` is forwarded as is, and alc then sends none of its own. agy's efforts
+stop at `max`, so a profile set to `ultra` launches on `max`, with a one-line
+note saying so. `alc models --agy` lists what `agy models` reports, kept for a
+day, or a bundled list when agy cannot be asked; `--refresh` asks again now. In
+`alc config`, the Model row of an antigravity profile steps through the same
+list with ←/→. `--agy` (or `--antigravity`) is the shortcut for
+`--provider antigravity`.
+
+A `config.toml` written by an older alc has no `antigravity` profile. `alc agy`
+then says so and names the fix, and `alc doctor` warns with the same command:
+
+```sh
+alc config upsert antigravity --kind antigravity
+```
+
+Only agy runs on this login today; `alc --agy claude` is refused. Routing the
+other agents through the Antigravity login is coming, as an explicit opt-in,
+because Google has suspended accounts for third-party use of that login (see
+the [Google AI Developers Forum](https://discuss.ai.google.dev/)). `alc agy`
+itself carries no such risk: agy makes its own calls.
+
 ## Command reference
 
 | Command | What it does |
 | --- | --- |
-| `alc claude`, `codex`, `opencode`, `pi`, `copilot`, `goose`, `qwen`, `kimi` | Launch that agent on its configured provider |
+| `alc claude`, `codex`, `opencode`, `pi`, `copilot`, `goose`, `qwen`, `kimi`, `agy` | Launch that agent on its configured provider |
 | `alc config` | The configuration TUI; also `init`, `show`, `path`, `upsert`, `key`, `set-default`, `remove` |
 | `alc doctor` | Binaries, credentials, compatibility, defaults, bridge and remote state |
-| `alc models` | The GPT models the Codex bridge offers; `--refresh`, `--json` |
+| `alc models` | The GPT models the Codex bridge offers, or with `--agy` the Antigravity CLI's; `--refresh`, `--json` |
 | `alc usage [weekly\|monthly\|yearly]` | Accounts/quota, the compatibility ledger, and daily token/cost statistics; `--timezone`, `--chart[=PATH]`, `--wrapped[=PATH]`, `--daily`, `--monthly`, `--details`, `--offline`, `--pricing-file`, `--json` |
 | `alc tps` | Client-observed TTFT and estimated/E2E tokens per second; latest 20 timed requests by default, `--include-unmeasured`, `--limit`, `--json` |
 | `alc update` | Verify and activate an immutable alc generation; `--check`, `--force`, `--download-only`, `--from ... --offline`, `--rollback` |
@@ -339,8 +381,10 @@ in the line it reaches the agent as an argument of its own.
 **Previewing.** `alc --codex --dry-run claude` prints the resolved agent and
 provider, the command with secrets redacted, a line for the built-in adapter when
 the launch uses one, and every file it would write — and says when a launch would
-be refused rather than only what would succeed. A dry-run starts no listener and
-writes nothing, including with `--metrics`.
+be refused rather than only what would succeed. With `--share` the command
+carries the permission flag a real share would add, on every agent, and a
+mistyped `--permission` fails the dry run as it would the launch. A dry-run
+starts no listener and writes nothing, including with `--metrics`.
 
 ## Diagnostics
 
@@ -348,10 +392,11 @@ writes nothing, including with `--metrics`.
 alc doctor
 ```
 
-`alc doctor` reports the environment and credential paths, all eight agent
-binaries, every provider profile against all eight agents, the resolved per-agent
+`alc doctor` reports the environment and credential paths, all nine agent
+binaries, every provider profile against all nine agents, the resolved per-agent
 defaults, a leftover GPT model pinned in `~/.claude/settings.json`, the Codex
-bridge's model, effort, context choice, and `codex login` state, an enabled
+bridge's model, effort, context choice, and `codex login` state, the Antigravity
+CLI's binary, whether agy has been set up, and its profile, an enabled
 Ollama, llama.cpp or vLLM profile checked against its running server, and the
 remote-control posture — then a summary of issues with a fix for each. It exits
 non-zero when it finds one.
@@ -525,7 +570,7 @@ HTTP-only and requires you to **explicitly** pass
 forces WebSockets off nor claims to observe them, and ordinary no-metrics
 WebSocket behavior stays untouched. OpenCode/Copilot, Qwen/Goose's supported
 Anthropic/OpenAI branches, and Kimi's generated temporary config have supported
-seams. Direct Pi, native OAuth/login, Qwen Google/Gemini, Goose native
+seams. Direct Pi, native OAuth/login (agy's included), Qwen Google/Gemini, Goose native
 OpenRouter/Ollama or OpenAI split endpoints with query/fragment, and explicit
 endpoint/helper/config/provider overrides outside those seams are not observed;
 unsafe/unsupported explicit `--metrics` is refused, not silently rerouted.
@@ -599,6 +644,7 @@ The two lookup tables, resolved for your own configuration by `alc doctor`.
 | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | responses, chat | No |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | anthropic, responses, chat | Yes |
 | `codex` | — (native `codex login`) | — | native | Yes (bridge) |
+| `antigravity` | — (native `agy` login) | — | native (`agy` only) | Not yet |
 | `ollama` | `http://localhost:11434` | — | anthropic, responses, chat | Yes |
 | `vllm` | `http://localhost:8000/v1` | — | responses, chat (+ anthropic) | Yes |
 | `llamacpp` | `http://localhost:8080/v1` | `LLAMA_API_KEY` | anthropic, responses, chat | Yes |
@@ -633,11 +679,13 @@ upsert` when upstream renames or retires a model.
 | [Goose](https://block.github.io/goose/) | `goose` | OpenAI- or Anthropic-compatible endpoint | `GOOSE_*` + provider key env | Yes |
 | [Qwen Code](https://github.com/QwenLM/qwen-code) | `qwen` | OpenAI-, Anthropic-, or Gemini-compatible endpoint | `--auth-type` flag + env | Yes |
 | [Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli) | `kimi` | OpenAI- or Anthropic-compatible endpoint | temp `--config-file` (merged TOML, deleted after the run) | Yes |
+| Antigravity CLI | `agy` | its own Google login only | `--model`, `--effort` | No (own login) |
 
 `alc` launches agents that are already installed — install the ones you plan to
 use from the links above (Pi is `npm install -g @earendil-works/pi-coding-agent`).
-Every agent reaches the Codex bridge with one `codex login` whatever it accepts
-natively, and `ALC_CLAUDE_BIN` and its siblings override a binary path.
+Every agent but agy reaches the Codex bridge with one `codex login` whatever it
+accepts natively; agy runs only on its own Google login. `ALC_CLAUDE_BIN` and its
+siblings, `ALC_AGY_BIN` among them, override a binary path.
 
 ## Codex bridge
 
@@ -962,10 +1010,11 @@ alc has five rungs, loosest last: `plan` (reads and plans, writes nothing), `ask
 asking, still asks for commands), `auto` (acts inside whatever sandbox the agent
 has), and `full` (no gate). `--permission <rung>` sets where a session starts.
 
-A shared session with no `--permission` starts at **ask** on the three agents
-whose flags alc verified against a real `--help` — Claude Code, Codex, and
-OpenCode — so a link opened on a phone is not looking at an autonomous agent
-there. The other five launch exactly as they would on their own, because guessing
+A shared session with no `--permission` starts at **ask** on the four agents
+whose flags alc verified against a real `--help` — Claude Code, Codex, OpenCode,
+and agy, whose own default already asks, so alc adds no flag to it — so a link
+opened on a phone is not looking at an autonomous agent there. Pi, Copilot CLI,
+Goose, Qwen Code, and Kimi launch exactly as they would on their own, because guessing
 an unverified flag name into argv produces a session that will not start rather
 than a tightened one; name the rung with `--permission` to have alc pass the
 documented flag anyway, except on Pi, which has no permission model to set. The
@@ -984,9 +1033,9 @@ next minute. Tickets expire unredeemed after five minutes, and `alc confirm`
 refuses to run without a controlling terminal — which is the point: the agent
 cannot redeem its own ticket.
 
-The eight agents do not agree on what a permission mode is, so alc records for
+The nine agents do not agree on what a permission mode is, so alc records for
 each one whether it verified the flags against a real `--help`, whether the mode
-can be changed mid-session at all (Kimi is relaunch-only; Pi has no permission
+can be changed mid-session at all (Kimi and agy are relaunch-only; Pi has no permission
 model and is not sandboxed), and whether the current mode was set at launch, read
 back off the screen, or merely assumed. The page shows the agent's own word
 beside alc's rung — `auto-edit · Accept edits` — because a single

@@ -132,7 +132,7 @@ A page that types into a coding agent is remote code execution on your machine.
 
 ## Permission modes
 
-The eight agents disagree about what a permission mode is, what the modes are
+The nine agents disagree about what a permission mode is, what the modes are
 called, and whether one can change after launch. The page renders what the
 agent in front of it can actually do: a dropdown where a mode can be set
 outright, a cycle button where it can only be cycled, and a disabled control
@@ -150,9 +150,13 @@ the most permissive setting Goose has and a mid-tier one for Claude Code.
 | kimi | `--plan`, `--yolo` | relaunch only |
 | copilot | `--mode plan\|interactive`, `--allow-all-tools` | `/permissions` opens its picker |
 | pi | — | not supported: Pi has no permission modes or sandbox, by design |
+| agy | `--mode plan`, `--mode accept-edits`, `--sandbox --dangerously-skip-permissions`, `--dangerously-skip-permissions` | relaunch only |
 
 alc injects a permission flag only for agents it has confirmed against a real
 `--help`; for the rest it changes nothing unless you ask with `--permission`.
+agy is confirmed, but its own default already asks, so its `ask` rung adds no
+flag: a shared agy with no `--permission` starts exactly as a bare `agy` would.
+A shared `--dry-run` prints the flag a real share would add, on every agent.
 Each card says how much alc trusts what it shows: `launched`, `reported`, or a
 `?` for a guess.
 

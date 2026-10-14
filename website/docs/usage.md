@@ -237,6 +237,7 @@ and needs no opt-in.
 | Qwen Code / Goose | Supported alc-managed Anthropic or OpenAI branches. Qwen's Google/Gemini branch and Goose's native OpenRouter/Ollama integrations are not observed. Goose's OpenAI split endpoint with a query or fragment is refused for metrics; ordinary launches are unchanged. |
 | Kimi Code CLI | The provider endpoint in alc's generated temporary config, not a user-supplied config. |
 | Pi | Direct observation is unavailable: alc will not put an ephemeral listener into its persistent shared `models.json`. |
+| Antigravity CLI | Direct observation is unavailable: agy runs on its own login, which alc leaves untouched. |
 
 Codex's generated provider ID is `alc_` plus the alc profile name with hyphens
 changed to underscores: profile `openai-work` needs
@@ -384,7 +385,7 @@ Accounts or the compatibility ledger:
 | `--until DATE` | Exclusive end, in the same formats. To include October 7 in the selected zone, use `--until 2026-10-08`. |
 | `--timezone ZONE` | `UTC` (default), `local`, or an IANA name such as `Asia/Taipei`; shared by date-only bounds, windows, and buckets. |
 | `--filter-profile PROFILE` | Exact recorded alc profile. Native records without a profile do not match. |
-| `--filter-agent AGENT` | Recorded coding agent: `claude`, `codex`, `opencode`, `pi`, `copilot`, `goose`, `qwen`, or `kimi`. |
+| `--filter-agent AGENT` | Recorded coding agent: `claude`, `codex`, `opencode`, `pi`, `copilot`, `goose`, `qwen`, `kimi`, or `agy`. |
 | `--filter-model MODEL` | Exact reported model ID, not a fuzzy alias search. |
 | `--claude-dir PATH` | Repeatable absolute Claude **config root**; reads `projects/` beneath it. |
 | `--codex-dir PATH` | Repeatable absolute Codex **home**; reads `sessions/` and `archived_sessions/` beneath it. |

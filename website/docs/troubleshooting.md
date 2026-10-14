@@ -16,7 +16,7 @@ keywords:
 
 Start with `alc doctor`. It reports every agent binary, credential status,
 provider profiles with a per-agent compatibility column, the resolved defaults,
-and the Codex login state.
+the Codex login state, and whether the Antigravity CLI has been set up.
 
 ## `'claude' is not installed or not on PATH`
 
@@ -45,6 +45,25 @@ profile's `api_key_env`.
 
 Run `codex login`, then retry. [`alc usage`](./usage.md) shows which logins are
 current.
+
+## `provider profile or kind 'antigravity' was not found for agy`
+
+Your `config.toml` was written by an alc that predates the Antigravity CLI, so
+it has no `antigravity` profile. Add it, and `alc agy` runs:
+
+```sh
+alc config upsert antigravity --kind antigravity
+```
+
+`alc doctor` shows the same hint, as a warning, until you do.
+
+## `is not compatible with agy` or `drives the Antigravity CLI only`
+
+agy and the `antigravity` kind belong only to each other: agy signs in to Google
+itself, so `alc --codex agy` or `alc --openrouter agy` is refused, and so is
+`alc --agy claude`. Run plain `alc agy`. Routing other agents through the
+Antigravity login is not available yet; [Antigravity
+CLI](./agents.md#antigravity-cli-agy) says why.
 
 ## Auto mode says server-side checks are unavailable
 

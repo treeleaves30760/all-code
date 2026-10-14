@@ -3,7 +3,7 @@ id: agents
 title: Agents
 sidebar_label: Agents
 sidebar_position: 6
-description: What alc sets for each of the eight coding agents — environment variables, flags, or a merged config file — so your chosen provider works without editing anything by hand.
+description: What alc sets for each of the nine coding agents — environment variables, flags, or a merged config file — so your chosen provider works without editing anything by hand.
 keywords:
   - claude code
   - codex cli
@@ -13,6 +13,7 @@ keywords:
   - goose
   - qwen code
   - kimi code cli
+  - antigravity cli
 ---
 
 # Agents
@@ -21,9 +22,10 @@ Each agent has its own idea of how a provider is configured, so alc translates
 one provider list into whatever the agent you are launching expects. This page
 is what it sets, agent by agent.
 
-Every agent also runs on one `codex login` through the [Codex
+Every agent but one also runs on one `codex login` through the [Codex
 bridge](./codex-to-claude.md); `alc --codex <agent>` is the same command
-throughout, so it is not repeated below.
+throughout, so it is not repeated below. The exception is the [Antigravity
+CLI](#antigravity-cli-agy), which runs only on its own Google login.
 
 ## Claude Code
 
@@ -168,6 +170,37 @@ alc kimi
 alc --moonshot kimi
 ```
 
+## Antigravity CLI (agy)
+
+`agy` — Google's Antigravity CLI · runs only on its own Google login.
+
+agy signs in to Google itself, so alc has no endpoint, key or config file to
+hand it and touches none of agy's credentials. It runs on the `antigravity`
+profile the starter configuration ships, and alc sets only `--model` from that
+profile and, when the profile names one, `--effort`. agy's efforts are `low`,
+`medium`, `high`, `xhigh` and `max`; a profile set to `ultra` launches on `max`,
+with a note saying so. A `--model` or `--effort` of your own after `alc agy` is
+forwarded as is, and alc then sends none of its own.
+
+```sh
+alc agy
+alc agy --model gemini-3.8-flash-low
+alc models --agy
+```
+
+The starting model is `claude-opus-5-5-high`, with no effort set, so agy uses
+its own default. `alc models --agy` lists what `agy models` reports, kept for a
+day (`--refresh` asks again), with a bundled list when agy cannot be asked; the
+Model row of an antigravity profile in `alc config` steps through the same list.
+A `config.toml` from an older alc has no `antigravity` profile; `alc agy` then
+names the fix, `alc config upsert antigravity --kind antigravity`.
+
+No other agent runs on the Antigravity login yet: `alc --agy claude` is refused.
+Routing other agents through it is coming as an explicit opt-in, because Google
+has suspended accounts for third-party use of that login (see the [Google AI
+Developers Forum](https://discuss.ai.google.dev/)). `alc agy` itself carries no
+such risk: agy makes its own calls.
+
 ## Direct API metrics
 
 `alc --metrics <agent>` opts into observation at supported alc-managed endpoint
@@ -187,6 +220,7 @@ automatically. Native Codex CLI login traffic is not bridge traffic.
 | Goose | alc's Anthropic/OpenAI branches, not native OpenRouter/Ollama integrations. OpenAI split endpoints containing query/fragment are refused for metrics; ordinary launches are unchanged. |
 | Kimi Code CLI | The endpoint in alc's generated temporary provider config, not a user config/model/provider override. |
 | Pi | Unavailable for direct launches: its endpoint is in a persistent shared `models.json`, which alc will not point at an ephemeral observer. |
+| Antigravity CLI | Unavailable: agy runs on its own login, which alc leaves untouched. |
 
 Native OAuth/login and explicit endpoint/helper/config/provider overrides
 outside these seams are not silently intercepted; explicit `--metrics` fails
@@ -218,3 +252,4 @@ Point any agent at a specific binary instead of resolving it from `PATH`:
 | Goose | `ALC_GOOSE_BIN` |
 | Qwen Code | `ALC_QWEN_BIN` |
 | Kimi Code CLI | `ALC_KIMI_BIN` |
+| Antigravity CLI | `ALC_AGY_BIN` |

@@ -135,7 +135,8 @@ Claude Code starts on `gpt-6.1-sol` at `low` effort — or on whatever your
 own `~/.codex/config.toml` names — on the model's real Codex context window,
 with every GPT model in its `/model` picker.
 [Codex bridge](./codex-to-claude.md) has the models, the effort tiers, and the
-other seven agents.
+other agents on that login. The Antigravity CLI is the one agent that runs on a
+login of its own instead: `alc agy` ([Antigravity CLI](./agents.md#antigravity-cli-agy)).
 
 ## Other providers
 
@@ -152,7 +153,7 @@ alc -p local-vllm opencode
 `--provider` (`-p`) takes a profile name, or a kind when only one profile of
 that kind exists; `--anthropic`, `--openai`, `--openrouter`, `--codex`,
 `--ollama`, `--vllm`, `--llamacpp`, `--deepseek`, `--moonshot`, `--zai`,
-`--minimax`, `--groq`, `--xai`, and `--google` are shortcuts. Keys are saved locally or read
+`--minimax`, `--groq`, `--xai`, `--google`, and `--agy` are shortcuts. Keys are saved locally or read
 from environment variables; the environment wins. See
 [Providers](./providers.md) for what each kind speaks and
 [Configuration](./configuration.md) for the files.

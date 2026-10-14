@@ -2,8 +2,8 @@
 import {themes as prismThemes} from 'prism-react-renderer';
 
 const tagline =
-  'Claude Code on your ChatGPT plan — and seven other coding agents on any ' +
-  'provider, from one command.';
+  'Claude Code on your ChatGPT plan — seven other coding agents on that plan or ' +
+  'any provider, and the Antigravity CLI on its own login, from one command.';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -76,7 +76,7 @@ const config = {
           name: 'keywords',
           content:
             'claude code, codex cli, chatgpt subscription, opencode, pi coding agent, ' +
-            'copilot cli, goose, qwen code, kimi code cli, llm provider, anthropic, ' +
+            'copilot cli, goose, qwen code, kimi code cli, antigravity cli, llm provider, anthropic, ' +
             'openai, openrouter, ollama, llama.cpp, vllm, usage, quota, remote control, coding agent, cli, rust',
         },
         {property: 'og:type', content: 'website'},
