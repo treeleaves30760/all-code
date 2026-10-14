@@ -211,6 +211,7 @@ pub(crate) fn keyed_document(inputs: &KeyedDocument<'_>) -> Value {
         put(&mut env, name, "");
     }
     put(&mut env, "ANTHROPIC_MODEL", inputs.model);
+    pin_auto_mode_classifier(&mut env, inputs.model);
     if let Some(small) = inputs.small_model {
         put(&mut env, "ANTHROPIC_SMALL_FAST_MODEL", small);
     }
@@ -289,6 +290,7 @@ pub(crate) fn local_document(inputs: &LocalDocument<'_>) -> Value {
         put(&mut env, name, "");
     }
     put(&mut env, "ANTHROPIC_MODEL", inputs.model);
+    pin_auto_mode_classifier(&mut env, inputs.model);
     if let Some(small) = inputs.small_model {
         put(&mut env, "ANTHROPIC_SMALL_FAST_MODEL", small);
     }
@@ -309,6 +311,17 @@ pub(crate) fn local_document(inputs: &LocalDocument<'_>) -> Value {
         );
     }
     document
+}
+
+/// Claude Code's auto mode judges each tool call with a classifier. Off
+/// Anthropic's API the server-side one answers nothing, so Claude Code runs
+/// its own - on the `sonnet` alias, which only Anthropic serves by that name.
+/// Pinning the alias to the profile's model is what makes auto mode work on
+/// every provider; `CLAUDE_CODE_AUTO_MODE_SERVER=0` skips the server attempt
+/// and the request field a strict endpoint may refuse.
+fn pin_auto_mode_classifier(env: &mut Map<String, Value>, model: &str) {
+    put(env, "ANTHROPIC_DEFAULT_SONNET_MODEL", model);
+    put(env, "CLAUDE_CODE_AUTO_MODE_SERVER", "0");
 }
 
 /// Adds what a local server needs on top of any document: every alias on its
@@ -970,6 +983,76 @@ mod tests {
         });
         assert_eq!(self::env(&custom)["ANTHROPIC_AUTH_TOKEN"], "alc");
         assert!(!self::env(&custom).contains_key("ANTHROPIC_DEFAULT_OPUS_MODEL"));
+    }
+
+    #[test]
+    fn a_keyed_document_runs_the_auto_mode_classifier_on_the_profiles_model() {
+        let document = keyed_document(&KeyedDocument {
+            base_url: "https://openrouter.ai/api",
+            model: "anthropic/claude-sonnet-5",
+            small_model: Some("anthropic/claude-haiku-5"),
+            context_window: None,
+            key_env: Some("OPENROUTER_API_KEY"),
+            helper: "HELPER".to_owned(),
+        });
+        let env = env(&document);
+        // Claude Code's local classifier asks for the Sonnet alias; without
+        // the pin it names claude-sonnet-5, which the provider may not serve.
+        assert_eq!(
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+            "anthropic/claude-sonnet-5"
+        );
+        assert_eq!(env["CLAUDE_CODE_AUTO_MODE_SERVER"], "0");
+        // The other aliases stay Claude Code's: a hosted provider maps them.
+        assert!(!env.contains_key("ANTHROPIC_DEFAULT_OPUS_MODEL"));
+    }
+
+    #[test]
+    fn a_keyless_custom_document_runs_the_auto_mode_classifier_on_the_profiles_model() {
+        let document = local_document(&LocalDocument {
+            base_url: "http://gateway.test",
+            model: "m",
+            small_model: None,
+            context_window: None,
+            placeholder: "alc",
+            local_server: false,
+            local_env: &[],
+        });
+        let env = env(&document);
+        assert_eq!(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "m");
+        assert_eq!(env["CLAUDE_CODE_AUTO_MODE_SERVER"], "0");
+    }
+
+    #[test]
+    fn the_native_document_keeps_anthropics_server_classifier() {
+        let document = native_document(&NativeDocument {
+            base_url: "https://api.anthropic.com",
+            model: "opus",
+            small_model: None,
+            context_window: None,
+        });
+        let env = env(&document);
+        assert!(!env.contains_key("CLAUDE_CODE_AUTO_MODE_SERVER"));
+        assert!(!env.contains_key("ANTHROPIC_DEFAULT_SONNET_MODEL"));
+    }
+
+    #[test]
+    fn a_users_sonnet_override_survives_the_auto_mode_pin() {
+        let mut document = keyed_document(&KeyedDocument {
+            base_url: "https://openrouter.ai/api",
+            model: "anthropic/claude-sonnet-5",
+            small_model: None,
+            context_window: None,
+            key_env: Some("OPENROUTER_API_KEY"),
+            helper: "HELPER".to_owned(),
+        });
+        merge_user_settings(
+            &mut document,
+            &json!({ "env": { "ANTHROPIC_DEFAULT_SONNET_MODEL": "mine" } }),
+        );
+        let env = env(&document);
+        assert_eq!(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "mine");
+        assert_eq!(env["CLAUDE_CODE_AUTO_MODE_SERVER"], "0");
     }
 
     #[test]
