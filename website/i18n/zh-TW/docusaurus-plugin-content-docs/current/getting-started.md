@@ -3,7 +3,7 @@ id: getting-started
 title: 快速上手
 sidebar_label: 快速上手
 sidebar_position: 2
-description: 安裝 alc、用你的 Codex 登入跑 Claude Code、把任何 agent 指向別的 provider、傳遞參數、啟動前先預覽，以及更新。
+description: 安裝 alc、用你的 Codex 登入跑 Claude Code、把 agy 以外的任何 agent 指向別的 provider、傳遞參數、啟動前先預覽，以及更新。
 keywords:
   - alc install
   - alc update

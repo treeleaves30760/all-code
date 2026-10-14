@@ -364,8 +364,8 @@ alc doctor
 `alc doctor` 會回報環境與憑證路徑、全部九個 agent 的執行檔、每個 provider
 profile 對照全部九個 agent 的結果、解析後的各 agent 預設值、殘留在
 `~/.claude/settings.json` 裡被釘住的 GPT 模型、Codex 橋接的模型、推理強度、
-context window 選擇與 `codex login` 狀態、Antigravity CLI 的執行檔、agy 是否已經
-設定好，以及它的 profile、已啟用的 Ollama、llama.cpp 或 vLLM profile 對照其執行中伺服器的檢查，
+context window 選擇與 `codex login` 狀態、Antigravity CLI（執行檔、是否已設定好、
+profile、模型清單來源）、已啟用的 Ollama、llama.cpp 或 vLLM profile 對照其執行中伺服器的檢查，
 以及遠端控制的現況 —— 最後是一份問題摘要，每一項都附上修法。只要找到
 其中一個問題，它就會以非零狀態結束。
 
@@ -415,7 +415,8 @@ Token usage
 
 alc 會向每個登入所屬的服務商查詢剩餘額度：Codex 登入問 chatgpt.com、Claude
 Code 的登入問 api.anthropic.com，OpenRouter、DeepSeek、Moonshot、MiniMax 與
-Z.ai 的 key 則走各自公開的餘額端點。過程中不會寫回任何東西，也不會更新
+Z.ai 的 key 則走各自公開的餘額端點；`antigravity` 那一列則顯示 no quota API，
+因為 agy 的登入只歸它自己。過程中不會寫回任何東西，也不會更新
 token —— 一個查詢狀態的指令不該讓執行中的 session 手上的憑證失效。
 
 **同一種登入有兩個帳號，就開兩個 profile。**`codex_home` 與
@@ -611,7 +612,8 @@ ID，等上游改名或棄用某個模型時，再用 `alc config upsert` 修改
 | Antigravity CLI | `agy` | 只有它自己的 Google 登入 | `--model`、`--effort` | 否（自己的登入） |
 
 `alc` 只啟動已經安裝好的 agent —— 你打算用的那幾個，請從上面的連結裝起來
-（Pi 是 `npm install -g @earendil-works/pi-coding-agent`）。不論原生支援
+（Pi 是 `npm install -g @earendil-works/pi-coding-agent`；agy 則照 Google 自己的
+Antigravity 說明安裝並登入）。不論原生支援
 什麼，除了 agy 之外的每個 agent 都只要一次 `codex login` 就能接上 Codex 橋接；
 agy 只跑在它自己的 Google 登入上。`ALC_CLAUDE_BIN` 與它的同類環境變數（包含
 `ALC_AGY_BIN`）可以覆寫執行檔路徑。

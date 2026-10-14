@@ -62,9 +62,11 @@ keywords:
 新建的 `openai` profile 也會以 `low` 推理強度啟動。既有 profile 已儲存的模型
 與強度維持原樣。
 
-`antigravity` 只會啟動 Antigravity CLI，不會啟動別的，所以它還不能跑 Claude ——
-目前還不行：讓其他 agent 也經由那個登入連線的功能即將推出，而且會是需要你明確
-選擇開啟的選項。在它出現之前寫出的 `config.toml` 沒有這個 profile；
+`antigravity` 只會啟動 Antigravity CLI，不會啟動別的，所以它還不能跑 Claude。
+讓其他 agent 也經由那個登入連線的功能即將推出，而且會是需要你明確選擇開啟的
+選項，因為 Google 曾經停權把那個登入拿給第三方使用的帳號（論壇討論串見
+[Antigravity CLI](./agents.md#antigravity-cli-agy)）。在它出現之前寫出的
+`config.toml` 沒有這個 profile；
 `alc config upsert antigravity --kind antigravity` 會把它加上。
 
 model ID 換得比 alc 發版還快，所以上面每一個起始模型都只是拿來改的值，不是
