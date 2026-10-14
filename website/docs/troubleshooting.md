@@ -55,7 +55,8 @@ it has no `antigravity` profile. Add it, and `alc agy` runs:
 alc config upsert antigravity --kind antigravity
 ```
 
-`alc doctor` shows the same hint, as a warning, until you do.
+`alc doctor` shows the same hint, as a warning, and so does the Agent defaults
+screen of `alc config`, until you do.
 
 ## `is not compatible with agy` or `drives the Antigravity CLI only`
 
@@ -64,6 +65,16 @@ itself, so `alc --codex agy` or `alc --openrouter agy` is refused, and so is
 `alc --agy claude`. Run plain `alc agy`. Routing other agents through the
 Antigravity login is not available yet; [Antigravity
 CLI](./agents.md#antigravity-cli-agy) says why.
+
+If a profile of your own is already named `antigravity`, leave it alone:
+`alc config upsert antigravity` would rewrite it for the new kind, base URL and
+model gone, which is why alc does not suggest it then. Add the login under
+another name and make that agy's default:
+
+```sh
+alc config upsert google-agy --kind antigravity
+alc config set-default agy google-agy
+```
 
 ## Auto mode says server-side checks are unavailable
 
