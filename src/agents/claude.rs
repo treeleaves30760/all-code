@@ -261,17 +261,30 @@ fn codex_plan(
     Ok((document, Some(route), offered))
 }
 
-/// Claude Code on agy's login: launched on a family (`claude-opus-5-5`) with
-/// the effort its wire id or the profile names, so the effort slider keeps
-/// working - the bridge turns each request's effort into the wire suffix.
-fn antigravity_plan(
-    spec: &mut LaunchSpec,
-    store: &Store,
+/// What a Claude Code session on agy's login starts on.
+#[derive(Debug)]
+pub(crate) struct AntigravityStart {
+    pub family: crate::antigravity::AgyFamily,
+    /// One of the family's own rungs: the effort the bridge really runs the
+    /// first turn at, so Claude Code's slider starts where the session is.
+    pub effort: ReasoningEffort,
+    /// Said once on stderr when `effort` is not the one asked for.
+    pub note: Option<String>,
+}
+
+/// The family and effort a Claude Code session on Antigravity starts on.
+///
+/// The effort is this run's choice before the profile's, and a stated
+/// effort before the one a wire id implies - as `alc agy` reads a profile.
+/// The wire knows only `low`, `medium` and `high`, and a family may serve
+/// fewer (GPT-OSS serves `medium` alone), so the effort is brought to the
+/// rung the bridge will actually send, out loud: launching at `max` would
+/// show a session running at `high` as running at `max`.
+pub(crate) fn antigravity_start(
     profile_name: &str,
     provider: &Provider,
-    rest: &[OsString],
     overrides: &LaunchOverrides,
-) -> Result<(Value, Option<RouteRecord>, Vec<String>)> {
+) -> Result<AntigravityStart> {
     let asked = overrides
         .model
         .clone()
@@ -291,19 +304,60 @@ fn antigravity_plan(
         crate::antigravity::split_wire_id(model)
             .and_then(|(_, effort)| effort.parse::<ReasoningEffort>().ok())
     };
-    // This run's choice before the profile's, and a stated effort before the
-    // one a wire id implies - as `alc agy` reads a profile.
-    let effort = match overrides
+    let wanted = overrides
         .reasoning_effort
         .or_else(|| overrides.model.as_deref().and_then(suffix))
         .or(provider.reasoning_effort)
         .or_else(|| suffix(&provider.model))
-        .unwrap_or(ReasoningEffort::Medium)
-    {
-        // Claude Code's own ladder stops at max.
-        ReasoningEffort::Ultra => ReasoningEffort::Max,
-        effort => effort,
-    };
+        .unwrap_or(ReasoningEffort::Medium);
+    let ladder = crate::antigravity::effort_word(Some(wanted));
+    let wire = crate::antigravity::wire_model(&family, ladder);
+    let rung = wire
+        .strip_prefix(&format!("{}-", family.id))
+        .and_then(|rung| rung.parse::<ReasoningEffort>().ok())
+        .unwrap_or(ReasoningEffort::Medium);
+    let note = (rung != wanted).then(|| {
+        if family.thinking.contains_key(ladder) {
+            format!(
+                "note: Antigravity tops out at '{rung}', so this session uses {rung} rather than \
+                 {wanted}."
+            )
+        } else {
+            let rungs: Vec<&str> = family.thinking.keys().map(String::as_str).collect();
+            format!(
+                "note: {} on Antigravity runs at {} only, so this session uses {rung} rather \
+                 than {wanted}.",
+                family.id,
+                rungs.join(", ")
+            )
+        }
+    });
+    Ok(AntigravityStart {
+        family,
+        effort: rung,
+        note,
+    })
+}
+
+/// Claude Code on agy's login: launched on a family (`claude-opus-5-5`) with
+/// the effort its wire id or the profile names, so the effort slider keeps
+/// working - the bridge turns each request's effort into the wire suffix.
+fn antigravity_plan(
+    spec: &mut LaunchSpec,
+    store: &Store,
+    profile_name: &str,
+    provider: &Provider,
+    rest: &[OsString],
+    overrides: &LaunchOverrides,
+) -> Result<(Value, Option<RouteRecord>, Vec<String>)> {
+    let AntigravityStart {
+        family,
+        effort,
+        note,
+    } = antigravity_start(profile_name, provider, overrides)?;
+    if let Some(note) = note {
+        eprintln!("{note}");
+    }
     if !has_model_override(rest) {
         spec.args
             .extend([OsString::from("--model"), OsString::from(&family.id)]);
@@ -771,6 +825,94 @@ pub(crate) fn claude_base_url(provider: &Provider) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn start(
+        model: Option<&str>,
+        effort: Option<ReasoningEffort>,
+        profile_effort: Option<ReasoningEffort>,
+    ) -> AntigravityStart {
+        let mut provider = Provider::for_kind(ProviderKind::Antigravity);
+        provider.reasoning_effort = profile_effort;
+        let overrides = LaunchOverrides {
+            model: model.map(str::to_owned),
+            reasoning_effort: effort,
+            ..LaunchOverrides::default()
+        };
+        antigravity_start("antigravity", &provider, &overrides).unwrap()
+    }
+
+    #[test]
+    fn an_antigravity_session_starts_on_the_rung_the_bridge_runs_and_says_so() {
+        // The profile's wire id names its effort, quietly.
+        let plain = start(None, None, None);
+        assert_eq!(plain.family.id, "claude-opus-5-5");
+        assert_eq!(plain.effort, ReasoningEffort::High);
+        assert!(plain.note.is_none());
+
+        // Above the wire's ladder: high, out loud.
+        for above in [
+            ReasoningEffort::Xhigh,
+            ReasoningEffort::Max,
+            ReasoningEffort::Ultra,
+        ] {
+            let clamped = start(None, Some(above), None);
+            assert_eq!(clamped.effort, ReasoningEffort::High, "{above}");
+            assert_eq!(
+                clamped.note.as_deref(),
+                Some(
+                    format!(
+                        "note: Antigravity tops out at 'high', so this session uses high rather \
+                         than {above}."
+                    )
+                    .as_str()
+                )
+            );
+        }
+
+        // A rung the family does not serve: the one it does, out loud.
+        let oss = start(Some("gpt-oss-120b"), Some(ReasoningEffort::Low), None);
+        assert_eq!(oss.effort, ReasoningEffort::Medium);
+        let note = oss.note.unwrap();
+        assert!(
+            note.contains("gpt-oss-120b") && note.contains("uses medium rather than low"),
+            "{note}"
+        );
+
+        // This run's wire id beats the profile's effort; the profile's effort
+        // beats the profile's own wire id.
+        let run = start(
+            Some("gemini-3.8-flash-low"),
+            None,
+            Some(ReasoningEffort::High),
+        );
+        assert_eq!(
+            (run.family.id.as_str(), run.effort),
+            ("gemini-3.8-flash", ReasoningEffort::Low)
+        );
+        assert!(run.note.is_none());
+        assert_eq!(
+            start(None, None, Some(ReasoningEffort::Low)).effort,
+            ReasoningEffort::Low
+        );
+    }
+
+    #[test]
+    fn a_model_outside_the_antigravity_families_is_refused_by_naming_them() {
+        let provider = Provider::for_kind(ProviderKind::Antigravity);
+        let overrides = LaunchOverrides {
+            model: Some("gemini-2.5-pro".to_owned()),
+            ..LaunchOverrides::default()
+        };
+        let error = antigravity_start("antigravity", &provider, &overrides)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "(claude-opus-5-5, claude-sonnet-5-5, gemini-4-argon, gemini-3.8-flash, gpt-oss-120b)"
+            ),
+            "{error}"
+        );
+    }
 
     #[test]
     fn local_server_timeouts_are_injected_when_unset() {

@@ -962,12 +962,6 @@ fn run_claude(
     };
 
     if provider.kind == ProviderKind::Antigravity {
-        if args.save {
-            bail!(
-                "--save is available with a Codex provider; set an antigravity profile's defaults with \
-                 `alc config upsert {profile_name} --model <id> --effort <level> --context <standard|max>`"
-            );
-        }
         // This run's choice goes through the provider, so the one place that
         // turns a choice into a window decides it for this run too; the
         // windows reach the plan through the overrides.
@@ -976,6 +970,19 @@ fn run_claude(
             provider.context = choice;
         }
         let overrides = antigravity_launch_overrides(&provider, args.model.as_deref(), args.effort);
+        if args.save {
+            // The command that saves exactly what this run resolved to.
+            let start =
+                crate::agents::claude::antigravity_start(&profile_name, &provider, &overrides)?;
+            bail!(
+                "--save is available with a Codex provider; save these as the antigravity \
+                 profile's defaults with `alc config upsert {profile_name} --model {} --effort {} \
+                 --context {}`",
+                start.family.id,
+                start.effort,
+                provider.context
+            );
+        }
         let spec = launch::build(
             store,
             Agent::Claude,

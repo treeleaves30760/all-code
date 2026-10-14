@@ -426,6 +426,15 @@ pub fn build(
     if agent == Agent::Agy {
         spec.effort = spec.effort.map(agents::agy::clamp_for_agy);
     }
+    // Claude Code on agy's login starts on the family's own rung, which a
+    // wire-id suffix or the family's ladder may have decided; the builder
+    // already resolved it (and refused an unknown model).
+    if agent == Agent::Claude
+        && provider.kind == ProviderKind::Antigravity
+        && let Ok(start) = agents::claude::antigravity_start(profile_name, provider, overrides)
+    {
+        spec.effort = Some(start.effort);
+    }
     Ok(spec)
 }
 
@@ -508,11 +517,19 @@ impl Prepared {
 /// because the plan was dropped between the client and the hub - and the
 /// invariant is checked here, at the point of harm, so the next route that
 /// loses it stops rather than mis-launches.
+///
+/// The same holds for every agent but agy on an Antigravity profile, and it
+/// is worse there: Claude Code launched with `--model claude-opus-5-5` and
+/// no plan would run on the user's own Claude login without a word.
 fn needs_an_adapter_and_has_one(spec: &LaunchSpec) -> Result<()> {
-    let needed = spec.provider_kind == ProviderKind::Codex && spec.agent != Agent::Codex;
-    if needed && !spec.is_bridged() {
+    let upstream = match spec.provider_kind {
+        ProviderKind::Codex if spec.agent != Agent::Codex => "Codex",
+        ProviderKind::Antigravity if spec.agent != Agent::Agy => "Antigravity",
+        _ => return Ok(()),
+    };
+    if !spec.is_bridged() {
         bail!(
-            "this {} launch runs on the Codex adapter, but the launch reached the point of \
+            "this {} launch runs on the {upstream} adapter, but the launch reached the point of \
              spawning without one; refusing rather than starting {} against a model it cannot \
              reach. This is an alc bug - please report it",
             spec.agent,
@@ -3074,6 +3091,65 @@ mod tests {
         assert!(needs_an_adapter_and_has_one(&plain).is_ok());
     }
 
+    /// The same check on agy's login: a Claude Code launch whose plan went
+    /// missing would carry `--model claude-opus-5-5` to the user's own Claude
+    /// login.
+    #[test]
+    fn an_antigravity_launch_without_an_adapter_is_refused_at_the_point_of_spawning() {
+        let mut spec = empty_spec();
+        spec.provider_kind = ProviderKind::Antigravity;
+        spec.agent = Agent::Claude;
+        let error = needs_an_adapter_and_has_one(&spec).unwrap_err().to_string();
+        assert!(error.contains("Antigravity adapter"), "{error}");
+
+        let mut routed = empty_spec();
+        routed.provider_kind = ProviderKind::Antigravity;
+        routed.agent = Agent::Claude;
+        routed.settings_plan = LaunchSpec::saturated().settings_plan;
+        assert!(needs_an_adapter_and_has_one(&routed).is_ok());
+        if let Some(plan) = routed.settings_plan.as_mut() {
+            plan.route = None;
+        }
+        assert!(needs_an_adapter_and_has_one(&routed).is_err());
+
+        // agy itself runs on that login natively.
+        let mut native = empty_spec();
+        native.provider_kind = ProviderKind::Antigravity;
+        native.agent = Agent::Agy;
+        assert!(needs_an_adapter_and_has_one(&native).is_ok());
+    }
+
+    /// The session card says what the session really runs at: the family's
+    /// rung, after a wire-id suffix and the ladder's top are applied.
+    #[test]
+    fn an_antigravity_claude_spec_records_the_effort_the_bridge_runs() {
+        let store = store(Config::default(), Credentials::default());
+        let run = |model: Option<&str>, effort: Option<ReasoningEffort>| {
+            let overrides = LaunchOverrides {
+                model: model.map(str::to_owned),
+                reasoning_effort: effort,
+                ..LaunchOverrides::default()
+            };
+            build(&store, Agent::Claude, Some("antigravity"), &[], &overrides)
+                .unwrap()
+                .effort
+        };
+        // The profile's own model is `claude-opus-5-5-high`.
+        assert_eq!(run(None, None), Some(ReasoningEffort::High));
+        assert_eq!(
+            run(Some("gemini-3.8-flash-low"), None),
+            Some(ReasoningEffort::Low)
+        );
+        assert_eq!(
+            run(None, Some(ReasoningEffort::Ultra)),
+            Some(ReasoningEffort::High)
+        );
+        assert_eq!(
+            run(Some("gpt-oss-120b"), Some(ReasoningEffort::Low)),
+            Some(ReasoningEffort::Medium)
+        );
+    }
+
     #[test]
     fn process_file_setup_applies_both_variants_and_only_flags_write_temp_for_cleanup() {
         let temp = tempfile::tempdir().unwrap();
@@ -3227,7 +3303,7 @@ mod tests {
                 {
                     // The matrix already says yes; these builders still
                     // refuse until each agent gets its Antigravity plan.
-                    // Remove this once they do.
+                    // Task 11 removes this.
                     assert!(!built, "{name} × {agent} builds: drop this exemption");
                     continue;
                 }

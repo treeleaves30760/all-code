@@ -1441,13 +1441,64 @@ fn antigravity_claude_takes_the_larger_window_on_context_max() {
             "\"CLAUDE_CODE_MAX_CONTEXT_TOKENS\":\"1048576\"",
         ));
     alc(&temp)
-        .args(["--agy", "--dry-run", "claude", "--save"])
+        .args([
+            "--agy",
+            "--dry-run",
+            "claude",
+            "--model",
+            "gemini-3.8-flash-low",
+            "--save",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("--save"))
         .stderr(predicate::str::contains(
-            "alc config upsert antigravity --model <id>",
+            "`alc config upsert antigravity --model gemini-3.8-flash --effort low --context max`",
         ));
+}
+
+/// The wire knows low, medium and high, and a family may serve fewer; the
+/// session starts on the rung the bridge really runs, and says so.
+#[test]
+fn antigravity_claude_starts_on_a_rung_the_bridge_runs_out_loud() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--agy", "--dry-run", "claude", "--effort", "ultra"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--model claude-opus-5-5 --effort high",
+        ))
+        .stderr(predicate::str::contains(
+            "note: Antigravity tops out at 'high', so this session uses high rather than ultra.",
+        ));
+    alc(&temp)
+        .args([
+            "--agy",
+            "--dry-run",
+            "claude",
+            "--model",
+            "gpt-oss-120b",
+            "--effort",
+            "low",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--model gpt-oss-120b --effort medium",
+        ))
+        .stderr(predicate::str::contains(
+            "so this session uses medium rather than low.",
+        ));
+    // A rung the family serves is launched as asked, silently.
+    alc(&temp)
+        .args(["--agy", "--dry-run", "claude", "--effort", "low"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "--model claude-opus-5-5 --effort low",
+        ))
+        .stderr(predicate::str::contains("note:").not());
 }
 
 /// `alc models --agy` lists live ids that belong to no family; the refusal

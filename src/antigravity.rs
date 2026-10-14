@@ -119,7 +119,6 @@ pub fn family_of_model(model: &str) -> Option<AgyFamily> {
 
 /// alc's effort ladder on Antigravity's three rungs. Absent is `medium`,
 /// agy's own default.
-#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
 pub fn effort_word(effort: Option<ReasoningEffort>) -> &'static str {
     match effort {
         None | Some(ReasoningEffort::Medium) => "medium",
