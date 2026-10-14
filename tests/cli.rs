@@ -2403,12 +2403,45 @@ fn doctor_has_an_antigravity_section_that_reads_no_secret() {
     let section = doctor_section(&text, "Antigravity");
     assert!(section.contains("agy"), "{section}");
     assert!(
-        section.contains("not set up") || section.contains("not found"),
+        section.contains("not logged in") || section.contains("not found"),
         "{section}"
     );
+    assert!(section.contains("bridge"), "{section}");
     assert!(section.contains("claude-opus-5-5-high"), "{section}");
     // Doctor never asks agy for its models, so a run leaves no cache behind.
     assert!(!temp.path().join("antigravity-models.json").exists());
+}
+
+/// With a fresh login, doctor asks for the project once, read-only, and
+/// says only whether there is one: never the token, never the project id.
+#[test]
+fn doctor_checks_a_fresh_antigravity_login_for_a_project_without_printing_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    write_agy_login(&temp);
+    let (base, requests) = serve_agy_quota(("404 Not Found", "{}"));
+    let output = alc(&temp)
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .env("ALC_AGY_API_BASE", &base)
+        .args(["doctor"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    let section = doctor_section(&text, "Antigravity");
+    assert!(section.contains("ready (agy's Google login)"), "{section}");
+    assert!(
+        section.contains("onboarded (a Cloud Code project exists)"),
+        "{section}"
+    );
+    for secret in ["synthetic-agy-token-never-echo", "proj-never-shown"] {
+        assert!(!text.contains(secret), "{text}");
+    }
+    let requests: Vec<String> = requests.try_iter().collect();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(requests[0].starts_with("POST /v1internal:loadCodeAssist "));
 }
 
 /// A config.toml written before the antigravity kind has no profile for agy.
@@ -2941,6 +2974,168 @@ fn usage_reports_every_codex_login_when_two_profiles_name_two_homes() {
         .stdout(predicate::str::contains("me@example.com"))
         .stdout(predicate::str::contains("work@example.com"))
         .stdout(predicate::str::contains("codex-work"));
+}
+
+/// A stand-in for the Cloud Code endpoint's two read-only calls. Every
+/// request's head and body is sent back to the test; `quota` is the status
+/// and body the quota call answers with.
+fn serve_agy_quota(
+    quota: (&'static str, &'static str),
+) -> (String, std::sync::mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake Cloud Code");
+    let address = listener.local_addr().expect("fake Cloud Code address");
+    let (seen, requests) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let request = read_request(&mut stream);
+            let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
+            let _ = seen.send(request);
+            let (status, body) = if path == "/v1internal:loadCodeAssist" {
+                (
+                    "200 OK",
+                    r#"{"cloudaicompanionProject":"proj-never-shown"}"#,
+                )
+            } else if path == "/v1internal:retrieveUserQuotaSummary" {
+                quota
+            } else {
+                ("404 Not Found", r#"{"error":"not found"}"#)
+            };
+            respond(stream, status, body);
+        }
+    });
+    (format!("http://{address}"), requests)
+}
+
+fn write_agy_login(temp: &tempfile::TempDir) {
+    std::fs::write(
+        temp.path().join("agy-login"),
+        serde_json::json!({
+            "auth_method": "consumer",
+            "token": {
+                "access_token": "synthetic-agy-token-never-echo",
+                "token_type": "Bearer",
+                "refresh_token": "synthetic-refresh-never-sent",
+                "expiry": "2099-01-01T00:00:00Z",
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+/// The `antigravity` row reads agy's login and asks the two read-only calls
+/// agy itself makes; it never runs agy and never shows the token or project.
+#[test]
+fn usage_reports_what_is_left_on_the_antigravity_login_by_pool() {
+    let temp = tempfile::tempdir().unwrap();
+    write_agy_login(&temp);
+    let (base, requests) = serve_agy_quota((
+        "200 OK",
+        r#"{"groups":[
+            {"displayName":"Gemini Models","buckets":[
+              {"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.4},
+              {"bucketId":"gemini-5h","window":"5h","remainingFraction":0.72}]},
+            {"displayName":"Claude and GPT models","buckets":[
+              {"bucketId":"3p-weekly","window":"weekly","remainingFraction":0.91}]}]}"#,
+    ));
+    let output = alc(&temp)
+        .env("ALC_AGY_API_BASE", &base)
+        .env("ALC_ASCII", "1")
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["usage", "--provider", "antigravity", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("usage JSON");
+    let account = report["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|account| account["profile"] == "antigravity")
+        .expect("an antigravity row");
+    assert_eq!(account["state"], "ok", "{account}");
+    assert_eq!(account["account_id"], "agy", "{account}");
+    let windows: Vec<_> = account["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|window| format!("{} {}", window["scope"].as_str().unwrap(), window["name"]))
+        .collect();
+    assert_eq!(
+        windows,
+        ["Gemini \"5h\"", "Gemini \"week\"", "Claude/GPT \"week\""]
+    );
+    for secret in [
+        "synthetic-agy-token-never-echo",
+        "proj-never-shown",
+        "synthetic-refresh",
+    ] {
+        assert!(!stdout.contains(secret), "{stdout}");
+    }
+
+    let requests: Vec<String> = requests.try_iter().collect();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(requests[0].starts_with("POST /v1internal:loadCodeAssist "));
+    assert!(requests[1].starts_with("POST /v1internal:retrieveUserQuotaSummary "));
+    assert!(
+        requests[1].contains(r#"{"project":"proj-never-shown"}"#),
+        "{}",
+        requests[1]
+    );
+    for request in &requests {
+        let lower = request.to_ascii_lowercase();
+        assert!(lower.contains("authorization: bearer synthetic-agy-token-never-echo"));
+        assert!(lower.contains("user-agent: antigravity/cli/"));
+        assert!(!request.contains("synthetic-refresh"));
+    }
+
+    let text = alc(&temp)
+        .env("ALC_AGY_API_BASE", &base)
+        .env("ALC_ASCII", "1")
+        .env("PATH", "")
+        .env_remove("ALC_AGY_BIN")
+        .args(["usage", "--provider", "antigravity"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("Gemini: 5h 72% left"), "{text}");
+    assert!(text.contains("Claude/GPT: week 91% left"), "{text}");
+}
+
+#[test]
+fn usage_names_the_fix_when_google_refuses_or_agy_is_signed_out() {
+    let temp = tempfile::tempdir().unwrap();
+    let (base, _requests) = serve_agy_quota(("401 Unauthorized", r#"{"error":{"code":401}}"#));
+    let run = || {
+        let output = alc(&temp)
+            .env("ALC_AGY_API_BASE", &base)
+            .env("PATH", "")
+            .env_remove("ALC_AGY_BIN")
+            .args(["usage", "--provider", "antigravity", "--json"])
+            .output()
+            .unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        report["accounts"][0].clone()
+    };
+    let signed_out = run();
+    assert_eq!(signed_out["state"], "signed-out", "{signed_out}");
+    assert_eq!(signed_out["error"], "not logged in; run `agy`");
+
+    write_agy_login(&temp);
+    let refused = run();
+    assert_eq!(refused["state"], "signed-out", "{refused}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("sign in with agy again"),
+        "{refused}"
+    );
 }
 
 #[test]

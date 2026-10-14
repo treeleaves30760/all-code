@@ -2452,7 +2452,9 @@ mod tests {
         assert_eq!(record.model.as_deref(), Some("claude-sonnet-5-5-low"));
         assert_eq!(record.tokens.input_tokens, Some(20));
         assert_eq!(record.tokens.output_tokens, Some(8));
-        assert_eq!(record.account_id.as_deref().map(str::len), Some(12));
+        // One login per machine: a stable marker, not the token's fingerprint,
+        // which changes with every hourly renewal.
+        assert_eq!(record.account_id.as_deref(), Some("agy"));
     }
 
     #[test]

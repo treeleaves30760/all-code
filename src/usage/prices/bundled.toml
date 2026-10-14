@@ -237,3 +237,14 @@ input = "1.75"
 output = "14"
 cache_read = "0.175"
 cache_write = "1.75"
+
+# Antigravity serves GPT-OSS 120B at no API-equivalent cost; the Claude and
+# Gemini families it serves have no verified rate in this snapshot yet, so
+# their rows are N/A rather than guessed.
+[[models]]
+provider = "antigravity"
+model = "gpt-oss-120b"
+aliases = ["gpt-oss-120b-medium"]
+input = "0"
+output = "0"
+cache_read = "0"

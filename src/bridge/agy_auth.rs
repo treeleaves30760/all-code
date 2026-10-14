@@ -12,8 +12,6 @@
 //! that failed to parse, so a malformed store cannot put a token into an
 //! error message, a log line or a failing assertion.
 
-#![allow(dead_code, reason = "wired in by Plan C Tasks 3-12")]
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,6 +24,7 @@ use sha2::{Digest, Sha256};
 
 /// The Windows Credential Manager target agy's keyring library writes:
 /// go-keyring's `service:user`, with service `gemini` and user `antigravity`.
+#[cfg(windows)]
 pub(crate) const KEYRING_TARGET: &str = "gemini:antigravity";
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const KEYRING_SERVICE: &str = "gemini";
@@ -37,6 +36,11 @@ const BASE64_PREFIX: &str = "go-keyring-base64:";
 /// A token this close to its expiry is renewed before use rather than sent:
 /// a turn that starts on it can outlive it.
 pub(crate) const FRESHNESS_MARGIN_SECS: i64 = 60;
+/// What the usage ledger and `alc usage` name agy's login. agy's login has
+/// no account id of its own and its token changes with every renewal, so a
+/// fingerprint would split one account's rows by the hour; alc supports one
+/// agy login per machine, and this marker says which rows are that login's.
+pub(crate) const ACCOUNT_ID: &str = "agy";
 
 /// Why agy's login could not be used. The sentence names the fix; the code
 /// is what KohakuTerrarium calls the same condition.
@@ -53,6 +57,9 @@ pub(crate) enum AgyAuthError {
 }
 
 impl AgyAuthError {
+    /// The code each sentence carries in its parentheses. Users read it
+    /// there; the tests pin that every sentence carries its own.
+    #[cfg(test)]
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::LoginRequired => "login_required",
@@ -150,6 +157,8 @@ impl AgyLocator {
 pub(crate) struct RawCredential(Vec<u8>);
 
 impl RawCredential {
+    /// Test stores only: the real ones build theirs from what they read.
+    #[cfg(test)]
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
@@ -477,8 +486,8 @@ impl fmt::Debug for AgyToken {
 pub(crate) struct Fingerprint([u8; 32]);
 
 impl Fingerprint {
-    /// What the usage ledger records as the account: twelve hex digits, enough
-    /// to tell logins apart and useless for anything else.
+    /// Twelve hex digits, enough to tell two tokens apart in a debug line and
+    /// useless for anything else.
     pub(crate) fn account_id(&self) -> String {
         self.0
             .iter()
@@ -635,13 +644,6 @@ impl AgyCredentials {
         self
     }
 
-    /// The login as stored now. Never renews; there is no cache to be stale.
-    /// Blocking: on macOS and Linux it can wait on the keyring tool, so async
-    /// code reads through [`Self::read`] instead.
-    pub(crate) fn current(&self) -> Result<AgyToken, AgyAuthError> {
-        load(self.store.as_ref())
-    }
-
     /// A token to sign the next request with, renewed first when stale.
     pub(crate) async fn token(&self) -> Result<AgyToken, AgyAuthError> {
         let token = self.read().await?;
@@ -714,8 +716,9 @@ impl AgyCredentials {
         Ok((token.is_fresh(now_secs()) && !refused).then_some(token))
     }
 
-    /// [`Self::current`] on the blocking pool, so a keyring tool that waits
-    /// for an unlock prompt holds a blocking thread and not an async worker.
+    /// The login as stored now, read on the blocking pool: on macOS and Linux
+    /// the read can wait on a keyring tool, and an unlock prompt then holds a
+    /// blocking thread and not an async worker.
     /// Never renews, which is what the transport's account-switch guard
     /// needs: it asks who is signed in now, not for a usable token.
     pub(crate) async fn read(&self) -> Result<AgyToken, AgyAuthError> {
@@ -1464,7 +1467,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // agy runs but leaves the login as it was.
         let credentials = renewing(dir.path(), credential("tok-a", 3600), None, 0);
-        let rejected = credentials.current().unwrap().fingerprint();
+        let rejected = credentials.read().await.unwrap().fingerprint();
         let error = credentials
             .renew_after_rejection(rejected)
             .await

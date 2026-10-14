@@ -82,6 +82,10 @@ pub(crate) enum Credential {
         key: String,
         vendor: KeyVendor,
     },
+    /// agy's login: the fixed keyring entry plus this fallback file.
+    Antigravity {
+        file: PathBuf,
+    },
     /// Nothing to read, and the sentence that says why.
     None {
         reason: String,
@@ -111,6 +115,7 @@ pub(crate) enum Identity {
     /// The key itself, never shown: two profiles holding one key are one
     /// account at the vendor.
     Key(String),
+    Antigravity(PathBuf),
 }
 
 impl Discovered {
@@ -121,6 +126,7 @@ impl Discovered {
             Credential::Codex { auth_file } => Some(Identity::Codex(auth_file.clone())),
             Credential::Claude { config_dir } => Some(Identity::Claude(config_dir.clone())),
             Credential::ApiKey { key, .. } => Some(Identity::Key(key.clone())),
+            Credential::Antigravity { file } => Some(Identity::Antigravity(file.clone())),
             Credential::None { .. } => None,
         }
     }
@@ -207,14 +213,20 @@ fn resolve(
             },
             CredentialSource::Key,
         ),
-        // The Antigravity CLI holds its own Google login, and alc has no
-        // way to ask Google for its quota yet.
-        ProviderKind::Antigravity => (
-            Credential::None {
-                reason: "no quota API without the Antigravity bridge".to_owned(),
-            },
-            CredentialSource::None,
-        ),
+        // agy's own Google login, read the way the bridge reads it.
+        ProviderKind::Antigravity => match crate::bridge::agy_auth::AgyLocator::resolve() {
+            Ok(locator) => (
+                Credential::Antigravity { file: locator.file },
+                CredentialSource::Default,
+            ),
+            Err(_) => (
+                Credential::None {
+                    reason: "could not resolve the home directory where agy keeps its login"
+                        .to_owned(),
+                },
+                CredentialSource::None,
+            ),
+        },
         kind => match KeyVendor::for_kind(kind) {
             None => (
                 Credential::None {

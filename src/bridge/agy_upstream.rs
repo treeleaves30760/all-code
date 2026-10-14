@@ -7,8 +7,6 @@
 //! a guard against the login changing mid-request, and retries that stop
 //! the moment the first byte of an answer has been read.
 
-#![allow(dead_code, reason = "wired in by Plan C Tasks 7-12")]
-
 use std::collections::VecDeque;
 use std::path::Path;
 use std::time::Duration;
@@ -292,10 +290,6 @@ impl AgyUpstream {
     pub(crate) fn without_backoff(mut self) -> Self {
         self.backoff_base = Duration::ZERO;
         self
-    }
-
-    pub(crate) fn credentials(&self) -> &AgyCredentials {
-        &self.credentials
     }
 
     /// Opens a generation stream: the project lookup, then the request, each

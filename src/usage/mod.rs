@@ -297,6 +297,34 @@ fn account_for(
             account.label = Some("key".to_owned());
             quota::fetch_key(*vendor, key, &discovered.profile)
         }
+        Credential::Antigravity { file } => {
+            use crate::bridge::agy_auth::{self, AgyAuthError, SystemStore};
+            // A daemon may not open the macOS Keychain (it raises a dialog on
+            // a desktop nobody is watching); the file is still read.
+            let store = if cfg!(target_os = "macos") && stores == ClaudeStores::FileOnly {
+                SystemStore::file_only(file.clone())
+            } else {
+                SystemStore::new(file.clone())
+            };
+            match agy_auth::load(&store) {
+                Ok(token) => {
+                    // The ledger's marker, so this row and the bridge's
+                    // rows name the same login.
+                    account.account_id = Some(agy_auth::ACCOUNT_ID.to_owned());
+                    quota::fetch_antigravity(&token, agy_auth::now_secs())
+                }
+                Err(AgyAuthError::LoginRequired) => quota::Outcome {
+                    state: Some(AccountState::SignedOut),
+                    error: Some("not logged in; run `agy`".to_owned()),
+                    ..quota::Outcome::default()
+                },
+                Err(error) => quota::Outcome {
+                    state: Some(AccountState::SignedOut),
+                    error: Some(error.message().to_owned()),
+                    ..quota::Outcome::default()
+                },
+            }
+        }
     };
 
     account.plan = outcome.plan;
@@ -320,6 +348,7 @@ fn finish(mut account: Account, credential: &Credential, env: &Env) -> Account {
     account.credential_path = match credential {
         Credential::Codex { auth_file } => Some(elide_home(auth_file, env.home.as_deref())),
         Credential::Claude { config_dir } => Some(elide_home(config_dir, env.home.as_deref())),
+        Credential::Antigravity { file } => Some(elide_home(file, env.home.as_deref())),
         Credential::ApiKey { .. } | Credential::None { .. } => None,
     };
     if account.error.is_some() && account.state == AccountState::Unavailable {
@@ -619,6 +648,9 @@ fn remaining_text(account: &Account, theme: &Theme) -> String {
     {
         return error.clone();
     }
+    if account.kind == ProviderKind::Antigravity && !account.windows.is_empty() {
+        return pooled_text(account, theme);
+    }
 
     let mut parts: Vec<String> = account
         .windows
@@ -631,18 +663,7 @@ fn remaining_text(account: &Account, theme: &Theme) -> String {
                 Some(scope) => format!("{scope} {}", window.name),
                 None => window.name.clone(),
             };
-            let left = (100.0 - quota::clamp_percent(window.used_percent)).round();
-            match window
-                .resets_at
-                .map(|at| at.saturating_sub(account.fetched_at.unwrap_or(0)))
-                .filter(|seconds| *seconds > 0)
-            {
-                Some(seconds) => format!(
-                    "{name} {left:.0}% left, resets in {}",
-                    format_countdown(seconds)
-                ),
-                None => format!("{name} {left:.0}% left"),
-            }
+            window_text(&name, window, account.fetched_at)
         })
         .collect();
 
@@ -674,6 +695,50 @@ fn remaining_text(account: &Account, theme: &Theme) -> String {
     } else {
         parts.join(&format!(" {} ", theme.dash()))
     }
+}
+
+fn window_text(name: &str, window: &Window, fetched_at: Option<u64>) -> String {
+    let left = (100.0 - quota::clamp_percent(window.used_percent)).round();
+    match window
+        .resets_at
+        .map(|at| at.saturating_sub(fetched_at.unwrap_or(0)))
+        .filter(|seconds| *seconds > 0)
+    {
+        Some(seconds) => format!(
+            "{name} {left:.0}% left, resets in {}",
+            format_countdown(seconds)
+        ),
+        None => format!("{name} {left:.0}% left"),
+    }
+}
+
+/// An Antigravity row: one clause per pool, its windows joined by the dash,
+/// pools by a semicolon. Every pool window shows, used or not: they are the
+/// plan's own windows, not per-model ones.
+fn pooled_text(account: &Account, theme: &Theme) -> String {
+    let mut pools: Vec<(String, Vec<String>)> = Vec::new();
+    for window in &account.windows {
+        let pool = window
+            .scope
+            .clone()
+            .unwrap_or_else(|| "Antigravity".to_owned());
+        let text = window_text(&window.name, window, account.fetched_at);
+        match pools.iter_mut().find(|(name, _)| *name == pool) {
+            Some((_, parts)) => parts.push(text),
+            None => pools.push((pool, vec![text])),
+        }
+    }
+    let separator = format!(" {} ", theme.dash());
+    let mut text = pools
+        .into_iter()
+        .map(|(pool, parts)| format!("{pool}: {}", parts.join(&separator)))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if let Some(error) = &account.error {
+        text.push_str(&separator);
+        text.push_str(error);
+    }
+    text
 }
 
 /// `None` when the vendor enabled a balance but sent no numbers for it, so
@@ -796,6 +861,35 @@ mod tests {
         assert!(text.contains("codex"), "{text}");
         assert!(text.contains("me@example.com"), "{text}");
         assert!(text.contains("5h 63% left, resets in 2h 10m"), "{text}");
+    }
+
+    #[test]
+    fn an_antigravity_row_reads_by_pool() {
+        let mut account = account("antigravity", AccountState::Ok);
+        account.kind = ProviderKind::Antigravity;
+        account.fetched_at = Some(1_000);
+        account.windows.clear();
+        for (pool, name, used, resets) in [
+            ("Gemini", "5h", 28.0, Some(1_000 + 3 * 3_600)),
+            ("Gemini", "week", 60.0, None),
+            ("Claude/GPT", "week", 9.0, None),
+        ] {
+            account.windows.push(Window {
+                name: name.to_owned(),
+                scope: Some(pool.to_owned()),
+                used_percent: used,
+                resets_at: resets,
+                remaining: None,
+                limit: None,
+            });
+        }
+        let theme = theme();
+        let text = render(&report(vec![account], vec![]), &theme);
+        let expected = format!(
+            "Gemini: 5h 72% left, resets in 3h 0m {} week 40% left; Claude/GPT: week 91% left",
+            theme.dash()
+        );
+        assert!(text.contains(&expected), "{text}");
     }
 
     /// The panel the request was about: several logins of one kind, each with

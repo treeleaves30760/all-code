@@ -152,7 +152,6 @@ pub fn wire_model(family: &AgyFamily, effort: &str) -> String {
 /// The wire id an agent pinned at launch sends: the profile's model with the
 /// pinned effort's suffix. A wire id with no pinned effort stays as it is,
 /// and a model alc does not know passes through for upstream to judge.
-#[allow(dead_code, reason = "used by the Antigravity bridge (Tasks 6-11)")]
 pub fn wire_model_for(model: &str, effort: Option<ReasoningEffort>) -> String {
     if let Some((family, _)) = split_wire_id(model) {
         return match effort {

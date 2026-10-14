@@ -158,17 +158,14 @@ impl BridgeState {
         // Read once here rather than per turn: it is the id the requests
         // already carry as a header, and reading the file on every frame
         // would be a syscall per turn for a number that cannot change while
-        // the session runs. agy's login has no account id of its own, so
-        // its row names the token's fingerprint, which never discloses it.
+        // the session runs. agy's login has no account id of its own, and
+        // its token changes with every hourly renewal, so its rows carry a
+        // fixed marker: alc supports one agy login per machine.
         let (kind, account) = match &upstream {
             Upstream::Codex(auth) => (crate::config::ProviderKind::Codex, auth.stored_account_id()),
-            Upstream::Antigravity(agy) => (
+            Upstream::Antigravity(_) => (
                 crate::config::ProviderKind::Antigravity,
-                agy.upstream
-                    .credentials()
-                    .current()
-                    .ok()
-                    .map(|token| token.fingerprint().account_id()),
+                Some(agy_auth::ACCOUNT_ID.to_owned()),
             ),
         };
         let ledger = config.ledger.clone().map(|path| {
