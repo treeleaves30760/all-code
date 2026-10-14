@@ -161,12 +161,13 @@ fn push_codex_config(args: &mut Vec<OsString>, key: &str, value: String) {
 
 /// Points Codex at alc's in-process bridge for a login Codex cannot sign with
 /// itself (agy's). Prepended, so the flags precede any subcommand Codex was
-/// given. Codex on its own login runs natively and never gets a plan.
-pub(crate) fn apply_bridge(
-    spec: &mut LaunchSpec,
-    base_url: &str,
-    _plan: &BridgePlan,
-) -> Result<()> {
+/// given and a `-c` of the user's own still wins. Codex on its own login runs
+/// natively and never gets a plan.
+///
+/// The window travels too: Codex has no metadata for an Antigravity slug,
+/// and without one it neither compacts a long session nor shows how much
+/// context is left - the session would end on Antigravity's limit instead.
+pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
     if spec.provider_kind != ProviderKind::Antigravity {
         return Ok(());
     }
@@ -193,6 +194,9 @@ pub(crate) fn apply_bridge(
         &format!("model_providers.{id}.requires_openai_auth"),
         "false".to_owned(),
     );
+    if let Some(window) = plan.context_window {
+        push_codex_config(&mut flags, "model_context_window", window.to_string());
+    }
     spec.args.splice(0..0, flags);
     Ok(())
 }
@@ -214,10 +218,11 @@ mod tests {
         let plan = BridgePlan {
             model: "gemini-3.8-flash-low".to_owned(),
             effort: None,
-            context_window: None,
+            context_window: Some(1_048_576),
             options: Vec::new(),
             api: BridgeApi::Responses,
         };
+        let unwindowed = spec.clone();
         apply_bridge(&mut spec, "http://127.0.0.1:9", &plan).unwrap();
         let args: Vec<String> = spec
             .args
@@ -241,6 +246,26 @@ mod tests {
         assert_eq!(
             &args[args.len() - 3..],
             ["--model", "gemini-3.8-flash-low", "exec"]
+        );
+        // Codex has no metadata for an Antigravity slug, so without the
+        // window it neither compacts nor shows how much context is left.
+        assert!(
+            args.contains(&"model_context_window=1048576".to_owned()),
+            "{args:?}"
+        );
+
+        let mut spec = unwindowed;
+        let plan = BridgePlan {
+            context_window: None,
+            ..plan
+        };
+        apply_bridge(&mut spec, "http://127.0.0.1:9", &plan).unwrap();
+        assert!(
+            !spec
+                .args
+                .iter()
+                .any(|arg| arg.to_string_lossy().starts_with("model_context_window")),
+            "no window, no setting"
         );
 
         let mut native = LaunchSpec::for_test();

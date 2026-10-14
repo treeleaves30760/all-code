@@ -1571,7 +1571,7 @@ fn a_bridged_agent_on_antigravity_starts_on_a_rung_the_bridge_runs_out_loud() {
         ])
         .assert()
         .success();
-    alc(&temp)
+    let output = alc(&temp)
         .args(["--agy", "--dry-run", "pi"])
         .assert()
         .success()
@@ -1580,6 +1580,36 @@ fn a_bridged_agent_on_antigravity_starts_on_a_rung_the_bridge_runs_out_loud() {
         ))
         .stderr(predicate::str::contains(
             "note: Antigravity tops out at 'high', so this session uses high rather than max.",
+        ))
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.matches("note:").count(), 1, "{stderr}");
+}
+
+/// A model alc does not ship is sent as it is, and the user is told so.
+#[test]
+fn a_bridged_agent_on_an_unshipped_antigravity_id_says_it_passes_through() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args([
+            "config",
+            "upsert",
+            "antigravity",
+            "--kind",
+            "antigravity",
+            "--model",
+            "gemini-9-preview",
+        ])
+        .assert()
+        .success();
+    alc(&temp)
+        .args(["--agy", "--dry-run", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--model gemini-9-preview"))
+        .stderr(predicate::str::contains(
+            "note: 'gemini-9-preview' is not one of the Antigravity families alc ships",
         ));
 }
 
@@ -1673,6 +1703,8 @@ fn a_signed_in_bridged_agent_is_pointed_at_the_in_process_bridge() {
         args[args.len() - 4..],
         ["--model", "claude-opus-5-5-high", "exec", "hello"]
     );
+    // The family's standard window, as Claude Code is told it.
+    assert!(args.contains(&"model_context_window=256000"), "{args:?}");
 }
 
 #[test]

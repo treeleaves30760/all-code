@@ -912,6 +912,11 @@ pub(crate) fn bridge_plan(
                             .model
                             .clone()
                             .unwrap_or_else(|| provider.model.clone());
+                        eprintln!(
+                            "note: '{}' is not one of the Antigravity families alc ships; it is \
+                             sent as it is, for Antigravity to accept or refuse.",
+                            model.trim()
+                        );
                         (
                             crate::antigravity::wire_model_for(&model, effort),
                             effort,
@@ -1273,15 +1278,16 @@ impl Bridge {
         // No model allowlist, on purpose: a stale one is the whole reason
         // this code exists. Upstream decides what it will serve, and says so
         // in terms the agent can show the user.
-        let (native, adapter) = if spec.provider_kind == ProviderKind::Antigravity {
+        let (native, adapter, thread_name) = if spec.provider_kind == ProviderKind::Antigravity {
             let file = spec.agy_credential_file.clone().context(
                 "this launch reached the Antigravity adapter without agy's login path; it was \
                  resolved when the launch was built and has been lost since. This is an alc bug \
                  - please report it",
             )?;
             let credential = crate::bridge::agy_auth::AgyLocator { file };
-            // In the user's terminal, before a port is taken: no login, two,
-            // or one alc cannot read. An expired one is agy's to renew.
+            // Before a port is taken: no login, two, or one alc cannot read.
+            // An expired one is agy's to renew. On a shared session this runs
+            // in the hub, which hands the refusal back to the client.
             crate::bridge::agy_auth::require_login(&credential.store())?;
             let config = bridge_config(
                 PathBuf::new(),
@@ -1294,7 +1300,7 @@ impl Bridge {
                     config_dir: config_dir.to_owned(),
                 },
             );
-            (config, "Antigravity adapter")
+            (config, "Antigravity adapter", "agy-bridge")
         } else {
             // No fallback to resolving it here. `build` resolves it in the
             // user's shell, and a launch that arrives without one has lost it
@@ -1320,7 +1326,7 @@ impl Bridge {
                 ledger,
                 crate::bridge::UpstreamKind::Codex,
             );
-            (config, "Codex adapter")
+            (config, "Codex adapter", "codex-bridge")
         };
 
         // Built here, on the calling thread and before any runtime exists,
@@ -1346,7 +1352,7 @@ impl Bridge {
         let (ready, started) = std::sync::mpsc::channel::<Result<(), String>>();
 
         let thread = thread::Builder::new()
-            .name("codex-bridge".to_owned())
+            .name(thread_name.to_owned())
             .spawn(move || {
                 let runtime = match tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(2)
@@ -1392,7 +1398,7 @@ impl Bridge {
             shutdown: Some(shutdown),
             thread: Some(thread),
         };
-        bridge.wait_until_ready()?;
+        bridge.wait_until_ready(adapter)?;
         Ok(bridge)
     }
 
@@ -1400,7 +1406,7 @@ impl Bridge {
         format!("http://127.0.0.1:{}", self.port)
     }
 
-    fn wait_until_ready(&self) -> Result<()> {
+    fn wait_until_ready(&self, adapter: &str) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let address = SocketAddr::from(([127, 0, 0, 1], self.port));
         while Instant::now() < deadline {
@@ -1410,7 +1416,7 @@ impl Bridge {
             thread::sleep(Duration::from_millis(50));
         }
         bail!(
-            "Codex adapter did not become ready on 127.0.0.1:{} within 10 seconds",
+            "the {adapter} did not become ready on 127.0.0.1:{} within 10 seconds",
             self.port
         )
     }
@@ -3624,5 +3630,50 @@ mod tests {
             assert!(spec.agy_credential_file.is_some(), "{agent}");
             assert!(spec.codex_auth_file.is_none(), "{agent}");
         }
+    }
+
+    fn antigravity_bridged_spec(login: Option<PathBuf>) -> LaunchSpec {
+        let mut spec = LaunchSpec::for_test();
+        spec.provider_kind = ProviderKind::Antigravity;
+        spec.provider_name = "antigravity".to_owned();
+        spec.agent = Agent::Opencode;
+        spec.bridge = Some(BridgePlan {
+            model: "claude-opus-5-5-high".to_owned(),
+            effort: Some(ReasoningEffort::High),
+            context_window: Some(256_000),
+            options: Vec::new(),
+            api: BridgeApi::Responses,
+        });
+        spec.agy_credential_file = login;
+        spec
+    }
+
+    /// A plan that lost its login path is alc's fault, and says so rather
+    /// than going looking for a login in whatever process this is.
+    #[test]
+    fn an_antigravity_bridge_without_its_login_path_is_an_alc_bug() {
+        let temp = tempfile::tempdir().unwrap();
+        let spec = antigravity_bridged_spec(None);
+        let plan = spec.bridge.clone().unwrap();
+        let error = format!(
+            "{:#}",
+            Bridge::start(&plan, &spec, temp.path()).err().unwrap()
+        );
+        assert!(error.contains("without agy's login path"), "{error}");
+        assert!(error.contains("alc bug"), "{error}");
+    }
+
+    #[test]
+    fn an_antigravity_bridge_with_no_login_tells_the_user_to_sign_in() {
+        crate::bridge::agy_auth::test_support::without_system_keyring();
+        let temp = tempfile::tempdir().unwrap();
+        let spec = antigravity_bridged_spec(Some(temp.path().join("absent-login")));
+        let plan = spec.bridge.clone().unwrap();
+        let error = format!(
+            "{:#}",
+            Bridge::start(&plan, &spec, temp.path()).err().unwrap()
+        );
+        assert!(error.contains("not signed in to Antigravity"), "{error}");
+        assert!(error.contains("run `agy` and sign in"), "{error}");
     }
 }

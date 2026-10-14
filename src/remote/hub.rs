@@ -1306,6 +1306,36 @@ mod tests {
         }
     }
 
+    /// A shared session's bridge is started by the hub, from the spec that
+    /// crossed the socket: the login path the client resolved arrives, and a
+    /// missing login is refused with the same sign-in sentence, which the
+    /// hub hands back to the client as the create request's error.
+    #[test]
+    fn a_shared_antigravity_launch_with_no_login_is_refused_with_the_sign_in_sentence() {
+        crate::bridge::agy_auth::test_support::without_system_keyring();
+        let temp = tempfile::tempdir().unwrap();
+        let mut spec = LaunchSpec::for_test();
+        spec.provider_kind = ProviderKind::Antigravity;
+        spec.provider_name = "antigravity".to_owned();
+        spec.agent = Agent::Opencode;
+        spec.program = "opencode".into();
+        spec.bridge = Some(crate::launch::BridgePlan {
+            model: "claude-opus-5-5-high".to_owned(),
+            effort: None,
+            context_window: None,
+            options: Vec::new(),
+            api: crate::launch::BridgeApi::Responses,
+        });
+        spec.agy_credential_file = Some(temp.path().join("absent-login"));
+
+        let back = from_wire(to_wire(&spec).unwrap(), &[]).unwrap();
+        let error = match launch::prepare(back, temp.path()) {
+            Ok(_) => panic!("a launch with no login was prepared"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(error.contains("run `agy` and sign in"), "{error}");
+    }
+
     /// The regression this file exists to not repeat.
     ///
     /// A shared `alc --codex claude` reached Claude Code with the Codex model

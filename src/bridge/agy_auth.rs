@@ -772,6 +772,20 @@ pub(crate) mod test_support {
 
     type Slot = Result<Option<RawCredential>, AgyAuthError>;
 
+    /// Turns the system keyring off for this test process, so a test that
+    /// goes through a real `SystemStore` (`Bridge::start`, `prepare`) can
+    /// never read the login of the machine running the suite.
+    ///
+    /// Set once and never unset: no unit test wants the keyring, so there is
+    /// no value for a concurrent reader to see change, and the `Once` keeps
+    /// two callers from writing the environment at the same time.
+    pub(crate) fn without_system_keyring() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        // SAFETY: written once, under the `Once`, to the value every later
+        // read expects; nothing in the test binary removes or changes it.
+        ONCE.call_once(|| unsafe { std::env::set_var("ALC_AGY_NO_KEYRING", "1") });
+    }
+
     /// Credential bytes held in memory, settable mid-test.
     pub(crate) struct MemoryStore {
         keyring: Mutex<Slot>,
