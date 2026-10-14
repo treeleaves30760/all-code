@@ -92,12 +92,17 @@ pub(crate) struct ChatRequest {
     pub tool_choice: Option<Value>,
     /// Antigravity's `maxOutputTokens` (`max_completion_tokens` wins when both
     /// are sent); chatgpt.com refuses both, so the Codex body never carries them.
+    ///
+    /// Read as raw JSON and only used when it is a whole non-negative number:
+    /// a `4096.0`, a `-1` or a string is dropped like any field this surface
+    /// cannot use, never a reason to refuse the turn.
     #[serde(default)]
-    pub max_tokens: Option<u64>,
+    pub max_tokens: Option<Value>,
     #[serde(default)]
-    pub max_completion_tokens: Option<u64>,
+    pub max_completion_tokens: Option<Value>,
+    /// Kept only when it is a number, for the same reason.
     #[serde(default)]
-    pub temperature: Option<f64>,
+    pub temperature: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -280,7 +285,7 @@ pub(crate) fn to_upstream(
 ) -> Result<UpstreamRequest, BridgeError> {
     if request.model.trim().is_empty() {
         return Err(BridgeError::invalid(
-            "'model' is required and must name a Codex model",
+            "'model' is required and must name the model to run",
         ));
     }
     if request.messages.is_empty() {
@@ -343,8 +348,10 @@ pub(crate) fn to_upstream(
         },
         prompt_cache_key: None,
         input,
-        max_output_tokens: request.max_completion_tokens.or(request.max_tokens),
-        temperature: request.temperature,
+        max_output_tokens: [&request.max_completion_tokens, &request.max_tokens]
+            .into_iter()
+            .find_map(|cap| cap.as_ref().and_then(Value::as_u64)),
+        temperature: request.temperature.as_ref().and_then(Value::as_f64),
     })
 }
 
@@ -354,7 +361,7 @@ pub(crate) fn to_upstream(
 fn translate_tool(tool: &ChatTool) -> Result<Tool, BridgeError> {
     if tool.kind != "function" {
         return Err(BridgeError::invalid(format!(
-            "unsupported tool type {:?}; Codex takes only 'function' tools",
+            "unsupported tool type {:?}; this bridge takes only 'function' tools",
             tool.kind
         )));
     }
@@ -1014,7 +1021,7 @@ fn turn_failure(frame: &UpstreamFrame) -> BridgeError {
     BridgeError::upstream(
         StatusCode::BAD_GATEWAY,
         upstream::error_message(frame.raw.as_bytes())
-            .unwrap_or_else(|| "chatgpt.com ended the turn without saying why".to_owned()),
+            .unwrap_or_else(|| "the upstream ended the turn without saying why".to_owned()),
     )
 }
 
@@ -1042,13 +1049,13 @@ async fn aggregate(mut turn: Turn, model: &str) -> Result<ChatCompletion, Bridge
     if !state.completed {
         return Err(BridgeError::upstream(
             StatusCode::BAD_GATEWAY,
-            "chatgpt.com closed the stream before the turn completed",
+            "the upstream closed the stream before the turn completed",
         ));
     }
     if state.is_empty() {
         return Err(BridgeError::upstream(
             StatusCode::BAD_GATEWAY,
-            "chatgpt.com completed the turn without producing any output",
+            "the upstream completed the turn without producing any output",
         ));
     }
     Ok(state.completion())
@@ -1139,14 +1146,14 @@ impl StreamPump {
         if !self.state.completed {
             self.fail(BridgeError::upstream(
                 StatusCode::BAD_GATEWAY,
-                "chatgpt.com closed the stream before the turn completed",
+                "the upstream closed the stream before the turn completed",
             ));
             return;
         }
         if self.state.is_empty() {
             self.fail(BridgeError::upstream(
                 StatusCode::BAD_GATEWAY,
-                "chatgpt.com completed the turn without producing any output",
+                "the upstream completed the turn without producing any output",
             ));
             return;
         }
@@ -2047,5 +2054,50 @@ mod tests {
                 .max_output_tokens,
             Some(9)
         );
+    }
+
+    #[tokio::test]
+    async fn caps_this_surface_cannot_read_are_dropped_rather_than_refused() {
+        let done = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Sunny.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2,\"totalTokenCount\":5}}}\n\n";
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(done)]);
+        let body = json!({"model": "gemini-3.8-flash", "max_tokens": 4096.0,
+            "max_completion_tokens": -1, "temperature": "x",
+            "messages": [{"role": "user", "content": "hi"}]});
+        let (status, answer) =
+            post_json(agy_bridge(&fake, None, None), "/v1/chat/completions", body).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        let sent = generated(&fake).into_iter().next().unwrap();
+        let config = &sent["request"]["generationConfig"];
+        assert_ne!(config["maxOutputTokens"], 4096, "{sent}");
+        assert!(config.get("temperature").is_none(), "{sent}");
+    }
+
+    #[test]
+    fn refusals_name_no_vendor_this_bridge_might_not_be_serving() {
+        let empty: ChatRequest = serde_json::from_value(
+            json!({"model": " ", "messages": [{"role": "user", "content": "hi"}]}),
+        )
+        .unwrap();
+        let hosted: ChatRequest = serde_json::from_value(json!({"model": "gemini-3.8-flash",
+            "tools": [{"type": "web_search", "function": {"name": "search"}}],
+            "messages": [{"role": "user", "content": "hi"}]}))
+        .unwrap();
+        let unexplained = UpstreamFrame {
+            raw: json!({"type": "response.failed", "response": {"id": "resp_x"}}).to_string(),
+            event: serde_json::from_value(
+                json!({"type": "response.failed", "response": {"id": "resp_x"}}),
+            )
+            .unwrap(),
+        };
+        for message in [
+            to_upstream(&empty, &config(None)).unwrap_err().message,
+            to_upstream(&hosted, &config(None)).unwrap_err().message,
+            turn_failure(&unexplained).message,
+        ] {
+            assert!(
+                !message.contains("Codex") && !message.contains("chatgpt.com"),
+                "{message}"
+            );
+        }
     }
 }

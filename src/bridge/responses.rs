@@ -241,7 +241,8 @@ pub(crate) fn antigravity_request(
         _ => return Err(BridgeError::invalid("the request has no 'input' to send")),
     }
     let effort = match body.pointer("/reasoning/effort").and_then(Value::as_str) {
-        Some(word) => effort_word(word),
+        // A word alc has no rung for (`auto`) says nothing, so the pin stands.
+        Some(word) => effort_word(word).or_else(|| pinned.map(Effort::from)),
         None => pinned.map(Effort::from),
     };
     Ok(UpstreamRequest {
@@ -273,8 +274,9 @@ pub(crate) fn antigravity_request(
     })
 }
 
-/// A Responses effort word on alc's ladder; one it does not know leaves the
-/// effort to the model's default rather than refusing the turn.
+/// A Responses effort word on alc's ladder; one it does not know is `None`,
+/// which leaves the launch pin (or the model's default) in force rather than
+/// refusing the turn.
 fn effort_word(word: &str) -> Option<Effort> {
     match word.trim().to_ascii_lowercase().as_str() {
         "none" => Some(Effort::None),
@@ -399,33 +401,29 @@ async fn relay_antigravity(
     }
 }
 
-/// The translated events as Responses SSE, each under its own `event:` name.
+/// The translated events as Responses SSE, each under its own `event:` name
+/// and stamped with a `sequence_number` counting from 0, as chatgpt.com's
+/// frames are.
 ///
-/// A failure after the first frame can only be told in the stream itself, as
-/// the Responses `error` event; nothing is retried by then (see
-/// [`super::gemini_stream::AgyStream`]). A `SAFETY` or `RECITATION` stop is
-/// not one of those: it arrives as the turn's own `response.failed`.
+/// The stamp is not decoration: `@ai-sdk/openai` (OpenCode's Responses
+/// client) validates each chunk against a schema that requires it, and a
+/// chunk that fails is ignored rather than refused - an `error` event without
+/// one would vanish. For the same reader, a `response.failed` (a `SAFETY` or
+/// `RECITATION` stop) is preceded by an `error` event carrying its code and
+/// message: that client finishes on `completed`/`incomplete` and reports
+/// `error`, so a stop told only as `response.failed` could show as an empty
+/// turn. A failure after the first frame can only be told in the stream
+/// itself, as that same `error` event; nothing is retried by then (see
+/// [`super::gemini_stream::AgyStream`]).
 fn stream_antigravity(stream: UpstreamStream) -> Response {
-    let body = futures_util::stream::unfold(Some(stream), |state| async move {
-        let mut stream = state?;
-        match stream.next().await {
-            Some(Ok(frame)) => {
-                let kind = serde_json::from_str::<Value>(&frame.raw)
-                    .ok()
-                    .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
-                    .unwrap_or_else(|| "message".to_owned());
-                Some((
-                    Ok::<_, Infallible>(format!("event: {kind}\ndata: {}\n\n", frame.raw)),
-                    Some(stream),
-                ))
-            }
-            Some(Err(error)) => {
-                let event = json!({"type": "error", "code": error.kind,
-                    "message": error.message, "param": null});
-                Some((Ok(format!("event: error\ndata: {event}\n\n")), None))
-            }
-            None => None,
-        }
+    let relay = SequencedRelay {
+        stream: Some(stream),
+        sequence: 0,
+        queued: std::collections::VecDeque::new(),
+    };
+    let body = futures_util::stream::unfold(relay, |mut relay| async move {
+        let frame = relay.next().await?;
+        Some((Ok::<_, Infallible>(frame), relay))
     });
     let mut response = Response::new(Body::from_stream(body));
     response.headers_mut().insert(
@@ -437,6 +435,70 @@ fn stream_antigravity(stream: UpstreamStream) -> Response {
         axum::http::HeaderValue::from_static("no-cache"),
     );
     response
+}
+
+/// [`stream_antigravity`]'s state: the turn, the next sequence number, and
+/// the frames already written but not yet handed out.
+struct SequencedRelay {
+    /// `None` once the turn has ended, in success or failure.
+    stream: Option<UpstreamStream>,
+    sequence: u64,
+    queued: std::collections::VecDeque<String>,
+}
+
+impl SequencedRelay {
+    async fn next(&mut self) -> Option<String> {
+        loop {
+            if let Some(frame) = self.queued.pop_front() {
+                return Some(frame);
+            }
+            let stream = self.stream.as_mut()?;
+            match stream.next().await {
+                Some(Ok(frame)) => match serde_json::from_str::<Value>(&frame.raw) {
+                    Ok(event) if event.is_object() => {
+                        if event.get("type").and_then(Value::as_str) == Some("response.failed") {
+                            let error = event.pointer("/response/error");
+                            let read = |key: &str| {
+                                error
+                                    .and_then(|error| error.get(key))
+                                    .cloned()
+                                    .unwrap_or(Value::Null)
+                            };
+                            self.push(json!({"type": "error", "code": read("code"),
+                                "message": read("message"), "param": null}));
+                        }
+                        self.push(event);
+                    }
+                    // Unreachable: every frame is built from a JSON object.
+                    _ => self.fail("alc relayed an Antigravity event it could not re-read"),
+                },
+                Some(Err(error)) => {
+                    let event = json!({"type": "error", "code": error.kind,
+                        "message": error.message, "param": null});
+                    self.push(event);
+                    self.stream = None;
+                }
+                None => self.stream = None,
+            }
+        }
+    }
+
+    fn push(&mut self, mut event: Value) {
+        let kind = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("message")
+            .to_owned();
+        event["sequence_number"] = json!(self.sequence);
+        self.sequence += 1;
+        self.queued
+            .push_back(format!("event: {kind}\ndata: {event}\n\n"));
+    }
+
+    fn fail(&mut self, message: &str) {
+        self.push(json!({"type": "error", "code": "api_error", "message": message, "param": null}));
+        self.stream = None;
+    }
 }
 
 /// The same events folded into one Responses object, as [`fold_response`]
@@ -1213,6 +1275,29 @@ mod tests {
             .collect()
     }
 
+    /// The streamed body's frames as (event name, payload). Asserts what every
+    /// Responses client may rely on: each payload's `type` is its event name,
+    /// and `sequence_number` is on every frame, counting up from 0.
+    fn frames(body: &str) -> Vec<(String, Value)> {
+        let frames: Vec<(String, Value)> = upstream::parse_sse(body)
+            .into_iter()
+            .map(|frame| {
+                let payload: Value = serde_json::from_str(&frame.data).unwrap();
+                (frame.event.unwrap_or_default(), payload)
+            })
+            .collect();
+        assert!(!frames.is_empty(), "no frames in {body}");
+        for (index, (event, payload)) in frames.iter().enumerate() {
+            assert_eq!(payload["type"], event.as_str(), "{body}");
+            assert_eq!(payload["sequence_number"], index as u64, "{body}");
+        }
+        frames
+    }
+
+    fn names(frames: &[(String, Value)]) -> Vec<&str> {
+        frames.iter().map(|(event, _)| event.as_str()).collect()
+    }
+
     #[tokio::test]
     async fn a_responses_client_runs_a_signed_tool_round_on_antigravity() {
         let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(CALL), Reply::sse(DONE)]);
@@ -1227,6 +1312,8 @@ mod tests {
             "{body}"
         );
         assert!(body.contains("event: response.completed"), "{body}");
+        let streamed = frames(&body);
+        assert_eq!(names(&streamed).last(), Some(&"response.completed"));
 
         let second = serde_json::json!({"model": "gemini-3.8-flash", "stream": false, "tools": tools(),
             "reasoning": {"effort": "low"}, "input": [
@@ -1302,22 +1389,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stream_that_fails_mid_turn_ends_with_an_error_event() {
-        let fake = FakeCodeAssist::start(
-            vec![project()],
-            vec![Reply::sse(
-                "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"x\"}]},\"finishReason\":\"RECITATION\"}],\"usageMetadata\":{}}}\n\n",
-            )],
-        );
+    async fn an_effort_word_alc_does_not_know_leaves_the_launch_pin_in_force() {
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(DONE)]);
+        let asked = serde_json::json!({"model": "gemini-3.8-flash", "reasoning": {"effort": "auto"},
+            "input": "hi"});
         let (status, body) = post_json(
-            agy_bridge(&fake, None, None),
+            agy_bridge(&fake, None, Some(crate::config::ReasoningEffort::High)),
             "/v1/responses",
-            serde_json::json!({"model": "gemini-3.8-flash", "stream": true, "input": "hi"}),
+            asked,
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("event: response.failed"), "{body}");
-        assert!(body.contains("RECITATION"), "{body}");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(generated(&fake)[0]["model"], "gemini-3.8-flash-high");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_stream_says_error_before_response_failed_so_either_reader_sees_it() {
+        for (reason, words) in [
+            ("RECITATION", "recited protected text"),
+            ("SAFETY", "safety filter"),
+        ] {
+            let stopped = format!(
+                "data: {{\"response\":{{\"candidates\":[{{\"content\":{{\"role\":\"model\",\"parts\":[{{\"text\":\"x\"}}]}},\"finishReason\":\"{reason}\"}}],\"usageMetadata\":{{}}}}}}\n\n"
+            );
+            let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(&stopped)]);
+            let (status, body) = post_json(
+                agy_bridge(&fake, None, None),
+                "/v1/responses",
+                serde_json::json!({"model": "gemini-3.8-flash", "stream": true, "input": "hi"}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let streamed = frames(&body);
+            let names = names(&streamed);
+            assert_eq!(
+                &names[names.len() - 2..],
+                ["error", "response.failed"],
+                "{body}"
+            );
+            let (_, error) = &streamed[streamed.len() - 2];
+            assert_eq!(error["code"], reason, "{body}");
+            assert!(error["param"].is_null(), "{body}");
+            assert!(error["message"].as_str().unwrap().contains(words), "{body}");
+            let (_, failed) = streamed.last().unwrap();
+            assert_eq!(failed["response"]["error"]["code"], reason, "{body}");
+        }
     }
 
     #[tokio::test]
@@ -1355,7 +1471,8 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("event: response.output_text.delta"), "{body}");
-        assert!(body.contains("event: error\n"), "{body}");
+        let streamed = frames(&body);
+        assert_eq!(names(&streamed).last(), Some(&"error"), "{body}");
         assert!(!body.contains("event: response.completed"), "{body}");
         assert_eq!(
             fake.count("streamGenerateContent"),
