@@ -277,8 +277,11 @@ uses to that model (so `/model sonnet` names it too) and skips the server
 attempt. Auto mode then works, and its classifier calls spend that provider's
 quota. The `anthropic` kind — your own Claude login or API key — keeps
 Anthropic's server-side check. A profile whose model is itself a Claude Code
-alias, such as `sonnet`, is not pinned, and a `--settings` of your own that
-names `ANTHROPIC_DEFAULT_SONNET_MODEL` still wins.
+alias, such as `sonnet`, is not pinned, nor is one whose model is a Claude id in
+full, such as `claude-opus-5` — a gateway in front of Anthropic that already
+serves Sonnet by name. A `--settings` of your own that names
+`ANTHROPIC_DEFAULT_SONNET_MODEL` still wins; one in `~/.claude/settings.json`
+does not, because alc's settings take precedence over it.
 
 ## Command reference
 
