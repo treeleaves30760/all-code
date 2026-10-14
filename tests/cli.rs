@@ -1724,8 +1724,9 @@ fn claude_credential_names_a_missing_agy_login_without_starting_a_bridge() {
 }
 
 /// The streams Task 1's spike captured from the live endpoint, CRLF framing
-/// and all: the fake Code Assist server replays them, so the end-to-end
-/// tests read the shapes Google really sends.
+/// and all (`.gitattributes` keeps git from converting them, so every
+/// checkout serves the same bytes): the fake Code Assist server replays
+/// them, so the end-to-end tests read the shapes Google really sends.
 const FLASH_TOOL_TURN: &str = include_str!("fixtures/antigravity/flash-tool-turn.sse");
 const FLASH_TOOL_REPLAY: &str = include_str!("fixtures/antigravity/flash-tool-replay.sse");
 const CLAUDE_TOOL_TURN: &str = include_str!("fixtures/antigravity/claude-tool-turn.sse");
@@ -1736,6 +1737,47 @@ const WEATHER_QUESTION: &str = "Call get_weather for Paris, then stop.";
 fn weather_tool() -> serde_json::Value {
     serde_json::json!({"name": "get_weather", "description": "Current weather for a city",
         "input_schema": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"}}, "required": ["city"]}})
+}
+
+/// A stand-in `agy` that only notes it ran, in `<dir>/agy-ran`, and fails.
+/// The end-to-end tests point alc and the host it starts at it, so a bridge
+/// that took to renewing would run this rather than the developer's agy on
+/// their real login - and [`assert_agy_never_ran`] would say so.
+fn fake_agy(dir: &std::path::Path) -> std::path::PathBuf {
+    let marker = dir.join("agy-ran");
+    #[cfg(windows)]
+    {
+        let path = dir.join("agy.cmd");
+        std::fs::write(
+            &path,
+            format!(
+                "@echo off\r\n>>\"{}\" echo ran\r\nexit /b 1\r\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        path
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("agy");
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\necho ran >> '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+}
+
+/// Nothing renewed agy's login: a fresh token needs no agy.
+fn assert_agy_never_ran(work: &tempfile::TempDir) {
+    assert!(
+        !work.path().join("agy-ran").exists(),
+        "alc ran agy during a test whose login needed no renewal"
+    );
 }
 
 /// Starts `alc --agy claude` with the stand-in `claude`, then asks for the
@@ -1749,6 +1791,7 @@ fn launch_claude_on_agy(
     let stand_in = fake_claude(work.path());
     let launch = alc(temp)
         .env("ALC_AGY_API_BASE", &fake.base)
+        .env("ALC_AGY_BIN", fake_agy(work.path()))
         .env("ALC_CLAUDE_BIN", &stand_in)
         .env("ALC_FAKE_ARGS", work.path().join("args.txt"))
         .env("ALC_FAKE_ENV", work.path().join("env.txt"))
@@ -1769,18 +1812,21 @@ fn launch_claude_on_agy(
         .to_owned();
     let route = base_url.rsplit('/').next().unwrap().to_owned();
     assert!(route.starts_with("ag-"), "{base_url}");
-    let token = claude_credential_on_agy(temp, fake, &route);
+    let token = claude_credential_on_agy(temp, work, fake, &route);
     (base_url, route, token)
 }
 
 /// `alc claude-credential <route>`, as Claude Code's apiKeyHelper runs it.
+/// The host it starts inherits this environment, the stand-in agy included.
 fn claude_credential_on_agy(
     temp: &tempfile::TempDir,
+    work: &tempfile::TempDir,
     fake: &FakeCodeAssist,
     route: &str,
 ) -> String {
     let helper = alc(temp)
         .env("ALC_AGY_API_BASE", &fake.base)
+        .env("ALC_AGY_BIN", fake_agy(work.path()))
         .args(["claude-credential", route])
         .output()
         .unwrap();
@@ -1812,25 +1858,30 @@ fn claude_code_messages(base_url: &str, token: &str, body: &serde_json::Value) -
 }
 
 /// The JSON body of an HTTP response, chunked or not (the host chunks).
+/// Chunks are counted in bytes and may end inside a character, so they are
+/// joined as bytes and decoded once.
 fn json_body(response: &str) -> serde_json::Value {
-    let (head, mut rest) = response.split_once("\r\n\r\n").expect("an HTTP response");
-    let mut body = String::new();
+    let (head, rest) = response.split_once("\r\n\r\n").expect("an HTTP response");
+    let mut rest = rest.as_bytes();
+    let mut body = Vec::new();
     if head
         .to_ascii_lowercase()
         .contains("transfer-encoding: chunked")
     {
-        while let Some((size, after)) = rest.split_once("\r\n") {
+        while let Some(line_end) = rest.windows(2).position(|pair| pair == b"\r\n") {
+            let size = std::str::from_utf8(&rest[..line_end]).expect("a chunk size line");
             let size = usize::from_str_radix(size.trim(), 16).expect("a chunk size");
             if size == 0 {
                 break;
             }
-            body.push_str(&after[..size]);
-            rest = after[size..].trim_start_matches("\r\n");
+            let data = &rest[line_end + 2..];
+            body.extend_from_slice(&data[..size]);
+            rest = data[size..].strip_prefix(b"\r\n").expect("a chunk's CRLF");
         }
     } else {
-        body.push_str(rest);
+        body.extend_from_slice(rest);
     }
-    serde_json::from_str(&body).unwrap_or_else(|error| panic!("{error}: {response}"))
+    serde_json::from_slice(&body).unwrap_or_else(|error| panic!("{error}: {response}"))
 }
 
 /// The first turn of a tool round on `model`.
@@ -1960,8 +2011,9 @@ fn a_claude_code_tool_round_runs_through_the_background_bridge_on_antigravity() 
             "Gemini never sees it"
         );
         assert!(
-            !call.body.contains(&token),
-            "the bridge's own credential stays local"
+            !call.body.contains(&token) && !call.head.contains(&token.to_ascii_lowercase()),
+            "the bridge's own credential stays local: {}",
+            call.head
         );
     }
     let replay: serde_json::Value = serde_json::from_str(&generates[1].body).unwrap();
@@ -2016,13 +2068,14 @@ fn a_claude_code_tool_round_runs_through_the_background_bridge_on_antigravity() 
     );
     assert_no_agy_secret_under(temp.path());
     assert_no_agy_secret_under(work.path());
+    assert_agy_never_ran(&work);
 }
 
 /// What goes wrong upstream reaches Claude Code as an error, through the
 /// real host: a 401 after the first part is the client's to see (replaying
 /// half a turn would duplicate it), a SAFETY stop is not an ordinary end,
-/// and a restarted host refuses an unsigned Gemini round rather than send
-/// Google a round it would reject.
+/// and a host restarted after a signed Flash turn refuses that turn's round,
+/// now unsigned, rather than send Google a round it would reject.
 #[test]
 fn antigravity_failures_reach_claude_code_through_the_background_bridge() {
     let temp = tempfile::tempdir().unwrap();
@@ -2033,7 +2086,7 @@ fn antigravity_failures_reach_claude_code_through_the_background_bridge() {
         "data: {\"error\":{\"code\":401,\"message\":\"Request had invalid authentication credentials.\",\"status\":\"UNAUTHENTICATED\"}}\r\n\r\n",
     );
     let blocked = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"SAFETY\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"totalTokenCount\":5}}}\r\n\r\n";
-    let fake = serve_code_assist(&[broken, blocked], ("404 Not Found", "{}"));
+    let fake = serve_code_assist(&[broken, blocked, FLASH_TOOL_TURN], ("404 Not Found", "{}"));
     let _stop = StopTheBridge(&temp);
     let (base_url, route, token) = launch_claude_on_agy(&temp, &work, &fake);
     let hello = serde_json::json!({"model": "gemini-3.8-flash", "stream": true, "max_tokens": 256,
@@ -2060,16 +2113,20 @@ fn antigravity_failures_reach_claude_code_through_the_background_bridge() {
     assert!(!answer.contains("end_turn"), "{answer}");
     assert_eq!(fake.calls("streamGenerateContent").len(), 2);
 
+    // Flash signs its tool call, and this host remembers the signature by
+    // the call's id; Claude Code's history carries no signature of its own.
+    let first = claude_code_messages(&base_url, &token, &weather_ask("gemini-3.8-flash"));
+    assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+    let first = json_body(&first);
+    assert_eq!(first["stop_reason"], "tool_use", "{first}");
+    assert_eq!(fake.calls("streamGenerateContent").len(), 3);
     // A new host holds none of the signatures the old one minted.
     alc(&temp).args(["bridge", "stop"]).assert().success();
-    let token = claude_credential_on_agy(&temp, &fake, &route);
-    let unsigned = serde_json::json!([
-        {"type": "tool_use", "id": "call-flash-1", "name": "get_weather", "input": {"city": "Paris"}}
-    ]);
+    let token = claude_credential_on_agy(&temp, &work, &fake, &route);
     let refused = claude_code_messages(
         &base_url,
         &token,
-        &weather_answer("gemini-3.8-flash", &unsigned, "call-flash-1"),
+        &weather_answer("gemini-3.8-flash", &first["content"], "call-flash-1"),
     );
     assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
     assert!(
@@ -2078,10 +2135,11 @@ fn antigravity_failures_reach_claude_code_through_the_background_bridge() {
     );
     assert_eq!(
         fake.calls("streamGenerateContent").len(),
-        2,
+        3,
         "nothing reached Google"
     );
     alc(&temp).args(["bridge", "stop"]).assert().success();
+    assert_agy_never_ran(&work);
     assert_no_agy_secret_under(temp.path());
 }
 
@@ -2157,6 +2215,7 @@ fn opencode_completes_a_responses_turn_on_the_antigravity_login() {
     let answer = work.path().join("answer.txt");
     let output = alc(&temp)
         .env("ALC_AGY_API_BASE", &fake.base)
+        .env("ALC_AGY_BIN", fake_agy(work.path()))
         .env("ALC_OPENCODE_BIN", stand_in_opencode_bin(work.path()))
         .env("ALC_STAND_IN_OUT", &answer)
         .args(["--agy", "--no-share", "opencode"])
@@ -2170,6 +2229,12 @@ fn opencode_completes_a_responses_turn_on_the_antigravity_login() {
     );
     assert_no_agy_secret("alc's output", &output.stdout);
     assert_no_agy_secret("alc's output", &output.stderr);
+    assert_agy_never_ran(&work);
+    // The bridge lived inside that alc: no background host was started.
+    assert!(
+        !temp.path().join("run").join("bridge.port").exists(),
+        "OpenCode ran on the in-process bridge, not the background host"
+    );
     let answer = std::fs::read_to_string(answer).expect("the stand-in OpenCode ran");
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
     assert!(answer.contains("response.output_text.delta"), "{answer}");
