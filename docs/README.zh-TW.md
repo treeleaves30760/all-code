@@ -251,8 +251,11 @@ OpenAI、OpenRouter、Codex、Ollama，以及一個預設停用的 vLLM 範本�
 `/model sonnet` 也會指向它），並跳過伺服器端的嘗試。這樣 Auto 模式就能運作，
 分類器請求使用的是那個 provider 的額度。`anthropic` 這個 kind —— 你自己的
 Claude 登入或 API key —— 則保留 Anthropic 的伺服器端檢查。如果 profile 的模型
-本身就是 Claude Code 的別名（例如 `sonnet`），就不會被釘住；你自己的
-`--settings` 若指定了 `ANTHROPIC_DEFAULT_SONNET_MODEL`，仍以你的為準。
+本身就是 Claude Code 的別名（例如 `sonnet`），就不會被釘住；模型是完整的
+Claude 模型 id（例如 `claude-opus-5`，代表這是架在 Anthropic 前面、原本就以名稱
+提供 Sonnet 的閘道）時也不會。你自己的 `--settings` 若指定了
+`ANTHROPIC_DEFAULT_SONNET_MODEL`，仍以你的為準；寫在 `~/.claude/settings.json`
+裡的則不會，因為 alc 的設定優先於它。
 
 ## 指令一覽
 

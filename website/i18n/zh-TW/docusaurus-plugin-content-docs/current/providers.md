@@ -91,14 +91,21 @@ Claude Code 的 Auto 模式會用一個分類器檢查每一次工具呼叫。An
 OpenRouter、DeepSeek、自訂端點，或任何 Claude Code 連得到的地方都能運作，分類器
 請求使用的是那個 provider 的額度。`/model sonnet` 也會指向 profile 的模型。
 
-有三種情況不會動：
+有四種情況例外：
 
 - `anthropic` 這個 kind —— 你自己的 Claude 登入或 API key —— 保留 Anthropic
   的伺服器端檢查與它的別名對照表。
 - profile 的模型本身就是 Claude Code 的別名（例如 `sonnet` 或 `opus`）時不會
-  被釘住：否則 Claude Code 會把那個別名原封不動當成模型名稱送出。
+  被釘住：否則 Claude Code 會把那個別名原封不動當成模型名稱送出。伺服器端的
+  嘗試仍會跳過。
+- profile 的模型是完整的 Claude 模型 id（例如 `claude-opus-5`）時也不會被釘住：
+  它的端點是架在 Anthropic 前面的閘道（LiteLLM、公司內部的 proxy），原本就以
+  名稱提供 `claude-sonnet-*`，所以 `/model sonnet` 與每個宣告 `model: sonnet`
+  的 subagent 仍使用 Claude Sonnet。伺服器端的嘗試仍會跳過。provider 自己的
+  寫法（例如 OpenRouter 的 `anthropic/claude-sonnet-5`）不算完整的 Claude 模型
+  id，仍會被釘住。
 - 你自己的 `--settings` 若指定了 `ANTHROPIC_DEFAULT_SONNET_MODEL`，仍以你的
-  為準。
+  為準。寫在 `~/.claude/settings.json` 裡的則不會：alc 的設定優先於它。
 
 [Codex 橋接](./codex-to-claude.md#auto-模式與提示快取)與本機伺服器原本就是這樣
 運作。
