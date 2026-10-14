@@ -44,7 +44,7 @@ provider，以 `--settings` 傳入，而不是 supervisor 不會留下的環境�
 
 | 檔案裡有什麼 | 它的作用 |
 | --- | --- |
-| `ANTHROPIC_BASE_URL` | 那個 provider 的 Anthropic 端點、alc 的 Codex 背景橋接，或選擇啟用的 API 觀測 route |
+| `ANTHROPIC_BASE_URL` | 那個 provider 的 Anthropic 端點、alc 的背景橋接（Codex 或 Antigravity 登入），或選擇啟用的 API 觀測 route |
 | 模型相關變數與 `modelPicker` | Claude Code 啟動時用哪個模型、選單裡又列出哪些 |
 | `apiKeyHelper` | 雜湊釘住的 alc 執行檔執行 `--runtime <id> claude-credential …`，Claude Code 用它取得憑證 |
 

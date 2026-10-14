@@ -133,7 +133,7 @@ Claude Code 照常逐次切換模型與強度：它的 `/model` 選單列出這�
 模型配上 profile 的強度 —— 所以請在 profile 上選：
 
 ```sh
-alc config upsert antigravity --model gemini-3.8-flash-low --context max
+alc config upsert antigravity --model gemini-3.8-flash-low --effort low --context max
 ```
 
 每個家族一開始用 256K 的 window（GPT-OSS 是 131K）。在 profile 上設
@@ -141,7 +141,7 @@ alc config upsert antigravity --model gemini-3.8-flash-low --context max
 840K、Argon 900K、Flash 1,048K。Codex CLI 會以 `model_context_window` 拿到這個
 window（較舊的 Codex 版本還得在它自己的設定裡手動設
 `model_auto_compact_token_limit`）。Codex session 內的 `/model` 選單仍會列出
-OpenAI 的模型名稱，這些在這個登入上會被上游拒絕：請改在 profile 上換模型。
+OpenAI 的模型名稱，這些在這個登入上會被 alc 的橋接拒絕：請改在 profile 上換模型。
 
 ### 推理簽章、額度與平台
 

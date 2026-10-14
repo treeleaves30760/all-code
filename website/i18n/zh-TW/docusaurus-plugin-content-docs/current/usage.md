@@ -102,7 +102,7 @@ left`。
 
 只讀，永遠不更新：token 過期時顯示 `expired; agy renews it on the next launch`，
 下一次在這個登入上啟動時，agy 就會把它更新。沒有登入時顯示
-``not logged in; run `agy` ``。其他 agent 經由 alc 的橋接在這個登入上送出的請求，
+`` not logged in; run `agy` ``。其他 agent 經由 alc 的橋接在這個登入上送出的請求，
 會以 kind `antigravity`、Google 收到的模型 id，以及它回報的 token 數記錄下來。
 只有 `gpt-oss-120b` 有定價（為 0）：Claude 與 Gemini 家族跑在 Google 的方案上，
 沒有經過驗證的 API-equivalent 費率，所以成本維持未知。
@@ -152,7 +152,7 @@ profile 叫這個種類的名字、而又有好幾個是同一種時，捷徑才
 ## 各 provider 與 agent 的用量
 
 這張相容用的表只讀[設定目錄](./configuration.md)裡的 `usage.jsonl`。啟動時追加
-啟動紀錄；[Codex 協定轉譯橋接](./codex-to-claude.md)（Codex 登入或 Antigravity
+啟動紀錄；[協定轉譯橋接](./codex-to-claude.md)（Codex 登入或 Antigravity
 登入上的都算）或選擇啟用的直接 API 觀測器承載請求時，追加中繼資料紀錄。一般直接啟動仍只計為一次啟動。原生歷史是獨立的
 統計來源，不會匯入這份帳本。
 

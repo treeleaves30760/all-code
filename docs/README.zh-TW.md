@@ -279,7 +279,9 @@ alc models --agy                          # agy 提供的模型
 
 alc 會把 profile 的模型當成 agy 的 `--model` 傳入；profile 有設定推理強度時，
 也會以 `--effort` 傳入。你在 `alc agy` 後面自己寫的 `--model` 或 `--effort` 會
-原封不動轉送，alc 這時就不再送自己的那一個。agy 的強度最高到 `max`，所以設成
+原封不動轉送，alc 這時就不再送自己的那一個。agy 只列出 wire id，所以 profile 上
+的家族 id（例如 `claude-opus-5-5`，其他 agent 的橋接也讀得懂）會依 profile 的
+強度換成對應的 wire id 再交給 agy。agy 的強度最高到 `max`，所以設成
 `ultra` 的 profile 會以 `max` 啟動，並印出一行說明。`alc models --agy` 會列出
 `agy models` 回報的模型，保留一天；問不到 agy 時就用內建的清單；`--refresh`
 會立刻重新問一次。它會印出每個模型的 context window，並把不屬於下面五個模型家族
@@ -331,7 +333,7 @@ Code 照常逐次切換模型與強度：它的 `/model` 選單列出這五個�
 模型配上 profile 的強度 —— 所以請在 profile 上選：
 
 ```sh
-alc config upsert antigravity --model gemini-3.8-flash-low --context max
+alc config upsert antigravity --model gemini-3.8-flash-low --effort low --context max
 ```
 
 每個家族一開始用 256K 的 window（GPT-OSS 是 131K）。在 profile 上設
@@ -339,7 +341,7 @@ alc config upsert antigravity --model gemini-3.8-flash-low --context max
 840K、Argon 900K、Flash 1,048K。Codex CLI 會以 `model_context_window` 拿到這個
 window（較舊的 Codex 版本還得在它自己的設定裡手動設
 `model_auto_compact_token_limit`）。Codex session 內的 `/model` 選單仍會列出
-OpenAI 的模型名稱，這些在這個登入上會被上游拒絕：請改在 profile 上換模型。
+OpenAI 的模型名稱，這些在這個登入上會被 alc 的橋接拒絕：請改在 profile 上換模型。
 
 Gemini 會替推理內容簽章，簽章會跟著對話走。Gemini 的工具呼叫若遺失了簽章 ——
 例如在別處開始的 session、任務進行中改了強度，或橋接重新啟動過 —— alc 會請你

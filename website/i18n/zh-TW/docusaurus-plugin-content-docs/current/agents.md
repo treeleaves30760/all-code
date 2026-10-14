@@ -177,7 +177,9 @@ agy 自己登入 Google，所以 alc 沒有端點、金鑰或設定檔要交給�
 設定 `--model`，以及 profile 有指定時的 `--effort`。agy 的強度是 `low`、
 `medium`、`high`、`xhigh` 與 `max`；設成 `ultra` 的 profile 會以 `max` 啟動，並
 印出一行說明。你在 `alc agy` 後面自己寫的 `--model` 或 `--effort` 會原封不動
-轉送，alc 這時就不再送自己的那一個。
+轉送，alc 這時就不再送自己的那一個。agy 只列出 wire id，所以 profile 上的家族
+id（例如 `claude-opus-5-5`，其他 agent 的橋接也讀得懂）會依 profile 的強度換成
+對應的 wire id 再交給 agy。
 
 ```sh
 alc agy
