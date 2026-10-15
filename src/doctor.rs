@@ -490,29 +490,51 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     marked(theme, &rows);
 }
 
-/// The Antigravity CLI: is agy installed, has it been set up, and which
-/// profile, model and effort `alc agy` would launch it on.
+/// The Antigravity CLI and agy's login: is agy installed, is its token ready
+/// (offline), does the account have a project (one read-only call, only for
+/// a ready token), and which profile `alc agy` launches. Never the token
+/// itself.
 ///
 /// Raises no issue of its own. A missing agy that is an explicit default is
 /// already one in the binaries section, and an explicit default naming a
 /// profile that is gone is already one from `Config::validate`; counting
 /// either again here would double the summary.
 fn antigravity(store: &Store, theme: &Theme) {
+    use crate::bridge::agy_auth::{self, AgyAuthError, LoginState};
     heading(theme, "Antigravity");
     println!(
         "{INDENT}{}",
         theme.paint(
             Tone::Dim,
-            "agy holds its own Google login; alc only checks it was set up"
+            "agy owns its Google login and renews it; alc borrows its access token for the other agents"
         )
     );
     let binary = binary_for(Agent::Agy);
     let found = resolve(&binary);
-    let home = crate::launch::home_dir();
+    let (login, project) = match agy_auth::AgyLocator::resolve() {
+        Ok(locator) => {
+            // One read of the store: the state and, for a fresh token, the
+            // token the project lookup is signed with.
+            let loaded = agy_auth::load(&locator.store());
+            let login = agy_auth::state_of(&loaded, agy_auth::now_secs());
+            // One read-only lookup, and only for a fresh token: doctor never renews.
+            let project = match (&login, &loaded) {
+                (LoginState::Ready { .. }, Ok(token)) => Some(
+                    crate::usage::quota::antigravity_project(token)
+                        .map(|project| project.is_some())
+                        .map_err(|outcome| outcome.error.unwrap_or_else(|| "no answer".to_owned())),
+                ),
+                _ => None,
+            };
+            (login, project)
+        }
+        Err(_) => (LoginState::Missing(AgyAuthError::LoginRequired), None),
+    };
     let facts = AgyFacts {
         binary,
         found,
-        home: home.as_deref(),
+        login,
+        project,
         // Off the disk only: asking agy is a network round trip, and doctor
         // stays fast and writes nothing.
         models: crate::antigravity::source_on_disk(&store.dir),
@@ -521,15 +543,20 @@ fn antigravity(store: &Store, theme: &Theme) {
 }
 
 /// What the Antigravity section reports on, gathered by the caller so the
-/// rows can be built without touching PATH or the home directory.
-struct AgyFacts<'a> {
+/// rows can be built without touching PATH, the credential store or the
+/// network.
+struct AgyFacts {
     binary: std::ffi::OsString,
     found: Option<PathBuf>,
-    home: Option<&'a Path>,
+    login: crate::bridge::agy_auth::LoginState,
+    /// `Some` only for a fresh token: whether a Cloud Code project exists, or
+    /// why that could not be asked.
+    project: Option<Result<bool, String>>,
     models: String,
 }
 
-fn antigravity_rows(config: &Config, theme: &Theme, facts: &AgyFacts<'_>) -> Vec<Row> {
+fn antigravity_rows(config: &Config, theme: &Theme, facts: &AgyFacts) -> Vec<Row> {
+    use crate::bridge::agy_auth::{AgyAuthError, LoginState};
     let mut rows = Vec::new();
     let explicit = config.defaults.is_explicit(Agent::Agy);
 
@@ -547,28 +574,57 @@ fn antigravity_rows(config: &Config, theme: &Theme, facts: &AgyFacts<'_>) -> Vec
         }
     }
 
-    // Presence only: agy writes settings.json the first time it runs, and
-    // keeps the login itself in the system keyring, which alc never reads.
-    // So this says agy was set up here, never that its login is still good.
-    let set_up = facts.home.is_some_and(|home| {
-        home.join(".gemini")
-            .join("antigravity-cli")
-            .join("settings.json")
-            .is_file()
-    });
-    rows.push(if set_up {
-        Row::new(
+    // The token's state, read offline; never the token. An expired token is
+    // routine (agy's last about an hour) and healthy as long as agy is on
+    // PATH to renew it at the next launch; without agy it is stranded.
+    rows.push(match facts.login {
+        LoginState::Ready { .. } => Row::new(
             Status::Good,
             "login",
-            "set up (~/.gemini/antigravity-cli)".to_owned(),
-        )
-    } else {
-        Row::new(
+            "ready (agy's Google login)".to_owned(),
+        ),
+        LoginState::Expired if facts.found.is_some() => Row::new(
+            Status::Good,
+            "login",
+            "expired; agy renews it on the next launch".to_owned(),
+        ),
+        LoginState::Expired => Row::new(
             Status::Warn,
             "login",
-            theme.paint(Tone::Warn, "not set up; run `agy` once and sign in"),
-        )
+            theme.paint(Tone::Warn, AgyAuthError::AgyNotInstalled.message()),
+        ),
+        LoginState::Missing(AgyAuthError::LoginRequired) => Row::new(
+            Status::Warn,
+            "login",
+            theme.paint(Tone::Warn, "not logged in; run `agy` and sign in"),
+        ),
+        LoginState::Missing(error) => Row::new(
+            Status::Warn,
+            "login",
+            theme.paint(Tone::Warn, error.message()),
+        ),
     });
+    match &facts.project {
+        Some(Ok(true)) => rows.push(Row::new(
+            Status::Good,
+            "project",
+            "onboarded (a Cloud Code project exists)".to_owned(),
+        )),
+        Some(Ok(false)) => rows.push(Row::new(
+            Status::Warn,
+            "project",
+            theme.paint(
+                Tone::Warn,
+                "not onboarded; open agy once and finish its setup",
+            ),
+        )),
+        Some(Err(reason)) => rows.push(Row::new(
+            Status::Warn,
+            "project",
+            theme.paint(Tone::Warn, reason),
+        )),
+        None => {}
+    }
 
     rows.push(match config.resolve(Agent::Agy, None) {
         Ok((name, provider)) => {
@@ -614,6 +670,15 @@ fn antigravity_rows(config: &Config, theme: &Theme, facts: &AgyFacts<'_>) -> Vec
     });
 
     rows.push(Row::blank("models", theme.paint(Tone::Dim, &facts.models)));
+    rows.push(Row::new(
+        Status::Good,
+        "bridge",
+        if cfg!(windows) {
+            "every agent can run on this login through alc's bridge".to_owned()
+        } else {
+            "every agent can run on this login through alc's bridge (verified on Windows; reading agy's login here is best effort)".to_owned()
+        },
+    ));
     rows
 }
 
@@ -1423,6 +1488,7 @@ fn truncate(value: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bridge::agy_auth::{AgyAuthError, LoginState};
 
     fn plain() -> Theme {
         Theme {
@@ -1437,11 +1503,12 @@ mod tests {
         config
     }
 
-    fn facts(found: Option<PathBuf>, home: Option<&Path>) -> AgyFacts<'_> {
+    fn facts(found: Option<PathBuf>, login: LoginState) -> AgyFacts {
         AgyFacts {
             binary: "agy".into(),
             found,
-            home,
+            login,
+            project: None,
             models: "bundled".to_owned(),
         }
     }
@@ -1453,40 +1520,115 @@ mod tests {
     }
 
     #[test]
-    fn the_antigravity_login_row_reports_only_that_agy_was_set_up() {
-        let home = tempfile::tempdir().unwrap();
+    fn the_antigravity_login_row_reports_the_token_state_and_never_the_token() {
         let config = Config::default();
-        let rows = antigravity_rows(&config, &plain(), &facts(None, Some(home.path())));
+        let login = |found: Option<PathBuf>, state: LoginState| {
+            antigravity_rows(&config, &plain(), &facts(found, state))
+                .into_iter()
+                .find(|row| row.name == "login")
+                .unwrap()
+        };
+        let ready = login(None, LoginState::Ready { expires_at: 0 });
+        assert!(ready.status == Some(Status::Good));
+        assert_eq!(ready.detail, "ready (agy's Google login)");
+        // Expired with agy at hand is routine (agy's tokens last an hour):
+        // healthy, and it says agy renews it.
+        let renewable = login(Some(PathBuf::from("/opt/agy")), LoginState::Expired);
+        assert!(renewable.status == Some(Status::Good));
+        assert!(
+            renewable.detail.contains("agy renews it"),
+            "{}",
+            renewable.detail
+        );
+        let stranded = login(None, LoginState::Expired);
+        assert!(stranded.status == Some(Status::Warn));
+        assert!(stranded.detail.contains("sign in"), "{}", stranded.detail);
+        let missing = login(None, LoginState::Missing(AgyAuthError::LoginRequired));
+        assert_eq!(missing.detail, "not logged in; run `agy` and sign in");
+    }
+
+    #[test]
+    fn doctor_names_ambiguous_agy_logins() {
+        let rows = antigravity_rows(
+            &Config::default(),
+            &plain(),
+            &facts(None, LoginState::Missing(AgyAuthError::AmbiguousSources)),
+        );
         let login = row(&rows, "login");
         assert!(login.status == Some(Status::Warn));
-        assert_eq!(login.detail, "not set up; run `agy` once and sign in");
+        assert!(
+            login.detail.contains("ambiguous sources"),
+            "{}",
+            login.detail
+        );
+    }
 
-        let settings = home.path().join(".gemini").join("antigravity-cli");
-        std::fs::create_dir_all(&settings).unwrap();
-        std::fs::write(settings.join("settings.json"), "{}").unwrap();
-        let rows = antigravity_rows(&config, &plain(), &facts(None, Some(home.path())));
-        let login = row(&rows, "login");
-        assert!(login.status == Some(Status::Good));
-        assert_eq!(login.detail, "set up (~/.gemini/antigravity-cli)");
+    #[test]
+    fn the_project_and_bridge_rows_say_what_they_found_and_never_an_id() {
+        let mut found = facts(None, LoginState::Ready { expires_at: 0 });
+        found.project = Some(Ok(true));
+        let rows = antigravity_rows(&Config::default(), &plain(), &found);
+        assert_eq!(
+            row(&rows, "project").detail,
+            "onboarded (a Cloud Code project exists)"
+        );
+        assert!(row(&rows, "bridge").detail.contains("through alc's bridge"));
+        found.project = Some(Ok(false));
+        let rows = antigravity_rows(&Config::default(), &plain(), &found);
+        assert!(row(&rows, "project").detail.contains("open agy once"));
+        // Not signed in: nothing was asked, so there is no project row.
+        let rows = antigravity_rows(
+            &Config::default(),
+            &plain(),
+            &facts(None, LoginState::Missing(AgyAuthError::LoginRequired)),
+        );
+        assert!(rows.iter().all(|row| row.name != "project"));
+    }
 
-        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
-        assert!(row(&rows, "login").status == Some(Status::Warn));
+    /// None of the section's rows is a problem of its own: the binaries
+    /// section already counts an explicit default's missing agy.
+    #[test]
+    fn no_antigravity_login_state_is_a_problem() {
+        for state in [
+            LoginState::Expired,
+            LoginState::Missing(AgyAuthError::LoginRequired),
+            LoginState::Missing(AgyAuthError::AmbiguousSources),
+            LoginState::Missing(AgyAuthError::MalformedCredential),
+        ] {
+            let rows = antigravity_rows(&Config::default(), &plain(), &facts(None, state));
+            assert!(row(&rows, "login").status != Some(Status::Bad), "{state:?}");
+        }
     }
 
     #[test]
     fn a_missing_agy_is_a_problem_only_when_agy_is_an_explicit_default() {
-        let rows = antigravity_rows(&Config::default(), &plain(), &facts(None, None));
+        let rows = antigravity_rows(
+            &Config::default(),
+            &plain(),
+            &facts(None, LoginState::Missing(AgyAuthError::LoginRequired)),
+        );
         let agy = row(&rows, "agy");
         assert!(agy.status == Some(Status::Warn));
         assert_eq!(agy.detail, "not found (agy)");
 
         let mut config = Config::default();
         config.defaults.set(Agent::Agy, "antigravity");
-        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        let rows = antigravity_rows(
+            &config,
+            &plain(),
+            &facts(None, LoginState::Missing(AgyAuthError::LoginRequired)),
+        );
         assert!(row(&rows, "agy").status == Some(Status::Bad));
 
         let found = PathBuf::from("/opt/agy/bin/agy");
-        let rows = antigravity_rows(&config, &plain(), &facts(Some(found.clone()), None));
+        let rows = antigravity_rows(
+            &config,
+            &plain(),
+            &facts(
+                Some(found.clone()),
+                LoginState::Missing(AgyAuthError::LoginRequired),
+            ),
+        );
         let agy = row(&rows, "agy");
         assert!(agy.status == Some(Status::Good));
         assert_eq!(agy.detail, found.display().to_string());
@@ -1495,7 +1637,11 @@ mod tests {
     #[test]
     fn the_antigravity_profile_row_shows_its_model_and_effort() {
         let mut config = Config::default();
-        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        let rows = antigravity_rows(
+            &config,
+            &plain(),
+            &facts(None, LoginState::Missing(AgyAuthError::LoginRequired)),
+        );
         let profile = row(&rows, "profile");
         assert!(profile.status == Some(Status::Good));
         assert!(profile.detail.contains("antigravity"), "{}", profile.detail);
@@ -1515,14 +1661,22 @@ mod tests {
             .get_mut("antigravity")
             .unwrap()
             .reasoning_effort = Some(ReasoningEffort::Xhigh);
-        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        let rows = antigravity_rows(
+            &config,
+            &plain(),
+            &facts(None, LoginState::Missing(AgyAuthError::LoginRequired)),
+        );
         assert!(row(&rows, "profile").detail.contains("/ xhigh"));
         assert_eq!(row(&rows, "models").detail, "bundled");
     }
 
     #[test]
     fn a_config_from_before_the_antigravity_kind_is_warned_with_the_command_that_adds_it() {
-        let rows = antigravity_rows(&upgraded_config(), &plain(), &facts(None, None));
+        let rows = antigravity_rows(
+            &upgraded_config(),
+            &plain(),
+            &facts(None, LoginState::Missing(AgyAuthError::LoginRequired)),
+        );
         let profile = row(&rows, "profile");
         assert!(profile.status == Some(Status::Warn));
         assert!(
@@ -1551,7 +1705,11 @@ mod tests {
             "antigravity".to_owned(),
             Provider::for_kind(ProviderKind::Openrouter),
         );
-        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        let rows = antigravity_rows(
+            &config,
+            &plain(),
+            &facts(None, LoginState::Missing(AgyAuthError::LoginRequired)),
+        );
         let profile = row(&rows, "profile");
         assert!(profile.status == Some(Status::Warn));
         assert!(
@@ -1575,7 +1733,11 @@ mod tests {
         let default = default_row(&config, &plain(), Agent::Agy);
         assert!(default.status == Some(Status::Bad));
         assert!(default.detail.contains("(no such profile)"));
-        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        let rows = antigravity_rows(
+            &config,
+            &plain(),
+            &facts(None, LoginState::Missing(AgyAuthError::LoginRequired)),
+        );
         assert!(row(&rows, "profile").status == Some(Status::Bad));
 
         let mut config = Config::default();
@@ -1593,7 +1755,11 @@ mod tests {
         let default = default_row(&config, &plain(), Agent::Agy);
         assert!(default.status == Some(Status::Good));
         assert!(default.detail.contains("work-agy"), "{}", default.detail);
-        let rows = antigravity_rows(&config, &plain(), &facts(None, None));
+        let rows = antigravity_rows(
+            &config,
+            &plain(),
+            &facts(None, LoginState::Missing(AgyAuthError::LoginRequired)),
+        );
         assert!(row(&rows, "profile").detail.contains("work-agy"));
     }
 

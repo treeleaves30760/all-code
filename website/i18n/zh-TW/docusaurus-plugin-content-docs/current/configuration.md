@@ -87,9 +87,9 @@ alc config
 - 在 Codex profile 上，把游標移到 Model 欄位按 `←`/`→`，會開啟 GPT
   模型與推理強度的引導式選單，選好的結果就寫成 `alc --codex claude`
   的啟動預設值。
-- 在 Codex profile 上，緊接在 Reasoning effort 後面的 Context 欄位按
-  `←`/`→`，會在模型的 `standard` window 與 `max` window 之間切換；其他
-  kind 在這一欄會顯示 `codex only`。
+- 在 Codex 或 Antigravity profile 上，緊接在 Reasoning effort 後面的
+  Context 欄位按 `←`/`→`，會在模型的 `standard` window 與 `max` window
+  之間切換；其他 kind 在這一欄會顯示 `codex/antigravity only`。
 - `s`：儲存；`q`：儲存並離開；`Ctrl+C`：不儲存離開。
 
 ## 用指令設定
@@ -110,7 +110,7 @@ alc config remove work
 `--protocol`、`--auth`、`--api-key-env`、`--codex-profile`、`--codex-home`、
 `--claude-config-dir`、`--disable` 與 `--enable`。
 
-`--context standard|max` 只屬於 `codex` profile，用在其他 kind 上會被拒絕。
+`--context standard|max` 只屬於 `codex` 或 `antigravity` profile，用在其他 kind 上會被拒絕。
 `max` 會存成 `context = "max"`；`standard` 是預設值，永遠不會寫進設定。超過
 標準 window 之後，每一輪消耗方案額度的速度會變快 ——
 [Context window](./codex-to-claude.md#context-window) 列出了實際數字。

@@ -20,7 +20,9 @@ keywords:
 `alc --codex <agent>` starts a loopback adapter and points one agent's session
 at it. One `codex login` serves every agent alc launches except the Antigravity
 CLI, which runs on its own Google login ([Antigravity
-CLI](./agents.md#antigravity-cli-agy)).
+CLI](./agents.md#antigravity-cli-agy)). The same bridge also puts every other
+agent, Claude Code included, on that Google login: `alc --agy <agent>`
+([Antigravity](./providers.md#antigravity)).
 
 ```sh
 codex login
@@ -108,7 +110,7 @@ the [configuration TUI](./configuration.md#the-configuration-tui) has a
 `alc doctor` adds `/ max context` to the bridge row of a profile set to it. The
 profile's choice reaches every agent on the bridge, not only Claude Code. The
 per-run `--context`, like `--effort`, belongs to `alc claude` and is refused
-off a Codex provider.
+off a Codex or Antigravity provider.
 
 ## Starting somewhere else
 

@@ -70,6 +70,7 @@ mod tests {
                 provider: "codex".to_owned(),
                 ledger: None,
                 claude_tiers: None,
+                upstream: crate::bridge::UpstreamKind::Codex,
             })
             .expect("the state builds without touching the auth file"),
         )

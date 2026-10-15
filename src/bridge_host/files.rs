@@ -1,7 +1,8 @@
 //! Where the background bridge keeps its state, all in `<config>/run/`:
 //! `bridge.port` (the port, chosen once), `bridge.token` (0600, the token every
 //! model request must carry), `bridge.lock` (held while one is starting) and
-//! `bridge/routes/<id>.json` (one Codex login a Claude Code session runs on).
+//! `bridge/routes/<id>.json` (one Codex or Antigravity login a Claude Code
+//! session runs on).
 
 use std::fs;
 use std::ops::Range;
@@ -11,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::bridge::agy_auth::AgyLocator;
 use crate::bridge::tiers::ModelTiers;
 use crate::remote::{Secrets, create_token, generate_token, restricted_dir};
 
@@ -140,15 +142,50 @@ pub(crate) fn choose_port() -> Result<u16> {
     Ok(PORT_RANGE.start + u16::from_le_bytes(bytes) % span)
 }
 
-/// One Codex login a Claude Code session runs on, written by the launch that
-/// resolved it in the user's own shell.
+/// Which login a route signs with. Absent in every route file written before
+/// Antigravity routes existed, which are all Codex ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum RouteKind {
+    #[default]
+    Codex,
+    Antigravity,
+}
+
+impl RouteKind {
+    fn is_codex(&self) -> bool {
+        *self == Self::Codex
+    }
+}
+
+#[allow(
+    clippy::ptr_arg,
+    reason = "serde hands skip_serializing_if the field itself"
+)]
+fn path_is_empty(path: &PathBuf) -> bool {
+    path.as_os_str().is_empty()
+}
+
+/// One Codex or Antigravity login a Claude Code session runs on, written by
+/// the launch that resolved it in the user's own shell.
+///
+/// The field order keeps a Codex route's bytes exactly what they were before
+/// Antigravity routes existed, which `publish_immutable` compares.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RouteRecord {
     pub id: String,
+    #[serde(default, skip_serializing_if = "RouteKind::is_codex")]
+    pub kind: RouteKind,
     /// The alc profile, which the usage ledger credits.
     pub profile: String,
-    /// The Codex `auth.json` this route's requests sign with.
+    /// The Codex `auth.json` this route's requests sign with; empty on an
+    /// Antigravity route.
+    #[serde(default, skip_serializing_if = "path_is_empty")]
     pub auth_file: PathBuf,
+    /// Where an Antigravity route reads agy's login (the fallback file, as the
+    /// launching shell resolved it; the keyring entry is fixed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<AgyLocator>,
     /// Where Claude's own model ids land; see `bridge::tiers`.
     pub tiers: ModelTiers,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,12 +209,103 @@ impl RouteRecord {
         };
         Self {
             id: scoped_route_id(profile, &auth_file, &tiers, scope),
+            kind: RouteKind::Codex,
             profile: profile.to_owned(),
             auth_file,
+            credential: None,
             tiers,
             generation,
         }
     }
+
+    pub(crate) fn antigravity(profile: &str, credential: AgyLocator, tiers: ModelTiers) -> Self {
+        Self::antigravity_for(profile, credential, tiers, crate::runtime::scope())
+    }
+
+    fn antigravity_for(
+        profile: &str,
+        credential: AgyLocator,
+        tiers: ModelTiers,
+        scope: &crate::runtime::RuntimeScope,
+    ) -> Self {
+        let generation = match scope {
+            crate::runtime::RuntimeScope::Legacy => None,
+            scope => Some(scope.identity().to_owned()),
+        };
+        Self {
+            id: antigravity_route_id(profile, &credential.file, &tiers, scope),
+            kind: RouteKind::Antigravity,
+            profile: profile.to_owned(),
+            auth_file: PathBuf::new(),
+            credential: Some(credential),
+            tiers,
+            generation,
+        }
+    }
+
+    /// The same login with other tiers: a generation route's identity freezes
+    /// the tiers the session actually runs on.
+    pub(crate) fn with_tiers(&self, tiers: ModelTiers) -> Self {
+        match self.kind {
+            RouteKind::Codex => Self::new(&self.profile, self.auth_file.clone(), tiers),
+            RouteKind::Antigravity => Self::antigravity(
+                &self.profile,
+                self.credential.clone().unwrap_or(AgyLocator {
+                    file: PathBuf::new(),
+                }),
+                tiers,
+            ),
+        }
+    }
+
+    /// The id this record's own contents make under `scope`.
+    fn own_id(&self, scope: &crate::runtime::RuntimeScope) -> String {
+        match self.kind {
+            RouteKind::Codex => scoped_route_id(&self.profile, &self.auth_file, &self.tiers, scope),
+            RouteKind::Antigravity => antigravity_route_id(
+                &self.profile,
+                self.credential
+                    .as_ref()
+                    .map_or(Path::new(""), |credential| credential.file.as_path()),
+                &self.tiers,
+                scope,
+            ),
+        }
+    }
+}
+
+/// `ag-` and twelve (legacy) or twenty-four (generation) hex digits of the
+/// profile, agy's login file and the tiers. Hashed under its own domain, so
+/// no Antigravity route can share a name's digits with a Codex one.
+fn antigravity_route_id(
+    profile: &str,
+    file: &Path,
+    tiers: &ModelTiers,
+    scope: &crate::runtime::RuntimeScope,
+) -> String {
+    let legacy = matches!(scope, crate::runtime::RuntimeScope::Legacy);
+    let identity = if legacy { "" } else { scope.identity() };
+    let mut hash = Sha256::new();
+    for value in [
+        b"alc-antigravity-route-v1".as_slice(),
+        identity.as_bytes(),
+        profile.as_bytes(),
+        file.as_os_str().as_encoded_bytes(),
+        tiers.strongest.as_bytes(),
+        tiers.default.as_bytes(),
+        tiers.cheapest.as_bytes(),
+    ] {
+        hash.update((value.len() as u64).to_le_bytes());
+        hash.update(value);
+    }
+    let digits = if legacy { 6 } else { 12 };
+    let hex: String = hash
+        .finalize()
+        .iter()
+        .take(digits)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("ag-{hex}")
 }
 
 /// `codex-` and twelve hex digits of the profile and the login it names, so two
@@ -231,12 +359,14 @@ fn scoped_route_id(
 }
 
 pub(crate) fn valid_route_id(id: &str) -> bool {
-    id.strip_prefix("codex-").is_some_and(|hex| {
-        matches!(hex.len(), 12 | 24)
-            && hex
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    })
+    id.strip_prefix("codex-")
+        .or_else(|| id.strip_prefix("ag-"))
+        .is_some_and(|hex| {
+            matches!(hex.len(), 12 | 24)
+                && hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
 }
 
 /// Writes `route` under its own name, and only a route alc named.
@@ -250,23 +380,18 @@ pub(crate) fn valid_route_id(id: &str) -> bool {
 pub(crate) fn write_route(config_dir: &Path, route: &RouteRecord) -> Result<()> {
     if !valid_route_id(&route.id) {
         bail!(
-            "refusing to write bridge route {:?}: alc names a route `codex-` and twelve hex digits",
+            "refusing to write bridge route {:?}: alc names a route `codex-` or `ag-` and twelve hex digits",
             route.id
         );
     }
-    let own = scoped_route_id(
-        &route.profile,
-        &route.auth_file,
-        &route.tiers,
-        crate::runtime::scope(),
-    );
+    let own = route.own_id(crate::runtime::scope());
     let generation = match crate::runtime::scope() {
         crate::runtime::RuntimeScope::Legacy => None,
         scope => Some(scope.identity()),
     };
     if route.id != own || route.generation.as_deref() != generation {
         bail!(
-            "refusing to write bridge route {}: the profile and Codex login it holds make route {own}",
+            "refusing to write bridge route {}: the profile and login it holds make route {own}",
             route.id
         );
     }
@@ -324,8 +449,7 @@ pub(crate) fn read_route(config_dir: &Path, id: &str) -> Result<Option<RouteReco
                 crate::runtime::scope(),
                 crate::runtime::RuntimeScope::Generation(_)
             ) {
-                let expected =
-                    RouteRecord::new(&route.profile, route.auth_file.clone(), route.tiers.clone());
+                let expected = route.with_tiers(route.tiers.clone());
                 if route != expected || route.id != id {
                     bail!(
                         "{} does not match its immutable runtime route identity",
@@ -542,6 +666,84 @@ mod tests {
             }
         }
         files
+    }
+
+    #[test]
+    fn an_antigravity_route_is_named_ag_and_round_trips() {
+        let config = tempfile::tempdir().unwrap();
+        let credential = crate::bridge::agy_auth::AgyLocator {
+            file: PathBuf::from("/home/ada/.gemini/antigravity-cli/antigravity-oauth-token"),
+        };
+        let route = RouteRecord::antigravity("antigravity", credential.clone(), tiers());
+        assert!(route.id.starts_with("ag-"), "{}", route.id);
+        assert!(valid_route_id(&route.id));
+        assert_eq!(route.kind, RouteKind::Antigravity);
+        let text = serde_json::to_string(&route).unwrap();
+        assert!(text.contains("\"kind\":\"antigravity\""), "{text}");
+        assert!(text.contains("\"credential\""), "{text}");
+        assert!(!text.contains("auth_file"), "{text}");
+        write_route(config.path(), &route).unwrap();
+        assert_eq!(
+            read_route(config.path(), &route.id).unwrap(),
+            Some(route.clone())
+        );
+        let other = RouteRecord::antigravity(
+            "antigravity",
+            crate::bridge::agy_auth::AgyLocator {
+                file: PathBuf::from("/home/bob/agy"),
+            },
+            tiers(),
+        );
+        assert_ne!(other.id, route.id, "another login is another route");
+        assert_eq!(route.with_tiers(tiers()), route);
+    }
+
+    #[test]
+    fn a_codex_route_serialises_exactly_as_it_always_has() {
+        let route = RouteRecord::new("codex", PathBuf::from("/w/auth.json"), tiers());
+        let text = serde_json::to_string(&route).unwrap();
+        assert!(
+            !text.contains("kind") && !text.contains("credential"),
+            "{text}"
+        );
+        let old = r#"{"id":"codex-0123456789ab","profile":"codex","auth_file":"/w/auth.json","tiers":{"strongest":"a","default":"b","cheapest":"c"}}"#;
+        let parsed: RouteRecord = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.kind, RouteKind::Codex);
+        assert!(parsed.credential.is_none());
+        assert!(valid_route_id("ag-0123456789ab") && valid_route_id("ag-0123456789ab0123456789ab"));
+        assert!(!valid_route_id("ag-xyz") && !valid_route_id("agy-0123456789ab"));
+    }
+
+    #[test]
+    fn a_generation_antigravity_route_freezes_its_login_and_tiers() {
+        let scope = crate::runtime::RuntimeScope::parse("0123456789ab").unwrap();
+        let credential = crate::bridge::agy_auth::AgyLocator {
+            file: PathBuf::from("/test-only/agy-login"),
+        };
+        let route =
+            RouteRecord::antigravity_for("antigravity", credential.clone(), tiers(), &scope);
+        assert_eq!(route.id.len(), "ag-".len() + 24, "{}", route.id);
+        assert!(valid_route_id(&route.id));
+        assert_eq!(route.generation.as_deref(), Some(scope.identity()));
+        assert_eq!(route.own_id(&scope), route.id);
+        let mut changed = tiers();
+        changed.default = "other-default".to_owned();
+        let moved = RouteRecord::antigravity_for("antigravity", credential, changed, &scope);
+        assert_ne!(
+            moved.id, route.id,
+            "the default tier is part of the identity"
+        );
+        let codex = RouteRecord::new_for(
+            "antigravity",
+            PathBuf::from("/test-only/agy-login"),
+            tiers(),
+            &scope,
+        );
+        assert_ne!(
+            codex.id.trim_start_matches("codex-"),
+            route.id.trim_start_matches("ag-"),
+            "the two kinds hash under different domains"
+        );
     }
 
     #[test]

@@ -137,6 +137,8 @@ with every GPT model in its `/model` picker.
 [Codex bridge](./codex-to-claude.md) has the models, the effort tiers, and the
 other agents on that login. The Antigravity CLI is the one agent that runs on a
 login of its own instead: `alc agy` ([Antigravity CLI](./agents.md#antigravity-cli-agy)).
+That Google login serves every other agent too, through the same bridge:
+`alc --agy claude` ([Antigravity](./providers.md#antigravity)).
 
 ## Other providers
 

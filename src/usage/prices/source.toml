@@ -25,4 +25,5 @@ notes = [
     "Claude 4.6 rates are flat across the 1M context window according to the first-party pricing page.",
     "Legacy DeepSeek chat/reasoner rows are intentionally omitted: the current provider page lists different models and time-of-day prices, not authoritative current rates for those legacy names.",
     "Text-token estimates exclude tax, tool/search/image/audio/container charges, data residency premiums, subscription fees and negotiated discounts. They are reference estimates, not invoices or balance deductions.",
+    "Antigravity: GPT-OSS 120B is priced at zero (the spec's API-equivalent reference); its Claude and Gemini families stay N/A until verified rates are added.",
 ]

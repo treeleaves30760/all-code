@@ -43,7 +43,7 @@ under `<config>/claude/`.
 
 | In the file | What it does |
 | --- | --- |
-| `ANTHROPIC_BASE_URL` | the provider's Anthropic endpoint, alc's Codex background bridge, or an opt-in API observation route |
+| `ANTHROPIC_BASE_URL` | the provider's Anthropic endpoint, alc's background bridge (Codex or Antigravity login), or an opt-in API observation route |
 | model variables and `modelPicker` | the models Claude Code starts on and offers |
 | `apiKeyHelper` | A hash-pinned alc executable running `--runtime <id> claude-credential …`, which Claude Code runs for the credential |
 

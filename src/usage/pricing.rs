@@ -793,6 +793,13 @@ impl PriceBook {
                     "anthropic"
                 })
             }
+            Some("antigravity") => {
+                estimate.assumptions.push(
+                    "Antigravity runs on a Google plan; only models with a verified API-equivalent rate in alc's snapshot are priced."
+                        .to_owned(),
+                );
+                Some("antigravity")
+            }
             Some(_) => {
                 if let Some(provider) = official {
                     estimate.assumptions.push("Exact official endpoint supplies a reference only; observed custom/local provider attribution is unchanged.".to_owned());
@@ -1996,6 +2003,37 @@ input="1"
         assert_eq!(
             license,
             include_str!("../../THIRD_PARTY_LICENSES/LiteLLM-LICENSE")
+        );
+    }
+
+    #[test]
+    fn antigravity_prices_gpt_oss_at_zero_and_leaves_unverified_families_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = PriceBook::load(dir.path(), None).unwrap();
+        let mut gpt = record(
+            Some("antigravity"),
+            "gpt-oss-120b-medium",
+            InputBasis::default(),
+        );
+        gpt.tokens.input_tokens = Some(1_000);
+        gpt.tokens.output_tokens = Some(100);
+        let estimate = book.estimate(&gpt);
+        assert!(estimate.applicable, "{:?}", estimate.reasons);
+        assert_eq!(estimate.reference_provider.as_deref(), Some("antigravity"));
+        assert_eq!(estimate.known_subtotal, Money::ZERO);
+        let claude = book.estimate(&record(
+            Some("antigravity"),
+            "claude-opus-5-5-high",
+            InputBasis::default(),
+        ));
+        assert!(!claude.applicable);
+        assert!(
+            claude
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("no verified price")),
+            "{:?}",
+            claude.reasons
         );
     }
 }

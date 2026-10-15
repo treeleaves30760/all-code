@@ -2,10 +2,10 @@ use std::ffi::OsString;
 
 use anyhow::{Context, Result};
 
-use crate::config::{AuthStyle, Provider, ProviderKind, Store};
+use crate::config::{AuthStyle, Provider, Store};
 use crate::launch::{
-    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, anthropic_shaped, has_option, key_or_error,
-    resolve_codex_effort, resolve_codex_model,
+    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, anthropic_shaped, bridge_plan, has_option,
+    key_or_error,
 };
 
 /// Copilot CLI is driven entirely through documented `COPILOT_PROVIDER_*` and
@@ -20,22 +20,8 @@ pub(crate) fn build(
     passthrough: &[OsString],
     overrides: &LaunchOverrides,
 ) -> Result<()> {
-    if provider.kind == ProviderKind::Codex {
-        let model = overrides
-            .model
-            .clone()
-            .map_or_else(|| resolve_codex_model(provider), Ok)?;
-        let effort = overrides
-            .reasoning_effort
-            .or(provider.reasoning_effort)
-            .or(resolve_codex_effort(provider)?);
-        spec.bridge = Some(BridgePlan {
-            model,
-            effort,
-            context_window: overrides.context_window,
-            options: overrides.model_options.clone(),
-            api: BridgeApi::Chat,
-        });
+    if let Some(plan) = bridge_plan(provider, overrides, BridgeApi::Chat)? {
+        spec.bridge = Some(plan);
         spec.args.extend_from_slice(passthrough);
         return Ok(());
     }

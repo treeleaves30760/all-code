@@ -203,6 +203,19 @@ fn read_json(path: &std::path::Path) -> Value {
     serde_json::from_str(&raw).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
+/// One file of the Antigravity captures in `tests/fixtures/antigravity/`,
+/// taken live on 2026-10-14 and normalised (project, signatures, call ids).
+pub(crate) fn antigravity(name: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/antigravity")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+pub(crate) fn antigravity_json(name: &str) -> Value {
+    serde_json::from_str(&antigravity(name)).unwrap_or_else(|error| panic!("{name}: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

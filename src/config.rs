@@ -75,16 +75,19 @@ impl std::str::FromStr for ReasoningEffort {
     }
 }
 
-/// How much of a Codex model's window a session is given.
+/// How much of a model's window a session is given, on the Codex and
+/// Antigravity kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ContextChoice {
     /// The window chatgpt.com advertises as the model's own (272K; 500K for
-    /// GPT-6.1 Sol). Codex's own default too.
+    /// GPT-6.1 Sol). Codex's own default too. On Antigravity, the family's
+    /// standard window (`models/antigravity.json`).
     #[default]
     Standard,
-    /// The model's `max_context_window` (872K today). Past the standard
-    /// window a turn uses plan limits faster, so this is opt-in.
+    /// The model's `max_context_window` (872K today; the family's maximum on
+    /// Antigravity). Past the standard window a turn uses plan limits
+    /// faster, so this is opt-in.
     Max,
 }
 
@@ -696,9 +699,9 @@ impl Provider {
             return false;
         }
         if self.kind == ProviderKind::Antigravity {
-            // Native for the Antigravity CLI; the bridge for other agents
-            // arrives with the antigravity upstream (not yet).
-            return agent == Agent::Agy;
+            // agy runs natively on its own login; every other agent reaches
+            // the same login through alc's bridge (`bridge::agy_upstream`).
+            return true;
         }
         if agent == Agent::Agy {
             return false;
@@ -820,9 +823,14 @@ impl Config {
             if provider.kind == ProviderKind::Custom && provider.effective_base_url().is_none() {
                 bail!("custom provider '{name}' needs a base_url");
             }
-            if provider.context != ContextChoice::Standard && provider.kind != ProviderKind::Codex {
+            if provider.context != ContextChoice::Standard
+                && !matches!(
+                    provider.kind,
+                    ProviderKind::Codex | ProviderKind::Antigravity
+                )
+            {
                 bail!(
-                    "provider '{name}' sets context = \"{}\", which only a codex profile can use",
+                    "provider '{name}' sets context = \"{}\", which only a codex or antigravity profile can use",
                     provider.context
                 );
             }
@@ -832,13 +840,6 @@ impl Config {
             let default_name = self.defaults.get(agent);
             match self.providers.get(default_name) {
                 Some(provider) if provider.supports(agent) => {}
-                Some(provider)
-                    if self.defaults.is_explicit(agent)
-                        && provider.enabled
-                        && provider.kind == ProviderKind::Antigravity =>
-                {
-                    bail!("{}", antigravity_drives_only_agy(default_name))
-                }
                 Some(provider) if self.defaults.is_explicit(agent) => bail!(
                     "provider '{default_name}' ({}) cannot be used with {agent}; {}",
                     provider.kind,
@@ -876,9 +877,6 @@ impl Config {
                 );
             }
             if !provider.supports(agent) {
-                if provider.kind == ProviderKind::Antigravity {
-                    bail!("{}", antigravity_drives_only_agy(name));
-                }
                 bail!(
                     "provider '{name}' ({}) is not compatible with {agent}; {}. Run `alc doctor` for the compatibility matrix",
                     provider.kind,
@@ -897,20 +895,15 @@ impl Config {
         match matches.as_slice() {
             [(name, provider)] => Ok((name.as_str(), *provider)),
             // A config.toml from before the antigravity kind has no profile
-            // for agy, and `alc config` alone does not say which one to add.
+            // for it, and `alc config` alone does not say which one to add.
             // Not when the name is taken: `upsert` would rewrite that
             // profile for the new kind, base URL and model gone.
             [] if kind == Some(ProviderKind::Antigravity)
-                && agent == Agent::Agy
                 && !self.providers.contains_key("antigravity") =>
             {
                 bail!(
                     "provider profile or kind '{requested}' was not found for {agent}; {ADD_ANTIGRAVITY}"
                 )
-            }
-            // No antigravity profile could serve another agent anyway.
-            [] if kind == Some(ProviderKind::Antigravity) && agent != Agent::Agy => {
-                bail!("{}", antigravity_drives_only_agy(requested))
             }
             [] => bail!(
                 "provider profile or kind '{requested}' was not found for {agent}; run `alc config`"
@@ -922,17 +915,8 @@ impl Config {
     }
 }
 
-/// What adds the profile agy runs on to a config.toml written before it.
+/// What adds the Antigravity profile to a config.toml written before it.
 pub const ADD_ANTIGRAVITY: &str = "run `alc config upsert antigravity --kind antigravity`";
-
-/// The antigravity kind is a login only the Antigravity CLI holds, so naming
-/// it for another agent is a wrong turn rather than a protocol mismatch, and
-/// the error says where to go instead.
-fn antigravity_drives_only_agy(name: &str) -> String {
-    format!(
-        "provider '{name}' (antigravity) drives the Antigravity CLI only: run `alc agy`; routing other agents through this login is not available yet"
-    )
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1354,8 +1338,8 @@ enabled = true
                 by_kind(ProviderKind::Openrouter),
                 every_agent_but_agy.as_slice(),
             ),
-            // antigravity: the Antigravity CLI only
-            (by_kind(ProviderKind::Antigravity), &[Agent::Agy]),
+            // antigravity: agy natively, every other agent through the bridge
+            (by_kind(ProviderKind::Antigravity), &Agent::ALL),
         ];
         for (provider, expected) in cases {
             for agent in Agent::ALL {
@@ -1622,11 +1606,10 @@ enabled = true
     }
 
     #[test]
-    fn agy_runs_only_on_the_antigravity_kind_and_the_kind_runs_only_agy() {
+    fn the_antigravity_kind_runs_every_agent_and_agy_runs_only_on_it() {
         let antigravity = Provider::for_kind(ProviderKind::Antigravity);
-        assert!(antigravity.supports(Agent::Agy));
-        for agent in Agent::ALL.into_iter().filter(|agent| *agent != Agent::Agy) {
-            assert!(!antigravity.supports(agent), "{agent}");
+        for agent in Agent::ALL {
+            assert!(antigravity.supports(agent), "{agent}");
         }
         for kind in ProviderKind::ALL
             .into_iter()
@@ -1643,28 +1626,32 @@ enabled = true
     }
 
     #[test]
-    fn another_agent_on_the_antigravity_profile_is_pointed_at_alc_agy() {
+    fn another_agent_resolves_on_the_antigravity_profile() {
         let config = Config::default();
-        let error = config
-            .resolve(Agent::Claude, Some("antigravity"))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains(
-                "provider 'antigravity' (antigravity) drives the Antigravity CLI only: run `alc agy`; routing other agents through this login is not available yet"
-            ),
-            "{error}"
-        );
-        let (name, provider) = config.resolve(Agent::Agy, None).unwrap();
+        let (name, provider) = config.resolve(Agent::Claude, Some("antigravity")).unwrap();
         assert_eq!(name, "antigravity");
         assert_eq!(provider.kind, ProviderKind::Antigravity);
-
-        // Saving it as another agent's default is refused the same way.
+        assert_eq!(
+            config.resolve(Agent::Opencode, Some("agy")).unwrap().0,
+            "antigravity"
+        );
         let mut config = Config::default();
         config.defaults.set(Agent::Codex, "antigravity");
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn a_context_choice_is_allowed_on_codex_and_antigravity_only() {
+        let mut config = Config::default();
+        config.providers.get_mut("antigravity").unwrap().context = ContextChoice::Max;
+        config.providers.get_mut("codex").unwrap().context = ContextChoice::Max;
+        config.validate().unwrap();
+        let mut provider = Provider::for_kind(ProviderKind::Openrouter);
+        provider.context = ContextChoice::Max;
+        config.providers.insert("work".to_owned(), provider);
         let error = config.validate().unwrap_err().to_string();
         assert!(
-            error.contains("drives the Antigravity CLI only: run `alc agy`"),
+            error.contains("work") && error.contains("codex or antigravity"),
             "{error}"
         );
     }
@@ -1683,13 +1670,14 @@ enabled = true
                 "{requested:?}: {error}"
             );
         }
-        // Another agent is not sent to add a profile it could not use.
+        // Every agent now runs on that login, so another agent is sent to add
+        // it too.
         let error = config
             .resolve(Agent::Claude, Some("antigravity"))
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("drives the Antigravity CLI only: run `alc agy`"),
+            error.contains("run `alc config upsert antigravity --kind antigravity`"),
             "{error}"
         );
         // Every other missing kind keeps the general pointer.
@@ -1726,19 +1714,6 @@ enabled = true
                 "{requested}: {error}"
             );
         }
-    }
-
-    #[test]
-    fn a_context_choice_is_refused_off_the_codex_kind() {
-        let mut config = Config::default();
-        let mut provider = Provider::for_kind(ProviderKind::Openrouter);
-        provider.context = ContextChoice::Max;
-        config.providers.insert("work".to_owned(), provider);
-        let error = config.validate().unwrap_err().to_string();
-        assert!(
-            error.contains("work") && error.contains("context"),
-            "{error}"
-        );
     }
 }
 

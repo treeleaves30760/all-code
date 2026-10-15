@@ -21,6 +21,11 @@ use serde::Deserialize;
 
 use super::accounts::{ClaudeLogin, CodexLogin, KeyVendor};
 use super::{AccountState, Balance, Credits, Window};
+use crate::bridge::agy_auth::AgyToken;
+use crate::bridge::agy_upstream::{
+    LOAD_CODE_ASSIST_URL, QUOTA_SUMMARY_URL, X_GOOG_API_CLIENT, load_code_assist_body,
+    project_from, user_agent,
+};
 
 /// Long enough for a vendor on a slow link, short enough that one dead host
 /// does not make `alc usage` feel hung.
@@ -753,6 +758,198 @@ fn map_zai(value: &serde_json::Value, refused_message: &str) -> Outcome {
     }
 }
 
+// ------------------------------------------------------------ antigravity
+
+const AGY_SIGNED_OUT: &str = "Google refused agy's login; sign in with agy again";
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct AgyQuota {
+    groups: Vec<AgyQuotaGroup>,
+    /// Some answers carry the buckets at the top level instead.
+    buckets: Vec<AgyBucket>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct AgyQuotaGroup {
+    buckets: Vec<AgyBucket>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct AgyBucket {
+    bucket_id: String,
+    window: String,
+    remaining_fraction: Option<f64>,
+    reset_time: Option<String>,
+    disabled: bool,
+}
+
+/// The Cloud Code URL, or the same path on a loopback stand-in in a debug
+/// build: `ALC_AGY_API_BASE` (the bridge's own override) first, then the
+/// `ALC_USAGE_API_BASE` every other vendor here honours.
+fn agy_endpoint(url: &'static str) -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(base) = std::env::var("ALC_AGY_API_BASE")
+        && !base.is_empty()
+    {
+        return rebase(&base, url);
+    }
+    endpoint(url)
+}
+
+/// A POST with a JSON body; redirects are refused, because the bearer token
+/// rides along.
+fn post(url: &str, headers: &[(&str, &str)], body: &serde_json::Value) -> Result<Fetched, String> {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(QUOTA_TIMEOUT))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build();
+    let agent = ureq::Agent::new_with_config(config);
+    let mut request = agent.post(url);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let text = body.to_string();
+    let mut response = request
+        .send(text.as_bytes())
+        .map_err(|error| format!("could not reach {}: {error}", host_of(url)))?;
+    let status = response.status().as_u16();
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(QUOTA_BODY_LIMIT)
+        .read_to_string()
+        .map_err(|error| format!("could not read {}: {error}", host_of(url)))?;
+    Ok(Fetched { status, body })
+}
+
+/// The failures are boxed: an `Outcome` is large, and these are the rare path.
+fn agy_post(
+    token: &AgyToken,
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<Fetched, Box<Outcome>> {
+    let bearer = format!("Bearer {}", token.access_token());
+    let agent = user_agent();
+    let headers = [
+        ("authorization", bearer.as_str()),
+        ("user-agent", agent.as_str()),
+        ("x-goog-api-client", X_GOOG_API_CLIENT),
+        ("content-type", "application/json"),
+    ];
+    let fetched = post(url, &headers, body)
+        .map_err(|error| Box::new(Outcome::failed(AccountState::Error, error)))?;
+    match refused(fetched.status, url, AGY_SIGNED_OUT) {
+        Some(outcome) => Err(Box::new(outcome)),
+        None => Ok(fetched),
+    }
+}
+
+/// The account's Cloud Code project, `None` when it has none. Read-only.
+pub(crate) fn antigravity_project(token: &AgyToken) -> Result<Option<String>, Box<Outcome>> {
+    let url = agy_endpoint(LOAD_CODE_ASSIST_URL);
+    let fetched = agy_post(token, &url, &load_code_assist_body())?;
+    let answer: serde_json::Value =
+        serde_json::from_str(&fetched.body).map_err(|_| Box::new(unparsable(&url)))?;
+    Ok(project_from(&answer))
+}
+
+/// What is left on an Antigravity login: the Gemini pool and the Claude/GPT
+/// pool, each by window. Never renews: an expired token is routine (agy's
+/// last about an hour), so it is nothing to read right now rather than a
+/// signed-out login, and the next launch has agy renew it.
+pub(crate) fn fetch_antigravity(token: &AgyToken, now: i64) -> Outcome {
+    if !token.is_fresh(now) {
+        return Outcome::failed(
+            AccountState::Unavailable,
+            "expired; agy renews it on the next launch".to_owned(),
+        );
+    }
+    let project = match antigravity_project(token) {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            return Outcome::failed(
+                AccountState::Error,
+                "this Google account is not onboarded to Antigravity yet; open agy once".to_owned(),
+            );
+        }
+        Err(outcome) => return *outcome,
+    };
+    let url = agy_endpoint(QUOTA_SUMMARY_URL);
+    let fetched = match agy_post(token, &url, &serde_json::json!({"project": project})) {
+        Ok(fetched) => fetched,
+        Err(outcome) => return *outcome,
+    };
+    match serde_json::from_str::<AgyQuota>(&fetched.body) {
+        Ok(quota) => map_antigravity(quota),
+        Err(_) => unparsable(&url),
+    }
+}
+
+fn map_antigravity(quota: AgyQuota) -> Outcome {
+    let mut windows: Vec<Window> = quota
+        .groups
+        .into_iter()
+        .flat_map(|group| group.buckets)
+        .chain(quota.buckets)
+        .filter(|bucket| !bucket.disabled)
+        .filter_map(|bucket| {
+            let resets_at = bucket.reset_time.as_deref().and_then(parse_rfc3339_utc);
+            // Google's JSON omits a zero, so a spent bucket arrives with its
+            // reset time and no fraction; one with neither says nothing.
+            let fraction = match (bucket.remaining_fraction, &bucket.reset_time) {
+                (Some(fraction), _) => fraction,
+                (None, Some(_)) => 0.0,
+                (None, None) => return None,
+            };
+            let pool = if bucket.bucket_id.starts_with("gemini-") {
+                "Gemini"
+            } else if bucket.bucket_id.starts_with("3p-") {
+                "Claude/GPT"
+            } else {
+                "Other"
+            };
+            let name = match bucket.window.as_str() {
+                "5h" => "5h",
+                "daily" => "day",
+                "weekly" => "week",
+                "" => "window",
+                other => other,
+            };
+            Some(Window {
+                name: name.to_owned(),
+                scope: Some(pool.to_owned()),
+                used_percent: clamp_percent((1.0 - fraction) * 100.0),
+                resets_at,
+                remaining: None,
+                limit: None,
+            })
+        })
+        .collect();
+    let rank = |window: &Window| {
+        let pool = match window.scope.as_deref() {
+            Some("Gemini") => 0,
+            Some("Claude/GPT") => 1,
+            _ => 2,
+        };
+        let length = match window.name.as_str() {
+            "5h" => 0,
+            "day" => 1,
+            "week" => 2,
+            _ => 3,
+        };
+        (pool, length)
+    };
+    windows.sort_by_key(rank);
+    Outcome {
+        windows,
+        ..Outcome::default()
+    }
+}
+
 // ---------------------------------------------------------------- helpers
 
 /// A window's name from its length, so `alc usage` says "5h" and "week"
@@ -948,6 +1145,139 @@ mod tests {
         assert_eq!(outcome.state, Some(AccountState::SignedOut));
         assert!(outcome.error.unwrap().contains("codex login"));
         assert_eq!(outcome.plan.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn the_antigravity_quota_maps_pools_and_windows_and_skips_disabled_buckets() {
+        let quota: AgyQuota = serde_json::from_str(r#"{"groups":[
+            {"displayName":"Gemini models","buckets":[
+              {"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.4,"resetTime":"2026-10-20T00:00:00Z"},
+              {"bucketId":"gemini-5h","window":"5h","remainingFraction":0.72,"resetTime":"2026-10-14T18:00:00Z"},
+              {"bucketId":"gemini-daily","window":"daily","remainingFraction":1.0,"disabled":true}]},
+            {"displayName":"Claude and GPT models","buckets":[
+              {"bucketId":"3p-weekly","window":"weekly","remainingFraction":0.91}]}]}"#).unwrap();
+        let outcome = map_antigravity(quota);
+        let rows: Vec<_> = outcome
+            .windows
+            .iter()
+            .map(|w| {
+                (
+                    w.scope.clone().unwrap(),
+                    w.name.clone(),
+                    w.used_percent.round() as i64,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Gemini".to_owned(), "5h".to_owned(), 28),
+                ("Gemini".to_owned(), "week".to_owned(), 60),
+                ("Claude/GPT".to_owned(), "week".to_owned(), 9),
+            ]
+        );
+        assert!(outcome.windows[0].resets_at.is_some());
+        let top: AgyQuota = serde_json::from_str(
+            r#"{"buckets":[{"bucketId":"gemini-daily","window":"daily","remainingFraction":0.5}]}"#,
+        )
+        .unwrap();
+        assert_eq!(map_antigravity(top).windows[0].name, "day");
+    }
+
+    /// Google's JSON leaves a zero out, so a spent bucket arrives with its
+    /// reset time and no fraction. It is the window a person most needs to
+    /// see, so it reads as empty rather than vanishing.
+    #[test]
+    fn a_spent_antigravity_bucket_without_a_fraction_reads_as_empty() {
+        let quota: AgyQuota = serde_json::from_str(
+            r#"{"groups":[{"buckets":[
+              {"bucketId":"3p-5h","window":"5h","resetTime":"2026-10-14T18:00:00Z"},
+              {"bucketId":"3p-weekly","window":"weekly"}]}]}"#,
+        )
+        .unwrap();
+        let outcome = map_antigravity(quota);
+        assert_eq!(outcome.windows.len(), 1, "{:?}", outcome.windows);
+        assert_eq!(outcome.windows[0].used_percent, 100.0);
+        assert_eq!(outcome.windows[0].scope.as_deref(), Some("Claude/GPT"));
+    }
+
+    #[test]
+    fn the_captured_quota_summary_parses() {
+        let quota: AgyQuota =
+            serde_json::from_str(&crate::bridge::fixtures::antigravity("quota-summary.json"))
+                .unwrap();
+        let windows = map_antigravity(quota).windows;
+        let rows: Vec<_> = windows
+            .iter()
+            .map(|w| (w.scope.clone().unwrap(), w.name.clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Gemini".to_owned(), "5h".to_owned()),
+                ("Gemini".to_owned(), "week".to_owned()),
+                ("Claude/GPT".to_owned(), "5h".to_owned()),
+                ("Claude/GPT".to_owned(), "week".to_owned()),
+            ]
+        );
+        let used: Vec<f64> = windows.iter().map(|w| w.used_percent).collect();
+        for (got, want) in used.iter().zip([0.0, 0.0, 0.0, 0.57448]) {
+            assert!((got - want).abs() < 0.001, "{used:?}");
+        }
+        // 0.9942552 remaining reads as 99% left.
+        assert_eq!((100.0 - used[3]).round(), 99.0);
+        assert!(windows.iter().all(|w| w.resets_at.is_some()), "{windows:?}");
+    }
+
+    #[test]
+    fn an_expired_antigravity_login_is_unavailable_without_a_request() {
+        use crate::bridge::agy_auth::{now_secs, parse_credential, test_support::credential};
+        let token = parse_credential(&credential("tok-a", -10)).unwrap();
+        let outcome = fetch_antigravity(&token, now_secs());
+        assert_eq!(outcome.state, Some(AccountState::Unavailable));
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("expired; agy renews it on the next launch")
+        );
+    }
+
+    /// The bearer token rides along, so a redirect is refused rather than
+    /// followed to wherever it points.
+    #[test]
+    fn a_post_does_not_follow_a_redirect() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://{}/v1internal:loadCodeAssist",
+            listener.local_addr().unwrap()
+        );
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !String::from_utf8_lossy(&seen).contains("{}") {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => seen.extend_from_slice(&chunk[..read]),
+                }
+            }
+            let _ = stream.write_all(
+                b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            String::from_utf8_lossy(&seen).into_owned()
+        });
+        let fetched = post(
+            &url,
+            &[("authorization", "Bearer t")],
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        assert_eq!(fetched.status, 302);
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("POST /v1internal:loadCodeAssist"),
+            "{request}"
+        );
     }
 
     #[test]
@@ -1159,6 +1489,11 @@ mod tests {
         assert_eq!(
             rebase("http://127.0.0.1:8080/", CLAUDE_USAGE_URL),
             "http://127.0.0.1:8080/api/oauth/usage"
+        );
+        // The same shape the bridge's own `ALC_AGY_API_BASE` stand-in serves.
+        assert_eq!(
+            rebase("http://127.0.0.1:8080", QUOTA_SUMMARY_URL),
+            "http://127.0.0.1:8080/v1internal:retrieveUserQuotaSummary"
         );
     }
 

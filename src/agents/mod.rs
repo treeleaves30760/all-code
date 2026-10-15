@@ -56,7 +56,8 @@ pub fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) ->
             "Claude Code was handed an in-process adapter plan, which alc no longer builds for it; \
              this is an alc bug - please report it"
         ),
-        Agent::Codex => Ok(()),
+        // Codex runs natively on its own login and is bridged on agy's.
+        Agent::Codex => codex::apply_bridge(spec, base_url, plan),
         Agent::Copilot => copilot::apply_bridge(spec, base_url, plan),
         Agent::Opencode => opencode::apply_bridge(spec, base_url, plan),
         Agent::Pi => pi::apply_bridge(spec, base_url, plan),

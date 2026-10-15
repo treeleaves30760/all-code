@@ -1,0 +1,10 @@
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": ""}]}}],"usageMetadata": {"promptTokenCount": 474,"candidatesTokenCount": 17,"totalTokenCount": 491},"modelVersion": "claude-sonnet-5-5-low","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": "Paris:"}]}}],"usageMetadata": {"promptTokenCount": 474,"candidatesTokenCount": 17,"totalTokenCount": 491},"modelVersion": "claude-sonnet-5-5-low","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": " Sunny, 21 "}]}}],"usageMetadata": {"promptTokenCount": 474,"candidatesTokenCount": 17,"totalTokenCount": 491},"modelVersion": "claude-sonnet-5-5-low","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": "°C."}]}}],"usageMetadata": {"promptTokenCount": 474,"candidatesTokenCount": 17,"totalTokenCount": 491},"modelVersion": "claude-sonnet-5-5-low","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": ""}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 474,"candidatesTokenCount": 17,"totalTokenCount": 491},"modelVersion": "claude-sonnet-5-5-low","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+

@@ -60,6 +60,9 @@ fn command_at(binary: &Path, config: &Path, runtime: Option<&str>) -> Command {
     command
         .env("CLAUDE_CONFIG_DIR", config.join("claude-history"))
         .env("CODEX_HOME", config.join("codex-history"))
+        // Never agy's real login (debug builds only honour these).
+        .env("ALC_AGY_NO_KEYRING", "1")
+        .env("ALC_AGY_CREDENTIAL_FILE", config.join("agy-login"))
         .env_remove("OPENAI_API_KEY")
         .env_remove("OPENAI_BASE_URL")
         .env_remove("ANTHROPIC_API_KEY")
@@ -237,6 +240,9 @@ fn helper(config: &Path, work: &Path, line: &str) -> String {
         .current_dir(work)
         .env("CLAUDE_CONFIG_DIR", config.join("claude-history"))
         .env("CODEX_HOME", config.join("codex-history"))
+        // Never agy's real login (debug builds only honour these).
+        .env("ALC_AGY_NO_KEYRING", "1")
+        .env("ALC_AGY_CREDENTIAL_FILE", config.join("agy-login"))
         .env_remove("OPENAI_API_KEY")
         .env_remove("OPENAI_BASE_URL")
         .env_remove("ANTHROPIC_API_KEY")

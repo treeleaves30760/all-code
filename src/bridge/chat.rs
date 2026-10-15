@@ -28,10 +28,12 @@
 //!
 //! One deliberate asymmetry: fields this endpoint has nowhere to put are
 //! dropped rather than refused. `temperature`, `top_p`, `max_tokens`, `user`
-//! and a message's `name` reach no field here and travel no further —
-//! chatgpt.com refuses the first four outright, so there is nothing to relay
-//! them into. The bridge being replaced answered 400 for every one of them,
-//! which is defensible against a spec and useless against an agent that sends
+//! and a message's `name` reach no field on the Codex upstream and travel no
+//! further — chatgpt.com refuses the first four outright, so there is nothing
+//! to relay them into; on Antigravity `max_tokens` (or
+//! `max_completion_tokens`) and `temperature` reach `generationConfig`. The
+//! bridge being replaced answered 400 for every one of them, which is
+//! defensible against a spec and useless against an agent that sends
 //! `temperature` on every request and cannot be told not to. The choice is
 //! between dropping them and refusing turns over them.
 
@@ -88,6 +90,19 @@ pub(crate) struct ChatRequest {
     pub tools: Vec<ChatTool>,
     #[serde(default)]
     pub tool_choice: Option<Value>,
+    /// Antigravity's `maxOutputTokens` (`max_completion_tokens` wins when both
+    /// are sent); chatgpt.com refuses both, so the Codex body never carries them.
+    ///
+    /// Read as raw JSON and only used when it is a whole non-negative number:
+    /// a `4096.0`, a `-1` or a string is dropped like any field this surface
+    /// cannot use, never a reason to refuse the turn.
+    #[serde(default)]
+    pub max_tokens: Option<Value>,
+    #[serde(default)]
+    pub max_completion_tokens: Option<Value>,
+    /// Kept only when it is a number, for the same reason.
+    #[serde(default)]
+    pub temperature: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -270,7 +285,7 @@ pub(crate) fn to_upstream(
 ) -> Result<UpstreamRequest, BridgeError> {
     if request.model.trim().is_empty() {
         return Err(BridgeError::invalid(
-            "'model' is required and must name a Codex model",
+            "'model' is required and must name the model to run",
         ));
     }
     if request.messages.is_empty() {
@@ -333,6 +348,10 @@ pub(crate) fn to_upstream(
         },
         prompt_cache_key: None,
         input,
+        max_output_tokens: [&request.max_completion_tokens, &request.max_tokens]
+            .into_iter()
+            .find_map(|cap| cap.as_ref().and_then(Value::as_u64)),
+        temperature: request.temperature.as_ref().and_then(Value::as_f64),
     })
 }
 
@@ -342,7 +361,7 @@ pub(crate) fn to_upstream(
 fn translate_tool(tool: &ChatTool) -> Result<Tool, BridgeError> {
     if tool.kind != "function" {
         return Err(BridgeError::invalid(format!(
-            "unsupported tool type {:?}; Codex takes only 'function' tools",
+            "unsupported tool type {:?}; this bridge takes only 'function' tools",
             tool.kind
         )));
     }
@@ -476,7 +495,7 @@ fn content_parts(
                     }
                     Some(other) => {
                         return Err(BridgeError::invalid(format!(
-                            "'{param}.type' is {other:?}; Codex takes text and image_url parts"
+                            "'{param}.type' is {other:?}; alc's bridge takes text and image_url parts"
                         )));
                     }
                     None => {
@@ -1002,7 +1021,7 @@ fn turn_failure(frame: &UpstreamFrame) -> BridgeError {
     BridgeError::upstream(
         StatusCode::BAD_GATEWAY,
         upstream::error_message(frame.raw.as_bytes())
-            .unwrap_or_else(|| "chatgpt.com ended the turn without saying why".to_owned()),
+            .unwrap_or_else(|| "the upstream ended the turn without saying why".to_owned()),
     )
 }
 
@@ -1030,13 +1049,13 @@ async fn aggregate(mut turn: Turn, model: &str) -> Result<ChatCompletion, Bridge
     if !state.completed {
         return Err(BridgeError::upstream(
             StatusCode::BAD_GATEWAY,
-            "chatgpt.com closed the stream before the turn completed",
+            "the upstream closed the stream before the turn completed",
         ));
     }
     if state.is_empty() {
         return Err(BridgeError::upstream(
             StatusCode::BAD_GATEWAY,
-            "chatgpt.com completed the turn without producing any output",
+            "the upstream completed the turn without producing any output",
         ));
     }
     Ok(state.completion())
@@ -1127,14 +1146,14 @@ impl StreamPump {
         if !self.state.completed {
             self.fail(BridgeError::upstream(
                 StatusCode::BAD_GATEWAY,
-                "chatgpt.com closed the stream before the turn completed",
+                "the upstream closed the stream before the turn completed",
             ));
             return;
         }
         if self.state.is_empty() {
             self.fail(BridgeError::upstream(
                 StatusCode::BAD_GATEWAY,
-                "chatgpt.com completed the turn without producing any output",
+                "the upstream completed the turn without producing any output",
             ));
             return;
         }
@@ -1234,7 +1253,19 @@ async fn respond(state: &BridgeState, body: Bytes) -> Result<Response, BridgeErr
             "the request body is not a Chat Completions request: {error}"
         ))
     })?;
-    let upstream_request = to_upstream(&request, &state.config)?;
+    let mut upstream_request = to_upstream(&request, &state.config)?;
+    // Resolved before the label and the ledger row below are taken, so both
+    // name the model that ran rather than the family that was asked for.
+    if matches!(state.upstream, super::Upstream::Antigravity(_)) {
+        upstream_request.model = super::gemini::wire_model(
+            &upstream_request.model,
+            upstream_request
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| reasoning.effort),
+            state.config.claude_tiers.as_ref(),
+        )?;
+    }
     // The model the *answer* is labelled with, before upstream names its own:
     // a client that pinned a slug should see that slug come back even on the
     // paths where the response object never arrives.
@@ -1273,6 +1304,7 @@ mod tests {
             provider: "codex".to_owned(),
             ledger: None,
             claude_tiers: None,
+            upstream: crate::bridge::UpstreamKind::Codex,
         }
     }
 
@@ -1885,5 +1917,187 @@ mod tests {
             completion.choices[0].message.content.as_deref(),
             Some("fine")
         );
+    }
+
+    use crate::bridge::agy_fake::{FakeCodeAssist, Reply, agy_bridge, post_json};
+
+    const SIGNED_CALL: &str = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"Paris\"}},\"thoughtSignature\":\"S3\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":4,\"totalTokenCount\":13}}}\n\n";
+
+    fn project() -> Reply {
+        Reply::json(200, json!({"cloudaicompanionProject": "test-project"}))
+    }
+
+    fn weather_tool() -> Value {
+        json!([{"type": "function", "function": {"name": "get_weather",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}])
+    }
+
+    fn generated(fake: &FakeCodeAssist) -> Vec<Value> {
+        fake.requests()
+            .into_iter()
+            .filter(|request| request.path.contains("streamGenerate"))
+            .map(|request| request.body)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_chat_client_gets_a_tool_call_from_antigravity_and_its_caps_reach_the_wire() {
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(SIGNED_CALL)]);
+        let body = json!({"model": "gemini-3.8-flash", "stream": false, "max_tokens": 700, "temperature": 0.1,
+            "tools": weather_tool(),
+            "messages": [{"role": "user", "content": "Weather in Paris?"}]});
+        let (status, answer) = post_json(
+            agy_bridge(&fake, None, Some(ReasoningEffort::High)),
+            "/v1/chat/completions",
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        let completion: Value = serde_json::from_str(&answer).unwrap();
+        let call = &completion["choices"][0]["message"]["tool_calls"][0];
+        assert_eq!(call["function"]["name"], "get_weather");
+        assert!(call["id"].as_str().unwrap().starts_with("ag_"));
+        assert_eq!(completion["choices"][0]["finish_reason"], "tool_calls");
+        let sent = generated(&fake).into_iter().next().unwrap();
+        assert_eq!(sent["model"], "gemini-3.8-flash-high");
+        assert_eq!(sent["request"]["generationConfig"]["maxOutputTokens"], 700);
+        assert_eq!(sent["request"]["generationConfig"]["temperature"], 0.1);
+    }
+
+    #[tokio::test]
+    async fn a_chat_tool_round_is_signed_again_from_the_cache_by_its_call_id() {
+        let done = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Sunny.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":12,\"candidatesTokenCount\":2,\"totalTokenCount\":14}}}\n\n";
+        let fake = FakeCodeAssist::start(
+            vec![project()],
+            vec![Reply::sse(SIGNED_CALL), Reply::sse(done)],
+        );
+        let state = agy_bridge(&fake, None, None);
+        let first = json!({"model": "gemini-3.8-flash-low", "tools": weather_tool(),
+            "messages": [{"role": "user", "content": "Weather in Paris?"}]});
+        let (_, answer) = post_json(Arc::clone(&state), "/v1/chat/completions", first).await;
+        let completion: Value = serde_json::from_str(&answer).unwrap();
+        let call = completion["choices"][0]["message"]["tool_calls"][0].clone();
+        let call_id = call["id"].as_str().unwrap().to_owned();
+
+        let second = json!({"model": "gemini-3.8-flash-low", "tools": weather_tool(), "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant", "content": null, "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": call_id, "content": "Sunny, 21 C"}]});
+        let (status, answer) = post_json(state, "/v1/chat/completions", second).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        let completion: Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!(completion["choices"][0]["message"]["content"], "Sunny.");
+        let sent = generated(&fake).into_iter().nth(1).unwrap();
+        let part = &sent["request"]["contents"][1]["parts"][0];
+        assert_eq!(part["thoughtSignature"], "S3", "{sent}");
+        assert!(
+            part["functionCall"].get("id").is_none(),
+            "a minted id is not Antigravity's to see: {sent}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_antigravity_stopped_for_safety_is_an_error_not_an_empty_completion() {
+        let stopped = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"SAFETY\"}],\"usageMetadata\":{}}}\n\n";
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(stopped)]);
+        let state = agy_bridge(&fake, None, None);
+        let ask = |stream: bool| {
+            json!({"model": "gemini-3.8-flash", "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}]})
+        };
+        let (status, answer) =
+            post_json(Arc::clone(&state), "/v1/chat/completions", ask(false)).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{answer}");
+        let error: Value = serde_json::from_str(&answer).unwrap();
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("SAFETY"),
+            "{answer}"
+        );
+
+        let (status, streamed) = post_json(state, "/v1/chat/completions", ask(true)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(streamed.contains("\"error\""), "{streamed}");
+        assert!(streamed.contains("SAFETY"), "{streamed}");
+        assert!(streamed.ends_with(DONE_FRAME), "{streamed}");
+    }
+
+    #[test]
+    fn the_codex_body_never_carries_max_tokens_or_temperature() {
+        let mut request: ChatRequest = serde_json::from_value(
+            json!({"model": "gpt-6-sol", "max_tokens": 5, "temperature": 0.5,
+            "messages": [{"role": "user", "content": "hi"}]}),
+        )
+        .unwrap();
+        request.stream = true;
+        let built = to_upstream(&request, &config(None)).unwrap();
+        assert_eq!(built.max_output_tokens, Some(5));
+        assert_eq!(built.temperature, Some(0.5));
+        let wire = serde_json::to_value(&built).unwrap();
+        assert!(
+            wire.get("max_output_tokens").is_none() && wire.get("temperature").is_none(),
+            "{wire}"
+        );
+    }
+
+    #[test]
+    fn max_completion_tokens_outranks_max_tokens() {
+        let request: ChatRequest = serde_json::from_value(json!({"model": "gemini-3.8-flash",
+            "max_tokens": 5, "max_completion_tokens": 9,
+            "messages": [{"role": "user", "content": "hi"}]}))
+        .unwrap();
+        assert_eq!(
+            to_upstream(&request, &config(None))
+                .unwrap()
+                .max_output_tokens,
+            Some(9)
+        );
+    }
+
+    #[tokio::test]
+    async fn caps_this_surface_cannot_read_are_dropped_rather_than_refused() {
+        let done = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Sunny.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2,\"totalTokenCount\":5}}}\n\n";
+        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(done)]);
+        let body = json!({"model": "gemini-3.8-flash", "max_tokens": 4096.0,
+            "max_completion_tokens": -1, "temperature": "x",
+            "messages": [{"role": "user", "content": "hi"}]});
+        let (status, answer) =
+            post_json(agy_bridge(&fake, None, None), "/v1/chat/completions", body).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        let sent = generated(&fake).into_iter().next().unwrap();
+        let config = &sent["request"]["generationConfig"];
+        assert_ne!(config["maxOutputTokens"], 4096, "{sent}");
+        assert!(config.get("temperature").is_none(), "{sent}");
+    }
+
+    #[test]
+    fn refusals_name_no_vendor_this_bridge_might_not_be_serving() {
+        let empty: ChatRequest = serde_json::from_value(
+            json!({"model": " ", "messages": [{"role": "user", "content": "hi"}]}),
+        )
+        .unwrap();
+        let hosted: ChatRequest = serde_json::from_value(json!({"model": "gemini-3.8-flash",
+            "tools": [{"type": "web_search", "function": {"name": "search"}}],
+            "messages": [{"role": "user", "content": "hi"}]}))
+        .unwrap();
+        let unexplained = UpstreamFrame {
+            raw: json!({"type": "response.failed", "response": {"id": "resp_x"}}).to_string(),
+            event: serde_json::from_value(
+                json!({"type": "response.failed", "response": {"id": "resp_x"}}),
+            )
+            .unwrap(),
+        };
+        for message in [
+            to_upstream(&empty, &config(None)).unwrap_err().message,
+            to_upstream(&hosted, &config(None)).unwrap_err().message,
+            turn_failure(&unexplained).message,
+        ] {
+            assert!(
+                !message.contains("Codex") && !message.contains("chatgpt.com"),
+                "{message}"
+            );
+        }
     }
 }

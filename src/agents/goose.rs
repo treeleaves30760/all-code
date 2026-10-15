@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 
 use crate::config::{AuthStyle, Provider, ProviderKind, Store};
 use crate::launch::{
-    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, anthropic_shaped, key_or_error,
-    resolve_codex_effort, resolve_codex_model, split_chat_url,
+    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, anthropic_shaped, bridge_plan,
+    key_or_error, split_chat_url,
 };
 
 /// goose's own fallback when `ANTHROPIC_HOST` is unset; alc only emits the
@@ -29,22 +29,8 @@ pub(crate) fn build(
     passthrough: &[OsString],
     overrides: &LaunchOverrides,
 ) -> Result<()> {
-    if provider.kind == ProviderKind::Codex {
-        let model = overrides
-            .model
-            .clone()
-            .map_or_else(|| resolve_codex_model(provider), Ok)?;
-        let effort = overrides
-            .reasoning_effort
-            .or(provider.reasoning_effort)
-            .or(resolve_codex_effort(provider)?);
-        spec.bridge = Some(BridgePlan {
-            model,
-            effort,
-            context_window: overrides.context_window,
-            options: overrides.model_options.clone(),
-            api: BridgeApi::Chat,
-        });
+    if let Some(plan) = bridge_plan(provider, overrides, BridgeApi::Chat)? {
+        spec.bridge = Some(plan);
         apply_args(spec, passthrough);
         return Ok(());
     }

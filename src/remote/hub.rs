@@ -787,6 +787,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         forward,
         settings_plan,
         codex_auth_file,
+        agy_credential_file,
         claude_settings_file,
         file_setup,
         model,
@@ -830,6 +831,7 @@ fn from_wire(spec: WireSpec, environ: &[(String, String)]) -> Result<LaunchSpec>
         // session pointed straight back at Anthropic.
         settings_plan,
         codex_auth_file: codex_auth_file.map(PathBuf::from),
+        agy_credential_file: agy_credential_file.map(PathBuf::from),
         claude_settings_file: claude_settings_file.map(PathBuf::from),
         file_setup,
         model,
@@ -868,6 +870,7 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         forward,
         settings_plan,
         codex_auth_file,
+        agy_credential_file,
         claude_settings_file,
         file_setup,
         model,
@@ -899,6 +902,10 @@ pub(crate) fn to_wire(spec: &LaunchSpec) -> Result<WireSpec> {
         codex_auth_file: codex_auth_file
             .as_ref()
             .map(|path| text(path.as_os_str(), "Codex credential path"))
+            .transpose()?,
+        agy_credential_file: agy_credential_file
+            .as_ref()
+            .map(|path| text(path.as_os_str(), "agy login path"))
             .transpose()?,
         claude_settings_file: claude_settings_file
             .as_ref()
@@ -1068,11 +1075,11 @@ pub(crate) fn hub_cannot_carry(hub_alc: &str, hub_pid: u32, spec: &LaunchSpec) -
         return None;
     }
     Some(format!(
-        "this session needs alc's own wiring for the agent (the Codex adapter or Claude Code's \
-         settings), and the hub that would run it is alc {hub_alc} \
-         (pid {hub_pid}) while this is alc {ours}; an older hub drops what it does not recognise \
-         and would launch the agent with no adapter behind it. Run `alc hub stop` and retry, or \
-         `--no-share` to run this one outside the hub"
+        "this session needs alc's own wiring for the agent (the translation bridge to the Codex \
+         or Antigravity login, or Claude Code's settings), and the hub that would run it is alc \
+         {hub_alc} (pid {hub_pid}) while this is alc {ours}; an older hub drops what it does not \
+         recognise and would launch the agent with no bridge behind it. Run `alc hub stop` and \
+         retry, or `--no-share` to run this one outside the hub"
     ))
 }
 
@@ -1299,6 +1306,36 @@ mod tests {
         }
     }
 
+    /// A shared session's bridge is started by the hub, from the spec that
+    /// crossed the socket: the login path the client resolved arrives, and a
+    /// missing login is refused with the same sign-in sentence, which the
+    /// hub hands back to the client as the create request's error.
+    #[test]
+    fn a_shared_antigravity_launch_with_no_login_is_refused_with_the_sign_in_sentence() {
+        crate::bridge::agy_auth::test_support::without_system_keyring();
+        let temp = tempfile::tempdir().unwrap();
+        let mut spec = LaunchSpec::for_test();
+        spec.provider_kind = ProviderKind::Antigravity;
+        spec.provider_name = "antigravity".to_owned();
+        spec.agent = Agent::Opencode;
+        spec.program = "opencode".into();
+        spec.bridge = Some(crate::launch::BridgePlan {
+            model: "claude-opus-5-5-high".to_owned(),
+            effort: None,
+            context_window: None,
+            options: Vec::new(),
+            api: crate::launch::BridgeApi::Responses,
+        });
+        spec.agy_credential_file = Some(temp.path().join("absent-login"));
+
+        let back = from_wire(to_wire(&spec).unwrap(), &[]).unwrap();
+        let error = match launch::prepare(back, temp.path()) {
+            Ok(_) => panic!("a launch with no login was prepared"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(error.contains("run `agy` and sign in"), "{error}");
+    }
+
     /// The regression this file exists to not repeat.
     ///
     /// A shared `alc --codex claude` reached Claude Code with the Codex model
@@ -1318,6 +1355,9 @@ mod tests {
             api: crate::launch::BridgeApi::Messages,
         });
         spec.codex_auth_file = Some(PathBuf::from("/work/codex/auth.json"));
+        spec.agy_credential_file = Some(PathBuf::from(
+            "/work/.gemini/antigravity-cli/antigravity-oauth-token",
+        ));
         spec.file_setup = vec![crate::launch::FileSetup::WriteTemp {
             path: PathBuf::from("/tmp/alc-kimi.json"),
             contents: "{\"apiKey\":\"never-print-this-value\"}".to_owned(),
@@ -1333,6 +1373,12 @@ mod tests {
         assert_eq!(
             back.codex_auth_file,
             Some(PathBuf::from("/work/codex/auth.json"))
+        );
+        assert_eq!(
+            back.agy_credential_file,
+            Some(PathBuf::from(
+                "/work/.gemini/antigravity-cli/antigravity-oauth-token"
+            ))
         );
         let plan = back.bridge.expect("the bridge plan crossed the wire");
         assert_eq!(plan.model, "gpt-6-astra");

@@ -82,15 +82,20 @@ pub(crate) fn build(
             .insert(OsString::from("CLAUDE_CONFIG_DIR"), OsString::from(dir));
     }
 
-    if provider.kind != ProviderKind::Codex && !provider.speaks_anthropic() {
+    // Both logins reach Claude Code through alc's background bridge, which
+    // speaks Messages whatever the profile's own protocol says.
+    let bridged = matches!(
+        provider.kind,
+        ProviderKind::Codex | ProviderKind::Antigravity
+    );
+    if !bridged && !provider.speaks_anthropic() {
         bail!(
             "provider '{profile_name}' speaks {}, but Claude Code needs Anthropic Messages; use an Anthropic-compatible endpoint, OpenRouter, a local Ollama, llama.cpp or vLLM, or `alc --codex claude`",
             provider.protocol
         );
     }
     let key = store.credentials.key_for(profile_name, provider);
-    let native =
-        provider.kind != ProviderKind::Codex && on_claudes_own_login(provider, key.as_deref());
+    let native = !bridged && on_claudes_own_login(provider, key.as_deref());
 
     let (passthrough, user_settings) = claude_settings::take_user_settings(passthrough)?;
     // `claude agents …` takes alc's defaults as its own options, which have
@@ -103,16 +108,20 @@ pub(crate) fn build(
     spec.args.extend_from_slice(&passthrough[..lead]);
     let rest = &passthrough[lead..];
 
-    let (mut document, mut route, offered) = if provider.kind == ProviderKind::Codex {
-        codex_plan(spec, store, profile_name, provider, rest, overrides)?
-    } else {
-        spec.args.extend_from_slice(rest);
-        let document = if native {
-            native_document(spec, profile_name, provider, overrides)?
-        } else {
-            provider_document(spec, store, profile_name, provider, key, overrides)?
-        };
-        (document, None, Vec::new())
+    let (mut document, mut route, offered) = match provider.kind {
+        ProviderKind::Codex => codex_plan(spec, store, profile_name, provider, rest, overrides)?,
+        ProviderKind::Antigravity => {
+            antigravity_plan(spec, store, profile_name, provider, rest, overrides)?
+        }
+        _ => {
+            spec.args.extend_from_slice(rest);
+            let document = if native {
+                native_document(spec, profile_name, provider, overrides)?
+            } else {
+                provider_document(spec, store, profile_name, provider, key, overrides)?
+            };
+            (document, None, Vec::new())
+        }
     };
     if let Some(user) = &user_settings {
         claude_settings::merge_user_settings(&mut document, user);
@@ -123,11 +132,8 @@ pub(crate) fn build(
             crate::runtime::RuntimeScope::Generation(_)
         )
     {
-        let frozen = RouteRecord::new(
-            &original.profile,
-            original.auth_file.clone(),
-            claude_settings::effective_tiers(&document, &original.tiers),
-        );
+        let frozen =
+            original.with_tiers(claude_settings::effective_tiers(&document, &original.tiers));
         if frozen.id != original.id {
             // Rewrite only alc's own references. An explicitly overridden
             // apiKeyHelper or endpoint remains the user's override.
@@ -251,6 +257,163 @@ fn codex_plan(
     let mut offered: Vec<String> = options.iter().map(|option| option.id.clone()).collect();
     if !offered.contains(&model) {
         offered.push(model);
+    }
+    Ok((document, Some(route), offered))
+}
+
+/// What a Claude Code session on agy's login starts on.
+#[derive(Debug)]
+pub(crate) struct AntigravityStart {
+    pub family: crate::antigravity::AgyFamily,
+    /// One of the family's own rungs: the effort the bridge really runs the
+    /// first turn at, so Claude Code's slider starts where the session is.
+    pub effort: ReasoningEffort,
+    /// Said once on stderr when `effort` is not the one asked for.
+    pub note: Option<String>,
+}
+
+/// The family and effort a Claude Code session on Antigravity starts on:
+/// [`antigravity_rung`], refused for a model outside the families, because
+/// Claude Code's tiers and effort slider need a family to land on.
+pub(crate) fn antigravity_start(
+    profile_name: &str,
+    provider: &Provider,
+    overrides: &LaunchOverrides,
+) -> Result<AntigravityStart> {
+    antigravity_rung(provider, overrides).with_context(|| {
+        let asked = overrides
+            .model
+            .clone()
+            .unwrap_or_else(|| provider.model.clone());
+        let families: Vec<String> = crate::antigravity::families()
+            .into_iter()
+            .map(|family| family.id)
+            .collect();
+        format!(
+            "model '{asked}' (provider '{profile_name}') is not an Antigravity model family \
+             ({}) or one of their wire ids, such as `gemini-3.8-flash-low`",
+            families.join(", ")
+        )
+    })
+}
+
+/// The family and effort a session on Antigravity starts on, or `None` for
+/// a model outside the families. Shared by Claude Code and by every agent on
+/// the in-process bridge (`launch::bridge_plan`), so both start on the same
+/// rung and say so in the same words.
+///
+/// The effort is this run's choice before the profile's, and a stated
+/// effort before the one a wire id implies - as `alc agy` reads a profile.
+/// The wire knows only `low`, `medium` and `high`, and a family may serve
+/// fewer (GPT-OSS serves `medium` alone), so the effort is brought to the
+/// rung the bridge will actually send, out loud: launching at `max` would
+/// show a session running at `high` as running at `max`.
+pub(crate) fn antigravity_rung(
+    provider: &Provider,
+    overrides: &LaunchOverrides,
+) -> Option<AntigravityStart> {
+    let asked = overrides
+        .model
+        .clone()
+        .unwrap_or_else(|| provider.model.clone());
+    let family = crate::antigravity::family_of_model(&asked)?;
+    let suffix = |model: &str| {
+        crate::antigravity::split_wire_id(model)
+            .and_then(|(_, effort)| effort.parse::<ReasoningEffort>().ok())
+    };
+    let wanted = overrides
+        .reasoning_effort
+        .or_else(|| overrides.model.as_deref().and_then(suffix))
+        .or(provider.reasoning_effort)
+        .or_else(|| suffix(&provider.model))
+        .unwrap_or(ReasoningEffort::Medium);
+    let ladder = crate::antigravity::effort_word(Some(wanted));
+    let wire = crate::antigravity::wire_model(&family, ladder);
+    let rung = wire
+        .strip_prefix(&format!("{}-", family.id))
+        .and_then(|rung| rung.parse::<ReasoningEffort>().ok())
+        .unwrap_or(ReasoningEffort::Medium);
+    let note = (rung != wanted).then(|| {
+        if family.thinking.contains_key(ladder) {
+            format!(
+                "note: Antigravity tops out at '{rung}', so this session uses {rung} rather than \
+                 {wanted}."
+            )
+        } else {
+            let rungs: Vec<&str> = family.thinking.keys().map(String::as_str).collect();
+            format!(
+                "note: {} on Antigravity runs at {} only, so this session uses {rung} rather \
+                 than {wanted}.",
+                family.id,
+                rungs.join(", ")
+            )
+        }
+    });
+    Some(AntigravityStart {
+        family,
+        effort: rung,
+        note,
+    })
+}
+
+/// Claude Code on agy's login: launched on a family (`claude-opus-5-5`) with
+/// the effort its wire id or the profile names, so the effort slider keeps
+/// working - the bridge turns each request's effort into the wire suffix.
+fn antigravity_plan(
+    spec: &mut LaunchSpec,
+    store: &Store,
+    profile_name: &str,
+    provider: &Provider,
+    rest: &[OsString],
+    overrides: &LaunchOverrides,
+) -> Result<(Value, Option<RouteRecord>, Vec<String>)> {
+    let AntigravityStart {
+        family,
+        effort,
+        note,
+    } = antigravity_start(profile_name, provider, overrides)?;
+    if let Some(note) = note {
+        eprintln!("{note}");
+    }
+    if !has_model_override(rest) {
+        spec.args
+            .extend([OsString::from("--model"), OsString::from(&family.id)]);
+    }
+    if !has_option(rest, "--effort", "--effort") {
+        spec.args
+            .extend([OsString::from("--effort"), OsString::from(effort.as_str())]);
+    }
+    spec.args.extend_from_slice(rest);
+
+    // Resolved here, in the user's shell, as a Codex route's `auth.json` is:
+    // the background bridge's own HOME may belong to another shell. Only the
+    // path - a dry run needs no login, and a real launch is refused on a
+    // missing one where the route is started (`launch::start_route`).
+    let credential = crate::bridge::agy_auth::AgyLocator::resolve()?;
+    let options = if overrides.model_options.is_empty() {
+        crate::antigravity::model_infos(provider.context)
+    } else {
+        overrides.model_options.clone()
+    };
+    let tiers = crate::antigravity::tiers(&family.id);
+    let route = RouteRecord::antigravity(profile_name, credential, tiers.clone());
+    let context_window = overrides
+        .context_window
+        .or(Some(crate::antigravity::context_window(
+            &family,
+            provider.context,
+        )));
+    let document = claude_settings::antigravity_document(&CodexDocument {
+        model: &family.id,
+        options: &options,
+        context_window,
+        tiers: &tiers,
+        route: &route.id,
+        helper: helper(store, &route.id)?,
+    });
+    let mut offered: Vec<String> = options.iter().map(|option| option.id.clone()).collect();
+    if !offered.contains(&family.id) {
+        offered.push(family.id.clone());
     }
     Ok((document, Some(route), offered))
 }
@@ -679,6 +842,94 @@ pub(crate) fn claude_base_url(provider: &Provider) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn start(
+        model: Option<&str>,
+        effort: Option<ReasoningEffort>,
+        profile_effort: Option<ReasoningEffort>,
+    ) -> AntigravityStart {
+        let mut provider = Provider::for_kind(ProviderKind::Antigravity);
+        provider.reasoning_effort = profile_effort;
+        let overrides = LaunchOverrides {
+            model: model.map(str::to_owned),
+            reasoning_effort: effort,
+            ..LaunchOverrides::default()
+        };
+        antigravity_start("antigravity", &provider, &overrides).unwrap()
+    }
+
+    #[test]
+    fn an_antigravity_session_starts_on_the_rung_the_bridge_runs_and_says_so() {
+        // The profile's wire id names its effort, quietly.
+        let plain = start(None, None, None);
+        assert_eq!(plain.family.id, "claude-opus-5-5");
+        assert_eq!(plain.effort, ReasoningEffort::High);
+        assert!(plain.note.is_none());
+
+        // Above the wire's ladder: high, out loud.
+        for above in [
+            ReasoningEffort::Xhigh,
+            ReasoningEffort::Max,
+            ReasoningEffort::Ultra,
+        ] {
+            let clamped = start(None, Some(above), None);
+            assert_eq!(clamped.effort, ReasoningEffort::High, "{above}");
+            assert_eq!(
+                clamped.note.as_deref(),
+                Some(
+                    format!(
+                        "note: Antigravity tops out at 'high', so this session uses high rather \
+                         than {above}."
+                    )
+                    .as_str()
+                )
+            );
+        }
+
+        // A rung the family does not serve: the one it does, out loud.
+        let oss = start(Some("gpt-oss-120b"), Some(ReasoningEffort::Low), None);
+        assert_eq!(oss.effort, ReasoningEffort::Medium);
+        let note = oss.note.unwrap();
+        assert!(
+            note.contains("gpt-oss-120b") && note.contains("uses medium rather than low"),
+            "{note}"
+        );
+
+        // This run's wire id beats the profile's effort; the profile's effort
+        // beats the profile's own wire id.
+        let run = start(
+            Some("gemini-3.8-flash-low"),
+            None,
+            Some(ReasoningEffort::High),
+        );
+        assert_eq!(
+            (run.family.id.as_str(), run.effort),
+            ("gemini-3.8-flash", ReasoningEffort::Low)
+        );
+        assert!(run.note.is_none());
+        assert_eq!(
+            start(None, None, Some(ReasoningEffort::Low)).effort,
+            ReasoningEffort::Low
+        );
+    }
+
+    #[test]
+    fn a_model_outside_the_antigravity_families_is_refused_by_naming_them() {
+        let provider = Provider::for_kind(ProviderKind::Antigravity);
+        let overrides = LaunchOverrides {
+            model: Some("gemini-2.5-pro".to_owned()),
+            ..LaunchOverrides::default()
+        };
+        let error = antigravity_start("antigravity", &provider, &overrides)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "(claude-opus-5-5, claude-sonnet-5-5, gemini-4-argon, gemini-3.8-flash, gpt-oss-120b)"
+            ),
+            "{error}"
+        );
+    }
 
     #[test]
     fn local_server_timeouts_are_injected_when_unset() {

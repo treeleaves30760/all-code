@@ -1,0 +1,3 @@
+# The Antigravity streams are served byte for byte as captured, CRLF framing
+# included; git must not convert them on any checkout.
+tests/fixtures/antigravity/*.sse -text

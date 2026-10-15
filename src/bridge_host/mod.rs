@@ -655,15 +655,26 @@ fn resolve_credential(store: &Store, route: &str) -> Result<Resolved> {
     }
     let record = files::read_route(&store.dir, route)?.with_context(|| {
         format!(
-            "alc's bridge has no route '{route}'; start `alc claude` once with that Codex profile \
-             to recreate it"
+            "alc's bridge has no route '{route}'; start `alc claude` once with that profile to \
+             recreate it"
         )
     })?;
-    if !record.auth_file.is_file() {
-        bail!(
-            "Codex credentials were not found at {}; run `codex login` and retry",
-            record.auth_file.display()
-        );
+    match record.kind {
+        files::RouteKind::Codex => {
+            if !record.auth_file.is_file() {
+                bail!(
+                    "Codex credentials were not found at {}; run `codex login` and retry",
+                    record.auth_file.display()
+                );
+            }
+        }
+        files::RouteKind::Antigravity => {
+            let credential = record
+                .credential
+                .as_ref()
+                .context("this Antigravity route names no login; start `alc --agy claude` again")?;
+            crate::bridge::agy_auth::require_login(&credential.store())?;
+        }
     }
     Ok(Resolved {
         value: ensure(&store.dir)?.token,

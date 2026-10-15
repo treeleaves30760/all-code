@@ -135,6 +135,13 @@ pub(crate) struct UpstreamRequest {
     /// Must be a list, and carries the tools, the system prompt and the
     /// conversation in that order.
     pub input: Vec<InputItem>,
+    /// The client's output cap, Antigravity only. chatgpt.com refuses
+    /// `max_output_tokens` outright, so it is never serialised.
+    #[serde(skip)]
+    pub max_output_tokens: Option<u64>,
+    /// Antigravity only, for the same reason.
+    #[serde(skip)]
+    pub temperature: Option<f64>,
 }
 
 impl UpstreamRequest {
@@ -267,8 +274,22 @@ pub(crate) enum InputItem {
         id: String,
         #[serde(default)]
         summary: Vec<Value>,
+        /// Empty, absent or `null` for an unsigned reasoning item; all three
+        /// read as `""`.
+        #[serde(default, deserialize_with = "null_as_empty")]
         encrypted_content: String,
     },
+}
+
+/// A string field a client may send as `null`: Responses clients that
+/// rebuild reasoning items rather than replaying them write
+/// `"encrypted_content": null` for an unsigned one, which is the same
+/// statement as `""` and must not fail the whole request.
+fn null_as_empty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// `output` of a `function_call_output`: a bare string, or content parts.
@@ -377,6 +398,16 @@ pub(crate) enum UpstreamEvent {
         output_index: u32,
         item_id: String,
         arguments: String,
+    },
+    /// Reasoning text, on the Antigravity upstream only: the Messages surface
+    /// renders it as a `thinking` block. chatgpt.com sends none, because the
+    /// Codex bodies alc builds ask for no reasoning summary.
+    #[serde(rename = "response.reasoning_summary_text.delta")]
+    ReasoningSummaryTextDelta {
+        output_index: u32,
+        #[serde(default)]
+        item_id: String,
+        delta: String,
     },
     #[serde(rename = "response.completed")]
     Completed { response: ResponseObject },
@@ -762,8 +793,40 @@ fn decode_frame(frame: &SseFrame) -> Result<Decoded, BridgeError> {
     })))
 }
 
-/// A turn in progress: chatgpt.com's SSE, decoded as the bytes land.
-pub(crate) struct UpstreamStream {
+/// A turn in progress, from whichever upstream the bridge serves.
+pub(crate) struct UpstreamStream(Source);
+
+/// Both boxed: each holds a live response and a decoder, and the enum would
+/// otherwise be as large as the larger of them on every surface's stack.
+enum Source {
+    Codex(Box<CodexStream>),
+    Antigravity(Box<super::gemini_stream::AgyStream>),
+}
+
+impl UpstreamStream {
+    fn new(response: reqwest::Response, observation: Option<RequestObservation>) -> Self {
+        Self(Source::Codex(Box::new(CodexStream::new(
+            response,
+            observation,
+        ))))
+    }
+
+    pub(crate) fn antigravity(stream: super::gemini_stream::AgyStream) -> Self {
+        Self(Source::Antigravity(Box::new(stream)))
+    }
+
+    /// The next event, or `None` once the stream is spent. Both sources speak
+    /// the same Responses events.
+    pub(crate) async fn next(&mut self) -> Option<Result<UpstreamFrame, BridgeError>> {
+        match &mut self.0 {
+            Source::Codex(stream) => stream.next().await,
+            Source::Antigravity(stream) => stream.next().await,
+        }
+    }
+}
+
+/// A Codex turn in progress: chatgpt.com's SSE, decoded as the bytes land.
+struct CodexStream {
     response: reqwest::Response,
     decoder: SseDecoder,
     ready: VecDeque<SseFrame>,
@@ -771,7 +834,7 @@ pub(crate) struct UpstreamStream {
     observation: Option<Box<StreamObservation>>,
 }
 
-impl UpstreamStream {
+impl CodexStream {
     fn new(response: reqwest::Response, observation: Option<RequestObservation>) -> Self {
         Self {
             response,
@@ -789,7 +852,7 @@ impl UpstreamStream {
     /// without warning, and a turn it answered correctly must not fail on one.
     /// A frame that is not JSON at all is a different thing and does fail,
     /// because past that point nothing downstream can be trusted.
-    pub(crate) async fn next(&mut self) -> Option<Result<UpstreamFrame, BridgeError>> {
+    async fn next(&mut self) -> Option<Result<UpstreamFrame, BridgeError>> {
         loop {
             while let Some(frame) = self.ready.pop_front() {
                 match decode_frame(&frame) {
@@ -948,7 +1011,14 @@ async fn post_with_affinity(
     lane: Lane,
     affinity: Option<&RequestAffinity>,
 ) -> Result<reqwest::Response, BridgeError> {
-    let credentials = state.auth.credentials(&state.http).await?;
+    let super::Upstream::Codex(auth) = &state.upstream else {
+        return Err(BridgeError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "api_error",
+            "an Antigravity bridge reached the Codex transport; this is an alc bug - please report it",
+        ));
+    };
+    let credentials = auth.credentials(&state.http).await?;
     let response = post_once(state, &credentials, body.clone(), streaming, lane, affinity).await?;
     if response.status() != StatusCode::UNAUTHORIZED {
         return Ok(response);
@@ -957,8 +1027,7 @@ async fn post_with_affinity(
     // upstream, or rotated by another Codex process since this one cached it.
     // One forced rotation and one retry is the difference between a session
     // that keeps working and a turn the user has to type again.
-    let refreshed = state
-        .auth
+    let refreshed = auth
         .force_refresh(&state.http, Some(&credentials.access_token))
         .await?;
     post_once(state, &refreshed, body, streaming, lane, affinity).await
@@ -997,6 +1066,9 @@ pub(crate) async fn send_with_affinity(
     affinity: Option<&RequestAffinity>,
     observed: Option<RequestObservation>,
 ) -> Result<UpstreamStream, BridgeError> {
+    if let super::Upstream::Antigravity(agy) = &state.upstream {
+        return super::gemini_stream::send(state, agy, request, observed).await;
+    }
     let request = request.over_http();
     let body = serde_json::to_vec(&request).map_err(|error| {
         BridgeError::new(
@@ -1164,6 +1236,22 @@ mod tests {
     use super::*;
     use crate::bridge::fixtures::Case;
     use serde_json::json;
+
+    #[test]
+    fn a_reasoning_item_with_null_or_absent_encrypted_content_reads_as_unsigned() {
+        for item in [
+            json!({"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": null}),
+            json!({"type": "reasoning", "id": "rs_1", "summary": []}),
+        ] {
+            let parsed: InputItem = serde_json::from_value(item).unwrap();
+            match parsed {
+                InputItem::Reasoning {
+                    encrypted_content, ..
+                } => assert_eq!(encrypted_content, ""),
+                other => panic!("not a reasoning item: {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn usage_keeps_optional_cache_details_and_inclusive_totals() {

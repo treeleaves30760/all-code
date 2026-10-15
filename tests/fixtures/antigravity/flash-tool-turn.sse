@@ -1,0 +1,4 @@
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"thoughtSignature": "sig-flash-1","functionCall": {"name": "get_weather","args": {"city": "Paris"},"id": "call-flash-1"}}]}}],"usageMetadata": {"promptTokenCount": 71,"candidatesTokenCount": 16,"totalTokenCount": 87},"modelVersion": "gemini-3.8-flash-n","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": ""}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 71,"candidatesTokenCount": 16,"totalTokenCount": 87},"modelVersion": "gemini-3.8-flash-n","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+

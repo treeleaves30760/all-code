@@ -17,7 +17,7 @@ keywords:
 
 先跑 `alc doctor`。它會回報每個 agent 的執行檔、憑證狀態、每個 provider profile
 以及它各自的 agent 相容性欄位、解析後的預設值、Codex 的登入狀態，還有
-Antigravity CLI 是否已經設定好。
+Antigravity 登入的狀態。
 
 ## `'claude' is not installed or not on PATH`
 
@@ -57,12 +57,10 @@ alc config upsert antigravity --kind antigravity
 在你加上之前，`alc doctor` 會以警告的形式給出同一個提示，`alc config` 的
 Agent defaults 畫面也會。
 
-## `is not compatible with agy` 或 `drives the Antigravity CLI only`
+## `is not compatible with agy`
 
-agy 和 `antigravity` 這個 kind 只屬於彼此：agy 自己登入 Google，所以
-`alc --codex agy` 或 `alc --openrouter agy` 會被拒絕，`alc --agy claude` 也一樣。
-直接跑 `alc agy` 就好。讓其他 agent 也經由 Antigravity 登入連線的功能目前還沒有；
-原因見 [Antigravity CLI](./agents.md#antigravity-cli-agy)。
+agy 只跑在 `antigravity` 這個 kind 上：agy 自己登入 Google，所以
+`alc --codex agy` 或 `alc --openrouter agy` 會被拒絕。直接跑 `alc agy` 就好。
 
 如果你自己已經有一個名叫 `antigravity` 的 profile，請保留它：
 `alc config upsert antigravity` 會把它改寫成新的 kind，base URL 和模型都會不見，
@@ -72,6 +70,30 @@ agy 和 `antigravity` 這個 kind 只屬於彼此：agy 自己登入 Google，�
 alc config upsert google-agy --kind antigravity
 alc config set-default agy google-agy
 ```
+
+## ``not signed in to Antigravity`` 或 ``refresh required; run `agy` and sign in``
+
+alc 借用 agy 的登入，並交給 agy 自己更新。在終端機執行一次 `agy` 並登入，下一個
+請求就會用新的 token。如果訊息說 PATH 上沒有 agy 能更新過期的登入，請安裝 agy
+（或用 `ALC_AGY_BIN` 指向它），再登入。`alc doctor` 會顯示登入狀態：agy 能更新
+的過期 token 算是正常，顯示 `expired; agy renews it on the next launch`。
+
+## `ambiguous sources`
+
+agy 的登入同時存在系統 keyring 與
+`~/.gemini/antigravity-cli/antigravity-oauth-token` 兩個地方，alc 不會去猜 agy
+接下來更新的是哪一個。請在 agy 裡登出再登入，讓只剩一份。
+
+## `start a new session to continue on Antigravity`
+
+Gemini 會替推理內容簽章，而 Antigravity 會拒絕遺失簽章的工具呼叫：例如 session
+是在別處開始的、任務進行中改了模型或強度，或 alc 的橋接重新啟動過。alc 從不偽造
+簽章；請開一個新 session（在 Claude Code 裡用 `/clear`）再繼續。
+
+## `Google refused this Antigravity account (403 …)`
+
+alc 不會重試 403：這個帳號可能受到限制。請開啟 agy 檢查帳號；訊息裡附有 Google
+自己的一行原因。
 
 ## Auto 模式說伺服器端檢查無法使用
 

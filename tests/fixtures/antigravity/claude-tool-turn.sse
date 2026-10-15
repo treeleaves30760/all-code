@@ -1,0 +1,6 @@
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": ""}]}}],"usageMetadata": {"promptTokenCount": 403,"candidatesTokenCount": 16,"totalTokenCount": 419},"modelVersion": "claude-sonnet-5-5-low","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"name": "get_weather","args": {"city": "Paris"},"id": "call-claude-1"}}]}}],"usageMetadata": {"promptTokenCount": 403,"candidatesTokenCount": 16,"totalTokenCount": 419},"modelVersion": "claude-sonnet-5-5-low","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": ""}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 403,"candidatesTokenCount": 50,"totalTokenCount": 453},"modelVersion": "claude-sonnet-5-5-low","responseId": "redacted"},"traceId": "redacted","metadata": {}}
+

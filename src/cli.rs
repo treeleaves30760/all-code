@@ -518,8 +518,8 @@ struct UpsertArgs {
     #[arg(long)]
     clear_effort: bool,
 
-    /// How much of a Codex model's window to use: standard, or max (uses
-    /// plan limits faster past the standard window).
+    /// How much of a Codex or Antigravity model's window to use: standard,
+    /// or max (uses plan limits faster past the standard window).
     #[arg(long, value_name = "CHOICE")]
     context: Option<ContextChoice>,
 
@@ -929,6 +929,8 @@ fn run_agent(
     let provider = store.config.resolve(agent, requested_provider)?.1.clone();
     let overrides = if provider.kind == ProviderKind::Codex && agent != Agent::Codex {
         codex_launch_overrides(store, &provider, dry_run)?
+    } else if provider.kind == ProviderKind::Antigravity && agent != Agent::Agy {
+        antigravity_launch_overrides(&provider, None, None)
     } else {
         launch::LaunchOverrides::default()
     };
@@ -961,10 +963,45 @@ fn run_claude(
         (name.to_owned(), provider.clone())
     };
 
+    if provider.kind == ProviderKind::Antigravity {
+        // This run's choice goes through the provider, so the one place that
+        // turns a choice into a window decides it for this run too; the
+        // windows reach the plan through the overrides.
+        let mut provider = provider;
+        if let Some(choice) = args.context {
+            provider.context = choice;
+        }
+        let overrides = antigravity_launch_overrides(&provider, args.model.as_deref(), args.effort);
+        if args.save {
+            // The command that saves exactly what this run resolved to. The
+            // model is the wire id of the rung it runs, which `alc agy` takes
+            // as well as the bridge: agy lists wire ids only.
+            let start =
+                crate::agents::claude::antigravity_start(&profile_name, &provider, &overrides)?;
+            bail!(
+                "--save is available with a Codex provider; save these as the antigravity \
+                 profile's defaults with `alc config upsert {profile_name} --model {} --effort {} \
+                 --context {}`",
+                crate::antigravity::wire_model_for(&start.family.id, Some(start.effort)),
+                start.effort,
+                provider.context
+            );
+        }
+        let spec = launch::build(
+            store,
+            Agent::Claude,
+            requested_provider,
+            &args.args,
+            &overrides,
+        )?;
+        return run_spec(store, spec, dry_run, sharing);
+    }
+
     if provider.kind != ProviderKind::Codex {
         if args.effort.is_some() || args.context.is_some() || args.save {
             bail!(
-                "--effort, --context and --save are available with a Codex provider; use `alc --codex claude`"
+                "--effort, --context and --save are available with a Codex or Antigravity provider; \
+                 use `alc --codex claude` or `alc --agy claude`"
             );
         }
         // A local server can say how much context it really gives the model,
@@ -1173,6 +1210,27 @@ fn codex_session_overrides(
     }
 }
 
+/// What an Antigravity-bridged session is launched with: the model and
+/// effort this run names (the plan falls back to the profile's), the window
+/// the profile's context choice gives that family, and every family for the
+/// agent's own picker.
+fn antigravity_launch_overrides(
+    provider: &Provider,
+    model: Option<&str>,
+    effort: Option<ReasoningEffort>,
+) -> launch::LaunchOverrides {
+    let context_window = antigravity::family_of_model(model.unwrap_or(&provider.model))
+        .map(|family| antigravity::context_window(&family, provider.context));
+    launch::LaunchOverrides {
+        // Only this run's: the plan reads a profile's wire-id effort after
+        // the profile's own `effort`, and a run's before it.
+        model: model.map(str::to_owned),
+        reasoning_effort: effort,
+        context_window,
+        model_options: antigravity::model_infos(provider.context),
+    }
+}
+
 /// The catalog entries the bundled bridge can actually route.
 ///
 /// These become the agent's own in-session picker, and the catalog on disk
@@ -1277,7 +1335,9 @@ fn run_spec(
             );
             // A dry run exists to report what a real run would do, so it has
             // to admit the launch it is describing would be refused.
-            if launch::bridge_codex_models().is_some_and(|routable| !routable.contains(&plan.model))
+            if spec.provider_kind == ProviderKind::Codex
+                && launch::bridge_codex_models()
+                    .is_some_and(|routable| !routable.contains(&plan.model))
             {
                 println!(
                     "adapter: WOULD FAIL - the bridge cannot route '{}'; run without --dry-run for the models it does",
@@ -1290,7 +1350,10 @@ fn run_spec(
                 "metrics: would observe native API requests through an authenticated loopback forwarding route; TTFT/TPS start with new requests"
             );
         }
-        if spec.is_bridged() {
+        if spec.is_bridged() && spec.provider_kind == ProviderKind::Antigravity {
+            // The picker is the families alc ships, never a synced list.
+            println!("catalog: the Antigravity families alc ships");
+        } else if spec.is_bridged() {
             // A dry run used to be the one path that said nothing at all
             // about where its model list came from, which is why a machine
             // quietly hiding a model looked healthy here.
@@ -1396,6 +1459,27 @@ fn run_bridge(store: &Store, args: BridgeArgs) -> Result<u8> {
     }
 }
 
+/// One row of `alc models --agy`: the id, its label, and its windows. A live
+/// `agy models` can list ids no family serves (`gemini-4-argon-disabled` on
+/// a plan without Argon, `gemini-3.8-flash-tiered`); those are marked, so
+/// nobody pins a profile to a model the bridge cannot run.
+fn agy_model_line(model: &antigravity::AgyModel) -> String {
+    let suffix = match antigravity::split_wire_id(&model.id) {
+        Some((family, _)) => {
+            let standard = family.context_window / 1_000;
+            let maximum = family.max_context_window / 1_000;
+            if maximum > standard {
+                format!(" (context {standard}K, max {maximum}K)")
+            } else {
+                format!(" (context {standard}K)")
+            }
+        }
+        None if antigravity::family_of_model(&model.id).is_none() => " (not bridgeable)".to_owned(),
+        None => String::new(),
+    };
+    format!("{}: {}{suffix}", model.id, model.label)
+}
+
 fn run_antigravity_models(store: &Store, args: &ModelsArgs) -> Result<u8> {
     let catalog = antigravity::models(&store.dir, args.refresh);
     if args.json {
@@ -1405,7 +1489,7 @@ fn run_antigravity_models(store: &Store, args: &ModelsArgs) -> Result<u8> {
     println!("Antigravity model catalog");
     println!("source: {}", catalog.source);
     for model in &catalog.models {
-        println!("- {}: {}", model.id, model.label);
+        println!("- {}", agy_model_line(model));
     }
     println!("Auto-sync: once a day from `agy models`; run `alc models --agy --refresh` to");
     println!("sync now.");
@@ -1713,6 +1797,35 @@ mod tests {
         provider.model = model.to_owned();
         provider.reasoning_effort = effort;
         provider
+    }
+
+    /// A live `agy models` lists ids no family serves (an Ultra-gated model
+    /// shows as `-disabled`, Flash has a `-tiered` entry); the bridge cannot
+    /// run those, so the list says so instead of offering them.
+    #[test]
+    fn agy_model_lines_mark_ids_outside_the_families() {
+        let line = |id: &str, label: &str| {
+            agy_model_line(&antigravity::AgyModel {
+                id: id.to_owned(),
+                label: label.to_owned(),
+            })
+        };
+        assert_eq!(
+            line("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
+            "claude-opus-5-5-high: Claude Opus 5.5 (High) (context 256K, max 840K)"
+        );
+        assert_eq!(
+            line("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+            "gpt-oss-120b-medium: GPT-OSS 120B (Medium) (context 131K)"
+        );
+        assert_eq!(
+            line("gemini-4-argon-disabled", "Gemini 4 Argon"),
+            "gemini-4-argon-disabled: Gemini 4 Argon (not bridgeable)"
+        );
+        assert_eq!(
+            line("gemini-3.8-flash-tiered", "Gemini 3.8 Flash"),
+            "gemini-3.8-flash-tiered: Gemini 3.8 Flash (not bridgeable)"
+        );
     }
 
     #[test]

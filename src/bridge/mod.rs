@@ -31,8 +31,12 @@ use tokio::net::TcpListener;
 use crate::config::ReasoningEffort;
 
 pub(crate) mod affinity;
+pub(crate) mod agy_auth;
+pub(crate) mod agy_upstream;
 pub(crate) mod auth;
 pub(crate) mod chat;
+pub(crate) mod gemini;
+pub(crate) mod gemini_stream;
 pub(crate) mod messages;
 pub(crate) mod models;
 pub(crate) mod responses;
@@ -42,6 +46,9 @@ pub(crate) mod upstream;
 
 #[cfg(test)]
 pub(crate) mod fixtures;
+
+#[cfg(test)]
+pub(crate) mod agy_fake;
 
 /// What a bridge session needs to serve one agent.
 ///
@@ -78,6 +85,27 @@ pub(crate) struct BridgeConfig {
     /// request naming a Claude model is answered by Codex rather than refused
     /// upstream. `None` for every other agent, which pins its model at launch.
     pub claude_tiers: Option<tiers::ModelTiers>,
+    /// Codex or Antigravity. `auth_file` is unused on the Antigravity upstream.
+    pub upstream: UpstreamKind,
+}
+
+/// Which upstream a bridge serves its three surfaces from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UpstreamKind {
+    /// chatgpt.com, signed with [`BridgeConfig::auth_file`].
+    Codex,
+    /// Google's Code Assist endpoint on agy's login. `config_dir` places the
+    /// cross-process renewal lock.
+    Antigravity {
+        credential: agy_auth::AgyLocator,
+        config_dir: PathBuf,
+    },
+}
+
+/// The live half of [`UpstreamKind`]: what a handler signs requests with.
+pub(crate) enum Upstream {
+    Codex(Arc<auth::AuthManager>),
+    Antigravity(Arc<agy_upstream::AgyState>),
 }
 
 /// Everything a handler shares: config, credentials, and one HTTP client.
@@ -87,10 +115,10 @@ pub(crate) struct BridgeConfig {
 /// is visible latency.
 pub(crate) struct BridgeState {
     pub config: BridgeConfig,
-    /// Shared by every route over the same `auth.json` in the background
-    /// bridge: a Codex refresh token is single-use, and two managers each
-    /// single-flighting their own refresh would still race each other.
-    pub auth: Arc<auth::AuthManager>,
+    /// Shared by every route over the same login in the background bridge: a
+    /// Codex refresh token is single-use, and agy's renewal is single-flighted
+    /// per login.
+    pub upstream: Upstream,
     pub http: reqwest::Client,
     /// Set once at startup, so recording a turn costs no lookup and no lock.
     pub ledger: Option<Arc<crate::usage::ledger::Ledger>>,
@@ -98,12 +126,28 @@ pub(crate) struct BridgeState {
 
 impl BridgeState {
     pub(crate) fn new(config: BridgeConfig) -> Result<Self> {
-        let auth = Arc::new(auth::AuthManager::new(config.auth_file.clone()));
-        Self::with_auth(config, auth)
+        let upstream = match &config.upstream {
+            UpstreamKind::Codex => {
+                Upstream::Codex(Arc::new(auth::AuthManager::new(config.auth_file.clone())))
+            }
+            UpstreamKind::Antigravity {
+                credential,
+                config_dir,
+            } => Upstream::Antigravity(Arc::new(agy_upstream::AgyState::new(
+                credential, config_dir,
+            )?)),
+        };
+        Self::with_upstream(config, upstream)
     }
 
-    /// The same, over a credential manager the caller already holds.
+    /// The same, over a Codex credential manager the caller already holds.
     pub(crate) fn with_auth(config: BridgeConfig, auth: Arc<auth::AuthManager>) -> Result<Self> {
+        Self::with_upstream(config, Upstream::Codex(auth))
+    }
+
+    /// Over an upstream the caller already built: the background bridge shares
+    /// one per login across its routes.
+    pub(crate) fn with_upstream(config: BridgeConfig, upstream: Upstream) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(upstream::USER_AGENT)
             // No total-request timeout: a Codex turn legitimately streams for
@@ -114,19 +158,28 @@ impl BridgeState {
         // Read once here rather than per turn: it is the id the requests
         // already carry as a header, and reading the file on every frame
         // would be a syscall per turn for a number that cannot change while
-        // the session runs.
+        // the session runs. agy's login has no account id of its own, and
+        // its token changes with every hourly renewal, so its rows carry a
+        // fixed marker: alc supports one agy login per machine.
+        let (kind, account) = match &upstream {
+            Upstream::Codex(auth) => (crate::config::ProviderKind::Codex, auth.stored_account_id()),
+            Upstream::Antigravity(_) => (
+                crate::config::ProviderKind::Antigravity,
+                Some(agy_auth::ACCOUNT_ID.to_owned()),
+            ),
+        };
         let ledger = config.ledger.clone().map(|path| {
             Arc::new(crate::usage::ledger::Ledger::new(
                 path,
                 config.agent,
                 config.provider.clone(),
-                crate::config::ProviderKind::Codex,
-                auth.stored_account_id(),
+                kind,
+                account,
             ))
         });
         Ok(Self {
             config,
-            auth,
+            upstream,
             http,
             ledger,
         })

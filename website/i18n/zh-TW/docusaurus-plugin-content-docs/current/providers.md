@@ -31,7 +31,8 @@ keywords:
 
 不論一個 agent 原生支援什麼，它同樣能透過 [Codex 橋接](./codex-to-claude.md)，
 只靠一次 `codex login` 運作 —— 只有 Antigravity CLI 例外，它只跑在自己的 Google
-登入上（見 [Antigravity CLI](./agents.md#antigravity-cli-agy)）。
+登入上 —— 而 agy 自己的 Google 登入也能給其他每個 agent 使用（見
+[Antigravity](#antigravity)）。
 
 `alc doctor` 會把這張表換成你自己的 profile，印出實際的結果。
 
@@ -62,11 +63,9 @@ keywords:
 新建的 `openai` profile 也會以 `low` 推理強度啟動。既有 profile 已儲存的模型
 與強度維持原樣。
 
-`antigravity` 只會啟動 Antigravity CLI，不會啟動別的，所以它還不能跑 Claude。
-讓其他 agent 也經由那個登入連線的功能即將推出，而且會是需要你明確選擇開啟的
-選項，因為 Google 曾經停權把那個登入拿給第三方使用的帳號（論壇討論串見
-[Antigravity CLI](./agents.md#antigravity-cli-agy)）。在它出現之前寫出的
-`config.toml` 沒有這個 profile；
+`antigravity` 會在 Antigravity CLI 自己的登入上啟動它，也會透過 alc 的橋接服務
+其他每個 agent，Claude Code 也包括在內（見 [Antigravity](#antigravity)）。在它
+出現之前寫出的 `config.toml` 沒有這個 profile；
 `alc config upsert antigravity --kind antigravity` 會把它加上。
 
 model ID 換得比 alc 發版還快，所以上面每一個起始模型都只是拿來改的值，不是
@@ -90,6 +89,70 @@ Ollama、llama.cpp 與 vLLM 都在根路徑上提供 Anthropic Messages，和 Op
 並列，所以不論 profile 替其他 agent 指定哪一種 OpenAI 協定，Claude Code 在這三者
 上都能跑。[本機模型](./local-models.md)說明 alc 替每一種設定了什麼，以及怎麼讓
 第一輪不要拖太久。
+
+## Antigravity
+
+`alc agy` 會在 Google 的 Antigravity CLI 自己的 Google 登入上啟動它（見
+[Antigravity CLI](./agents.md#antigravity-cli-agy)）。同一個登入也能透過 alc 的
+橋接，給其他每個 agent 使用：
+
+```sh
+alc --agy claude                          # Claude Code，用 claude-opus-5-5，強度 high
+alc --agy claude --model gemini-3.8-flash --effort low
+alc --agy opencode                        # 或 pi、kimi、codex、copilot、goose、qwen
+alc --agy claude --context max            # Claude 840K、Argon 900K、Flash 1,048K
+alc --agy usage                           # 方案各時間窗還剩多少
+```
+
+alc 借用 agy 已經存好的 access token —— Windows 認證管理員裡的
+`gemini:antigravity` 項目，或檔案
+`~/.gemini/antigravity-cli/antigravity-oauth-token` —— 其他什麼都不留：它從不
+儲存 refresh token、不改寫 agy 的登入，也從不自己跑 Google 登入流程。登入仍歸
+agy 管：token 快過期時，alc 會執行 `agy --output-format json models`（這會讓 agy
+自己更新 token），再重新讀一次。兩個地方都有登入時，alc 會拒絕而不去猜；請在
+agy 裡登出再登入。對 Google 來說，alc 會以 agy 用戶端的身分出現（agy 的
+User-Agent 與用戶端標頭），因為那個端點是依這個身分決定帳號能用哪些模型。
+
+使用這項選用整合仍受帳號提供者的條款與限制約束，不保證相容性，也不保證帳號可用。
+
+### 模型、強度與 context
+
+這個登入上有五個模型家族：`claude-opus-5-5`、`claude-sonnet-5-5`、
+`gemini-4-argon`（Google AI Ultra 帳號）、`gemini-3.8-flash` 與
+`gpt-oss-120b`，每個都有 `low`、`medium`、`high` 三種強度（GPT-OSS 只有
+`medium`）。Google 收到的 id 是兩者相連，例如 `gemini-3.8-flash-low`。
+`alc models --agy` 會連同 window 一起列出它們，並把 agy 回報、但沒有任何家族
+提供的 id 標上 ` (not bridgeable)`：agy 也許能跑，其他 agent 不行。
+
+Claude Code 照常逐次切換模型與強度：它的 `/model` 選單列出這五個家族，它的強度
+決定用哪個變體，`opus` 對應 Claude Opus 5.5、`sonnet` 對應這個 session 的模型、
+`haiku` 對應 Gemini 3.8 Flash。高於 `high` 的強度會以 `high` 執行，家族沒有的強度
+則換成它有的，兩者都會印出一行說明。`--model`、`--effort` 與 `--context` 只改
+這一次的 `alc --agy claude`；`--save` 會被拒絕，並附上能存下同樣選擇的
+`alc config upsert` 指令。其他 agent 整個 session 都用同一個模型 —— profile 的
+模型配上 profile 的強度 —— 所以請在 profile 上選：
+
+```sh
+alc config upsert antigravity --model gemini-3.8-flash-low --effort low --context max
+```
+
+每個家族一開始用 256K 的 window（GPT-OSS 是 131K）。在 profile 上設
+`context = "max"`，或只限 Claude Code 這一次的 `--context max`，Claude 會變成
+840K、Argon 900K、Flash 1,048K。Codex CLI 會以 `model_context_window` 拿到這個
+window（較舊的 Codex 版本還得在它自己的設定裡手動設
+`model_auto_compact_token_limit`）。Codex session 內的 `/model` 選單仍會列出
+OpenAI 的模型名稱，這些在這個登入上會被 alc 的橋接拒絕：請改在 profile 上換模型。
+
+### 推理簽章、額度與平台
+
+Gemini 會替推理內容簽章，簽章會跟著對話走。Gemini 的工具呼叫若遺失了簽章 ——
+例如在別處開始的 session、任務進行中改了強度，或橋接重新啟動過 —— alc 會請你
+開新 session，而不會不帶簽章重送（見[疑難排解](./troubleshooting.md#start-a-new-session-to-continue-on-antigravity)）。
+
+`alc usage` 會顯示方案還剩多少（見 [Antigravity 登入](./usage.md#antigravity-登入)），
+`alc doctor` 會檢查 agy、登入、它的 Google 專案與 profile。讀取登入的方式在
+Windows 上驗證過；在 macOS 與 Linux 上屬於盡力而為，token 檔案則在每個作業系統上
+都能用。
 
 ## Auto 模式在每個 provider 上都能用
 
