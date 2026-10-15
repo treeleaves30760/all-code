@@ -1,6 +1,6 @@
 [package]
 name = "all-code"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "One CLI to configure and launch Claude Code, Codex, OpenCode, Pi, Copilot CLI, Goose, Qwen Code, Kimi Code CLI, and Antigravity CLI with multiple LLM providers"
