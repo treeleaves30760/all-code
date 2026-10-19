@@ -44,6 +44,10 @@ pub enum BridgeApi {
     Messages,
     Responses,
     Chat,
+    /// Google's Code Assist, for the Antigravity CLI on the Codex login: the
+    /// Codex models join agy's own, which are relayed to Google.
+    #[serde(rename = "code_assist")]
+    CodeAssist,
 }
 
 /// What the in-process bridge needs to serve a coding-agent session, on the
@@ -1258,6 +1262,8 @@ fn bridge_config(
         ledger,
         claude_tiers: None,
         upstream,
+        code_assist: (plan.api == BridgeApi::CodeAssist)
+            .then(|| crate::bridge::code_assist::CodeAssistConfig::new(plan.options.clone())),
     }
 }
 

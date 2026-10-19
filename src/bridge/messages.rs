@@ -2247,6 +2247,7 @@ mod tests {
             agent: crate::config::Agent::Claude,
             provider: "codex".to_owned(),
             ledger: None,
+            code_assist: None,
             claude_tiers: Some(crate::bridge::tiers::ModelTiers {
                 strongest: "gpt-6-astra".to_owned(),
                 default: "gpt-5.6-terra".to_owned(),
@@ -2272,6 +2273,7 @@ mod tests {
 
         // Every other agent pins its model; nothing here may second-guess it.
         let pinned = crate::bridge::BridgeConfig {
+            code_assist: None,
             claude_tiers: None,
             ..config
         };

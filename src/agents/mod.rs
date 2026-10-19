@@ -64,7 +64,8 @@ pub fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) ->
         Agent::Goose => goose::apply_bridge(spec, base_url, plan),
         Agent::Qwen => qwen::apply_bridge(spec, base_url, plan),
         Agent::Kimi => kimi::apply_bridge(spec, base_url, plan),
-        // The Antigravity CLI runs on its own login and is never bridged.
-        Agent::Agy => Ok(()),
+        // The Antigravity CLI runs on its own login, and is bridged only on
+        // the Codex one.
+        Agent::Agy => agy::apply_bridge(spec, base_url, plan),
     }
 }

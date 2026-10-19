@@ -1620,6 +1620,12 @@ mod tests {
         assert!(screen.contains("missing"), "{screen}");
         assert!(!screen.contains("incompatible"), "{screen}");
 
+        // agy also runs on the Codex login; without one there is nothing to
+        // step to.
+        app.store
+            .config
+            .providers
+            .retain(|_, provider| provider.kind != ProviderKind::Codex);
         app.default_selected = Agent::ALL.iter().position(|a| *a == Agent::Agy).unwrap();
         press(&mut app, KeyCode::Right);
         assert!(app.status_error);
@@ -1640,6 +1646,12 @@ mod tests {
             default_compatibility(&app.store.config, Agent::Agy),
             "incompatible"
         );
+        // agy also runs on the Codex login; without one there is nothing to
+        // step to.
+        app.store
+            .config
+            .providers
+            .retain(|_, provider| provider.kind != ProviderKind::Codex);
         app.default_selected = Agent::ALL.iter().position(|a| *a == Agent::Agy).unwrap();
         press(&mut app, KeyCode::Right);
         assert!(app.status_error);

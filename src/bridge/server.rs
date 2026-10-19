@@ -12,7 +12,7 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 
-use super::{BridgeState, chat, messages, responses};
+use super::{BridgeState, chat, code_assist, messages, responses};
 
 pub(crate) fn router(state: Arc<BridgeState>) -> Router {
     let mut router = Router::new()
@@ -31,6 +31,12 @@ pub(crate) fn router(state: Arc<BridgeState>) -> Router {
         router = router
             .route("/v1/responses", post(responses::handle))
             .route("/v1/chat/completions", post(chat::handle));
+    }
+
+    // agy's Code Assist calls are all `/v1internal:<rpc>`, a path shape the
+    // router's segments cannot spell, so they are the fallback.
+    if state.config.code_assist.is_some() {
+        router = router.fallback(code_assist::handle);
     }
 
     // A coding agent's turn carries whatever it has read: a long session with
@@ -69,6 +75,7 @@ mod tests {
                 agent: crate::config::Agent::Claude,
                 provider: "codex".to_owned(),
                 ledger: None,
+                code_assist: None,
                 claude_tiers: None,
                 upstream: crate::bridge::UpstreamKind::Codex,
             })

@@ -1227,6 +1227,7 @@ mod tests {
                 agent: crate::config::Agent::Claude,
                 provider: "codex".to_owned(),
                 ledger: None,
+                code_assist: None,
                 claude_tiers: None,
                 upstream: crate::bridge::UpstreamKind::Codex,
             })

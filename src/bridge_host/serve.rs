@@ -164,6 +164,7 @@ impl Host {
                     agent: Agent::Claude,
                     provider: record.profile.clone(),
                     ledger,
+                    code_assist: None,
                     claude_tiers: Some(record.tiers),
                     upstream: UpstreamKind::Codex,
                 };
@@ -187,6 +188,7 @@ impl Host {
                     agent: Agent::Claude,
                     provider: record.profile.clone(),
                     ledger,
+                    code_assist: None,
                     claude_tiers: Some(record.tiers),
                     upstream: UpstreamKind::Antigravity {
                         credential,
