@@ -87,10 +87,11 @@ provider terms before routing subscription credentials through it.
 
 ## One login, every agent
 
-The same `codex login` drives every agent alc launches but one. No second key,
-no per-agent setup. The one is `alc agy`, Google's Antigravity CLI, which signs
-in to Google itself — and that Google login, in turn, serves every other agent
-too: see [Antigravity](#antigravity).
+The same `codex login` drives every agent alc launches. No second key, no
+per-agent setup. Google's Antigravity CLI, `agy`, joins it too: it keeps its own
+Google sign-in and gains the Codex models beside its own ([agy on the Codex
+login](#agy-on-the-codex-login)) — and that Google login, in turn, serves every
+other agent: see [Antigravity](#antigravity).
 
 ```sh
 alc --codex claude       # in-session /model picker
@@ -100,6 +101,7 @@ alc --codex copilot
 alc --codex goose
 alc --codex qwen
 alc --codex kimi
+alc --codex agy          # agy's /model gains the Codex models
 alc codex                # Codex CLI itself, on its own login, no adapter
 ```
 
@@ -108,16 +110,16 @@ alc codex                # Codex CLI itself, on its own login, no adapter
 | Claude Code | Anthropic Messages | `/model` picker, mid-session |
 | OpenCode, Pi, Kimi Code CLI | OpenAI Responses | one model, chosen at launch |
 | Copilot CLI, Goose, Qwen Code | OpenAI Chat Completions | one model, chosen at launch |
+| Antigravity CLI | Google Code Assist | agy's `/model` picker, mid-session, Codex and Google models side by side |
 | Codex CLI | native, no bridge | Codex's own picker |
 
 alc starts its own Codex adapter on a loopback port and points only the launched
 agent's process at it — three wire protocols, one login. For Claude Code the
 adapter is a background process its sessions share (see [Background
 sessions](#background-sessions)); for the others it lives inside alc and stops
-when the session does. Claude Code is the only agent that can switch mid-session,
-because it sends the model and effort with every request, so alc never pins
-either on the adapter; the others pick one model and one reasoning effort at
-launch.
+when the session does. Claude Code and agy can switch mid-session, because they
+send the model and effort with every request, so alc never pins either for them;
+the others pick one model and one reasoning effort at launch.
 
 [Codex bridge](#codex-bridge), below, has the model catalog, the effort tiers,
 and what the adapter does with your credentials.
@@ -247,7 +249,7 @@ performance](#ttft-tps-and-estimated-cost) explains what is measured.
 Anthropic, the OpenAI API, OpenRouter, a local Ollama, llama.cpp or vLLM server,
 DeepSeek, Moonshot, Z.ai, MiniMax, Groq, xAI, Google, or a custom endpoint — and
 change it for a single run without editing anything. agy, the Antigravity CLI,
-runs on its own Google login instead, and `--agy` puts any other agent on that
+runs on its own Google login (and the Codex one) instead, and `--agy` puts any other agent on that
 login too ([Antigravity](#antigravity), below).
 
 ```sh
@@ -291,10 +293,10 @@ does not, because alc's settings take precedence over it.
 
 ### Antigravity
 
-`alc agy` launches Google's Antigravity CLI, `agy`. It is the one agent that
-runs neither on the Codex login nor on a provider you point it at: agy signs in
-to Google itself, and alc launches it on that login without handling any
-credential. The starter configuration ships an enabled `antigravity` profile for
+`alc agy` launches Google's Antigravity CLI, `agy`. agy signs in to Google
+itself, and alc launches it on that login without handling any credential; the
+one other place it runs is the Codex login ([below](#agy-on-the-codex-login)),
+never a provider you point it at. The starter configuration ships an enabled `antigravity` profile for
 it, so once agy is signed in there is nothing to set up — for agy, or for any
 other agent on that login ([below](#every-other-agent-on-the-antigravity-login)).
 
@@ -325,6 +327,25 @@ then says so and names the fix, and `alc doctor` warns with the same command:
 ```sh
 alc config upsert antigravity --kind antigravity
 ```
+
+#### agy on the Codex login
+
+```sh
+alc --codex agy                                  # starts on the codex profile's model and effort
+alc --codex agy -- --model gemini-3.8-flash-low  # or on one of agy's own
+```
+
+agy reads its endpoint from `CLOUD_CODE_URL`, and alc points that at its bridge
+for the session. The bridge adds the Codex models to agy's model list — one
+entry per effort, `gpt-6.1-sol-high`, shown in `/model` as **GPT-6.1-Sol ·
+Codex** behind agy's own effort slider (Codex's `ultra` runs as `max`) — and
+translates their turns to your `codex login`. Everything else agy asks for — its
+own Gemini, Claude and GPT-OSS models, its login and quota checks, the helper
+turns that title a conversation — goes to Google unchanged, signed with the
+token agy itself sent; alc reads and keeps none of it. So agy still needs its
+own sign-in, and a session can move between a Codex model and one of Google's
+with `/model`. Codex turns land in the usage ledger as `agy` on the `codex`
+profile.
 
 #### Every other agent on the Antigravity login
 
@@ -392,10 +413,10 @@ works on every OS.
 | --- | --- |
 | `alc claude`, `codex`, `opencode`, `pi`, `copilot`, `goose`, `qwen`, `kimi`, `agy` | Launch that agent on its configured provider |
 | `alc config` | The configuration TUI; also `init`, `show`, `path`, `upsert`, `key`, `set-default`, `remove` |
-| `alc doctor` | Binaries, credentials, compatibility, defaults, bridge and remote state |
+| `alc doctor` | Binaries, credentials, compatibility, defaults, bridge and remote state; interactive on a terminal, `--plain` |
 | `alc models` | The GPT models the Codex bridge offers, or with `--agy` the Antigravity CLI's; `--refresh`, `--json` |
-| `alc usage [weekly\|monthly\|yearly]` | Accounts/quota, the compatibility ledger, and daily token/cost statistics; `--timezone`, `--chart[=PATH]`, `--wrapped[=PATH]`, `--daily`, `--monthly`, `--details`, `--offline`, `--pricing-file`, `--json` |
-| `alc tps` | Client-observed TTFT and estimated/E2E tokens per second; latest 20 timed requests by default, `--include-unmeasured`, `--limit`, `--json` |
+| `alc usage [weekly\|monthly\|yearly]` | Accounts/quota, the compatibility ledger, and daily token/cost statistics; interactive on a terminal; `--timezone`, `--chart[=PATH]`, `--wrapped[=PATH]`, `--daily`, `--monthly`, `--details`, `--offline`, `--pricing-file`, `--plain`, `--json` |
+| `alc tps` | Client-observed TTFT and estimated/E2E tokens per second; a dashboard on a terminal; latest 20 timed requests by default (200 in the dashboard), `--include-unmeasured`, `--limit`, `--plain`, `--json` |
 | `alc update` | Verify and activate an immutable alc generation; `--check`, `--force`, `--download-only`, `--from ... --offline`, `--rollback` |
 | `alc share <agent>` | Launch with the session mirrored to a browser page |
 | `alc sessions` | Shared sessions across generations and legacy, with each owner's page link |
@@ -464,6 +485,15 @@ enabled
 Ollama, llama.cpp or vLLM profile checked against its running server, and the
 remote-control posture — then a summary of issues with a fix for each. It exits
 non-zero when it finds one.
+
+**Interactive on a terminal.** `alc doctor`, `alc usage` and `alc tps` open a
+full-screen view when both ends are a terminal; a pipe, a redirect, `--json`,
+`--plain` or `ALC_NO_TUI=1` gets the plain report, unchanged. Doctor and usage
+list their sections on the left, each marked by the worst status it reports,
+with the summary — every issue and the command that fixes it — first, and fill
+them in as each check finishes. ↑↓ scrolls, tab and 1–9 move between sections,
+←→ pans a wide table, `a` shows every section on one page, `/` searches (`n`/`N`
+for the next hit), `r` runs the report again, `?` lists the keys and `q` leaves.
 
 For named errors and their fixes, see the
 [troubleshooting guide](https://treeleaves30760.github.io/all-code/troubleshooting).
@@ -571,6 +601,17 @@ to all sources; TPS defaults to `alc` and accepts `--limit` 1–10000.
 `alc usage --offline` reads only local configuration, histories, and pricing:
 no credentials/Keychain, quota calls, refresh, or network (a cached LiteLLM price map is still read). `alc tps` is also a
 local, credential-free read and does not probe running daemons.
+
+On a terminal, `alc usage` adds three keys to the [interactive
+view](#diagnostics): `p` steps the period (this week, month, year, then all
+history by day or by month), `s` the history source (all, alc, claude, codex)
+and `d` the details — only the statistics reload; the quota lookups do not run
+again. `alc tps` opens a dashboard over the last 200 requests (or `--limit`):
+TTFT p50/p95 and mean, weighted stream and E2E TPS, a throughput trend scaled to
+its 95th percentile so one cache-burst estimate cannot flatten it, each model's
+median TPS and TTFT, and the request table — `s`/`S` sort, `/` filters by
+profile, agent, model or outcome, `enter` opens a request's tokens, timing and
+ids, `+`/`-` read more or fewer, `u` adds unmeasured history.
 
 The terminal view shows daily (or `--monthly`) rollups and a by-model table in
 boxed tables sized to the terminal: long model lists wrap, then numbers switch
@@ -751,15 +792,15 @@ upsert` when upstream renames or retires a model.
 | [Goose](https://block.github.io/goose/) | `goose` | OpenAI- or Anthropic-compatible endpoint | `GOOSE_*` + provider key env | Yes |
 | [Qwen Code](https://github.com/QwenLM/qwen-code) | `qwen` | OpenAI-, Anthropic-, or Gemini-compatible endpoint | `--auth-type` flag + env | Yes |
 | [Kimi Code CLI](https://github.com/MoonshotAI/kimi-cli) | `kimi` | OpenAI- or Anthropic-compatible endpoint | temp `--config-file` (merged TOML, deleted after the run) | Yes |
-| Antigravity CLI | `agy` | its own Google login only | `--model`, `--effort` | No (own login) |
+| Antigravity CLI | `agy` | its own Google login, or Google Code Assist | `--model`, `--effort`; `CLOUD_CODE_URL` on Codex | Yes (Codex models join agy's `/model`) |
 
 `alc` launches agents that are already installed — install the ones you plan to
 use from the links above (Pi is `npm install -g @earendil-works/pi-coding-agent`;
 agy you install and sign in per Google's own Antigravity instructions).
-Every agent but agy reaches the Codex bridge with one `codex login` whatever it
-accepts natively, and every agent but agy also runs on agy's Google login
-through the same bridge (`alc --agy <agent>`); agy itself runs only on that
-login. `ALC_CLAUDE_BIN` and its
+Every agent reaches the Codex bridge with one `codex login` whatever it
+accepts natively — agy through a Code Assist surface that relays its own models
+to Google — and every agent but agy also runs on agy's Google login through the
+same bridge (`alc --agy <agent>`); agy itself runs natively on that login. `ALC_CLAUDE_BIN` and its
 siblings, `ALC_AGY_BIN` among them, override a binary path.
 
 ## Codex bridge
