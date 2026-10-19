@@ -304,7 +304,7 @@ alc config upsert antigravity --kind antigravity
 
 ```sh
 alc --codex agy                                  # 從 codex profile 的模型與推理強度開始
-alc --codex agy -- --model gemini-3.8-flash-low  # 或從 agy 自己的模型開始
+alc --codex agy --model gemini-3.8-flash-low     # 或從 agy 自己的模型開始
 ```
 
 agy 從 `CLOUD_CODE_URL` 讀取端點，alc 在這個 session 裡把它指向自己的橋接。橋接

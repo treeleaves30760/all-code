@@ -3,7 +3,7 @@ id: codex-to-claude
 title: Codex bridge
 sidebar_label: Codex bridge
 sidebar_position: 3
-description: One codex login reaches Claude Code and seven other coding agents through the bundled bridge — Claude Code with an in-session GPT model picker, and the others through one bridged model per session.
+description: One codex login reaches Claude Code and eight other coding agents through the bundled bridge — Claude Code and the Antigravity CLI with an in-session GPT model picker, and the others through one bridged model per session.
 keywords:
   - claude code with gpt
   - codex subscription
@@ -18,16 +18,17 @@ keywords:
 # Codex bridge
 
 `alc --codex <agent>` starts a loopback adapter and points one agent's session
-at it. One `codex login` serves every agent alc launches except the Antigravity
-CLI, which runs on its own Google login ([Antigravity
-CLI](./agents.md#antigravity-cli-agy)). The same bridge also puts every other
-agent, Claude Code included, on that Google login: `alc --agy <agent>`
-([Antigravity](./providers.md#antigravity)).
+at it. One `codex login` serves every agent alc launches. The Antigravity CLI
+keeps its own Google login for its own models and gains the Codex models next to
+them ([On the Codex login](./agents.md#on-the-codex-login)). The same bridge
+also puts every other agent, Claude Code included, on that Google login:
+`alc --agy <agent>` ([Antigravity](./providers.md#antigravity)).
 
 ```sh
 codex login
 alc --codex claude
 alc --codex opencode      # or pi, copilot, goose, qwen, kimi
+alc --codex agy           # the Codex models in agy's own /model picker
 ```
 
 | Agent | What the bridge serves it | How it picks a model |
@@ -35,10 +36,13 @@ alc --codex opencode      # or pi, copilot, goose, qwen, kimi
 | Claude Code | Anthropic Messages | `/model` picker, mid-session |
 | OpenCode, Pi, Kimi Code CLI | OpenAI Responses | one model, chosen at launch |
 | Copilot CLI, Goose, Qwen Code | OpenAI Chat Completions | one model, chosen at launch |
+| Antigravity CLI | Its own Code Assist API, beside its Google models | `/model` picker, mid-session |
 
-Claude Code is the only one that can switch mid-session, because it sends the
-model and effort with every request, so alc pins neither on the adapter. The
-others are wired through the same mechanism each already uses for the `openai`
+Claude Code and the Antigravity CLI can switch mid-session, because they name
+the model and effort in every request, so alc pins neither on the adapter.
+agy is pointed at the adapter with `CLOUD_CODE_URL` and lists one Codex entry
+per effort; whatever is not a Codex model goes on to Google. The others are
+wired through the same mechanism each already uses for the `openai`
 kind, pointed at the adapter with a placeholder key — see
 [Agents](./agents.md) for what each one receives.
 

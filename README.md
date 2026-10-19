@@ -332,7 +332,7 @@ alc config upsert antigravity --kind antigravity
 
 ```sh
 alc --codex agy                                  # starts on the codex profile's model and effort
-alc --codex agy -- --model gemini-3.8-flash-low  # or on one of agy's own
+alc --codex agy --model gemini-3.8-flash-low     # or on one of agy's own
 ```
 
 agy reads its endpoint from `CLOUD_CODE_URL`, and alc points that at its bridge

@@ -77,6 +77,52 @@ It does not filter the compatibility ledger or statistics. Use
 the existing `schema_version: 1`, `accounts`, and `ledger` fields and adds a
 `statistics` object; see [JSON reports](#json-reports).
 
+## Interactive views
+
+On a terminal — stdout and stdin both a TTY, `TERM` not `dumb` — `alc usage`,
+`alc tps` and `alc doctor` open full-screen views. A pipe, a redirect, `--json`,
+`--chart` or `--wrapped` (usage), `--plain` on any of the three, or
+`ALC_NO_TUI=1` prints the text reports shown on this page, unchanged. Exit codes
+are the same either way.
+
+`alc usage` and `alc doctor` share one viewer. The sidebar lists the report's
+sections, each marked `✓`, `!` or `✗` by the worst status it reports, with the
+Summary — the issues and the command that fixes each — first. Sections fill in
+as each lookup or check finishes; for usage, Accounts arrive from the network
+while the local statistics load.
+
+| Keys | Action |
+| --- | --- |
+| `↑` `↓`, `j` `k` · `PgUp` `PgDn`, `space` `b` · `g` `G` | Scroll · page · top and bottom |
+| `tab` `shift-tab`, `]` `[` · `1`–`9` | Next or previous section · jump to one |
+| `←` `→`, `h` `l` | Pan a wide table |
+| `a` · `w` | Every section on one page · wrap lines |
+| `/` then `n` `N` | Search, next and previous match |
+| `r` · `?` · `q`, `esc` | Run again · help · quit |
+| `p` (usage) | Period: this week → this month → this year → all history by day → by month |
+| `s` (usage) | History source: all → alc → claude → codex |
+| `d` (usage) | Toggle `--details` |
+
+`p`, `s` and `d` reload only the token statistics; account quota lookups do not
+run again.
+
+`alc tps` opens a dashboard: a header with the filters in force; cards for
+requests, TTFT p50 (with p95), TTFT mean, weighted stream TPS and weighted E2E
+TPS; a stream-TPS trend, oldest to newest, scaled to the 95th percentile so one
+cache-burst estimate does not flatten it; a per-model panel with median TPS,
+median TTFT and count; and a request table — time, profile, agent, model,
+outcome, TTFT, TPS, E2E and output tokens. It reads the last 200 requests unless
+`--limit` says otherwise; plain `alc tps` still defaults to 20.
+
+| Keys | Action |
+| --- | --- |
+| `↑` `↓` · `enter` | Select a request · open it in full: tokens, timing, correlation ids, warnings |
+| `s`, `tab` · `S` | Next sort column · reverse the sort |
+| `/`, `f` | Filter by profile, agent, model or outcome |
+| `+` `-` | Requests read: 20, 50, 100, 200, 500 or 1000 |
+| `u` | Show or hide unmeasured history (`--include-unmeasured`) |
+| `r` · `?` · `q` | Reload · help · quit |
+
 ## Codex logins
 
 alc reads the `auth.json` that `codex login` wrote and asks chatgpt.com what is
@@ -190,7 +236,8 @@ alc tps --include-unmeasured --source all --json
 ```
 
 `alc tps` reads local records without credentials, quota queries, network access,
-or probing active daemons. It defaults to `--source alc --limit 20`. After the
+or probing active daemons. It defaults to `--source alc --limit 20` (the
+[interactive dashboard](#interactive-views) reads 200). After the
 query filters, it selects **actual `Request` records with a timing object before
 sorting newest-first and applying the limit**. Newer historical turns cannot hide
 older measured requests. `--limit` accepts 1–10000.
@@ -252,7 +299,7 @@ Antigravity one, is already observed and needs no opt-in.
 | Qwen Code / Goose | Supported alc-managed Anthropic or OpenAI branches. Qwen's Google/Gemini branch and Goose's native OpenRouter/Ollama integrations are not observed. Goose's OpenAI split endpoint with a query or fragment is refused for metrics; ordinary launches are unchanged. |
 | Kimi Code CLI | The provider endpoint in alc's generated temporary config, not a user-supplied config. |
 | Pi | Direct observation is unavailable: alc will not put an ephemeral listener into its persistent shared `models.json`. |
-| Antigravity CLI | Direct observation is unavailable: agy runs on its own login. Other agents on that login are observed by alc's bridge automatically. |
+| Antigravity CLI | Direct observation is unavailable: agy runs on its own login. Other agents on that login, and agy's Codex turns under `alc --codex agy`, are observed by alc's bridge automatically. |
 
 Codex's generated provider ID is `alc_` plus the alc profile name with hyphens
 changed to underscores: profile `openai-work` needs

@@ -18,6 +18,14 @@ Start with `alc doctor`. It reports every agent binary, credential status,
 provider profiles with a per-agent compatibility column, the resolved defaults,
 the Codex login state, and the Antigravity login's state.
 
+On a terminal it opens an interactive view: a sidebar of sections, each marked
+`✓`, `!` or `✗` by the worst thing it found, with the Summary — every issue and
+the command that fixes it — first. Sections fill in as each check finishes; `r`
+runs the checks again and `?` lists the keys ([Interactive
+views](./usage.md#interactive-views)). A pipe, a redirect, `--plain` or
+`ALC_NO_TUI=1` prints the text report instead, and the exit code is the same
+either way: non-zero when there is an issue.
+
 ## `'claude' is not installed or not on PATH`
 
 alc launches agents that already exist. Install the agent, or point alc at a
@@ -60,8 +68,10 @@ screen of `alc config`, until you do.
 
 ## `is not compatible with agy`
 
-agy runs only on the `antigravity` kind: agy signs in to Google itself, so
-`alc --codex agy` or `alc --openrouter agy` is refused. Run plain `alc agy`.
+agy runs on the `antigravity` kind, its own Google login, and on the `codex`
+kind through alc's bridge ([On the Codex login](./agents.md#on-the-codex-login)).
+agy signs in to Google itself, so any other provider — `alc --openrouter agy`,
+say — is refused. Run plain `alc agy`, or `alc --codex agy`.
 
 If a profile of your own is already named `antigravity`, leave it alone:
 `alc config upsert antigravity` would rewrite it for the new kind, base URL and

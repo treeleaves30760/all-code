@@ -26,12 +26,13 @@ pair before launch instead of sending a request that cannot work.
 | Goose | OpenAI- or Anthropic-compatible | `openai-chat`, `anthropic-messages` |
 | Qwen Code | OpenAI-, Anthropic-, or Gemini-compatible | `openai-chat`, `anthropic-messages` |
 | Kimi Code CLI | OpenAI- or Anthropic-compatible | `openai-chat`, `anthropic-messages` |
-| Antigravity CLI | Its own Google login | `antigravity-native` |
+| Antigravity CLI | Its own Google login, or the Codex login through alc's bridge | `antigravity-native` |
 
 Whatever an agent accepts natively, it also runs on one `codex login` through
-the [Codex bridge](./codex-to-claude.md) — every agent but the Antigravity CLI,
-which runs only on its own Google login — and agy's own Google login serves
-every other agent too ([Antigravity](#antigravity)).
+the [Codex bridge](./codex-to-claude.md). The Antigravity CLI runs there too,
+still signed in to Google for its own models ([On the Codex
+login](./agents.md#on-the-codex-login)), and on no other provider. agy's own
+Google login serves every other agent too ([Antigravity](#antigravity)).
 
 `alc doctor` prints this matrix resolved against your own profiles.
 
@@ -148,9 +149,11 @@ Each family starts on a 256K window (GPT-OSS on 131K). `context = "max"` on the
 profile, or `--context max` for one run of Claude Code, gives 840K for Claude,
 900K for Argon and 1,048K for Flash. Codex CLI is handed the window as
 `model_context_window` (older Codex versions also needed
-`model_auto_compact_token_limit` set by hand in their own config). Codex's
-in-session `/model` picker still offers OpenAI's slugs, which alc's bridge
-refuses on this login: change the model on the profile instead.
+`model_auto_compact_token_limit` set by hand in their own config), and the
+effort as `model_reasoning_effort`, so its footer shows the effort the session
+runs at. Codex's in-session `/model` picker still offers OpenAI's slugs, which
+alc's bridge refuses on this login: change the model on the profile, or pass
+one of this login's ids with `--model`.
 
 ### Signed reasoning, quota and platforms
 

@@ -135,10 +135,11 @@ Claude Code starts on `gpt-6.1-sol` at `low` effort — or on whatever your
 own `~/.codex/config.toml` names — on the model's real Codex context window,
 with every GPT model in its `/model` picker.
 [Codex bridge](./codex-to-claude.md) has the models, the effort tiers, and the
-other agents on that login. The Antigravity CLI is the one agent that runs on a
-login of its own instead: `alc agy` ([Antigravity CLI](./agents.md#antigravity-cli-agy)).
-That Google login serves every other agent too, through the same bridge:
-`alc --agy claude` ([Antigravity](./providers.md#antigravity)).
+other agents on that login. The Antigravity CLI also runs on a login of its
+own: `alc agy` ([Antigravity CLI](./agents.md#antigravity-cli-agy)), and
+`alc --codex agy` adds the Codex models to it. That Google login serves every
+other agent too, through the same bridge: `alc --agy claude`
+([Antigravity](./providers.md#antigravity)).
 
 ## Other providers
 
@@ -188,6 +189,8 @@ alc doctor                     # binaries, credentials, compatibility, defaults,
 ```
 
 `alc doctor` exits non-zero when it finds an issue and names the fix for each.
+On a terminal it opens an interactive view, Summary first; `--plain` prints the
+text report ([Interactive views](./usage.md#interactive-views)).
 [Troubleshooting](./troubleshooting.md) has the error messages.
 
 ## Update
