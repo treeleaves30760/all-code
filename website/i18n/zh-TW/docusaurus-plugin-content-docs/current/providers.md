@@ -27,11 +27,12 @@ keywords:
 | Goose | OpenAI 或 Anthropic 相容端點 | `openai-chat`、`anthropic-messages` |
 | Qwen Code | OpenAI、Anthropic，或 Gemini 相容端點 | `openai-chat`、`anthropic-messages` |
 | Kimi Code CLI | OpenAI 或 Anthropic 相容端點 | `openai-chat`、`anthropic-messages` |
-| Antigravity CLI | 它自己的 Google 登入 | `antigravity-native` |
+| Antigravity CLI | 它自己的 Google 登入，或透過 alc 橋接的 Codex 登入 | `antigravity-native` |
 
 不論一個 agent 原生支援什麼，它同樣能透過 [Codex 橋接](./codex-to-claude.md)，
-只靠一次 `codex login` 運作 —— 只有 Antigravity CLI 例外，它只跑在自己的 Google
-登入上 —— 而 agy 自己的 Google 登入也能給其他每個 agent 使用（見
+只靠一次 `codex login` 運作。Antigravity CLI 也能跑在那裡，自己的模型仍用它的
+Google 登入（見[在 Codex 登入上](./agents.md#在-codex-登入上)），除此之外不能跑在
+其他 provider 上。agy 自己的 Google 登入也能給其他每個 agent 使用（見
 [Antigravity](#antigravity)）。
 
 `alc doctor` 會把這張表換成你自己的 profile，印出實際的結果。
@@ -140,8 +141,10 @@ alc config upsert antigravity --model gemini-3.8-flash-low --effort low --contex
 `context = "max"`，或只限 Claude Code 這一次的 `--context max`，Claude 會變成
 840K、Argon 900K、Flash 1,048K。Codex CLI 會以 `model_context_window` 拿到這個
 window（較舊的 Codex 版本還得在它自己的設定裡手動設
-`model_auto_compact_token_limit`）。Codex session 內的 `/model` 選單仍會列出
-OpenAI 的模型名稱，這些在這個登入上會被 alc 的橋接拒絕：請改在 profile 上換模型。
+`model_auto_compact_token_limit`），並以 `model_reasoning_effort` 拿到推理強度，
+所以它的頁尾顯示的就是這個 session 實際用的強度。Codex session 內的 `/model`
+選單仍會列出 OpenAI 的模型名稱，這些在這個登入上會被 alc 的橋接拒絕：請改在
+profile 上換模型，或用 `--model` 傳入這個登入的 id。
 
 ### 推理簽章、額度與平台
 

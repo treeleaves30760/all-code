@@ -19,6 +19,12 @@ keywords:
 以及它各自的 agent 相容性欄位、解析後的預設值、Codex 的登入狀態，還有
 Antigravity 登入的狀態。
 
+在終端機上它會開啟互動式檢視：側欄列出各個區塊，每個區塊依它找到的最差狀況
+標上 `✓`、`!` 或 `✗`，最前面是 Summary —— 所有問題，以及各自的修正指令。每項
+檢查一完成，對應區塊就會填上；`r` 重新執行檢查，`?` 列出所有按鍵（見[互動式
+檢視](./usage.md#互動式檢視)）。導向管線或檔案、`--plain` 或 `ALC_NO_TUI=1` 則
+改印文字報告，兩種情況的結束碼都一樣：有問題時為非零。
+
 ## `'claude' is not installed or not on PATH`
 
 alc 只啟動已經裝好的 agent。請先安裝那個 agent，或用[覆寫變數](./agents.md#執行檔覆寫)把
@@ -59,8 +65,10 @@ Agent defaults 畫面也會。
 
 ## `is not compatible with agy`
 
-agy 只跑在 `antigravity` 這個 kind 上：agy 自己登入 Google，所以
-`alc --codex agy` 或 `alc --openrouter agy` 會被拒絕。直接跑 `alc agy` 就好。
+agy 跑在 `antigravity` 這個 kind（它自己的 Google 登入）上，也能透過 alc 的
+橋接跑在 `codex` 這個 kind 上（見[在 Codex 登入上](./agents.md#在-codex-登入上)）。
+agy 自己登入 Google，所以其他 provider —— 例如 `alc --openrouter agy` —— 都會
+被拒絕。直接跑 `alc agy` 或 `alc --codex agy` 就好。
 
 如果你自己已經有一個名叫 `antigravity` 的 profile，請保留它：
 `alc config upsert antigravity` 會把它改寫成新的 kind，base URL 和模型都會不見，

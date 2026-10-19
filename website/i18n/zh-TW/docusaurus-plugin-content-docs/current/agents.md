@@ -23,11 +23,12 @@ keywords:
 provider 清單，翻譯成你正要啟動的那個 agent 聽得懂的樣子。這一頁就是它逐一
 設定了什麼。
 
-除了一個例外，每個 agent 也都能靠一次 `codex login`，透過 [Codex
+每個 agent 也都能靠一次 `codex login`，透過 [Codex
 橋接](./codex-to-claude.md)運作；`alc --codex <agent>` 從頭到尾都是同一個
-指令，所以下面不再重複。例外是 [Antigravity CLI](#antigravity-cli-agy)，它只
-跑在自己的 Google 登入上 —— 而那個登入反過來也能給其他每個 agent 使用
-（`alc --agy <agent>`）。
+指令，所以下面不再重複。[Antigravity CLI](#antigravity-cli-agy) 在那裡的運作
+方式不太一樣：它保留自己的 Google 登入，再在自己的模型旁多出 Codex 的模型（見
+[在 Codex 登入上](#在-codex-登入上)）。那個 Google 登入反過來也能給其他每個
+agent 使用（`alc --agy <agent>`）。
 
 ## Claude Code
 
@@ -170,7 +171,7 @@ alc --moonshot kimi
 ## Antigravity CLI (agy)
 
 `agy` —— Google 的 Antigravity CLI · 跑在它自己的 Google 登入上，那個登入也能
-給其他每個 agent 使用。
+給其他每個 agent 使用；它也能透過 alc 的橋接跑在 Codex 登入上。
 
 agy 自己登入 Google，所以 alc 沒有端點、金鑰或設定檔要交給它，也完全不碰 agy
 的任何憑證。它跑在初始設定內附的 `antigravity` profile 上，alc 只依那個 profile
@@ -199,6 +200,28 @@ profile 的 Model 那一列也是在同一份清單裡切換。舊版 alc 寫出
 `alc --agy opencode` 等等。alc 借用了什麼、agy 仍管什麼，見
 [Provider](./providers.md#antigravity)。
 
+### 在 Codex 登入上
+
+`alc --codex agy` 會啟動 alc 的橋接，並把 agy 的 `CLOUD_CODE_URL` 指向它。橋接
+會把 Codex 的模型加進 agy 自己的模型清單，每個推理強度一筆
+（`gpt-6.1-sol-high`）：agy 的 `/model` 選單會顯示成 `GPT-6.1-Sol · Codex`，
+搭配 agy 自己從 `low` 到 `max` 的強度滑桿，Codex 的 `ultra` 則以 `max` 執行。
+Codex 模型上的每一輪都送到你的 `codex login`。agy 問的其他所有東西 —— 它自己的
+Gemini、Claude 與 GPT-OSS 模型、登入檢查、額度，以及標題、checkpoint 這類輔助
+請求 —— 都原封不動轉送給 Google，用的是 agy 自己送出的 token；alc 不讀取、也
+不保留任何 agy 憑證。所以 agy 仍然需要它自己的 Google 登入，而 `/model` 可以在
+session 中途於 Codex 與 Google 的模型之間切換。
+
+```sh
+alc --codex agy                                   # 用 codex profile 的模型與強度開始
+alc --codex agy --model gemini-3.8-flash-low   # 你自己的 --model 優先
+```
+
+session 一開始用 codex profile 的模型與強度，以 `--model gpt-6.1-sol-<effort>`
+傳入。Codex 模型上的每一輪會以 agent `agy`、codex profile 記錄下來，所以
+[`alc usage` 與 `alc tps`](./usage.md) 都會算進去。其他 provider 都不能跑
+agy：它原生跑在 `antigravity` 這個 kind 上，透過橋接跑在 `codex` 這個 kind 上。
+
 ## 直接 API 量測
 
 `alc --metrics <agent>` 會在支援的、由 alc 管理的端點設定位置啟用觀測，保留原生
@@ -216,7 +239,7 @@ helper 憑證，不是原始服務商金鑰。不加旗標的一般直接啟動�
 | Goose | alc 的 Anthropic/OpenAI 分支，不含原生 OpenRouter/Ollama 整合。OpenAI 分拆端點含 query／fragment 時，量測會被拒絕；一般啟動維持不變。 |
 | Kimi Code CLI | alc 產生的暫存 provider 設定裡的端點，不是使用者的 config／model／provider 覆寫。 |
 | Pi | 不支援直接啟動觀測：端點存在持續共用的 `models.json`，alc 不會讓它指向短命的觀測器。 |
-| Antigravity CLI | 不支援：agy 跑在它自己的登入上。跑在那個登入上的其他 agent，會由 alc 的橋接自動觀測。 |
+| Antigravity CLI | 不支援：agy 跑在它自己的登入上。跑在那個登入上的其他 agent，以及 `alc --codex agy` 下 agy 在 Codex 模型上的請求，會由 alc 的橋接自動觀測。 |
 
 原生 OAuth／登入，以及超出這些設定位置的明確端點／helper／config／provider
 覆寫，不會被偷偷攔截；明確要求 `--metrics` 卻不安全或不支援時，會說明原因並

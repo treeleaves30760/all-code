@@ -3,7 +3,7 @@ id: codex-to-claude
 title: Codex 橋接
 sidebar_label: Codex 橋接
 sidebar_position: 3
-description: 一次 codex login，透過內建的橋接就能餵飽 Claude Code 和另外七個 coding agent —— Claude Code 有 session 內的 GPT 模型選單，其他 agent 則是每個 session 用一個橋接過的模型。
+description: 一次 codex login，透過內建的橋接就能餵飽 Claude Code 和另外八個 coding agent —— Claude Code 與 Antigravity CLI 有 session 內的 GPT 模型選單，其他 agent 則是每個 session 用一個橋接過的模型。
 keywords:
   - claude code with gpt
   - codex subscription
@@ -19,9 +19,9 @@ keywords:
 # Codex 橋接
 
 `alc --codex <agent>` 會啟動一個 loopback 轉接器，並把某一個 agent 的 session
-指向它。一次 `codex login` 就夠 alc 啟動的每個 agent 一起用，只有 Antigravity
-CLI 例外，它跑在自己的 Google 登入上（見 [Antigravity
-CLI](./agents.md#antigravity-cli-agy)）。同一個橋接也能讓其他每個 agent，包括
+指向它。一次 `codex login` 就夠 alc 啟動的每個 agent 一起用。Antigravity CLI
+自己的模型仍用它自己的 Google 登入，再在旁邊多出 Codex 的模型（見[在 Codex
+登入上](./agents.md#在-codex-登入上)）。同一個橋接也能讓其他每個 agent，包括
 Claude Code，跑在那個 Google 登入上：`alc --agy <agent>`（見
 [Antigravity](./providers.md#antigravity)）。
 
@@ -29,6 +29,7 @@ Claude Code，跑在那個 Google 登入上：`alc --agy <agent>`（見
 codex login
 alc --codex claude
 alc --codex opencode      # or pi, copilot, goose, qwen, kimi
+alc --codex agy           # the Codex models in agy's own /model picker
 ```
 
 | Agent | 橋接提供給它的協定 | 它怎麼選模型 |
@@ -36,9 +37,12 @@ alc --codex opencode      # or pi, copilot, goose, qwen, kimi
 | Claude Code | Anthropic Messages | `/model` 選單，session 中途也能換 |
 | OpenCode、Pi、Kimi Code CLI | OpenAI Responses | 一個模型，啟動時選定 |
 | Copilot CLI、Goose、Qwen Code | OpenAI Chat Completions | 一個模型，啟動時選定 |
+| Antigravity CLI | 它自己的 Code Assist API，與它的 Google 模型並列 | `/model` 選單，session 中途也能換 |
 
-只有 Claude Code 能在 session 中途切換，因為它每次請求都會把模型與推理強度一起
-送出，所以 alc 兩者都不必釘在轉接器上。其他 agent 則是沿用它們各自處理
+Claude Code 與 Antigravity CLI 能在 session 中途切換，因為它們每次請求都會指明
+模型與推理強度，所以 alc 兩者都不必釘在轉接器上。agy 是透過 `CLOUD_CODE_URL`
+指向轉接器，每個強度列出一筆 Codex 模型；不是 Codex 模型的請求就繼續送往
+Google。其他 agent 則是沿用它們各自處理
 `openai` 這個 kind 的那套既有機制接上來，只是改指向轉接器、帶一個佔位用的
 key —— 每個 agent 實際收到什麼，見[支援的 agent](./agents.md)。
 

@@ -76,6 +76,48 @@ Token usage
 `alc usage --json` 保留既有的 `schema_version: 1`、`accounts` 與 `ledger` 欄位，
 另加一個 `statistics` 物件；見 [JSON 報告](#json-報告)。
 
+## 互動式檢視
+
+在終端機上 —— stdout 與 stdin 都是 TTY，且 `TERM` 不是 `dumb` —— `alc usage`、
+`alc tps` 與 `alc doctor` 會開啟全螢幕檢視。導向管線或檔案、`--json`、
+`--chart` 或 `--wrapped`（usage）、三者都有的 `--plain`，或 `ALC_NO_TUI=1`，
+則照舊印出本頁所示的文字報告，內容不變。結束碼兩種情況都一樣。
+
+`alc usage` 與 `alc doctor` 共用同一個檢視器。側欄列出報告的各個區塊，每個區塊
+依它回報的最差狀態標上 `✓`、`!` 或 `✗`，最前面是 Summary —— 所有問題，以及
+各自的修正指令。每項查詢或檢查一完成，對應區塊就會填上；usage 的 Accounts
+會在本機統計載入的同時，從網路陸續補上。
+
+| 按鍵 | 動作 |
+| --- | --- |
+| `↑` `↓`、`j` `k` · `PgUp` `PgDn`、`space` `b` · `g` `G` | 捲動 · 翻頁 · 跳到頂端與底端 |
+| `tab` `shift-tab`、`]` `[` · `1`–`9` | 下一個或上一個區塊 · 跳到指定區塊 |
+| `←` `→`、`h` `l` | 左右平移過寬的表格 |
+| `a` · `w` | 所有區塊放在同一頁 · 自動換行 |
+| `/` 再按 `n` `N` | 搜尋，下一個與上一個符合處 |
+| `r` · `?` · `q`、`esc` | 重新執行 · 說明 · 離開 |
+| `p`（usage） | 期間：本週 → 本月 → 本年 → 全部歷史（按日）→ 全部歷史（按月） |
+| `s`（usage） | 歷史來源：all → alc → claude → codex |
+| `d`（usage） | 切換 `--details` |
+
+`p`、`s`、`d` 只重新載入 token 統計；帳號額度查詢不會重跑。
+
+`alc tps` 會開啟一個儀表板：標頭列出目前套用的篩選條件；卡片顯示請求數、TTFT
+p50（附 p95）、TTFT 平均、加權串流 TPS 與加權 E2E TPS；一條由舊到新的串流 TPS
+趨勢線，以第 95 百分位數為上限縮放，免得一次 cache 爆量的估算值把整條線壓平；
+一個依模型分列的面板，列出 TPS 中位數、TTFT 中位數與筆數；以及一張請求表 ——
+時間、profile、agent、模型、結果、TTFT、TPS、E2E 與輸出 token。除非用
+`--limit` 指定，否則它讀最近 200 筆請求；純文字的 `alc tps` 預設仍是 20 筆。
+
+| 按鍵 | 動作 |
+| --- | --- |
+| `↑` `↓` · `enter` | 選擇請求 · 開啟完整內容：token、時間、correlation id、警告 |
+| `s`、`tab` · `S` | 下一個排序欄位 · 反轉排序 |
+| `/`、`f` | 依 profile、agent、模型或結果篩選 |
+| `+` `-` | 讀取的請求數：20、50、100、200、500 或 1000 |
+| `u` | 顯示或隱藏未量測的歷史（`--include-unmeasured`） |
+| `r` · `?` · `q` | 重新載入 · 說明 · 離開 |
+
 ## Codex 登入
 
 alc 讀 `codex login` 寫下的 `auth.json`，然後向 chatgpt.com 問這份登入還剩多少。
@@ -178,7 +220,7 @@ alc tps --include-unmeasured --source all --json
 ```
 
 `alc tps` 只讀本機紀錄，不讀憑證、不查額度、不連網，也不探測執行中的 daemon。
-預設為 `--source alc --limit 20`。查詢篩選後，先選出**帶有 timing 物件的實際
+預設為 `--source alc --limit 20`（[互動式儀表板](#互動式檢視)讀 200 筆）。查詢篩選後，先選出**帶有 timing 物件的實際
 `Request` 紀錄，再按最新排序並套用 limit**，較新的歷史 turn 不會遮住較舊的
 量測請求。`--limit` 接受 1–10000。
 
@@ -231,7 +273,7 @@ loopback HTTP 轉送 route，保留 agent 的 SDK、協定、模型、參數與*
 | Qwen Code / Goose | 支援的、由 alc 管理的 Anthropic 或 OpenAI 分支。Qwen 的 Google/Gemini 分支與 Goose 的原生 OpenRouter/Ollama 整合不在觀測範圍內。Goose 的 OpenAI 分拆端點若含 query 或 fragment，量測會被拒絕；一般啟動維持不變。 |
 | Kimi Code CLI | alc 產生的暫存設定裡的 provider 端點，不是使用者自帶的設定。 |
 | Pi | 不支援直接觀測：alc 不會把短命的 listener 寫進持續共用的 `models.json`。 |
-| Antigravity CLI | 不支援直接觀測：agy 跑在它自己的登入上。跑在那個登入上的其他 agent，會由 alc 的橋接自動觀測。 |
+| Antigravity CLI | 不支援直接觀測：agy 跑在它自己的登入上。跑在那個登入上的其他 agent，以及 `alc --codex agy` 下 agy 在 Codex 模型上的請求，會由 alc 的橋接自動觀測。 |
 
 Codex 產生的 provider ID 是 `alc_` 加上 alc profile 名稱，連字號改成底線：
 `openai-work` profile 要用 `model_providers.alc_openai_work.supports_websockets=false`。
