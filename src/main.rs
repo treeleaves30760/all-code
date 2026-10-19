@@ -4,6 +4,7 @@ mod bridge;
 mod bridge_host;
 mod cli;
 mod config;
+mod dashboard;
 mod doctor;
 mod file_lock;
 mod launch;
