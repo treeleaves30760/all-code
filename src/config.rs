@@ -189,7 +189,8 @@ impl Agent {
             Self::Qwen => "Qwen Code needs an OpenAI-, Anthropic-, or Gemini-compatible endpoint",
             Self::Kimi => "Kimi Code CLI needs an OpenAI- or Anthropic-compatible endpoint",
             Self::Agy => {
-                "the Antigravity CLI runs only on the antigravity kind (its own Google login)"
+                "the Antigravity CLI runs only on the antigravity kind (its own Google login) or the \
+                 codex kind (through alc's bridge)"
             }
         }
     }
