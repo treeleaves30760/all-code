@@ -512,6 +512,51 @@ impl std::str::FromStr for AuthStyle {
     }
 }
 
+/// The wire alc's bridge speaks to a provider for an agent that cannot speak
+/// it itself ([`Provider::bridge_wire`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApiWire {
+    Responses,
+    Chat,
+    Messages,
+}
+
+impl ApiWire {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Responses => "OpenAI Responses",
+            Self::Chat => "OpenAI Chat Completions",
+            Self::Messages => "Anthropic Messages",
+        }
+    }
+}
+
+/// Where the bridge sends a translated turn: the provider's own endpoint for
+/// [`ApiEndpoint::wire`], and the key it signs with.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiEndpoint {
+    pub kind: ProviderKind,
+    pub wire: ApiWire,
+    /// The full request URL: `…/responses`, `…/chat/completions` or
+    /// `…/v1/messages`.
+    pub url: String,
+    pub auth: AuthStyle,
+    pub key: Option<String>,
+}
+
+impl std::fmt::Debug for ApiEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiEndpoint")
+            .field("kind", &self.kind)
+            .field("wire", &self.wire)
+            .field("url", &self.url)
+            .field("auth", &self.auth)
+            .field("key", &self.key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Provider {
@@ -696,6 +741,13 @@ impl Provider {
     }
 
     pub fn supports(&self, agent: Agent) -> bool {
+        self.supports_natively(agent) || self.bridge_wire(agent).is_some()
+    }
+
+    /// Whether `agent` reaches this profile without alc translating: on its
+    /// own wire, or (Codex and Antigravity) through the bridge that exists
+    /// for that login.
+    pub fn supports_natively(&self, agent: Agent) -> bool {
         if !self.enabled {
             return false;
         }
@@ -706,7 +758,7 @@ impl Provider {
         }
         if agent == Agent::Agy {
             // agy reaches the Codex login through the bridge's Code Assist
-            // surface (`bridge::code_assist`), and no other provider.
+            // surface (`bridge::code_assist`).
             return self.kind == ProviderKind::Codex;
         }
         if self.protocol == Protocol::AntigravityNative {
@@ -731,8 +783,38 @@ impl Provider {
             Agent::Copilot | Agent::Goose | Agent::Qwen => {
                 self.speaks_chat() || self.speaks_anthropic()
             }
-            // Answered above: only the antigravity kind runs it.
+            // Answered above.
             Agent::Agy => false,
+        }
+    }
+
+    /// The wire alc's in-process bridge speaks to this profile for an agent
+    /// that cannot reach it itself, or `None` when the agent needs no
+    /// translation or the profile offers nothing to translate to. Responses
+    /// where the profile says that is its API; Chat Completions where it
+    /// offers both, as the surface every dual server implements most fully;
+    /// Messages last.
+    pub fn bridge_wire(&self, agent: Agent) -> Option<ApiWire> {
+        if !self.enabled
+            || matches!(self.kind, ProviderKind::Codex | ProviderKind::Antigravity)
+            || matches!(
+                self.protocol,
+                Protocol::CodexNative | Protocol::AntigravityNative
+            )
+            || !matches!(agent, Agent::Claude | Agent::Codex | Agent::Agy)
+            || self.supports_natively(agent)
+        {
+            return None;
+        }
+        let openai = self.effective_base_url().is_some();
+        if openai && self.protocol == Protocol::OpenaiResponses {
+            Some(ApiWire::Responses)
+        } else if openai && self.speaks_chat() {
+            Some(ApiWire::Chat)
+        } else if self.speaks_anthropic() && self.effective_anthropic_base_url().is_some() {
+            Some(ApiWire::Messages)
+        } else {
+            None
         }
     }
 }
@@ -1300,7 +1382,7 @@ enabled = true
     }
 
     #[test]
-    fn compatibility_matrix_matches_the_documented_capabilities() {
+    fn native_compatibility_matrix_matches_the_documented_capabilities() {
         let by_kind = |kind| Provider::for_kind(kind);
         // The Antigravity CLI runs on its own login and the Codex one.
         let every_agent_but_agy: Vec<Agent> = Agent::ALL
@@ -1347,13 +1429,49 @@ enabled = true
         for (provider, expected) in cases {
             for agent in Agent::ALL {
                 assert_eq!(
-                    provider.supports(agent),
+                    provider.supports_natively(agent),
                     expected.contains(&agent),
                     "{} × {agent}",
                     provider.kind
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_preset_reaches_every_agent_natively_or_through_the_bridge() {
+        for kind in ProviderKind::ALL {
+            let provider = Provider::for_kind(kind);
+            for agent in Agent::ALL {
+                // A custom profile has no URL until the user gives it one.
+                assert_eq!(
+                    provider.supports(agent),
+                    kind != ProviderKind::Custom || provider.supports_natively(agent),
+                    "{kind} × {agent}"
+                );
+            }
+        }
+        let wire = |kind, agent| Provider::for_kind(kind).bridge_wire(agent);
+        assert_eq!(
+            wire(ProviderKind::Openai, Agent::Claude),
+            Some(ApiWire::Responses)
+        );
+        assert_eq!(wire(ProviderKind::Groq, Agent::Claude), Some(ApiWire::Chat));
+        assert_eq!(wire(ProviderKind::Groq, Agent::Codex), Some(ApiWire::Chat));
+        assert_eq!(
+            wire(ProviderKind::Anthropic, Agent::Codex),
+            Some(ApiWire::Messages)
+        );
+        assert_eq!(
+            wire(ProviderKind::Anthropic, Agent::Agy),
+            Some(ApiWire::Messages)
+        );
+        assert_eq!(wire(ProviderKind::Ollama, Agent::Agy), Some(ApiWire::Chat));
+        // Nothing to translate for an agent that speaks the wire itself.
+        assert_eq!(wire(ProviderKind::Anthropic, Agent::Claude), None);
+        assert_eq!(wire(ProviderKind::Groq, Agent::Pi), None);
+        assert_eq!(wire(ProviderKind::Codex, Agent::Claude), None);
+        assert_eq!(wire(ProviderKind::Antigravity, Agent::Codex), None);
     }
 
     #[test]
@@ -1417,14 +1535,22 @@ enabled = true
             assert_eq!(provider.model, model, "{kind}");
             assert_eq!(provider.protocol, Protocol::OpenaiChat, "{kind}");
             assert_eq!(provider.auth, AuthStyle::Bearer, "{kind}");
-            // Anthropic-compatible presets serve Claude Code; the rest do not.
+            // Anthropic-compatible presets serve Claude Code themselves; the
+            // rest reach it through the bridge.
             assert_eq!(
-                provider.supports(Agent::Claude),
+                provider.supports_natively(Agent::Claude),
                 anthropic.is_some(),
                 "{kind}"
             );
-            // None of the seven speak the Responses API, so Codex CLI is out.
-            assert!(!provider.supports(Agent::Codex), "{kind}");
+            assert!(provider.supports(Agent::Claude), "{kind}");
+            // None of the seven speak the Responses API, so Codex CLI runs
+            // on the bridge's Chat Completions translation.
+            assert!(!provider.supports_natively(Agent::Codex), "{kind}");
+            assert_eq!(
+                provider.bridge_wire(Agent::Codex),
+                Some(ApiWire::Chat),
+                "{kind}"
+            );
             assert!(
                 provider.supports(Agent::Pi) && provider.supports(Agent::Opencode),
                 "{kind}"
@@ -1544,12 +1670,19 @@ enabled = true
         let mut provider = Provider::for_kind(ProviderKind::Llamacpp);
         provider.model = "qwen3.8-27b".into();
         for agent in Agent::ALL {
-            // The Antigravity CLI runs only on its own login.
-            assert_eq!(provider.supports(agent), agent != Agent::Agy, "{agent}");
+            // The Antigravity CLI through the bridge; everything else itself.
+            assert_eq!(
+                provider.supports_natively(agent),
+                agent != Agent::Agy,
+                "{agent}"
+            );
+            assert!(provider.supports(agent), "{agent}");
         }
-        // A chat-only profile still gives up Codex, which needs Responses.
+        // A chat-only profile reaches Codex, which needs Responses, through
+        // the bridge.
         provider.protocol = Protocol::OpenaiChat;
-        assert!(!provider.supports(Agent::Codex));
+        assert!(!provider.supports_natively(Agent::Codex));
+        assert_eq!(provider.bridge_wire(Agent::Codex), Some(ApiWire::Chat));
         assert!(provider.supports(Agent::Claude));
     }
 
@@ -1609,7 +1742,7 @@ enabled = true
     }
 
     #[test]
-    fn the_antigravity_kind_runs_every_agent_and_agy_runs_only_on_it_and_codex() {
+    fn the_antigravity_kind_runs_every_agent_and_agy_runs_natively_only_on_it_and_codex() {
         let antigravity = Provider::for_kind(ProviderKind::Antigravity);
         for agent in Agent::ALL {
             assert!(antigravity.supports(agent), "{agent}");
@@ -1619,7 +1752,10 @@ enabled = true
             .into_iter()
             .filter(|kind| !matches!(kind, ProviderKind::Antigravity | ProviderKind::Codex))
         {
-            assert!(!Provider::for_kind(kind).supports(Agent::Agy), "{kind}");
+            assert!(
+                !Provider::for_kind(kind).supports_natively(Agent::Agy),
+                "{kind}"
+            );
         }
         let mut wrong = Provider::for_kind(ProviderKind::Openai);
         wrong.protocol = Protocol::AntigravityNative;

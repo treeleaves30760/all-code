@@ -131,7 +131,7 @@ async fn relay(state: &BridgeState, body: Bytes) -> Result<Response, BridgeError
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if matches!(state.upstream, super::Upstream::Antigravity(_)) {
+    if !matches!(state.upstream, super::Upstream::Codex(_)) {
         return relay_antigravity(state, &request, streaming).await;
     }
     normalise(&mut request);
@@ -378,14 +378,16 @@ async fn relay_antigravity(
     streaming: bool,
 ) -> Result<Response, BridgeError> {
     let mut request = antigravity_request(body, state.config.effort)?;
-    request.model = super::gemini::wire_model(
-        &request.model,
-        request
-            .reasoning
-            .as_ref()
-            .and_then(|reasoning| reasoning.effort),
-        state.config.claude_tiers.as_ref(),
-    )?;
+    if matches!(state.upstream, super::Upstream::Antigravity(_)) {
+        request.model = super::gemini::wire_model(
+            &request.model,
+            request
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| reasoning.effort),
+            state.config.claude_tiers.as_ref(),
+        )?;
+    }
     let observed = upstream::observation(
         state,
         &request.model,

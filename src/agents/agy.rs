@@ -32,15 +32,34 @@ use crate::launch::{BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, bridge_p
 /// does not know, is sent as it is.
 pub(crate) fn build(
     spec: &mut LaunchSpec,
+    store: &crate::config::Store,
+    profile_name: &str,
     provider: &Provider,
     passthrough: &[OsString],
     overrides: &LaunchOverrides,
 ) -> Result<()> {
     if provider.kind == ProviderKind::Codex {
-        return build_on_codex(spec, provider, passthrough, overrides);
+        let Some(plan) = bridge_plan(provider, overrides, BridgeApi::CodeAssist)? else {
+            bail!("the Codex kind always runs agy on alc's bridge");
+        };
+        return build_on_bridge(spec, plan, "your Codex login", passthrough);
     }
     if provider.kind != ProviderKind::Antigravity {
-        bail!("the Antigravity CLI runs only on an antigravity or a codex profile");
+        let Some(plan) = crate::launch::api_bridge_plan(
+            spec,
+            store,
+            profile_name,
+            provider,
+            overrides,
+            BridgeApi::CodeAssist,
+        )?
+        else {
+            bail!(
+                "the Antigravity CLI cannot reach provider '{profile_name}': it offers no \
+                 OpenAI or Anthropic endpoint alc's bridge can translate to"
+            );
+        };
+        return build_on_bridge(spec, plan, &format!("'{profile_name}'"), passthrough);
     }
 
     let effort = overrides.reasoning_effort.or(provider.reasoning_effort);
@@ -73,19 +92,16 @@ pub(crate) fn build(
     Ok(())
 }
 
-/// agy on the Codex login: started on the profile's model at its effort,
-/// through the bridge. A `--model` passed through (a Codex wire id or one of
-/// agy's own) outranks it; `--effort` is not sent, because the wire id
-/// already carries it.
-fn build_on_codex(
+/// agy on alc's bridge - the Codex login, or a provider agy cannot speak
+/// to: started on the plan's model at its effort. A `--model` passed through
+/// (a bridged wire id or one of agy's own) outranks it; `--effort` is not
+/// sent, because the wire id already carries it.
+fn build_on_bridge(
     spec: &mut LaunchSpec,
-    provider: &Provider,
+    mut plan: BridgePlan,
+    through: &str,
     passthrough: &[OsString],
-    overrides: &LaunchOverrides,
 ) -> Result<()> {
-    let Some(mut plan) = bridge_plan(provider, overrides, BridgeApi::CodeAssist)? else {
-        bail!("the Codex kind always runs agy on alc's bridge");
-    };
     let known = plan.options.iter().find(|option| option.id == plan.model);
     let effort = plan
         .effort
@@ -107,7 +123,7 @@ fn build_on_codex(
             crate::model_catalog::ModelInfo {
                 id: plan.model.clone(),
                 name: plan.model.clone(),
-                description: format!("{} through your Codex login", plan.model),
+                description: format!("{} through {through}", plan.model),
                 context_window: plan.context_window.unwrap_or(272_000),
                 max_context_window: 0,
                 default_effort: effort,
@@ -126,8 +142,8 @@ fn build_on_codex(
     Ok(())
 }
 
-/// Points agy at the bridge's Code Assist surface. Only a Codex plan reaches
-/// here; agy on its own login is never bridged.
+/// Points agy at the bridge's Code Assist surface. agy on its own login is
+/// never bridged.
 pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
     if plan.api != BridgeApi::CodeAssist {
         bail!(
@@ -163,6 +179,14 @@ mod tests {
         (spec, Provider::for_kind(ProviderKind::Antigravity))
     }
 
+    fn test_store() -> crate::config::Store {
+        crate::config::Store {
+            dir: std::path::PathBuf::from("test"),
+            config: crate::config::Config::default(),
+            credentials: crate::config::Credentials::default(),
+        }
+    }
+
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
     }
@@ -171,7 +195,15 @@ mod tests {
     fn agy_gets_the_profiles_model_and_effort() {
         let (mut spec, mut provider) = antigravity();
         provider.reasoning_effort = Some(ReasoningEffort::High);
-        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        build(
+            &mut spec,
+            &test_store(),
+            "test",
+            &provider,
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
         assert_eq!(
             spec.args,
             args(&["--model", "claude-opus-5-5-high", "--effort", "high"])
@@ -181,7 +213,15 @@ mod tests {
     #[test]
     fn a_profile_without_an_effort_leaves_agy_on_its_own() {
         let (mut spec, provider) = antigravity();
-        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        build(
+            &mut spec,
+            &test_store(),
+            "test",
+            &provider,
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
         assert_eq!(spec.args, args(&["--model", "claude-opus-5-5-high"]));
     }
 
@@ -191,6 +231,8 @@ mod tests {
         provider.model = "  ".to_owned();
         build(
             &mut spec,
+            &test_store(),
+            "test",
             &provider,
             &args(&["-p", "hi"]),
             &LaunchOverrides::default(),
@@ -208,7 +250,15 @@ mod tests {
             reasoning_effort: Some(ReasoningEffort::Xhigh),
             ..LaunchOverrides::default()
         };
-        build(&mut spec, &provider, &args(&["-p", "hi"]), &overrides).unwrap();
+        build(
+            &mut spec,
+            &test_store(),
+            "test",
+            &provider,
+            &args(&["-p", "hi"]),
+            &overrides,
+        )
+        .unwrap();
         assert_eq!(
             spec.args,
             args(&[
@@ -239,7 +289,15 @@ mod tests {
             "-p",
             "hi",
         ]);
-        build(&mut spec, &provider, &passthrough, &overrides).unwrap();
+        build(
+            &mut spec,
+            &test_store(),
+            "test",
+            &provider,
+            &passthrough,
+            &overrides,
+        )
+        .unwrap();
         assert_eq!(spec.args, passthrough);
     }
 
@@ -250,6 +308,8 @@ mod tests {
         let passthrough = args(&["--model=gemini-3.8-flash-low", "--effort=low"]);
         build(
             &mut spec,
+            &test_store(),
+            "test",
             &provider,
             &passthrough,
             &LaunchOverrides::default(),
@@ -272,7 +332,15 @@ mod tests {
     fn an_ultra_profile_launches_agy_at_max() {
         let (mut spec, mut provider) = antigravity();
         provider.reasoning_effort = Some(ReasoningEffort::Ultra);
-        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        build(
+            &mut spec,
+            &test_store(),
+            "test",
+            &provider,
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
         assert_eq!(
             spec.args,
             args(&["--model", "claude-opus-5-5-high", "--effort", "max"])
@@ -286,7 +354,15 @@ mod tests {
         let (mut spec, mut provider) = antigravity();
         provider.model = "claude-opus-5-5".to_owned();
         provider.reasoning_effort = Some(ReasoningEffort::Low);
-        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        build(
+            &mut spec,
+            &test_store(),
+            "test",
+            &provider,
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
         assert_eq!(
             spec.args,
             args(&["--model", "claude-opus-5-5-low", "--effort", "low"])
@@ -295,7 +371,15 @@ mod tests {
         // No effort is agy's own default rung, medium.
         let (mut spec, mut provider) = antigravity();
         provider.model = "gemini-3.8-flash".to_owned();
-        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        build(
+            &mut spec,
+            &test_store(),
+            "test",
+            &provider,
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
         assert_eq!(spec.args, args(&["--model", "gemini-3.8-flash-medium"]));
     }
 
@@ -308,7 +392,7 @@ mod tests {
             reasoning_effort: Some(ReasoningEffort::Max),
             ..LaunchOverrides::default()
         };
-        build(&mut spec, &provider, &[], &overrides).unwrap();
+        build(&mut spec, &test_store(), "test", &provider, &[], &overrides).unwrap();
         assert_eq!(
             spec.args,
             args(&["--model", "gemini-3.8-flash-high", "--effort", "max"])
@@ -320,7 +404,15 @@ mod tests {
         let (mut spec, mut provider) = antigravity();
         provider.model = "gemini-3.8-flash-low".to_owned();
         provider.reasoning_effort = Some(ReasoningEffort::High);
-        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        build(
+            &mut spec,
+            &test_store(),
+            "test",
+            &provider,
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
         assert_eq!(
             spec.args,
             args(&["--model", "gemini-3.8-flash-low", "--effort", "high"])
@@ -332,7 +424,15 @@ mod tests {
         let (mut spec, mut provider) = antigravity();
         provider.model = "gemini-9-preview".to_owned();
         provider.reasoning_effort = Some(ReasoningEffort::Low);
-        build(&mut spec, &provider, &[], &LaunchOverrides::default()).unwrap();
+        build(
+            &mut spec,
+            &test_store(),
+            "test",
+            &provider,
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .unwrap();
         assert_eq!(
             spec.args,
             args(&["--model", "gemini-9-preview", "--effort", "low"])
@@ -343,7 +443,17 @@ mod tests {
     fn another_kind_is_refused() {
         let (mut spec, _) = antigravity();
         let provider = Provider::for_kind(ProviderKind::Openrouter);
-        assert!(build(&mut spec, &provider, &[], &LaunchOverrides::default()).is_err());
+        assert!(
+            build(
+                &mut spec,
+                &test_store(),
+                "test",
+                &provider,
+                &[],
+                &LaunchOverrides::default()
+            )
+            .is_err()
+        );
     }
 
     fn codex() -> (LaunchSpec, Provider) {
@@ -377,7 +487,15 @@ mod tests {
             model_options: vec![sol()],
             ..LaunchOverrides::default()
         };
-        build(&mut spec, &provider, &args(&["-p", "hi"]), &overrides).unwrap();
+        build(
+            &mut spec,
+            &test_store(),
+            "test",
+            &provider,
+            &args(&["-p", "hi"]),
+            &overrides,
+        )
+        .unwrap();
         assert_eq!(
             spec.args,
             args(&["--model", "gpt-6.1-sol-high", "-p", "hi"])
@@ -402,6 +520,8 @@ mod tests {
         provider.reasoning_effort = Some(ReasoningEffort::Ultra);
         build(
             &mut spec,
+            &test_store(),
+            "test",
             &provider,
             &args(&["--model", "gemini-3.8-flash-low"]),
             &LaunchOverrides::default(),

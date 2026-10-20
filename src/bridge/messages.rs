@@ -1354,10 +1354,15 @@ async fn messages(
     let affinity = RequestAffinity::from_headers(headers);
     let mut request = parse(body)?;
     let antigravity = matches!(state.upstream, super::Upstream::Antigravity(_));
+    let api = matches!(state.upstream, super::Upstream::Api(_));
     if !antigravity {
         serve_codex_model(&state.config, &mut request);
     }
     let mut upstream_request = to_upstream_for(&request, affinity.as_ref(), antigravity)?;
+    if api {
+        upstream_request.max_output_tokens = request.max_tokens;
+        upstream_request.temperature = request.temperature;
+    }
     if antigravity {
         // Resolved here rather than on the send path so the ledger row names
         // the wire model that actually served the turn.

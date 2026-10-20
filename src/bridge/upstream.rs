@@ -801,6 +801,7 @@ pub(crate) struct UpstreamStream(Source);
 enum Source {
     Codex(Box<CodexStream>),
     Antigravity(Box<super::gemini_stream::AgyStream>),
+    Api(Box<super::api::ApiStream>),
 }
 
 impl UpstreamStream {
@@ -815,12 +816,17 @@ impl UpstreamStream {
         Self(Source::Antigravity(Box::new(stream)))
     }
 
+    pub(crate) fn api(stream: super::api::ApiStream) -> Self {
+        Self(Source::Api(Box::new(stream)))
+    }
+
     /// The next event, or `None` once the stream is spent. Both sources speak
     /// the same Responses events.
     pub(crate) async fn next(&mut self) -> Option<Result<UpstreamFrame, BridgeError>> {
         match &mut self.0 {
             Source::Codex(stream) => stream.next().await,
             Source::Antigravity(stream) => stream.next().await,
+            Source::Api(stream) => stream.next().await,
         }
     }
 }
@@ -1015,7 +1021,7 @@ async fn post_with_affinity(
         return Err(BridgeError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "api_error",
-            "an Antigravity bridge reached the Codex transport; this is an alc bug - please report it",
+            "a bridge on another upstream reached the Codex transport; this is an alc bug - please report it",
         ));
     };
     let credentials = auth.credentials(&state.http).await?;
@@ -1068,6 +1074,9 @@ pub(crate) async fn send_with_affinity(
 ) -> Result<UpstreamStream, BridgeError> {
     if let super::Upstream::Antigravity(agy) = &state.upstream {
         return super::gemini_stream::send(state, agy, request, observed).await;
+    }
+    if let super::Upstream::Api(api) = &state.upstream {
+        return super::api::send(state, api, request, observed).await;
     }
     let request = request.over_http();
     let body = serde_json::to_vec(&request).map_err(|error| {

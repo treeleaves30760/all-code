@@ -25,7 +25,6 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
-use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
 
 use super::BridgeError;

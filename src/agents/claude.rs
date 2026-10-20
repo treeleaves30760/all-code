@@ -12,7 +12,7 @@ use crate::agents::claude_settings::{
 use crate::bridge_host::files::RouteRecord;
 use crate::config::{AuthStyle, Provider, ProviderKind, ReasoningEffort, Store};
 use crate::launch::{
-    LaunchOverrides, LaunchSpec, has_model_override, has_option, key_or_error,
+    BridgePlan, LaunchOverrides, LaunchSpec, has_model_override, has_option, key_or_error,
     resolve_codex_effort, resolve_codex_model,
 };
 
@@ -88,14 +88,28 @@ pub(crate) fn build(
         provider.kind,
         ProviderKind::Codex | ProviderKind::Antigravity
     );
-    if !bridged && !provider.speaks_anthropic() {
+    // Any other provider Claude Code cannot speak to is reached through alc's
+    // in-process bridge, which translates Messages to the provider's wire.
+    let api_plan = if bridged {
+        None
+    } else {
+        crate::launch::api_bridge_plan(
+            spec,
+            store,
+            profile_name,
+            provider,
+            overrides,
+            crate::launch::BridgeApi::Messages,
+        )?
+    };
+    if !bridged && api_plan.is_none() && !provider.speaks_anthropic() {
         bail!(
             "provider '{profile_name}' speaks {}, but Claude Code needs Anthropic Messages; use an Anthropic-compatible endpoint, OpenRouter, a local Ollama, llama.cpp or vLLM, or `alc --codex claude`",
             provider.protocol
         );
     }
     let key = store.credentials.key_for(profile_name, provider);
-    let native = !bridged && on_claudes_own_login(provider, key.as_deref());
+    let native = !bridged && api_plan.is_none() && on_claudes_own_login(provider, key.as_deref());
 
     let (passthrough, user_settings) = claude_settings::take_user_settings(passthrough)?;
     // `claude agents …` takes alc's defaults as its own options, which have
@@ -112,6 +126,27 @@ pub(crate) fn build(
         ProviderKind::Codex => codex_plan(spec, store, profile_name, provider, rest, overrides)?,
         ProviderKind::Antigravity => {
             antigravity_plan(spec, store, profile_name, provider, rest, overrides)?
+        }
+        _ if api_plan.is_some() => {
+            spec.args.extend_from_slice(rest);
+            let plan = api_plan.expect("checked by the guard");
+            // The bridge's port is not known yet; `apply_bridge` writes it.
+            // Every alias lands on the profile's model, as on a local server:
+            // the bridge serves only what the profile names.
+            let document = claude_settings::local_document(&LocalDocument {
+                base_url: claude_settings::BRIDGE_ORIGIN,
+                model: &plan.model,
+                small_model: provider
+                    .small_model
+                    .as_deref()
+                    .filter(|value| !value.is_empty()),
+                context_window: plan.context_window,
+                placeholder: "alc",
+                local_server: true,
+                local_env: &[],
+            });
+            spec.bridge = Some(plan);
+            (document, None, Vec::new())
         }
         _ => {
             spec.args.extend_from_slice(rest);
@@ -163,6 +198,24 @@ pub(crate) fn build(
         route,
         offered,
     });
+    Ok(())
+}
+
+/// Points Claude Code's settings at the in-process bridge that translates
+/// for a provider it cannot speak to ([`crate::launch::api_bridge_plan`]).
+pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
+    if plan.upstream.is_none() {
+        bail!(
+            "Claude Code was handed an in-process adapter plan for a login it reaches through the \
+             background bridge; this is an alc bug - please report it"
+        );
+    }
+    let document = &mut spec
+        .settings_plan
+        .as_mut()
+        .context("Claude Code's bridged launch lost its settings document; this is an alc bug")?
+        .document;
+    document["env"]["ANTHROPIC_BASE_URL"] = Value::String(base_url.to_owned());
     Ok(())
 }
 
