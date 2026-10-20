@@ -32,9 +32,10 @@ alc 指向某個執行檔。
 
 ## `provider '…' cannot be used with claude; Claude Code needs Anthropic Messages`
 
-那個 profile 講的協定 Claude Code 用不了。請換一個 Anthropic 相容的端點或本機伺服器
-（`--kind ollama`、`llamacpp` 或 `vllm`），或改用
-[`alc --codex claude`](./codex-to-claude.md)。對照表在 [Provider 相容性](./providers.md)。
+Claude Code 會透過 alc 的橋接接上 OpenAI 形式的 profile（見[任何 provider 接任何
+agent](./providers.md#任何-provider-接任何-agent)），所以這個訊息代表那個 profile 沒有可以轉譯的對象：它沒有
+base URL，或已經被關閉。`alc config show` 會告訴你是哪一種；對照表在
+[Provider 相容性](./providers.md)。
 
 ## `provider '…' is turned off`
 
@@ -65,10 +66,10 @@ Agent defaults 畫面也會。
 
 ## `is not compatible with agy`
 
-agy 跑在 `antigravity` 這個 kind（它自己的 Google 登入）上，也能透過 alc 的
-橋接跑在 `codex` 這個 kind 上（見[在 Codex 登入上](./agents.md#在-codex-登入上)）。
-agy 自己登入 Google，所以其他 provider —— 例如 `alc --openrouter agy` —— 都會
-被拒絕。直接跑 `alc agy` 或 `alc --codex agy` 就好。
+agy 原生跑在 `antigravity` 這個 kind 上，也能透過 alc 的橋接跑在其他任何有 API
+的 provider 上（見[任何 provider 接任何 agent](./providers.md#任何-provider-接任何-agent)）。這個訊息代表那個
+profile 沒有可以轉譯的對象 —— 沒有 base URL，或已經被關閉。`alc config show` 會
+告訴你是哪一種。
 
 如果你自己已經有一個名叫 `antigravity` 的 profile，請保留它：
 `alc config upsert antigravity` 會把它改寫成新的 kind，base URL 和模型都會不見，
@@ -92,11 +93,14 @@ agy 的登入同時存在系統 keyring 與
 `~/.gemini/antigravity-cli/antigravity-oauth-token` 兩個地方，alc 不會去猜 agy
 接下來更新的是哪一個。請在 agy 裡登出再登入，讓只剩一份。
 
-## `start a new session to continue on Antigravity`
+## Antigravity 上的 Gemini 把工具呼叫寫成文字
 
-Gemini 會替推理內容簽章，而 Antigravity 會拒絕遺失簽章的工具呼叫：例如 session
-是在別處開始的、任務進行中改了模型或強度，或 alc 的橋接重新啟動過。alc 從不偽造
-簽章；請開一個新 session（在 Claude Code 裡用 `/clear`）再繼續。
+舊版 alc 遇到遺失簽章的 Gemini 工具歷史（session 是在別處開始的、任務進行中改了
+模型或強度，或 alc 的橋接重新啟動過）時，會把它改寫成 `[called tool Read with {…}]`
+這種文字送回去，Gemini
+學著用這種文字回答，工具呼叫就不再執行。請升級 alc：歷史現在會以真正的工具呼叫送回，
+進行中那一輪的呼叫會帶上 Google 文件記載的佔位簽章。已經寫進 session 紀錄的那些行
+不會消失，模型可能繼續模仿；用 `/clear`（或開新 session）把它們清掉。
 
 ## `Google refused this Antigravity account (403 …)`
 

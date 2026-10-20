@@ -52,6 +52,11 @@ pub(crate) const GOOGLE_CODE_ASSIST: &str = "https://daily-cloudcode-pa.googleap
 const MODEL_ENUM_BASE: u64 = 1_900_000;
 /// agy's own cap on a Codex turn's output; chatgpt.com sets the real one.
 const CODEX_OUTPUT_CAP: u64 = 128_000;
+/// What agy's planner keeps of a model's window beside its output cap: it
+/// refuses to start on a model whose window minus `maxOutputTokens` is less.
+const AGY_PLANNER_TOKENS: u64 = 88_000;
+/// The least output cap a model with a small window is still offered at.
+const MIN_OUTPUT_CAP: u64 = 8_192;
 const RPC_PREFIX: &str = "/v1internal:";
 /// Headers that describe one hop rather than the request.
 const HOP_HEADERS: [&str; 6] = [
@@ -70,12 +75,21 @@ pub(crate) struct CodeAssistConfig {
     pub models: Vec<ModelInfo>,
     /// Where everything not answered here is relayed.
     pub google_base: String,
+    /// Who serves the added models, as agy's picker tags them: `Codex`, or
+    /// the profile a translated provider runs under.
+    pub served_by: String,
 }
 
 impl CodeAssistConfig {
     pub(crate) fn new(models: Vec<ModelInfo>) -> Self {
+        Self::serving(models, "Codex")
+    }
+
+    /// The same, for models served by something other than the Codex login.
+    pub(crate) fn serving(models: Vec<ModelInfo>, served_by: &str) -> Self {
         Self {
             models,
+            served_by: served_by.to_owned(),
             google_base: std::env::var("ALC_CODE_ASSIST_UPSTREAM")
                 .ok()
                 .filter(|base| !base.trim().is_empty())
@@ -286,12 +300,12 @@ async fn available_models(
             format!("Google's model list is not JSON: {error}"),
         )
     })?;
-    add_codex_models(&mut answer, &config.models);
+    add_codex_models(&mut answer, &config.models, &config.served_by);
     Ok(axum::Json(answer).into_response())
 }
 
 /// Adds one entry per Codex model and effort, and lists them first.
-pub(crate) fn add_codex_models(answer: &mut Value, models: &[ModelInfo]) {
+pub(crate) fn add_codex_models(answer: &mut Value, models: &[ModelInfo], served_by: &str) {
     let Some(object) = answer.as_object_mut() else {
         return;
     };
@@ -301,21 +315,32 @@ pub(crate) fn add_codex_models(answer: &mut Value, models: &[ModelInfo]) {
     for model in models {
         for effort in efforts_of(model) {
             let id = wire_id(&model.id, effort);
+            // agy refuses a model whose window leaves its planner too little
+            // beside the output cap, so a small window gets a smaller cap.
+            let output_cap = model
+                .context_window
+                .saturating_sub(AGY_PLANNER_TOKENS)
+                .clamp(MIN_OUTPUT_CAP, CODEX_OUTPUT_CAP);
+            let description = if served_by == "Codex" {
+                "Served by your Codex login through alc".to_owned()
+            } else {
+                format!("Served by '{served_by}' through alc's bridge")
+            };
             entries.insert(
                 id.clone(),
                 json!({
-                    "displayName": format!("{} · Codex ({})", model.name, effort_label(effort)),
+                    "displayName": format!("{} · {served_by} ({})", model.name, effort_label(effort)),
                     "supportsImages": true,
                     "supportsThinking": true,
                     "recommended": true,
                     "maxTokens": model.context_window,
-                    "maxOutputTokens": CODEX_OUTPUT_CAP,
+                    "maxOutputTokens": output_cap,
                     "quotaInfo": {"remainingFraction": 1},
                     "model": MODEL_ENUM_BASE + ordinal,
                     "apiProvider": "API_PROVIDER_OPENAI_VERTEX",
                     "modelProvider": "MODEL_PROVIDER_OPENAI",
-                    "tagTitle": "Codex",
-                    "tagDescription": "Served by your Codex login through alc",
+                    "tagTitle": served_by,
+                    "tagDescription": description,
                 }),
             );
             ids.push(Value::String(id));
@@ -528,6 +553,22 @@ fn json_schema(schema: &Value) -> Value {
                             })
                             .unwrap_or_default();
                         out.insert(key.clone(), Value::Object(properties));
+                    }
+                    // Gemini spells its int64 bounds as strings; JSON
+                    // Schema validators (llama.cpp's grammar among them)
+                    // refuse anything but a number.
+                    "minLength" | "maxLength" | "minItems" | "maxItems" | "minProperties"
+                    | "maxProperties" | "minimum" | "maximum" => {
+                        let number = value
+                            .as_str()
+                            .and_then(|text| text.parse::<i64>().ok().map(Value::from))
+                            .or_else(|| {
+                                value
+                                    .as_str()
+                                    .and_then(|text| text.parse::<f64>().ok())
+                                    .map(Value::from)
+                            });
+                        out.insert(key.clone(), number.unwrap_or_else(|| value.clone()));
                     }
                     _ => {
                         out.insert(key.clone(), json_schema(value));
@@ -1010,6 +1051,7 @@ mod tests {
         CodeAssistConfig {
             models: vec![sol()],
             google_base: GOOGLE_CODE_ASSIST.to_owned(),
+            served_by: "Codex".to_owned(),
         }
     }
 
@@ -1035,7 +1077,7 @@ mod tests {
             "agentModelSorts": [{"displayName": "Recommended",
                 "groups": [{"modelIds": ["gemini-3.8-flash-low"]}]}],
         });
-        add_codex_models(&mut answer, &[sol()]);
+        add_codex_models(&mut answer, &[sol()], "Codex");
         assert_eq!(
             answer["agentModelSorts"][0]["groups"][0]["modelIds"],
             json!([
@@ -1201,5 +1243,15 @@ mod tests {
                 "id": "r", "error": {"message": "model overloaded"}}})))
             .unwrap_err();
         assert_eq!(error.message, "model overloaded");
+    }
+
+    #[test]
+    fn geminis_string_bounds_become_numbers() {
+        let schema = json_schema(&json!({"type": "OBJECT", "properties": {
+            "Message": {"type": "STRING", "minLength": "1", "maxLength": "200"},
+            "Count": {"type": "NUMBER", "minimum": "0.5"}}}));
+        assert_eq!(schema["properties"]["Message"]["minLength"], json!(1));
+        assert_eq!(schema["properties"]["Message"]["maxLength"], json!(200));
+        assert_eq!(schema["properties"]["Count"]["minimum"], json!(0.5));
     }
 }

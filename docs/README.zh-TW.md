@@ -364,8 +364,9 @@ window（較舊的 Codex 版本還得在它自己的設定裡手動設
 OpenAI 的模型名稱，這些在這個登入上會被 alc 的橋接拒絕：請改在 profile 上換模型。
 
 Gemini 會替推理內容簽章，簽章會跟著對話走。Gemini 的工具呼叫若遺失了簽章 ——
-例如在別處開始的 session、任務進行中改了強度，或橋接重新啟動過 —— alc 會請你
-開新 session，而不會不帶簽章重送。讀取登入的方式在 Windows 上驗證過；在 macOS
+例如在別處開始的 session、任務進行中改了強度，或橋接重新啟動過 —— 仍會以原本的
+工具呼叫與結果送出：已結束的回合不帶簽章（Google 接受），進行中的回合則帶上
+Google 文件記載的佔位簽章。讀取登入的方式在 Windows 上驗證過；在 macOS
 與 Linux 上屬於盡力而為，token 檔案則在每個作業系統上都能用。
 
 ## 指令一覽
@@ -669,7 +670,7 @@ Google 的方案上，沒有經過驗證的 API-equivalent 費率，所以成本
 | Kind | 預設端點 | 金鑰環境變數 | 支援協定 | Claude 可用？ |
 | --- | --- | --- | --- | --- |
 | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | anthropic | 可 |
-| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | responses, chat | 否 |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | responses, chat | 是（橋接） |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | anthropic, responses, chat | 可 |
 | `codex` | —（原生 `codex login`） | — | native | 可（橋接） |
 | `antigravity` | —（原生 `agy` 登入） | — | native（`agy`）、橋接（其他 agent） | 可（橋接） |
@@ -680,10 +681,10 @@ Google 的方案上，沒有經過驗證的 API-equivalent 費率，所以成本
 | `moonshot` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | chat (+ anthropic) | 可 |
 | `zai` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | chat (+ anthropic) | 可 |
 | `minimax` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | chat (+ anthropic) | 可 |
-| `groq` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | chat | 否 |
-| `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` | chat | 否 |
-| `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` | chat | 否 |
-| `custom` | 使用者自訂 | 使用者自訂（`--api-key-env`） | 可設定 | 否，除非另行設定 |
+| `groq` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | chat | 是（橋接） |
+| `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` | chat | 是（橋接） |
+| `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` | chat | 是（橋接） |
+| `custom` | 使用者自訂 | 使用者自訂（`--api-key-env`） | 可設定 | 是（直接或透過橋接） |
 
 `deepseek`、`moonshot`、`zai`、`minimax` 都在主要的 OpenAI-chat 端點之外，
 各自另外提供一個 Anthropic 相容的 base URL（見 `alc config show`）——
@@ -716,6 +717,15 @@ Antigravity 說明安裝並登入）。不論原生支援
 都能跑在 agy 的 Google 登入上（`alc --agy <agent>`），agy 自己則原生跑在那個登入
 上。`ALC_CLAUDE_BIN` 與它的同類環境變數（包含
 `ALC_AGY_BIN`）可以覆寫執行檔路徑。
+
+**任何 provider 接任何 agent。** 當 agent 講不了 profile 的 API —— Claude Code 接
+OpenAI、Groq、xAI 或 Gemini；Codex CLI 接只有 Chat Completions 或只有 Anthropic 的
+provider；agy 接它自己的登入與 Codex 以外的任何 provider —— alc 會為那個 session
+在行程內啟動橋接，把每一輪轉譯成 provider 自己的協定：profile 的協定是
+`openai-responses` 時用 OpenAI Responses，提供 chat 時用 Chat Completions，其餘用
+Anthropic Messages。橋接用 profile 的金鑰簽署請求，金鑰不會交給 agent。`alc doctor`
+會把這些預設值標成「through alc's bridge」。走這條路的 Claude Code，每個模型別名都
+對應到 profile 的模型，它的背景 session 會隨啟動它的 alc 一起結束。
 
 ## Codex 橋接
 

@@ -85,6 +85,25 @@ pub(crate) fn build(
         return Ok(());
     }
 
+    // A provider without the Responses API is reached through alc's
+    // in-process bridge, which translates; `apply_bridge` points Codex at it.
+    if let Some(plan) = crate::launch::api_bridge_plan(
+        spec,
+        store,
+        profile_name,
+        provider,
+        overrides,
+        BridgeApi::Responses,
+    )? {
+        if !has_model_override(passthrough) {
+            spec.args
+                .extend([OsString::from("--model"), OsString::from(&plan.model)]);
+        }
+        spec.bridge = Some(plan);
+        spec.args.extend_from_slice(passthrough);
+        return Ok(());
+    }
+
     if !provider.protocol.supports_responses() {
         bail!(
             "provider '{profile_name}' speaks {}, but Codex requires the OpenAI Responses API",
@@ -168,16 +187,22 @@ fn push_codex_config(args: &mut Vec<OsString>, key: &str, value: String) {
 /// and without one it neither compacts a long session nor shows how much
 /// context is left - the session would end on Antigravity's limit instead.
 pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
-    if spec.provider_kind != ProviderKind::Antigravity {
+    let (id, name) = if plan.upstream.is_some() {
+        (
+            "alc_bridge",
+            format!("alc: {} via alc's bridge", spec.provider_name),
+        )
+    } else if spec.provider_kind == ProviderKind::Antigravity {
+        ("alc_antigravity", "alc: Antigravity login".to_owned())
+    } else {
         return Ok(());
-    }
-    let id = "alc_antigravity";
+    };
     let mut flags = Vec::new();
     push_codex_config(&mut flags, "model_provider", toml_string(id));
     push_codex_config(
         &mut flags,
         &format!("model_providers.{id}.name"),
-        toml_string("alc: Antigravity login"),
+        toml_string(&name),
     );
     push_codex_config(
         &mut flags,
@@ -230,6 +255,7 @@ mod tests {
             context_window: Some(1_048_576),
             options: Vec::new(),
             api: BridgeApi::Responses,
+            upstream: None,
         };
         let unwindowed = spec.clone();
         apply_bridge(&mut spec, "http://127.0.0.1:9", &plan).unwrap();

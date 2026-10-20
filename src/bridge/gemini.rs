@@ -10,14 +10,14 @@
 //! (`agy1:<wire>:<signature>`), in a Responses `reasoning` item's
 //! `encrypted_content`, a Messages `thinking` block's `signature`, and - for
 //! every surface - a bounded LRU keyed by the tool call's id. Only Gemini
-//! ([`SIGNING_FAMILIES`]) has its tool rounds refused without the signature
-//! it minted, so only there is a round in progress with no usable signature
-//! refused with [`NEW_SESSION`]; alc never invents one. A Claude turn the
-//! server did not sign is replayed as it was received (the live replay of
-//! one was served). The round in progress is what follows the last user turn
-//! that says more than tool results, so a user turn mixing tool results with
-//! text closes the round before it (Gemini's own notion of the current turn):
-//! an unsigned Gemini round there is replayed as text, not refused.
+//! ([`SIGNING_FAMILIES`]) has its tool rounds refused without a signature,
+//! and only in the round in progress: there an unsigned call carries Google's
+//! placeholder ([`SKIP_SIGNATURE`]), and every closed round is replayed as
+//! the calls and results it was, signed or not (both were served live). A
+//! Claude turn the server did not sign is replayed as it was received. The
+//! round in progress is what follows the last user turn that says more than
+//! tool results, so a user turn mixing tool results with text closes the
+//! round before it (Gemini's own notion of the current turn).
 //!
 //! Schemas. Agents ship JSON Schema richer than Gemini's subset, so schemas
 //! are rewritten, not refused: what has a Gemini spelling gets it, the rest
@@ -25,7 +25,6 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
-use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
 
 use super::BridgeError;
@@ -37,9 +36,12 @@ pub(crate) const SIGNATURE_PREFIX: &str = "agy1:";
 /// Call ids alc mints when upstream sends none. Never sent back upstream.
 pub(crate) const LOCAL_CALL_PREFIX: &str = "ag_";
 pub(crate) const SIGNATURE_CACHE_CAPACITY: usize = 4096;
-pub(crate) const NEW_SESSION: &str = "this conversation's tool history carries no Antigravity \
-    signature alc can replay (it began elsewhere, on another model or effort, or before alc's \
-    bridge restarted); start a new session to continue on Antigravity";
+/// Google's documented placeholder for a tool call whose signature is not at
+/// hand: the history began on another model or effort, or the bridge
+/// restarted since the call was made. Gemini serves the round with it; a
+/// replay of tool history as text instead taught the model to answer in that
+/// text, so its tool calls stopped running.
+pub(crate) const SKIP_SIGNATURE: &str = "skip_thought_signature_validator";
 /// The output cap for an Antigravity model alc does not ship.
 const CUSTOM_OUTPUT_CAP: u64 = 8_192;
 /// Families whose tool rounds the server accepts only with the signature it
@@ -433,64 +435,36 @@ impl<'a> Contents<'a> {
         let signing = SIGNING_FAMILIES
             .iter()
             .any(|prefix| self.wire_model.starts_with(prefix));
-        let unsigned_round = |turn: &Turn| {
-            turn.role == "model"
-                && turn
-                    .parts
-                    .iter()
-                    .any(|(_, part)| part.get("functionCall").is_some())
-                && !turn
-                    .parts
-                    .iter()
-                    .any(|(_, part)| part.get("thoughtSignature").is_some())
-        };
-        let mut as_text = vec![false; self.turns.len()];
-        for (index, turn) in self.turns.iter().enumerate() {
-            if signing && unsigned_round(turn) {
-                if in_progress(index) {
-                    return Err(BridgeError::new(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request_error",
-                        NEW_SESSION,
-                    ));
-                }
-                as_text[index] = true;
-                if let Some(next) = as_text.get_mut(index + 1) {
-                    *next = true;
-                }
+        for (index, turn) in self.turns.iter_mut().enumerate() {
+            if !(signing && turn.role == "model" && in_progress(index)) {
+                continue;
+            }
+            if turn
+                .parts
+                .iter()
+                .any(|(_, part)| part.get("thoughtSignature").is_some())
+            {
+                continue;
+            }
+            // Gemini checks the first call of each step in the round in
+            // progress; a closed round is served unsigned as it is.
+            if let Some((_, call)) = turn
+                .parts
+                .iter_mut()
+                .find(|(_, part)| part.get("functionCall").is_some())
+            {
+                call["thoughtSignature"] = json!(SKIP_SIGNATURE);
             }
         }
         Ok(self
             .turns
             .into_iter()
-            .zip(as_text)
-            .map(|(turn, as_text)| {
-                let parts: Vec<Value> = turn
-                    .parts
-                    .into_iter()
-                    .map(|(_, part)| if as_text { history_text(part) } else { part })
-                    .collect();
+            .map(|turn| {
+                let parts: Vec<Value> = turn.parts.into_iter().map(|(_, part)| part).collect();
                 json!({"role": turn.role, "parts": parts})
             })
             .collect())
     }
-}
-
-/// A closed tool round alc cannot replay signed, as the plain text it was.
-fn history_text(part: Value) -> Value {
-    if let Some(call) = part.get("functionCall") {
-        let name = call["name"].as_str().unwrap_or("tool");
-        return json!({"text": format!("[called tool {name} with {}]", call["args"])});
-    }
-    if let Some(response) = part.get("functionResponse") {
-        let name = response["name"].as_str().unwrap_or("tool");
-        let output = response
-            .pointer("/response/output")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        return json!({"text": format!("[tool {name} returned]\n{output}")});
-    }
-    part
 }
 
 fn generation_config(request: &UpstreamRequest, split: Option<&(AgyFamily, String)>) -> Value {
@@ -1375,8 +1349,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_unsigned_tool_round_in_progress_is_refused_with_the_new_session_message() {
-        let error = translated(
+    fn an_unsigned_tool_round_in_progress_carries_the_placeholder_signature() {
+        let body = translated(
             "gemini-3.8-flash-low",
             vec![
                 text("user", "go"),
@@ -1384,9 +1358,11 @@ pub(crate) mod tests {
                 output("call-1", "x"),
             ],
         )
-        .unwrap_err();
-        assert_eq!(error.status, axum::http::StatusCode::BAD_REQUEST);
-        assert_eq!(error.message, NEW_SESSION);
+        .unwrap();
+        assert_eq!(
+            body["contents"][1]["parts"][0]["thoughtSignature"],
+            json!(SKIP_SIGNATURE)
+        );
     }
 
     #[test]
@@ -1402,16 +1378,16 @@ pub(crate) mod tests {
             call("call-1", "{}"),
             output("call-1", "x"),
         ];
+        let body = translated("gemini-3.8-flash-low", input).unwrap();
+        assert!(!body.to_string().contains("S1"), "{body}");
         assert_eq!(
-            translated("gemini-3.8-flash-low", input)
-                .unwrap_err()
-                .message,
-            NEW_SESSION
+            body["contents"][1]["parts"][0]["thoughtSignature"],
+            json!(SKIP_SIGNATURE)
         );
     }
 
     #[test]
-    fn unsigned_history_is_replayed_as_text() {
+    fn closed_unsigned_history_is_replayed_as_calls_never_as_text() {
         let body = translated(
             "gemini-3.8-flash-low",
             vec![
@@ -1426,15 +1402,15 @@ pub(crate) mod tests {
         let contents = body["contents"].as_array().unwrap();
         assert_eq!(
             contents[1]["parts"][0],
-            json!({"text": "[called tool get_weather with {\"city\":\"Paris\"}]"})
+            json!({"functionCall": {"name": "get_weather", "args": {"city": "Paris"}, "id": "call-1"}})
         );
         assert_eq!(
-            contents[2]["parts"][0],
-            json!({"text": "[tool get_weather returned]\nSunny"})
+            contents[2]["parts"][0]["functionResponse"]["response"],
+            json!({"output": "Sunny"})
         );
         assert!(
             !body.to_string().contains("thoughtSignature"),
-            "no signature is ever invented"
+            "a closed round needs no signature"
         );
     }
 
@@ -1560,11 +1536,14 @@ pub(crate) mod tests {
     #[test]
     fn a_history_that_opens_with_an_unsigned_gemini_call_is_in_progress() {
         let wire = "gemini-3.8-flash-low";
-        let error =
-            translated(wire, vec![call("call-1", "{}"), output("call-1", "x")]).unwrap_err();
-        assert_eq!(error.message, NEW_SESSION);
-        // Text the model said is not user text: still in progress.
-        let error = translated(
+        let body = translated(wire, vec![call("call-1", "{}"), output("call-1", "x")]).unwrap();
+        assert_eq!(
+            body["contents"][0]["parts"][0]["thoughtSignature"],
+            json!(SKIP_SIGNATURE)
+        );
+        // Text the model said is not user text: still in progress, and the
+        // placeholder rides the call, not the text before it.
+        let body = translated(
             wire,
             vec![
                 text("assistant", "Let me look."),
@@ -1572,8 +1551,10 @@ pub(crate) mod tests {
                 output("call-1", "x"),
             ],
         )
-        .unwrap_err();
-        assert_eq!(error.message, NEW_SESSION);
+        .unwrap();
+        let parts = &body["contents"][0]["parts"];
+        assert!(parts[0].get("thoughtSignature").is_none(), "{parts}");
+        assert_eq!(parts[1]["thoughtSignature"], json!(SKIP_SIGNATURE));
     }
 
     #[test]
@@ -1594,13 +1575,9 @@ pub(crate) mod tests {
             3,
             "the result and the text share one user turn"
         );
-        assert_eq!(
-            contents[1]["parts"][0],
-            json!({"text": "[called tool get_weather with {}]"})
-        );
-        assert_eq!(
-            contents[2]["parts"],
-            json!([{"text": "[tool get_weather returned]\nx"}, {"text": "and now?"}])
-        );
+        assert!(contents[1]["parts"][0].get("functionCall").is_some());
+        assert!(contents[1]["parts"][0].get("thoughtSignature").is_none());
+        assert!(contents[2]["parts"][0].get("functionResponse").is_some());
+        assert_eq!(contents[2]["parts"][1], json!({"text": "and now?"}));
     }
 }

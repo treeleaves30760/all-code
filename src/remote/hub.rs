@@ -1325,6 +1325,7 @@ mod tests {
             context_window: None,
             options: Vec::new(),
             api: crate::launch::BridgeApi::Responses,
+            upstream: None,
         });
         spec.agy_credential_file = Some(temp.path().join("absent-login"));
 
@@ -1353,6 +1354,7 @@ mod tests {
             context_window: Some(272_000),
             options: options.clone(),
             api: crate::launch::BridgeApi::Messages,
+            upstream: None,
         });
         spec.codex_auth_file = Some(PathBuf::from("/work/codex/auth.json"));
         spec.agy_credential_file = Some(PathBuf::from(
@@ -1446,6 +1448,7 @@ mod tests {
             context_window: None,
             options: Vec::new(),
             api: crate::launch::BridgeApi::Messages,
+            upstream: None,
         });
 
         // A version apart plus something it can drop: refused, by name.

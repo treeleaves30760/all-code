@@ -1620,12 +1620,12 @@ mod tests {
         assert!(screen.contains("missing"), "{screen}");
         assert!(!screen.contains("incompatible"), "{screen}");
 
-        // agy also runs on the Codex login; without one there is nothing to
-        // step to.
+        // agy also runs on the Codex login and, through the bridge, on any
+        // provider with an API; without one there is nothing to step to.
         app.store
             .config
             .providers
-            .retain(|_, provider| provider.kind != ProviderKind::Codex);
+            .retain(|_, provider| !provider.supports(Agent::Agy));
         app.default_selected = Agent::ALL.iter().position(|a| *a == Agent::Agy).unwrap();
         press(&mut app, KeyCode::Right);
         assert!(app.status_error);
@@ -1637,21 +1637,22 @@ mod tests {
     fn a_profile_named_antigravity_of_another_kind_is_incompatible_and_gets_no_upsert_hint() {
         let temp = tempfile::tempdir().unwrap();
         let mut app = app_on_remote_screen(temp.path());
+        // A custom profile with no URL offers agy nothing to translate to.
         app.store.config.providers.insert(
             "antigravity".to_owned(),
-            Provider::for_kind(ProviderKind::Openrouter),
+            Provider::for_kind(ProviderKind::Custom),
         );
         app.screen = Screen::Defaults;
         assert_eq!(
             default_compatibility(&app.store.config, Agent::Agy),
             "incompatible"
         );
-        // agy also runs on the Codex login; without one there is nothing to
-        // step to.
+        // agy also runs on the Codex login and, through the bridge, on any
+        // provider with an API; without one there is nothing to step to.
         app.store
             .config
             .providers
-            .retain(|_, provider| provider.kind != ProviderKind::Codex);
+            .retain(|_, provider| !provider.supports(Agent::Agy));
         app.default_selected = Agent::ALL.iter().position(|a| *a == Agent::Agy).unwrap();
         press(&mut app, KeyCode::Right);
         assert!(app.status_error);

@@ -69,6 +69,11 @@ pub struct BridgePlan {
     /// Most capable first (catalog order).
     pub options: Vec<ModelInfo>,
     pub api: BridgeApi,
+    /// The provider's own API, when the bridge translates for an agent that
+    /// cannot speak it ([`api_bridge_plan`]); `None` on the Codex and
+    /// Antigravity logins, which the launch's provider kind names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<crate::config::ApiEndpoint>,
 }
 
 /// A file-system side effect a launch needs performed before the agent
@@ -230,6 +235,7 @@ impl LaunchSpec {
                 context_window: Some(272_000),
                 options: crate::model_catalog::ModelCatalog::built_in().models,
                 api: BridgeApi::Messages,
+                upstream: None,
             }),
             forward: Some(crate::agents::metrics::ForwardPlan {
                 upstream: "https://example.test/v1".to_owned(),
@@ -403,7 +409,11 @@ pub fn build(
     // Resolved here, where the user's shell is, rather than wherever the
     // bridge ends up being started, and reported here too - a `CODEX_HOME`
     // that resolves to nothing is worth saying in the shell that set it.
-    if spec.bridge.is_some() {
+    if spec
+        .bridge
+        .as_ref()
+        .is_some_and(|plan| plan.upstream.is_none())
+    {
         if provider.kind == ProviderKind::Antigravity {
             spec.agy_credential_file = Some(crate::bridge::agy_auth::AgyLocator::resolve()?.file);
         } else {
@@ -890,6 +900,7 @@ pub(crate) fn bridge_plan(
             context_window: overrides.context_window,
             options: overrides.model_options.clone(),
             api,
+            upstream: None,
         })),
         ProviderKind::Antigravity => {
             let (model, effort, window) =
@@ -964,10 +975,101 @@ pub(crate) fn bridge_plan(
                 context_window: overrides.context_window.or(window),
                 options,
                 api,
+                upstream: None,
             }))
         }
         _ => Ok(None),
     }
+}
+
+/// The in-process bridge plan for an agent that cannot speak `provider`'s
+/// wire itself, or `None` when it can ([`Provider::bridge_wire`]). The
+/// bridge translates each turn and signs it with the profile's key, which is
+/// recorded as a secret so a shared session scrubs it.
+pub(crate) fn api_bridge_plan(
+    spec: &mut LaunchSpec,
+    store: &crate::config::Store,
+    profile_name: &str,
+    provider: &Provider,
+    overrides: &LaunchOverrides,
+    api: BridgeApi,
+) -> Result<Option<BridgePlan>> {
+    let Some(wire) = provider.bridge_wire(spec.agent) else {
+        return Ok(None);
+    };
+    let model = overrides
+        .model
+        .clone()
+        .unwrap_or_else(|| provider.model.clone());
+    let model = model.trim().to_owned();
+    if model.is_empty() {
+        bail!(
+            "provider '{profile_name}' names no model; set one with `alc config upsert \
+             {profile_name} --model <id>` or pass --model"
+        );
+    }
+    let url = match wire {
+        crate::config::ApiWire::Responses | crate::config::ApiWire::Chat => {
+            let base = openai_style_base_url(provider)
+                .with_context(|| format!("provider '{profile_name}' needs a base URL"))?;
+            let path = if wire == crate::config::ApiWire::Responses {
+                "responses"
+            } else {
+                "chat/completions"
+            };
+            format!("{}/{path}", base.trim_end_matches('/'))
+        }
+        crate::config::ApiWire::Messages => {
+            let base = agents::claude::claude_base_url(provider).with_context(|| {
+                format!("provider '{profile_name}' needs an Anthropic base URL")
+            })?;
+            format!("{}/v1/messages", base.trim_end_matches('/'))
+        }
+    };
+    let saved = store.credentials.key_for(profile_name, provider);
+    let key = match provider.auth {
+        AuthStyle::Native => None,
+        // A keyless profile still sends a key it has: a server started with
+        // `--api-key` refuses even its model list without one.
+        AuthStyle::None => saved.filter(|key| !key.is_empty()),
+        // A local server answers without one; a hosted API is refused.
+        AuthStyle::ApiKey | AuthStyle::Bearer if provider.kind.is_local_server() => {
+            saved.filter(|key| !key.is_empty())
+        }
+        AuthStyle::ApiKey | AuthStyle::Bearer => Some(key_or_error(profile_name, provider, saved)?),
+    };
+    if let Some(key) = &key {
+        spec.mark_secret_value(key);
+    }
+    let effort = overrides.reasoning_effort.or(provider.reasoning_effort);
+    let options = if overrides.model_options.is_empty() {
+        vec![ModelInfo {
+            id: model.clone(),
+            name: model.clone(),
+            description: format!("{model} through '{profile_name}' ({})", wire.as_str()),
+            context_window: overrides.context_window.unwrap_or(128_000),
+            max_context_window: 0,
+            default_effort: effort.unwrap_or(ReasoningEffort::Medium),
+            supported_efforts: vec![effort.unwrap_or(ReasoningEffort::Medium)],
+            priority: None,
+        }]
+    } else {
+        overrides.model_options.clone()
+    };
+    Ok(Some(BridgePlan {
+        model,
+        effort,
+        context_window: overrides.context_window,
+        options,
+        api,
+        upstream: Some(crate::config::ApiEndpoint {
+            kind: provider.kind,
+            wire,
+            url,
+            auth: provider.auth,
+            key,
+        }),
+    }))
 }
 
 pub(crate) fn resolve_codex_model(provider: &Provider) -> Result<String> {
@@ -1253,6 +1355,13 @@ fn bridge_config(
     upstream: crate::bridge::UpstreamKind,
 ) -> BridgeConfig {
     let per_request = plan.api == BridgeApi::Messages;
+    let code_assist = (plan.api == BridgeApi::CodeAssist).then(|| {
+        if plan.upstream.is_some() {
+            crate::bridge::code_assist::CodeAssistConfig::serving(plan.options.clone(), &provider)
+        } else {
+            crate::bridge::code_assist::CodeAssistConfig::new(plan.options.clone())
+        }
+    });
     BridgeConfig {
         auth_file,
         effort: (!per_request).then_some(plan.effort).flatten(),
@@ -1262,8 +1371,7 @@ fn bridge_config(
         ledger,
         claude_tiers: None,
         upstream,
-        code_assist: (plan.api == BridgeApi::CodeAssist)
-            .then(|| crate::bridge::code_assist::CodeAssistConfig::new(plan.options.clone())),
+        code_assist,
     }
 }
 
@@ -1284,7 +1392,17 @@ impl Bridge {
         // No model allowlist, on purpose: a stale one is the whole reason
         // this code exists. Upstream decides what it will serve, and says so
         // in terms the agent can show the user.
-        let (native, adapter, thread_name) = if spec.provider_kind == ProviderKind::Antigravity {
+        let (native, adapter, thread_name) = if let Some(endpoint) = &plan.upstream {
+            let config = bridge_config(
+                PathBuf::new(),
+                plan,
+                spec.agent,
+                spec.provider_name.clone(),
+                ledger,
+                crate::bridge::UpstreamKind::Api(endpoint.clone()),
+            );
+            (config, "API adapter", "api-bridge")
+        } else if spec.provider_kind == ProviderKind::Antigravity {
             let file = spec.agy_credential_file.clone().context(
                 "this launch reached the Antigravity adapter without agy's login path; it was \
                  resolved when the launch was built and has been lost since. This is an alc bug \
@@ -2764,20 +2882,84 @@ mod tests {
     }
 
     #[test]
-    fn openai_is_rejected_for_claude_without_messages_gateway() {
+    fn openai_reaches_claude_through_the_bridges_responses_translation() {
         let mut credentials = Credentials::default();
         credentials
             .api_keys
-            .insert("openai".into(), "secret".into());
-        let error = build(
+            .insert("openai".into(), "secret-openai-key".into());
+        let spec = build(
             &store(Config::default(), credentials),
             Agent::Claude,
             Some("openai"),
             &[],
             &LaunchOverrides::default(),
         )
+        .unwrap();
+        let plan = spec
+            .bridge
+            .as_ref()
+            .expect("Claude Code on OpenAI is bridged");
+        assert_eq!(plan.api, BridgeApi::Messages);
+        let endpoint = plan.upstream.as_ref().unwrap();
+        assert_eq!(endpoint.wire, crate::config::ApiWire::Responses);
+        assert_eq!(endpoint.url, "https://api.openai.com/v1/responses");
+        assert_eq!(endpoint.key.as_deref(), Some("secret-openai-key"));
+        assert!(spec.codex_auth_file.is_none(), "no Codex login is read");
+        assert!(!format!("{plan:?}").contains("secret-openai-key"));
+        let document = &spec.settings_plan.as_ref().unwrap().document;
+        assert_eq!(document["env"]["ANTHROPIC_MODEL"], "gpt-6.1-sol");
+        assert!(!document.to_string().contains("secret-openai-key"));
+    }
+
+    #[test]
+    fn a_chat_only_provider_reaches_codex_and_agy_through_the_bridge() {
+        let mut config = Config::default();
+        config
+            .providers
+            .insert("groq".into(), Provider::for_kind(ProviderKind::Groq));
+        let mut credentials = Credentials::default();
+        credentials
+            .api_keys
+            .insert("groq".into(), "secret-groq-key".into());
+        let store = store(config, credentials);
+        for (agent, api) in [
+            (Agent::Codex, BridgeApi::Responses),
+            (Agent::Agy, BridgeApi::CodeAssist),
+        ] {
+            let spec = build(
+                &store,
+                agent,
+                Some("groq"),
+                &[],
+                &LaunchOverrides::default(),
+            )
+            .unwrap();
+            let plan = spec.bridge.as_ref().unwrap();
+            assert_eq!(plan.api, api, "{agent}");
+            let endpoint = plan.upstream.as_ref().unwrap();
+            assert_eq!(endpoint.wire, crate::config::ApiWire::Chat);
+            assert_eq!(
+                endpoint.url,
+                "https://api.groq.com/openai/v1/chat/completions"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bridged_provider_without_a_key_is_refused_before_launch() {
+        let mut config = Config::default();
+        config
+            .providers
+            .insert("groq".into(), Provider::for_kind(ProviderKind::Groq));
+        let error = build(
+            &store(config, Credentials::default()),
+            Agent::Codex,
+            Some("groq"),
+            &[],
+            &LaunchOverrides::default(),
+        )
         .unwrap_err();
-        assert!(error.to_string().contains("Anthropic-compatible endpoint"));
+        assert!(error.to_string().contains("has no API key"), "{error}");
     }
 
     #[test]
@@ -2942,6 +3124,7 @@ mod tests {
             context_window: None,
             options: Vec::new(),
             api: BridgeApi::Responses,
+            upstream: None,
         };
         let config = bridge_config(
             PathBuf::from("auth.json"),
@@ -3227,6 +3410,7 @@ mod tests {
             context_window: None,
             options: Vec::new(),
             api: BridgeApi::Messages,
+            upstream: None,
         });
         assert!(needs_an_adapter_and_has_one(&spec).is_ok());
 
@@ -3649,6 +3833,7 @@ mod tests {
             context_window: Some(256_000),
             options: Vec::new(),
             api: BridgeApi::Responses,
+            upstream: None,
         });
         spec.agy_credential_file = login;
         spec

@@ -12,7 +12,7 @@ pub mod qwen;
 
 use std::ffi::OsString;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use crate::config::{Agent, Provider, Store};
 use crate::launch::{BridgePlan, LaunchOverrides, LaunchSpec};
@@ -39,7 +39,7 @@ pub fn build(
         Agent::Goose => goose::build(spec, store, profile_name, provider, passthrough, overrides),
         Agent::Qwen => qwen::build(spec, store, profile_name, provider, passthrough, overrides),
         Agent::Kimi => kimi::build(spec, store, profile_name, provider, passthrough, overrides),
-        Agent::Agy => agy::build(spec, provider, passthrough, overrides),
+        Agent::Agy => agy::build(spec, store, profile_name, provider, passthrough, overrides),
     }
 }
 
@@ -49,13 +49,9 @@ pub fn build(
 pub fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
     let agent = spec.agent;
     match agent {
-        // Claude Code reaches the Codex login through the background bridge
-        // and a settings file, never an in-process adapter; see
-        // `bridge_host`. A plan reaching here is a builder bug.
-        Agent::Claude => bail!(
-            "Claude Code was handed an in-process adapter plan, which alc no longer builds for it; \
-             this is an alc bug - please report it"
-        ),
+        // Claude Code reaches the Codex and agy logins through the background
+        // bridge, and any other provider it cannot speak through this one.
+        Agent::Claude => claude::apply_bridge(spec, base_url, plan),
         // Codex runs natively on its own login and is bridged on agy's.
         Agent::Codex => codex::apply_bridge(spec, base_url, plan),
         Agent::Copilot => copilot::apply_bridge(spec, base_url, plan),

@@ -33,6 +33,7 @@ use crate::config::ReasoningEffort;
 pub(crate) mod affinity;
 pub(crate) mod agy_auth;
 pub(crate) mod agy_upstream;
+pub(crate) mod api;
 pub(crate) mod auth;
 pub(crate) mod chat;
 pub(crate) mod code_assist;
@@ -105,12 +106,16 @@ pub(crate) enum UpstreamKind {
         credential: agy_auth::AgyLocator,
         config_dir: PathBuf,
     },
+    /// A provider's own API, for an agent that cannot speak its wire
+    /// ([`api`]).
+    Api(crate::config::ApiEndpoint),
 }
 
 /// The live half of [`UpstreamKind`]: what a handler signs requests with.
 pub(crate) enum Upstream {
     Codex(Arc<auth::AuthManager>),
     Antigravity(Arc<agy_upstream::AgyState>),
+    Api(Arc<api::ApiUpstream>),
 }
 
 /// Everything a handler shares: config, credentials, and one HTTP client.
@@ -141,6 +146,9 @@ impl BridgeState {
             } => Upstream::Antigravity(Arc::new(agy_upstream::AgyState::new(
                 credential, config_dir,
             )?)),
+            UpstreamKind::Api(endpoint) => {
+                Upstream::Api(Arc::new(api::ApiUpstream::new(endpoint.clone())?))
+            }
         };
         Self::with_upstream(config, upstream)
     }
@@ -172,6 +180,7 @@ impl BridgeState {
                 crate::config::ProviderKind::Antigravity,
                 Some(agy_auth::ACCOUNT_ID.to_owned()),
             ),
+            Upstream::Api(api) => (api.endpoint.kind, None),
         };
         let ledger = config.ledger.clone().map(|path| {
             Arc::new(crate::usage::ledger::Ledger::new(

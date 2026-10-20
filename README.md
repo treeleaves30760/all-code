@@ -402,8 +402,9 @@ refuses on this login: change the model on the profile instead.
 
 Gemini signs its reasoning, and the signature travels with the conversation. A
 Gemini tool round that lost its signature — a session started elsewhere, an
-effort changed mid-task, or a bridge restarted — is refused with a request to
-start a new session rather than replayed unsigned. Reading the login is
+effort changed mid-task, or a bridge restarted — still goes up as the tool
+calls and results it was: closed rounds unsigned, which Google serves, and the
+round in progress with Google's documented placeholder signature. Reading the login is
 verified on Windows; on macOS and Linux it is best effort, and the token file
 works on every OS.
 
@@ -754,7 +755,7 @@ The two lookup tables, resolved for your own configuration by `alc doctor`.
 | Kind | Default endpoint | Key env | Protocols | Claude-ready? |
 | --- | --- | --- | --- | --- |
 | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | anthropic | Yes |
-| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | responses, chat | No |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | responses, chat | Yes (bridge) |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | anthropic, responses, chat | Yes |
 | `codex` | — (native `codex login`) | — | native | Yes (bridge) |
 | `antigravity` | — (native `agy` login) | — | native (`agy`), bridge (every other agent) | Yes (bridge) |
@@ -765,10 +766,10 @@ The two lookup tables, resolved for your own configuration by `alc doctor`.
 | `moonshot` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | chat (+ anthropic) | Yes |
 | `zai` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | chat (+ anthropic) | Yes |
 | `minimax` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | chat (+ anthropic) | Yes |
-| `groq` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | chat | No |
-| `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` | chat | No |
-| `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` | chat | No |
-| `custom` | user-defined | user-defined (`--api-key-env`) | configurable | No, unless configured |
+| `groq` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | chat | Yes (bridge) |
+| `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` | chat | Yes (bridge) |
+| `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` | chat | Yes (bridge) |
+| `custom` | user-defined | user-defined (`--api-key-env`) | configurable | Yes (directly or through the bridge) |
 
 `deepseek`, `moonshot`, `zai`, and `minimax` each also ship a separate
 Anthropic-compatible base URL alongside their primary OpenAI-chat one (see
@@ -802,6 +803,17 @@ accepts natively — agy through a Code Assist surface that relays its own model
 to Google — and every agent but agy also runs on agy's Google login through the
 same bridge (`alc --agy <agent>`); agy itself runs natively on that login. `ALC_CLAUDE_BIN` and its
 siblings, `ALC_AGY_BIN` among them, override a binary path.
+
+**Any provider, any agent.** Where an agent cannot speak a profile's API —
+Claude Code on OpenAI, Groq, xAI or Gemini; Codex CLI on a Chat Completions or
+Anthropic-only provider; agy on anything but its own login and Codex — alc
+starts its bridge in-process for that session and translates each turn to the
+provider's own wire: OpenAI Responses where the profile's protocol is
+`openai-responses`, Chat Completions where it offers chat, Anthropic Messages
+otherwise. The bridge signs with the profile's key, which never reaches the
+agent. `alc doctor` marks those defaults "through alc's bridge". Claude Code on
+this path runs every model alias on the profile's model, and its background
+sessions end with the alc that started them.
 
 ## Codex bridge
 

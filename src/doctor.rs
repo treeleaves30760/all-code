@@ -211,9 +211,20 @@ fn defaults(store: &Store, theme: &Theme) {
 fn default_row(config: &Config, theme: &Theme, agent: Agent) -> Row {
     let name = config.defaults.get(agent);
     match config.providers.get(name) {
-        Some(provider) if provider.supports(agent) => {
-            Row::new(Status::Good, agent, name.to_owned())
-        }
+        Some(provider) if provider.supports(agent) => match provider.bridge_wire(agent) {
+            Some(wire) => Row::new(
+                Status::Good,
+                agent,
+                format!(
+                    "{name}{GUTTER}{}",
+                    theme.paint(
+                        Tone::Dim,
+                        &format!("(through alc's bridge, as {})", wire.as_str())
+                    )
+                ),
+            ),
+            None => Row::new(Status::Good, agent, name.to_owned()),
+        },
         Some(_) => Row::new(
             Status::Bad,
             agent,
@@ -1720,7 +1731,7 @@ mod tests {
         let mut config = upgraded_config();
         config.providers.insert(
             "antigravity".to_owned(),
-            Provider::for_kind(ProviderKind::Openrouter),
+            Provider::for_kind(ProviderKind::Custom),
         );
         let rows = antigravity_rows(
             &config,
@@ -1735,9 +1746,9 @@ mod tests {
             profile.detail
         );
         assert!(
-            profile.detail.contains(
-                "the profile named 'antigravity' is openrouter, not the antigravity kind"
-            ),
+            profile
+                .detail
+                .contains("the profile named 'antigravity' is custom, not the antigravity kind"),
             "{}",
             profile.detail
         );

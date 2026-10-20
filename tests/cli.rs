@@ -1328,26 +1328,25 @@ fn saved_keys_are_not_printed() {
 }
 
 #[test]
-fn incompatible_provider_has_actionable_error() {
+fn an_openai_only_provider_reaches_claude_code_through_the_bridge() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
-        .env("OPENAI_API_KEY", "test")
+        .env("OPENAI_API_KEY", "test-openai-key")
         .args(["--openai", "--dry-run", "claude"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "Claude Code needs an Anthropic-compatible endpoint",
-        ));
+        .success()
+        .stdout(predicate::str::contains("test-openai-key").not());
 }
 
 #[test]
-fn agy_refuses_every_other_kind() {
+fn agy_reaches_any_api_provider_through_the_bridge() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
+        .env("OPENROUTER_API_KEY", "test-openrouter-key")
         .args(["--openrouter", "--dry-run", "agy"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("antigravity"));
+        .success()
+        .stdout(predicate::str::contains("test-openrouter-key").not());
 }
 
 #[test]
@@ -2087,8 +2086,8 @@ fn a_claude_code_tool_round_runs_through_the_background_bridge_on_antigravity() 
 /// What goes wrong upstream reaches Claude Code as an error, through the
 /// real host: a 401 after the first part is the client's to see (replaying
 /// half a turn would duplicate it), a SAFETY stop is not an ordinary end,
-/// and a host restarted after a signed Flash turn refuses that turn's round,
-/// now unsigned, rather than send Google a round it would reject.
+/// and a host restarted after a signed Flash turn sends that turn's round,
+/// now unsigned, with Google's placeholder signature.
 #[test]
 fn antigravity_failures_reach_claude_code_through_the_background_bridge() {
     let temp = tempfile::tempdir().unwrap();
@@ -2099,7 +2098,11 @@ fn antigravity_failures_reach_claude_code_through_the_background_bridge() {
         "data: {\"error\":{\"code\":401,\"message\":\"Request had invalid authentication credentials.\",\"status\":\"UNAUTHENTICATED\"}}\r\n\r\n",
     );
     let blocked = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"SAFETY\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"totalTokenCount\":5}}}\r\n\r\n";
-    let fake = serve_code_assist(&[broken, blocked, FLASH_TOOL_TURN], ("404 Not Found", "{}"));
+    let sunny = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Sunny.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":1,\"totalTokenCount\":6}}}\r\n\r\n";
+    let fake = serve_code_assist(
+        &[broken, blocked, FLASH_TOOL_TURN, sunny],
+        ("404 Not Found", "{}"),
+    );
     let _stop = StopTheBridge(&temp);
     let (base_url, route, token) = launch_claude_on_agy(&temp, &work, &fake);
     let hello = serde_json::json!({"model": "gemini-3.8-flash", "stream": true, "max_tokens": 256,
@@ -2136,21 +2139,19 @@ fn antigravity_failures_reach_claude_code_through_the_background_bridge() {
     // A new host holds none of the signatures the old one minted.
     alc(&temp).args(["bridge", "stop"]).assert().success();
     let token = claude_credential_on_agy(&temp, &work, &fake, &route);
-    let refused = claude_code_messages(
+    // ...so the round goes up with Google's placeholder signature, as calls
+    // and results rather than as text the model would learn to imitate.
+    let answered = claude_code_messages(
         &base_url,
         &token,
         &weather_answer("gemini-3.8-flash", &first["content"], "call-flash-1"),
     );
-    assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
-    assert!(
-        refused.contains("start a new session to continue on Antigravity"),
-        "{refused}"
-    );
-    assert_eq!(
-        fake.calls("streamGenerateContent").len(),
-        3,
-        "nothing reached Google"
-    );
+    assert!(answered.starts_with("HTTP/1.1 200"), "{answered}");
+    let calls = fake.calls("streamGenerateContent");
+    assert_eq!(calls.len(), 4);
+    let sent = calls.last().unwrap().body.to_string();
+    assert!(sent.contains("skip_thought_signature_validator"), "{sent}");
+    assert!(!sent.contains("[called tool"), "{sent}");
     alc(&temp).args(["bridge", "stop"]).assert().success();
     assert_agy_never_ran(&work);
     assert_no_agy_secret_under(temp.path());
