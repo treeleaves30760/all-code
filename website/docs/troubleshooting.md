@@ -97,12 +97,15 @@ agy's login is stored twice — in the system keyring and in
 `~/.gemini/antigravity-cli/antigravity-oauth-token` — and alc will not guess
 which one agy updates. Sign out of agy and sign in again so only one remains.
 
-## `start a new session to continue on Antigravity`
+## Gemini on Antigravity writes `[called tool … with {…}]` instead of calling it
 
-Gemini signs its reasoning, and Antigravity refuses a tool round whose
-signature was lost: the session began elsewhere, the model or effort changed
-mid-task, or alc's bridge restarted. alc never invents a signature; start a new
-session (`/clear` in Claude Code) and continue there.
+Older alc replayed Gemini tool history whose signature was lost (the session
+began elsewhere, the model or effort changed mid-task, or alc's bridge
+restarted) as text in that shape, and Gemini learned to answer in it, so its
+tool calls stopped running. Upgrade alc: the history now goes back as real tool
+calls, and a call in the round in progress carries Google's documented
+placeholder signature. Lines already in a session's transcript stay there, and
+the model may keep copying them; `/clear` (or a new session) drops them.
 
 ## `Google refused this Antigravity account (403 …)`
 

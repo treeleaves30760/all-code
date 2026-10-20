@@ -2283,7 +2283,7 @@ mod tests {
     }
 
     use crate::bridge::agy_fake::{FakeCodeAssist, Reply, agy_bridge, post_json};
-    use crate::bridge::gemini::NEW_SESSION;
+    use crate::bridge::gemini::SKIP_SIGNATURE;
 
     const TURN_ONE: &str = concat!(
         "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Need weather.\",\"thought\":true,\"thoughtSignature\":\"S1\"}]}}]}}\n\n",
@@ -2373,7 +2373,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_fresh_bridge_refuses_an_unsigned_tool_round_instead_of_inventing_one() {
+    async fn a_fresh_bridge_sends_an_unsigned_tool_round_with_the_placeholder() {
         let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(SUNNY)]);
         let (status, body) = post_json(
             agy_bridge(&fake, None, None),
@@ -2381,10 +2381,10 @@ mod tests {
             second_turn("gemini-3.8-flash", None),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        let error: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(error["error"]["message"], NEW_SESSION);
-        assert!(fake.requests().is_empty(), "nothing reached Google");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let sent = fake.requests().last().cloned().unwrap().body;
+        assert!(sent.to_string().contains(SKIP_SIGNATURE), "{sent}");
+        assert!(!sent.to_string().contains("[called tool"), "{sent}");
     }
 
     #[tokio::test]

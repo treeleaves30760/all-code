@@ -92,11 +92,13 @@ agy 的登入同時存在系統 keyring 與
 `~/.gemini/antigravity-cli/antigravity-oauth-token` 兩個地方，alc 不會去猜 agy
 接下來更新的是哪一個。請在 agy 裡登出再登入，讓只剩一份。
 
-## `start a new session to continue on Antigravity`
+## Antigravity 上的 Gemini 輸出 `[called tool … with {…}]` 而不是真的呼叫工具
 
-Gemini 會替推理內容簽章，而 Antigravity 會拒絕遺失簽章的工具呼叫：例如 session
-是在別處開始的、任務進行中改了模型或強度，或 alc 的橋接重新啟動過。alc 從不偽造
-簽章；請開一個新 session（在 Claude Code 裡用 `/clear`）再繼續。
+舊版 alc 遇到遺失簽章的 Gemini 工具歷史（session 是在別處開始的、任務進行中改了
+模型或強度，或 alc 的橋接重新啟動過）時，會把它改寫成這種格式的文字送回去，Gemini
+學著用這種文字回答，工具呼叫就不再執行。請升級 alc：歷史現在會以真正的工具呼叫送回，
+進行中那一輪的呼叫會帶上 Google 文件記載的佔位簽章。已經寫進 session 紀錄的那些行
+不會消失，模型可能繼續模仿；用 `/clear`（或開新 session）把它們清掉。
 
 ## `Google refused this Antigravity account (403 …)`
 
