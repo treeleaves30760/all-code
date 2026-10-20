@@ -1344,10 +1344,23 @@ fn incompatible_provider_has_actionable_error() {
 fn agy_refuses_every_other_kind() {
     let temp = tempfile::tempdir().unwrap();
     alc(&temp)
-        .args(["--codex", "--dry-run", "agy"])
+        .args(["--openrouter", "--dry-run", "agy"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("antigravity"));
+}
+
+#[test]
+fn agy_runs_on_the_codex_login_through_the_bridge() {
+    let temp = tempfile::tempdir().unwrap();
+    alc(&temp)
+        .args(["--codex", "--dry-run", "agy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "command: agy --model gpt-6.1-sol-",
+        ))
+        .stdout(predicate::str::contains("adapter:"));
 }
 
 /// An Antigravity route file, as `alc --agy claude` writes it, reading agy's

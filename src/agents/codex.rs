@@ -197,6 +197,15 @@ pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgeP
     if let Some(window) = plan.context_window {
         push_codex_config(&mut flags, "model_context_window", window.to_string());
     }
+    // The wire id already carries the effort; this only keeps Codex from
+    // showing the effort of its own config beside it.
+    if let Some(effort) = plan.effort {
+        push_codex_config(
+            &mut flags,
+            "model_reasoning_effort",
+            toml_string(effort.as_str()),
+        );
+    }
     spec.args.splice(0..0, flags);
     Ok(())
 }

@@ -105,6 +105,9 @@ pub(crate) struct UsageOptions {
     /// Also print per-source rows, assumptions and coverage diagnostics.
     #[arg(long)]
     pub details: bool,
+    /// Print the plain report instead of opening the interactive view.
+    #[arg(long)]
+    pub plain: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -120,6 +123,9 @@ pub(crate) struct TpsOptions {
     /// Print timing, token counters and coverage as JSON.
     #[arg(long)]
     pub json: bool,
+    /// Print the plain report instead of opening the interactive dashboard.
+    #[arg(long)]
+    pub plain: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -213,7 +219,7 @@ fn timestamp(timestamp_ms: u64) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_millis(i64::try_from(timestamp_ms).ok()?)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub(crate) struct QueryRange {
     /// Inclusive resolved boundary, with the selected timezone's offset.
     pub start: Option<String>,
@@ -1454,52 +1460,52 @@ pub(crate) fn render_details(report: &Statistics, theme: &Theme) -> String {
 }
 
 #[derive(Debug, Serialize)]
-struct TpsReport {
-    schema_version: u32,
-    measurement: &'static str,
-    timezone: String,
-    range: QueryRange,
-    rows: Vec<TpsRow>,
-    summary: TpsSummary,
-    coverage: TpsCoverage,
-    sources: Vec<SourceDiagnostics>,
+pub(crate) struct TpsReport {
+    pub(crate) schema_version: u32,
+    pub(crate) measurement: &'static str,
+    pub(crate) timezone: String,
+    pub(crate) range: QueryRange,
+    pub(crate) rows: Vec<TpsRow>,
+    pub(crate) summary: TpsSummary,
+    pub(crate) coverage: TpsCoverage,
+    pub(crate) sources: Vec<SourceDiagnostics>,
 }
 
 #[derive(Debug, Default, Serialize)]
-struct TpsCoverage {
-    matching_records: usize,
-    measured_requests: usize,
+pub(crate) struct TpsCoverage {
+    pub(crate) matching_records: usize,
+    pub(crate) measured_requests: usize,
     /// Disjoint excluded categories, evaluated before sort/limit.
-    excluded_legacy_records: usize,
-    excluded_unmeasured_records: usize,
-    excluded_nonrequest_records: usize,
-    eligible_records: usize,
-    returned_records: usize,
-    limited_records: usize,
-    include_unmeasured: bool,
+    pub(crate) excluded_legacy_records: usize,
+    pub(crate) excluded_unmeasured_records: usize,
+    pub(crate) excluded_nonrequest_records: usize,
+    pub(crate) eligible_records: usize,
+    pub(crate) returned_records: usize,
+    pub(crate) limited_records: usize,
+    pub(crate) include_unmeasured: bool,
 }
 
 #[derive(Debug, Serialize)]
-struct TpsRow {
+pub(crate) struct TpsRow {
     #[serde(flatten)]
-    record: UsageRecord,
-    provenance: BTreeSet<Source>,
-    metrics: Metrics,
+    pub(crate) record: UsageRecord,
+    pub(crate) provenance: BTreeSet<Source>,
+    pub(crate) metrics: Metrics,
 }
 
 #[derive(Debug, Default, Serialize)]
-struct TpsSummary {
-    requests: Option<usize>,
-    records: usize,
-    known_requests: usize,
-    ttft_samples: usize,
-    ttft_mean_ms: Option<f64>,
-    ttft_p50_ms: Option<f64>,
-    ttft_p95_ms: Option<f64>,
-    stream_tps_samples: usize,
-    weighted_stream_tps: Option<f64>,
-    e2e_tps_samples: usize,
-    weighted_e2e_tps: Option<f64>,
+pub(crate) struct TpsSummary {
+    pub(crate) requests: Option<usize>,
+    pub(crate) records: usize,
+    pub(crate) known_requests: usize,
+    pub(crate) ttft_samples: usize,
+    pub(crate) ttft_mean_ms: Option<f64>,
+    pub(crate) ttft_p50_ms: Option<f64>,
+    pub(crate) ttft_p95_ms: Option<f64>,
+    pub(crate) stream_tps_samples: usize,
+    pub(crate) weighted_stream_tps: Option<f64>,
+    pub(crate) e2e_tps_samples: usize,
+    pub(crate) weighted_e2e_tps: Option<f64>,
 }
 
 fn select_tps(
@@ -1556,7 +1562,13 @@ fn select_tps(
     (rows, coverage)
 }
 
-pub(crate) fn run_tps(config_dir: &Path, config: &Config, options: &TpsOptions) -> Result<u8> {
+/// The rows and summary `alc tps` reports, for the plain report and the
+/// dashboard alike.
+pub(crate) fn tps_report(
+    config_dir: &Path,
+    config: &Config,
+    options: &TpsOptions,
+) -> Result<TpsReport> {
     let query = Query::new(&options.query, false, None, Utc::now())?;
     let read = read(config_dir, config, &options.query, &query);
     let rows = reconcile(read.records)
@@ -1564,7 +1576,7 @@ pub(crate) fn run_tps(config_dir: &Path, config: &Config, options: &TpsOptions) 
         .filter(|row| query.matches(&row.record, &options.query))
         .collect::<Vec<_>>();
     let (rows, coverage) = select_tps(rows, options.include_unmeasured, options.limit);
-    let report = TpsReport {
+    Ok(TpsReport {
         schema_version: 1,
         measurement: "client-observed; stream estimate excludes first token; E2E includes queue/network/reasoning, not server decode speed",
         timezone: query.timezone.name(),
@@ -1576,7 +1588,14 @@ pub(crate) fn run_tps(config_dir: &Path, config: &Config, options: &TpsOptions) 
         coverage,
         rows,
         sources: read.diagnostics,
-    };
+    })
+}
+
+pub(crate) fn run_tps(config_dir: &Path, config: &Config, options: &TpsOptions) -> Result<u8> {
+    if !options.json && crate::dashboard::wanted(options.plain) {
+        return crate::dashboard::tps::run(config_dir, config, options);
+    }
+    let report = tps_report(config_dir, config, options)?;
     if options.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {

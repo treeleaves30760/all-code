@@ -189,7 +189,8 @@ impl Agent {
             Self::Qwen => "Qwen Code needs an OpenAI-, Anthropic-, or Gemini-compatible endpoint",
             Self::Kimi => "Kimi Code CLI needs an OpenAI- or Anthropic-compatible endpoint",
             Self::Agy => {
-                "the Antigravity CLI runs only on the antigravity kind (its own Google login)"
+                "the Antigravity CLI runs only on the antigravity kind (its own Google login) or the \
+                 codex kind (through alc's bridge)"
             }
         }
     }
@@ -704,7 +705,9 @@ impl Provider {
             return true;
         }
         if agent == Agent::Agy {
-            return false;
+            // agy reaches the Codex login through the bridge's Code Assist
+            // surface (`bridge::code_assist`), and no other provider.
+            return self.kind == ProviderKind::Codex;
         }
         if self.protocol == Protocol::AntigravityNative {
             // antigravity-native is only meaningful on the antigravity kind.
@@ -1299,14 +1302,14 @@ enabled = true
     #[test]
     fn compatibility_matrix_matches_the_documented_capabilities() {
         let by_kind = |kind| Provider::for_kind(kind);
-        // The Antigravity CLI runs on its own login and nowhere else.
+        // The Antigravity CLI runs on its own login and the Codex one.
         let every_agent_but_agy: Vec<Agent> = Agent::ALL
             .into_iter()
             .filter(|agent| *agent != Agent::Agy)
             .collect();
         let cases: &[(Provider, &[Agent])] = &[
-            // codex login reaches every agent but agy through the bridge
-            (by_kind(ProviderKind::Codex), every_agent_but_agy.as_slice()),
+            // codex login reaches every agent, agy included, through the bridge
+            (by_kind(ProviderKind::Codex), &Agent::ALL),
             // anthropic: everything except codex CLI
             (
                 by_kind(ProviderKind::Anthropic),
@@ -1606,14 +1609,15 @@ enabled = true
     }
 
     #[test]
-    fn the_antigravity_kind_runs_every_agent_and_agy_runs_only_on_it() {
+    fn the_antigravity_kind_runs_every_agent_and_agy_runs_only_on_it_and_codex() {
         let antigravity = Provider::for_kind(ProviderKind::Antigravity);
         for agent in Agent::ALL {
             assert!(antigravity.supports(agent), "{agent}");
         }
+        assert!(Provider::for_kind(ProviderKind::Codex).supports(Agent::Agy));
         for kind in ProviderKind::ALL
             .into_iter()
-            .filter(|kind| *kind != ProviderKind::Antigravity)
+            .filter(|kind| !matches!(kind, ProviderKind::Antigravity | ProviderKind::Codex))
         {
             assert!(!Provider::for_kind(kind).supports(Agent::Agy), "{kind}");
         }

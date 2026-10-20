@@ -10,6 +10,7 @@ use crate::config::{
     ADD_ANTIGRAVITY, Agent, AuthStyle, Config, ContextChoice, Provider, ProviderKind,
     ReasoningEffort, Store,
 };
+use crate::dashboard::{out, outln};
 use crate::model_catalog::{CodexSource, ModelCatalog};
 use crate::{ollama, openai_server};
 
@@ -17,6 +18,22 @@ pub(crate) const INDENT: &str = "  ";
 pub(crate) const GUTTER: &str = "  ";
 /// Profile names are elided past this so one outlier cannot stretch every column.
 const NAME_LIMIT: usize = 24;
+
+/// The report in the interactive viewer, each section as its check ends.
+pub fn run_interactive(store: &Store) -> Result<u8> {
+    struct Doctor(std::sync::Arc<Store>);
+    impl crate::dashboard::report::Controls for Doctor {
+        fn loaders(&self) -> Vec<(String, crate::dashboard::report::Loader)> {
+            let store = std::sync::Arc::clone(&self.0);
+            vec![(
+                "Checks".to_owned(),
+                std::sync::Arc::new(move || Ok(if run(&store)? { 0 } else { 1 })),
+            )]
+        }
+    }
+    crate::dashboard::report::Viewer::new("alc doctor", Doctor(std::sync::Arc::new(store.clone())))
+        .run()
+}
 
 pub fn run(store: &Store) -> Result<bool> {
     let theme = Theme::detect();
@@ -27,7 +44,7 @@ pub fn run(store: &Store) -> Result<bool> {
         .values()
         .any(|provider| provider.enabled && provider.kind == ProviderKind::Codex);
 
-    println!("{}", theme.paint(Tone::Head, "alc doctor"));
+    outln!("{}", theme.paint(Tone::Head, "alc doctor"));
     environment(store, &theme, &mut issues);
     binaries(store, &theme, &mut issues);
     profiles(store, &theme, &mut issues);
@@ -179,7 +196,7 @@ fn profiles(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     }
 
     for line in table.render(theme) {
-        println!("{INDENT}{line}");
+        outln!("{INDENT}{line}");
     }
 }
 
@@ -344,7 +361,7 @@ fn agent_view_switched_off() -> Option<String> {
 
 fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     heading(theme, "Codex bridge");
-    println!(
+    outln!(
         "{INDENT}{}",
         theme.paint(Tone::Dim, "serves every agent through one `codex login`")
     );
@@ -502,7 +519,7 @@ fn codex_bridge(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
 fn antigravity(store: &Store, theme: &Theme) {
     use crate::bridge::agy_auth::{self, AgyAuthError, LoginState};
     heading(theme, "Antigravity");
-    println!(
+    outln!(
         "{INDENT}{}",
         theme.paint(
             Tone::Dim,
@@ -720,7 +737,7 @@ fn local_models(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     }
 
     heading(theme, "Ollama");
-    println!(
+    outln!(
         "{INDENT}{}",
         theme.paint(
             Tone::Dim,
@@ -844,7 +861,7 @@ fn openai_servers(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
     }
 
     heading(theme, "llama.cpp and vLLM");
-    println!(
+    outln!(
         "{INDENT}{}",
         theme.paint(
             Tone::Dim,
@@ -989,7 +1006,7 @@ fn openai_servers(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
 }
 
 pub(crate) fn summary(theme: &Theme, issues: &[Issue]) {
-    print!("{}", summary_text(theme, issues));
+    out!("{}", summary_text(theme, issues));
 }
 
 /// The same block as a string, for the reports that build one rather than
@@ -1068,7 +1085,7 @@ fn remote(store: &Store, theme: &Theme, issues: &mut Vec<Issue>) {
 }
 
 pub(crate) fn heading(theme: &Theme, title: &str) {
-    print!("{}", heading_text(theme, title));
+    out!("{}", heading_text(theme, title));
 }
 
 /// See [`summary_text`].
@@ -1084,7 +1101,7 @@ fn pairs(rows: &[(&str, String)]) {
         .max()
         .unwrap_or_default();
     for (name, value) in rows {
-        println!("{INDENT}{}{GUTTER}{value}", pad(name, label, Align::Left));
+        outln!("{INDENT}{}{GUTTER}{value}", pad(name, label, Align::Left));
     }
 }
 
@@ -1100,7 +1117,7 @@ pub(crate) fn marked(theme: &Theme, rows: &[Row]) {
             Some(status) => theme.mark(status),
             None => " ".to_owned(),
         };
-        println!(
+        outln!(
             "{INDENT}{mark}{GUTTER}{}{GUTTER}{}",
             pad(&row.name, name, Align::Left),
             row.detail

@@ -35,6 +35,7 @@ pub(crate) mod agy_auth;
 pub(crate) mod agy_upstream;
 pub(crate) mod auth;
 pub(crate) mod chat;
+pub(crate) mod code_assist;
 pub(crate) mod gemini;
 pub(crate) mod gemini_stream;
 pub(crate) mod messages;
@@ -87,6 +88,10 @@ pub(crate) struct BridgeConfig {
     pub claude_tiers: Option<tiers::ModelTiers>,
     /// Codex or Antigravity. `auth_file` is unused on the Antigravity upstream.
     pub upstream: UpstreamKind,
+    /// agy only: the Code Assist surface it reaches the Codex login through
+    /// ([`code_assist`]). `None` for every other agent, and the routes are
+    /// then absent.
+    pub code_assist: Option<code_assist::CodeAssistConfig>,
 }
 
 /// Which upstream a bridge serves its three surfaces from.

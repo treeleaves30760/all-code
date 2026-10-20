@@ -236,6 +236,7 @@ pub(crate) fn agy_bridge(
         agent: crate::config::Agent::Claude,
         provider: "antigravity".to_owned(),
         ledger,
+        code_assist: None,
         claude_tiers: Some(crate::antigravity::tiers("claude-sonnet-5-5")),
         upstream: crate::bridge::UpstreamKind::Antigravity {
             credential: AgyLocator {

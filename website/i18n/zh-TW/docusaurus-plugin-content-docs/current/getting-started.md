@@ -132,9 +132,10 @@ Claude Code 會以 `gpt-6.1-sol` 搭配 `low` 推理強度啟動 —— 或是�
 `~/.codex/config.toml` 裡指定的那一組 —— 用的是該模型在 Codex 上真正的
 context window，而 `/model` 選單裡會列出每一個 GPT 模型。模型、推理強度
 分級，以及同一個登入上的其他 agent，都在 [Codex 橋接](./codex-to-claude.md)。
-Antigravity CLI 是唯一改用自己登入的 agent：`alc agy`（見 [Antigravity
-CLI](./agents.md#antigravity-cli-agy)）。那個 Google 登入也能透過同一個橋接給其他
-每個 agent 使用：`alc --agy claude`（見 [Antigravity](./providers.md#antigravity)）。
+Antigravity CLI 也能跑在它自己的登入上：`alc agy`（見 [Antigravity
+CLI](./agents.md#antigravity-cli-agy)），而 `alc --codex agy` 會替它加上 Codex 的
+模型。那個 Google 登入也能透過同一個橋接給其他每個 agent 使用：`alc --agy claude`
+（見 [Antigravity](./providers.md#antigravity)）。
 
 ## 其他 provider
 
@@ -182,8 +183,9 @@ alc --codex --dry-run claude   # the resolved command, secrets redacted; says wh
 alc doctor                     # binaries, credentials, compatibility, defaults, bridge, remote state
 ```
 
-`alc doctor` 只要發現問題就會以非零狀態碼結束，並逐項說明該怎麼修。錯誤訊息
-本身收在[疑難排解](./troubleshooting.md)。
+`alc doctor` 只要發現問題就會以非零狀態碼結束，並逐項說明該怎麼修。在終端機上
+它會開啟互動式檢視，Summary 排在最前面；`--plain` 則印出文字報告（見[互動式
+檢視](./usage.md#互動式檢視)）。錯誤訊息本身收在[疑難排解](./troubleshooting.md)。
 
 ## 更新
 

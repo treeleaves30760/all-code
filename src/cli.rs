@@ -153,6 +153,13 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Debug, Clone, Args)]
+pub(crate) struct DoctorArgs {
+    /// Print the plain report instead of opening the interactive view.
+    #[arg(long)]
+    pub plain: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Open the configuration TUI or use a scripting subcommand.
@@ -163,7 +170,7 @@ enum Command {
     /// live.
     Config(ConfigArgs),
     /// Check agent binaries, credentials, defaults, and compatibility.
-    Doctor,
+    Doctor(DoctorArgs),
     /// Check login quota, token usage, and estimated API cost.
     Usage(usage::query::UsageOptions),
     /// Show client-observed TTFT and tokens per second for recent requests.
@@ -649,7 +656,10 @@ pub fn run() -> Result<u8> {
 
     match cli.command {
         Command::Config(args) => run_config(&mut store, args),
-        Command::Doctor => Ok(if doctor::run(&store)? { 0 } else { 1 }),
+        Command::Doctor(args) if crate::dashboard::wanted(args.plain) => {
+            doctor::run_interactive(&store)
+        }
+        Command::Doctor(_) => Ok(if doctor::run(&store)? { 0 } else { 1 }),
         Command::Usage(args) => usage::run_statistics(&store, requested_provider.as_deref(), &args),
         Command::Tps(_) => unreachable!("tps is handled without credentials"),
         Command::Models(args) => {

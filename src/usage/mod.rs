@@ -18,6 +18,7 @@
 pub(crate) mod accounts;
 mod chart;
 pub(crate) mod forward;
+mod interactive;
 pub(crate) mod ledger;
 mod litellm;
 pub(crate) mod native;
@@ -420,6 +421,13 @@ pub(crate) fn run_statistics(
     requested: Option<&str>,
     options: &query::UsageOptions,
 ) -> Result<u8> {
+    if !options.json
+        && options.chart.is_none()
+        && options.wrapped.is_none()
+        && crate::dashboard::wanted(options.plain)
+    {
+        return interactive::run(store, requested, options);
+    }
     let statistics = query::statistics(&store.dir, &store.config, options)?;
     if let Some(path) = options.chart.as_deref() {
         let path = chart::destination(path, "ai-usage.png")?;
