@@ -27,13 +27,33 @@ keywords:
 | Goose | OpenAI 或 Anthropic 相容端點 | `openai-chat`、`anthropic-messages` |
 | Qwen Code | OpenAI、Anthropic，或 Gemini 相容端點 | `openai-chat`、`anthropic-messages` |
 | Kimi Code CLI | OpenAI 或 Anthropic 相容端點 | `openai-chat`、`anthropic-messages` |
-| Antigravity CLI | 它自己的 Google 登入，或透過 alc 橋接的 Codex 登入 | `antigravity-native` |
+| Antigravity CLI | 它自己的 Google 登入；透過 alc 橋接的 Codex 登入或任何 API | `antigravity-native` |
 
 不論一個 agent 原生支援什麼，它同樣能透過 [Codex 橋接](./codex-to-claude.md)，
 只靠一次 `codex login` 運作。Antigravity CLI 也能跑在那裡，自己的模型仍用它的
-Google 登入（見[在 Codex 登入上](./agents.md#在-codex-登入上)），除此之外不能跑在
-其他 provider 上。agy 自己的 Google 登入也能給其他每個 agent 使用（見
-[Antigravity](#antigravity)）。
+Google 登入（見[在 Codex 登入上](./agents.md#在-codex-登入上)）。agy 自己的 Google
+登入也能給其他每個 agent 使用（見 [Antigravity](#antigravity)）。
+
+## 任何 provider 接任何 agent
+
+上表排除的組合照樣能跑：alc 會為那個 session 在行程內啟動橋接，把每一輪轉譯成
+provider 自己的協定。Claude Code 接 OpenAI、Groq、xAI 或 Gemini，Codex CLI 接只有
+Chat Completions 或只有 Anthropic 的 provider，以及 agy 接任何有 API 的 provider，
+都是這樣啟動的。
+
+| Profile 提供 | 橋接使用 |
+| --- | --- |
+| `openai-responses` | OpenAI Responses（`…/responses`） |
+| `openai-chat` 或 `dual` | Chat Completions（`…/chat/completions`） |
+| 只有 `anthropic-messages` | Anthropic Messages（`…/v1/messages`） |
+
+橋接用 profile 的金鑰簽署請求，金鑰不會交給 agent；provider 若點名拒絕某個欄位
+（例如推理模型上的 `max_tokens`），橋接會拿掉它再試一次。工具呼叫與結果以工具
+呼叫的形式往返；provider 串流回來的推理會顯示出來，但不會重送。走這條路的
+Claude Code，每個模型別名都對應到 profile 的模型，它的[背景
+session](./background-sessions.md) 會隨啟動它的 alc 一起結束。agy 會在 `/model`
+選單裡列出 profile 的模型，標上 profile 名稱，而且啟動時仍需要它自己的 Google
+登入。
 
 `alc doctor` 會把這張表換成你自己的 profile，印出實際的結果。
 
@@ -149,8 +169,9 @@ profile 上換模型，或用 `--model` 傳入這個登入的 id。
 ### 推理簽章、額度與平台
 
 Gemini 會替推理內容簽章，簽章會跟著對話走。Gemini 的工具呼叫若遺失了簽章 ——
-例如在別處開始的 session、任務進行中改了強度，或橋接重新啟動過 —— alc 會請你
-開新 session，而不會不帶簽章重送（見[疑難排解](./troubleshooting.md#start-a-new-session-to-continue-on-antigravity)）。
+例如在別處開始的 session、任務進行中改了強度，或橋接重新啟動過 —— 仍會以原本的
+工具呼叫與結果送出：已結束的回合不帶簽章（Google 接受），進行中的回合則帶上
+Google 文件記載的佔位簽章（見[疑難排解](./troubleshooting.md#antigravity-上的-gemini-把工具呼叫寫成文字)）。
 
 `alc usage` 會顯示方案還剩多少（見 [Antigravity 登入](./usage.md#antigravity-登入)），
 `alc doctor` 會檢查 agy、登入、它的 Google 專案與 profile。讀取登入的方式在

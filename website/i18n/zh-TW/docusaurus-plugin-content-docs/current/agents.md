@@ -33,7 +33,8 @@ agent 使用（`alc --agy <agent>`）。
 ## Claude Code
 
 `claude` —— [安裝](https://code.claude.com/docs/en/setup) · 支援 Anthropic
-相容端點。
+相容端點；其他 API 透過 alc 的橋接（見[任何 provider 接任何
+agent](./providers.md#任何-provider-接任何-agent)）。
 
 Claude Code 拿到的是一份設定檔（`--settings`），裡面放端點、模型相關變數與
 選單，憑證透過 `apiKeyHelper` 向雜湊釘住的 alc 執行檔取得，帶有
@@ -50,7 +51,8 @@ alc --openrouter claude
 ## Codex CLI
 
 `codex` —— [安裝](https://learn.chatgpt.com/docs/codex/cli) · 支援 OpenAI
-Responses API。
+Responses API；只有 Chat Completions 或只有 Anthropic 的 provider 透過 alc 的橋接，
+設定為 `model_providers.alc_bridge`。
 
 alc 會設定 `--model`，以及有設定時的 `--config
 model_reasoning_effort=<level>`。非 Codex 的 provider 還會拿到一整組
@@ -171,7 +173,7 @@ alc --moonshot kimi
 ## Antigravity CLI (agy)
 
 `agy` —— Google 的 Antigravity CLI · 跑在它自己的 Google 登入上，那個登入也能
-給其他每個 agent 使用；它也能透過 alc 的橋接跑在 Codex 登入上。
+給其他每個 agent 使用；它也能透過 alc 的橋接跑在 Codex 登入或任何 API provider 上。
 
 agy 自己登入 Google，所以 alc 沒有端點、金鑰或設定檔要交給它，也完全不碰 agy
 的任何憑證。它跑在初始設定內附的 `antigravity` profile 上，alc 只依那個 profile
@@ -219,8 +221,9 @@ alc --codex agy --model gemini-3.8-flash-low   # 你自己的 --model 優先
 
 session 一開始用 codex profile 的模型與強度，以 `--model gpt-6.1-sol-<effort>`
 傳入。Codex 模型上的每一輪會以 agent `agy`、codex profile 記錄下來，所以
-[`alc usage` 與 `alc tps`](./usage.md) 都會算進去。其他 provider 都不能跑
-agy：它原生跑在 `antigravity` 這個 kind 上，透過橋接跑在 `codex` 這個 kind 上。
+[`alc usage` 與 `alc tps`](./usage.md) 都會算進去。其他有 API 的 provider 也以
+同樣方式透過橋接的轉譯接上 agy（見[任何 provider 接任何 agent](./providers.md#任何-provider-接任何-agent)）：
+`alc --openrouter agy` 會把 profile 的模型加進 agy 的選單，標上 profile 名稱。
 
 ## 直接 API 量測
 
