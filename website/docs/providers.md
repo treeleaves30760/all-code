@@ -26,13 +26,35 @@ pair before launch instead of sending a request that cannot work.
 | Goose | OpenAI- or Anthropic-compatible | `openai-chat`, `anthropic-messages` |
 | Qwen Code | OpenAI-, Anthropic-, or Gemini-compatible | `openai-chat`, `anthropic-messages` |
 | Kimi Code CLI | OpenAI- or Anthropic-compatible | `openai-chat`, `anthropic-messages` |
-| Antigravity CLI | Its own Google login, or the Codex login through alc's bridge | `antigravity-native` |
+| Antigravity CLI | Its own Google login; the Codex login or any API through alc's bridge | `antigravity-native` |
 
 Whatever an agent accepts natively, it also runs on one `codex login` through
 the [Codex bridge](./codex-to-claude.md). The Antigravity CLI runs there too,
 still signed in to Google for its own models ([On the Codex
-login](./agents.md#on-the-codex-login)), and on no other provider. agy's own
-Google login serves every other agent too ([Antigravity](#antigravity)).
+login](./agents.md#on-the-codex-login)). agy's own Google login serves every
+other agent too ([Antigravity](#antigravity)).
+
+## Any provider, any agent
+
+A pair the table rules out still runs: alc starts its bridge in-process for the
+session and translates each turn to the provider's own wire. Claude Code on
+OpenAI, Groq, xAI or Gemini, Codex CLI on a Chat Completions or Anthropic-only
+provider, and agy on any provider with an API all launch this way.
+
+| Profile offers | The bridge speaks |
+| --- | --- |
+| `openai-responses` | OpenAI Responses (`…/responses`) |
+| `openai-chat` or `dual` | Chat Completions (`…/chat/completions`) |
+| `anthropic-messages` only | Anthropic Messages (`…/v1/messages`) |
+
+The bridge signs with the profile's key, which never reaches the agent, and
+retries once without a field the provider refuses by name (`max_tokens` on a
+reasoning model, say). Tool calls and their results travel as tool calls;
+reasoning a provider streams is shown, never replayed. Claude Code on this path
+runs every model alias on the profile's model, and its [background
+sessions](./background-sessions.md) end with the alc that started them. agy
+lists the profile's model in its `/model` picker, tagged with the profile name,
+and still needs its own Google sign-in to start.
 
 `alc doctor` prints this matrix resolved against your own profiles.
 
@@ -159,9 +181,10 @@ one of this login's ids with `--model`.
 
 Gemini signs its reasoning, and the signature travels with the conversation. A
 Gemini tool round that lost its signature — a session started elsewhere, an
-effort changed mid-task, or a bridge restarted — is refused with a request to
-start a new session rather than replayed unsigned
-([Troubleshooting](./troubleshooting.md#start-a-new-session-to-continue-on-antigravity)).
+effort changed mid-task, or a bridge restarted — still goes up as the tool
+calls and results it was: closed rounds unsigned, which Google serves, and the
+round in progress with Google's documented placeholder signature
+([Troubleshooting](./troubleshooting.md#gemini-on-antigravity-writes-tool-calls-as-text)).
 
 `alc usage` shows what is left of the plan ([Antigravity
 login](./usage.md#antigravity-login)), and `alc doctor` checks agy, the login,

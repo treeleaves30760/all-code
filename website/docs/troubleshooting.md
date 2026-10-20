@@ -33,9 +33,10 @@ binary with the [override variables](./agents.md#binary-overrides).
 
 ## `provider '…' cannot be used with claude; Claude Code needs Anthropic Messages`
 
-That profile speaks a protocol Claude Code cannot use. Pick an
-Anthropic-compatible endpoint or a local server (`--kind ollama`, `llamacpp` or
-`vllm`), or use [`alc --codex claude`](./codex-to-claude.md). [Provider
+Claude Code reaches an OpenAI-shaped profile through alc's bridge
+([Any provider, any agent](./providers.md#any-provider-any-agent)), so this
+means the profile offers nothing to translate to: it has no base URL, or it is
+turned off. `alc config show` shows which; [Provider
 compatibility](./providers.md) has the matrix.
 
 ## `provider '…' is turned off`
@@ -68,10 +69,11 @@ screen of `alc config`, until you do.
 
 ## `is not compatible with agy`
 
-agy runs on the `antigravity` kind, its own Google login, and on the `codex`
-kind through alc's bridge ([On the Codex login](./agents.md#on-the-codex-login)).
-agy signs in to Google itself, so any other provider — `alc --openrouter agy`,
-say — is refused. Run plain `alc agy`, or `alc --codex agy`.
+agy runs natively on the `antigravity` kind, and on any other provider with an
+API through alc's bridge ([Any provider, any
+agent](./providers.md#any-provider-any-agent)). This means the profile offers
+nothing to translate to — no base URL, or turned off. `alc config show` shows
+which.
 
 If a profile of your own is already named `antigravity`, leave it alone:
 `alc config upsert antigravity` would rewrite it for the new kind, base URL and
@@ -97,11 +99,12 @@ agy's login is stored twice — in the system keyring and in
 `~/.gemini/antigravity-cli/antigravity-oauth-token` — and alc will not guess
 which one agy updates. Sign out of agy and sign in again so only one remains.
 
-## Gemini on Antigravity writes `[called tool … with {…}]` instead of calling it
+## Gemini on Antigravity writes tool calls as text
 
 Older alc replayed Gemini tool history whose signature was lost (the session
 began elsewhere, the model or effort changed mid-task, or alc's bridge
-restarted) as text in that shape, and Gemini learned to answer in it, so its
+restarted) as text — `[called tool Read with {…}]` — and Gemini learned to
+answer in it, so its
 tool calls stopped running. Upgrade alc: the history now goes back as real tool
 calls, and a call in the round in progress carries Google's documented
 placeholder signature. Lines already in a session's transcript stay there, and

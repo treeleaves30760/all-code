@@ -33,7 +33,8 @@ turn (`alc --agy <agent>`).
 ## Claude Code
 
 `claude` — [install](https://code.claude.com/docs/en/setup) · accepts an
-Anthropic-compatible endpoint.
+Anthropic-compatible endpoint; any other API through alc's bridge ([Any
+provider, any agent](./providers.md#any-provider-any-agent)).
 
 Claude Code gets a settings file (`--settings`) holding the endpoint, the model
 variables and the picker, and fetches its credential through `apiKeyHelper` from
@@ -51,7 +52,8 @@ alc --openrouter claude
 ## Codex CLI
 
 `codex` — [install](https://learn.chatgpt.com/docs/codex/cli) · accepts the
-OpenAI Responses API.
+OpenAI Responses API; a Chat Completions or Anthropic-only provider through
+alc's bridge, as `model_providers.alc_bridge`.
 
 alc sets `--model` and, when configured, `--config
 model_reasoning_effort=<level>`. A non-Codex provider also gets a full
@@ -176,7 +178,8 @@ alc --moonshot kimi
 ## Antigravity CLI (agy)
 
 `agy` — Google's Antigravity CLI · runs on its own Google login, which also
-serves every other agent, and on the Codex login through alc's bridge.
+serves every other agent, and on the Codex login or any API provider through
+alc's bridge.
 
 agy signs in to Google itself, so alc has no endpoint, key or config file to
 hand it and touches none of agy's credentials. It runs on the `antigravity`
@@ -229,8 +232,10 @@ alc --codex agy --model gemini-3.8-flash-low   # a --model of your own wins
 The session starts on the codex profile's model at its effort, passed as
 `--model gpt-6.1-sol-<effort>`. Turns on a Codex model are recorded as agent
 `agy` on the codex profile, so [`alc usage` and `alc tps`](./usage.md) count
-them. No other provider runs agy: it runs on the `antigravity` kind natively
-and on the `codex` kind through the bridge.
+them. Any other provider with an API reaches agy the same way, through the
+bridge's translation ([Any provider, any
+agent](./providers.md#any-provider-any-agent)): `alc --openrouter agy` adds the
+profile's model to agy's picker, tagged with the profile name.
 
 ## Direct API metrics
 
