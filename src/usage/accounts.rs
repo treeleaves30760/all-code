@@ -507,31 +507,71 @@ pub(crate) fn read_claude_login(
 /// its own `CLAUDE_CONFIG_DIR` has its own item. A custom directory never
 /// falls back to the default item: showing the wrong account's quota is worse
 /// than showing none.
+///
+/// The account is pinned to the login user, as Claude Code does. Asked for by
+/// service alone, `security` returns whichever item of that name it meets
+/// first, and a machine that has signed in to several accounts (or had
+/// another user write one) can hold several: the stale one then answers for
+/// the live login.
 #[cfg(target_os = "macos")]
 fn read_keychain(config_dir: &Path, home: Option<&Path>) -> Option<String> {
-    use std::process::Command;
-
+    let account = keychain_account();
     let default_dir = home.map(|home| home.join(".claude"));
-    let service = if default_dir.as_deref() == Some(config_dir) {
-        "Claude Code-credentials".to_owned()
-    } else {
+    let hashed = {
         // Community-observed, not documented by Anthropic: a miss simply
         // reads as "not signed in" for that directory.
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(config_dir.to_string_lossy().as_bytes());
         format!("Claude Code-credentials-{}", hex8(&digest))
     };
-    // Absolute, so a test that empties PATH still finds it.
-    let output = Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", &service, "-w"])
-        .output()
-        .ok()?;
+    // Claude Code suffixes the service whenever `CLAUDE_CONFIG_DIR` is set,
+    // even to the default directory, which is how alc launches a pinned
+    // profile; a bare `claude` writes the plain name.
+    let mut services = Vec::new();
+    if default_dir.as_deref() == Some(config_dir) {
+        services.push("Claude Code-credentials".to_owned());
+    }
+    services.push(hashed);
+
+    // The freshest login wins, so a leftover item cannot shadow a renewed one.
+    services
+        .iter()
+        .filter_map(|service| keychain_item(service, account.as_deref()))
+        .max_by_key(|raw| expiry_of(raw))
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_account() -> Option<String> {
+    ["USER", "LOGNAME"]
+        .iter()
+        .find_map(|key| std::env::var(key).ok().filter(|value| !value.is_empty()))
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_item(service: &str, account: Option<&str>) -> Option<String> {
+    use std::process::Command;
+
+    let mut command = Command::new("/usr/bin/security"); // absolute, so a test that empties PATH still finds it
+    command.args(["find-generic-password", "-s", service]);
+    if let Some(account) = account {
+        command.args(["-a", account]);
+    }
+    let output = command.arg("-w").output().ok()?;
     if !output.status.success() {
         return None;
     }
     let text = String::from_utf8(output.stdout).ok()?;
     let text = text.trim().to_owned();
     (!text.is_empty()).then_some(text)
+}
+
+/// `expiresAt` of a stored login, 0 when it has none.
+#[cfg(target_os = "macos")]
+fn expiry_of(raw: &str) -> u64 {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value["claudeAiOauth"]["expiresAt"].as_u64())
+        .unwrap_or(0)
 }
 
 #[cfg(not(target_os = "macos"))]
