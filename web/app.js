@@ -653,11 +653,32 @@
    * session you just left from reviving it over the one you are on. */
   let generation = 0;
 
+  /* The terminal stays dark in both page themes: it is the agent's own
+   * screen, and agents draw for a dark background. The ANSI ramp is tuned to
+   * hold 4.5:1 against it, and the cursor and selection take the page accent
+   * so the two read as one design. */
   const DARK = {
-    background: '#16161a',
-    foreground: '#eceae5',
-    cursor: '#d98b5f',
-    selectionBackground: 'rgba(217,139,95,0.32)',
+    background: '#0b0c0f',
+    foreground: '#e6e4de',
+    cursor: '#e39a6d',
+    cursorAccent: '#0b0c0f',
+    selectionBackground: 'rgba(227,154,109,0.30)',
+    black: '#2a2c33',
+    red: '#f08a85',
+    green: '#7ccf9b',
+    yellow: '#e3b86a',
+    blue: '#7fb0f0',
+    magenta: '#c9a0ea',
+    cyan: '#6fcfd0',
+    white: '#d4d2cc',
+    brightBlack: '#7d7f89',
+    brightRed: '#ff9f9a',
+    brightGreen: '#97e0b2',
+    brightYellow: '#f2ca82',
+    brightBlue: '#9cc4fa',
+    brightMagenta: '#dcb9f6',
+    brightCyan: '#8fe0e0',
+    brightWhite: '#f4f3ef',
   };
 
   function ensureTerminal() {
@@ -668,7 +689,7 @@
       cursorBlink: true,
       convertEol: false,
       fontSize: baseFontSize,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace',
       scrollback: 5000,
       theme: DARK,
     });
@@ -1164,14 +1185,17 @@
     el.usageNote.hidden = !model.hubEnv;
 
     const body = el.ledger.tBodies[0];
+    const ledgerHeads = el.ledger.tHead.rows[0].cells;
     body.textContent = '';
     for (const row of model.rows) {
       const tr = document.createElement('tr');
-      for (const cell of core.ledgerCells(row)) {
+      core.ledgerCells(row).forEach((cell, index) => {
         const td = document.createElement('td');
         td.textContent = cell;
+        // The phone layout turns a row into a card and names each figure.
+        td.dataset.label = ledgerHeads[index] ? ledgerHeads[index].textContent : '';
         tr.append(td);
-      }
+      });
       body.append(tr);
     }
     el.ledger.hidden = model.rows.length === 0;
