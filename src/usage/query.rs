@@ -105,8 +105,9 @@ pub(crate) struct UsageOptions {
     /// Also print per-source rows, assumptions and coverage diagnostics.
     #[arg(long)]
     pub details: bool,
-    /// Print the plain report instead of opening the interactive view.
-    #[arg(long)]
+    /// Print the plain report instead of opening the interactive view
+    /// (also -nt; --plain is the older name).
+    #[arg(long = "no-tui", visible_alias = "plain")]
     pub plain: bool,
 }
 
@@ -123,8 +124,9 @@ pub(crate) struct TpsOptions {
     /// Print timing, token counters and coverage as JSON.
     #[arg(long)]
     pub json: bool,
-    /// Print the plain report instead of opening the interactive dashboard.
-    #[arg(long)]
+    /// Print the plain report instead of opening the interactive dashboard
+    /// (also -nt; --plain is the older name).
+    #[arg(long = "no-tui", visible_alias = "plain")]
     pub plain: bool,
 }
 

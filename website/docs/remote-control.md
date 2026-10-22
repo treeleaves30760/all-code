@@ -191,6 +191,7 @@ alc kill 7QK2                # stop one at its actual owner
 alc rename 7QK2 review       # rename its card at its owner
 alc hub status
 alc --runtime legacy hub stop --drain # explicitly end that owner's sessions
+alc hub stop --all           # stop every owner and all of their sessions (-a)
 ```
 
 Ids look like `claude-7QK2M9XB4T`; any unambiguous prefix or the tail alone
@@ -204,7 +205,8 @@ sharing policy remain shared. Existing listeners keep their bound address/port;
 new generations can choose an available port, so use the link for the intended
 owner rather than assuming every page uses 8787. Updates do not restart or drain
 old hubs. With several owners running, `hub stop` and `bridge stop` require an
-explicit runtime target. `hub stop` refuses live sessions unless `--drain`;
+explicit runtime target, or `--all` (`-a`), which stops every owner and ends
+all of their sessions. `hub stop` refuses live sessions unless `--drain`;
 a drain ends those sessions, and a bridge stop can interrupt in-flight requests.
 Neither stop is a zero-downtime operation or an update prerequisite.
 

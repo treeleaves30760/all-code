@@ -416,15 +416,15 @@ works on every OS.
 | `alc config` | The configuration TUI; also `init`, `show`, `path`, `upsert`, `key`, `set-default`, `remove` |
 | `alc doctor` | Binaries, credentials, compatibility, defaults, bridge and remote state; interactive on a terminal, `--plain` |
 | `alc models` | The GPT models the Codex bridge offers, or with `--agy` the Antigravity CLI's; `--refresh`, `--json` |
-| `alc usage [weekly\|monthly\|yearly]` | Accounts/quota, the compatibility ledger, and daily token/cost statistics; interactive on a terminal; `--timezone`, `--chart[=PATH]`, `--wrapped[=PATH]`, `--daily`, `--monthly`, `--details`, `--offline`, `--pricing-file`, `--plain`, `--json` |
-| `alc tps` | Client-observed TTFT and estimated/E2E tokens per second; a dashboard on a terminal; latest 20 timed requests by default (200 in the dashboard), `--include-unmeasured`, `--limit`, `--plain`, `--json` |
+| `alc usage [weekly\|monthly\|yearly]` | Accounts/quota, the compatibility ledger, and daily token/cost statistics; a tabbed dashboard on a terminal; `--timezone`, `--chart[=PATH]`, `--wrapped[=PATH]`, `--daily`, `--monthly`, `--details`, `--offline`, `--pricing-file`, `--no-tui` (`-nt`), `--json` |
+| `alc tps` | Client-observed TTFT and estimated/E2E tokens per second; a dashboard on a terminal; latest 20 timed requests by default (200 in the dashboard), `--include-unmeasured`, `--limit`, `--no-tui` (`-nt`), `--json` |
 | `alc update` | Verify and activate an immutable alc generation; `--check`, `--force`, `--download-only`, `--from ... --offline`, `--rollback` |
 | `alc share <agent>` | Launch with the session mirrored to a browser page |
 | `alc sessions` | Shared sessions across generations and legacy, with each owner's page link |
 | `alc attach <id>` | Put this terminal back on a shared session |
 | `alc rename <id> <name>` | Rename a session's card on the page |
 | `alc kill <id>` | Stop a shared session |
-| `alc hub` | `status`, `start`, `stop --drain`; multiple owners require `--runtime <id\|legacy>` to stop |
+| `alc hub` | `status`, `start`, `stop --drain`, `stop -a`/`--all` (every owner and its sessions); otherwise multiple owners require `--runtime <id\|legacy>` to stop |
 | `alc bridge` | Durable Claude Codex/metrics host; `status`, `stop`; multiple owners require `--runtime <id\|legacy>` to stop |
 | `alc remote` | `status`, `url`, `on`/`off`, `auto-share`, `allow-host`, `token --rotate` |
 | `alc confirm <ticket>` | Approve a permission change a shared session asked for |
@@ -489,8 +489,8 @@ non-zero when it finds one.
 
 **Interactive on a terminal.** `alc doctor`, `alc usage` and `alc tps` open a
 full-screen view when both ends are a terminal; a pipe, a redirect, `--json`,
-`--plain` or `ALC_NO_TUI=1` gets the plain report, unchanged. Doctor and usage
-list their sections on the left, each marked by the worst status it reports,
+`--plain` (`--no-tui` or `-nt` for usage and tps) or `ALC_NO_TUI=1` gets the
+plain report, unchanged. Doctor lists its sections on the left, each marked by the worst status it reports,
 with the summary — every issue and the command that fixes it — first, and fill
 them in as each check finishes. ↑↓ scrolls, tab and 1–9 move between sections,
 ←→ pans a wide table, `a` shows every section on one page, `/` searches (`n`/`N`
@@ -603,11 +603,18 @@ to all sources; TPS defaults to `alc` and accepts `--limit` 1–10000.
 no credentials/Keychain, quota calls, refresh, or network (a cached LiteLLM price map is still read). `alc tps` is also a
 local, credential-free read and does not probe running daemons.
 
-On a terminal, `alc usage` adds three keys to the [interactive
-view](#diagnostics): `p` steps the period (this week, month, year, then all
-history by day or by month), `s` the history source (all, alc, claude, codex)
-and `d` the details — only the statistics reload; the quota lookups do not run
-again. `alc tps` opens a dashboard over the last 200 requests (or `--limit`):
+On a terminal, `alc usage` opens a dashboard with four tabs (tab, ←→ or 1–4):
+**Overview** — cards for total tokens, estimated cost, requests, input/output
+and the cache-read share, a tokens-per-day chart, tokens by hour of day, and
+share bars for the top models, agents and providers; **Periods** — every day
+(or month) newest first; **Models** — each agent and model, sortable (`o`/`O`)
+and filterable (`/`); **Accounts** — the quota report, which arrives from the
+network while the statistics load. `p` steps the period (this week, month,
+year, then all history by day or by month), `s` the history source (all, alc,
+claude, codex), `c` switches the charts between tokens and cost, and `enter`
+opens a period or model in full — only the statistics reload; the quota lookups
+do not run again. `alc usage --no-tui` (or `-nt`) prints the plain report.
+`alc tps` opens a dashboard over the last 200 requests (or `--limit`):
 TTFT p50/p95 and mean, weighted stream and E2E TPS, a throughput trend scaled to
 its 95th percentile so one cache-burst estimate cannot flatten it, each model's
 median TPS and TTFT, and the request table — `s`/`S` sort, `/` filters by
@@ -1027,6 +1034,7 @@ alc rename 7QK2 review
 alc kill 7QK2
 alc hub status               # or bare `alc hub`
 alc --runtime legacy hub stop --drain # explicitly stop that owner and its sessions
+alc hub stop --all                    # stop every owner and all of their sessions
 alc remote url               # the selected runtime's link
 alc remote status            # on/off, bind, ceiling, where the files are
 alc remote auto-share on     # share every session without --share
@@ -1038,8 +1046,8 @@ Sessions are owned by a background hub per runtime generation, which is why they
 survive the terminal that started them; `ctrl-\` then `d` detaches. Each owner's
 browser page shows its own sessions, while `alc sessions` aggregates owners,
 including legacy. Multiple running owners require an explicit global
-`--runtime <id|legacy>` for `hub stop` or `bridge stop`. `hub stop --drain`
-ends that owner's sessions; neither stop is zero-downtime or part of updating.
+`--runtime <id|legacy>` for `hub stop` or `bridge stop`, unless `hub stop --all`
+(`-a`) stops every owner. `hub stop --drain` and `--all` end the sessions too; neither stop is zero-downtime or part of updating.
 Sharing policy in `remote.toml` is still shared across generations, and lives
 in `alc config` on the **Sharing & remote** screen.
 
