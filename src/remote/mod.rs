@@ -607,6 +607,8 @@ pub enum HubCommand {
     },
     Stop {
         drain: bool,
+        /// Every owner the lookup finds, each drained.
+        all: bool,
     },
     Status,
     List {
@@ -644,7 +646,8 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
             );
             Ok(0)
         }
-        HubCommand::Stop { drain } => {
+        HubCommand::Stop { all: true, .. } => stop_all(store),
+        HubCommand::Stop { drain, all: false } => {
             let owners = owners(store)?;
             let owner = stop_owner(&owners)?;
             ctl::request_at(
@@ -850,6 +853,45 @@ fn owners(store: &Store) -> Result<Vec<Owner>> {
     Ok(owners)
 }
 
+/// `alc hub stop --all`: drains every owner the lookup finds, carrying on
+/// past one that fails so a single wedged hub does not keep the rest alive.
+fn stop_all(store: &Store) -> Result<u8> {
+    let owners = owners(store)?;
+    if owners.is_empty() {
+        println!("no hub is running; nothing to stop");
+        return Ok(0);
+    }
+    let mut failed = 0;
+    for owner in &owners {
+        let sessions = list_at(&owner.run_dir, &owner.ctl)
+            .map(|cards| {
+                cards
+                    .iter()
+                    .filter(|card| card.state == wire::SessionState::Running)
+                    .count()
+            })
+            .unwrap_or(0);
+        match ctl::request_at(
+            &owner.run_dir,
+            &owner.ctl,
+            &ctl::CtlRequest::Shutdown { drain: true },
+        ) {
+            Ok(_) => println!(
+                "hub stopped (runtime {}, {sessions} session(s) ended)",
+                owner.scope
+            ),
+            Err(error) => {
+                failed += 1;
+                eprintln!(
+                    "could not stop the hub in runtime {}: {error:#}",
+                    owner.scope
+                );
+            }
+        }
+    }
+    Ok(u8::from(failed > 0))
+}
+
 fn stop_owner(owners: &[Owner]) -> Result<&Owner> {
     match owners {
         [owner] => Ok(owner),
@@ -861,7 +903,7 @@ fn stop_owner(owners: &[Owner]) -> Result<&Owner> {
                 .collect::<Vec<_>>()
                 .join(", ");
             bail!(
-                "more than one hub is running ({names}); choose one with --runtime <id|legacy>; none were stopped"
+                "more than one hub is running ({names}); choose one with --runtime <id|legacy>, or stop them all with --all; none were stopped"
             )
         }
     }

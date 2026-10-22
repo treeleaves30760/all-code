@@ -377,15 +377,15 @@ Google 文件記載的佔位簽章。讀取登入的方式在 Windows 上驗證�
 | `alc config` | 設定用的 TUI；另有 `init`、`show`、`path`、`upsert`、`key`、`set-default`、`remove` |
 | `alc doctor` | 執行檔、憑證、相容性、預設值，以及橋接與遠端狀態；在終端機上是互動畫面，`--plain` |
 | `alc models` | Codex 橋接提供的 GPT 模型，加上 `--agy` 則是 Antigravity CLI 的模型；`--refresh`、`--json` |
-| `alc usage [weekly\|monthly\|yearly]` | 帳號／額度、相容帳本與每日 token／成本統計；在終端機上是互動畫面；`--timezone`、`--chart[=PATH]`、`--wrapped[=PATH]`、`--daily`、`--monthly`、`--details`、`--offline`、`--pricing-file`、`--plain`、`--json` |
-| `alc tps` | 用戶端觀測的 TTFT 與估算／E2E 每秒 token 數；在終端機上是儀表板；預設最新 20 筆有 timing 的請求（儀表板為 200 筆），`--include-unmeasured`、`--limit`、`--plain`、`--json` |
+| `alc usage [weekly\|monthly\|yearly]` | 帳號／額度、相容帳本與每日 token／成本統計；在終端機上是分頁儀表板；`--timezone`、`--chart[=PATH]`、`--wrapped[=PATH]`、`--daily`、`--monthly`、`--details`、`--offline`、`--pricing-file`、`--no-tui`（`-nt`）、`--json` |
+| `alc tps` | 用戶端觀測的 TTFT 與估算／E2E 每秒 token 數；在終端機上是儀表板；預設最新 20 筆有 timing 的請求（儀表板為 200 筆），`--include-unmeasured`、`--limit`、`--no-tui`（`-nt`）、`--json` |
 | `alc update` | 驗證並啟用不可變的 alc 世代；`--check`、`--force`、`--download-only`、`--from ... --offline`、`--rollback` |
 | `alc share <agent>` | 啟動 agent，並把 session 鏡像到網頁 |
 | `alc sessions` | 跨世代與 legacy 的共享 session，以及各 owner 的頁面連結 |
 | `alc attach <id>` | 把這個終端機接回某個共享的 session |
 | `alc rename <id> <name>` | 替頁面上某個 session 的卡片改名 |
 | `alc kill <id>` | 停掉一個共享的 session |
-| `alc hub` | `status`、`start`、`stop --drain`；多個 owner 時停止須指定 `--runtime <id\|legacy>` |
+| `alc hub` | `status`、`start`、`stop --drain`、`stop -a`／`--all`（所有 owner 與其 session）；否則多個 owner 時停止須指定 `--runtime <id\|legacy>` |
 | `alc bridge` | Claude 的持續 Codex／量測 host；`status`、`stop`；多個 owner 時停止須指定 `--runtime <id\|legacy>` |
 | `alc remote` | `status`、`url`、`on`/`off`、`auto-share`、`allow-host`、`token --rotate` |
 | `alc confirm <ticket>` | 核准某個共享 session 提出的權限變更 |
@@ -445,8 +445,8 @@ agent）、已啟用的 Ollama、llama.cpp 或 vLLM profile 對照其執行中�
 其中一個問題，它就會以非零狀態結束。
 
 **在終端機上是互動畫面。** 當兩端都是終端機時，`alc doctor`、`alc usage` 與
-`alc tps` 會開啟全螢幕畫面；管線、重新導向、`--json`、`--plain` 或
-`ALC_NO_TUI=1` 則照舊得到純文字報告。doctor 與 usage 把各個區段列在左側，每段
+`alc tps` 會開啟全螢幕畫面；管線、重新導向、`--json`、`--plain`（usage 與 tps
+用 `--no-tui` 或 `-nt`）或 `ALC_NO_TUI=1` 則照舊得到純文字報告。doctor 把各個區段列在左側，每段
 標上它回報的最差狀態，摘要 —— 每個問題以及修正它的指令 —— 排在最前面，並在每項
 檢查完成時陸續填入。↑↓ 捲動，tab 與 1–9 在區段間移動，←→ 左右平移寬表格，`a`
 把所有區段放在同一頁，`/` 搜尋（`n`／`N` 跳到下一個結果），`r` 重新執行報告，
@@ -550,9 +550,15 @@ alc usage --offline --source alc --filter-profile work --filter-agent claude
 `alc usage --offline` 只讀本機設定、歷史與價格：不讀憑證／鑰匙圈、不查額度、
 不更新登入、不連網（仍會讀取已快取的 LiteLLM 價格表）。`alc tps` 也只讀本機、不讀憑證，不探測執行中的 daemon。
 
-在終端機上，`alc usage` 的[互動畫面](#診斷)多了三個鍵：`p` 切換期間（本週、本月、
-今年，再來是依日或依月的全部歷史），`s` 切換歷史來源（all、alc、claude、codex），
-`d` 切換明細 —— 只有統計會重新載入，額度查詢不會再跑一次。`alc tps` 會開啟最近
+在終端機上，`alc usage` 會開啟有四個分頁的儀表板（tab、←→ 或 1–4）：
+**Overview** —— 總 token、估算成本、請求數、輸入／輸出與快取讀取比例的卡片，
+每日 token 長條圖、依小時的 token 分布，以及前幾名模型、agent 與 provider 的
+占比長條；**Periods** —— 每一天（或每月），最新的在前；**Models** —— 每個 agent
+與模型，可排序（`o`／`O`）與篩選（`/`）；**Accounts** —— 額度報告，在統計載入的
+同時從網路補上。`p` 切換期間（本週、本月、今年，再來是依日或依月的全部歷史），
+`s` 切換歷史來源（all、alc、claude、codex），`c` 讓圖表在 token 與成本間切換，
+`enter` 開啟某個期間或模型的完整內容 —— 只有統計會重新載入，額度查詢不會再跑
+一次。`alc usage --no-tui`（或 `-nt`）印出純文字報告。`alc tps` 會開啟最近
 200 筆請求（或 `--limit`）的儀表板：TTFT p50／p95 與平均、加權的串流與 E2E TPS、
 以第 95 百分位數為刻度的吞吐趨勢（一筆快取爆量的估算不會把其他長條壓平）、每個
 模型的 TPS 與 TTFT 中位數，以及請求表格 —— `s`／`S` 排序，`/` 依 profile、agent、
@@ -916,6 +922,7 @@ alc rename 7QK2 review
 alc kill 7QK2
 alc hub status               # 或直接 `alc hub`
 alc --runtime legacy hub stop --drain # 明確停掉該 owner 與其 session
+alc hub stop --all                    # 停掉所有 owner 與它們全部的 session
 alc remote url               # 選定 runtime 的連結
 alc remote status            # 開/關、綁定方式、上限、檔案位置
 alc remote auto-share on     # 每個 session 都共享，不必加 --share
@@ -926,8 +933,8 @@ alc remote token --rotate    # 讓選定 runtime 的連結失效
 每個 runtime 世代各有一個背景 hub 擁有 session，所以它們活得比啟動它們的
 終端機久；`ctrl-\` 然後 `d` 卸離。各 owner 的網頁只列自己的 session，
 `alc sessions` 則跨 owner 彙整，包含 legacy。多個 owner 執行中時，`hub stop`
-或 `bridge stop` 必須明確指定全域 `--runtime <id|legacy>`。`hub stop --drain`
-會結束該 owner 的 session；兩種停止都不是零中斷，也不是更新的必要步驟。
+或 `bridge stop` 必須明確指定全域 `--runtime <id|legacy>`，除非用
+`hub stop --all`（`-a`）停掉所有 owner。`hub stop --drain` 與 `--all` 也會結束 session；兩種停止都不是零中斷，也不是更新的必要步驟。
 `remote.toml` 的共享政策仍由各世代共用，也能在 `alc config` 的
 **Sharing & remote** 畫面設定。
 

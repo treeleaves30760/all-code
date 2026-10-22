@@ -12,48 +12,100 @@
  * shape, not the default.
  */
 
+/* ---- design tokens ----
+ *
+ * One neutral ramp, one accent, three state colours. Every text token clears
+ * 4.5:1 on the surfaces it is used on, in both themes. The soft variants are
+ * tinted fills for badges and callouts; the state colour itself is only ever
+ * used for text and strokes. System font stacks only: the CSP blocks web
+ * fonts, and a phone already has a good one. */
+
 :root {
   color-scheme: light dark;
-  --bg: #fbfbfa;
+
+  --bg: #f5f5f3;
   --surface: #ffffff;
-  --raised: #f4f3f0;
+  --raised: #efeeeb;
   --line: #e3e1dc;
-  /* The edge of a meter's track, which has to be visible against the card
-   * it sits on: --line is a divider between things that are already
+  --line-strong: #cbc8c0;
+  /* The edge of a meter's track, which has to be visible against the card it
+   * sits on: --line is a divider between things that are already
    * distinguishable, and at 1.3:1 it left the bar with no visible extent. */
   --track-edge: #8f8b80;
-  --text: #1a1a19;
-  --muted: #5f5e5a;
+  --text: #191918;
+  --muted: #5c5b57;
+
   --accent: #a1522c;
-  --ok: #2f7d51;
-  --warn: #a4661c;
-  --danger: #a52a2a;
-  --term-bg: #16161a;
+  --accent-ink: #ffffff;
+  --accent-soft: rgb(161 82 44 / 8%);
+  --accent-line: rgb(161 82 44 / 45%);
+  --ok: #1d7444;
+  --ok-soft: rgb(29 116 68 / 14%);
+  --warn: #8f5509;
+  --warn-soft: rgb(143 85 9 / 10%);
+  --danger: #b0261e;
+  --danger-soft: rgb(176 38 30 / 8%);
+
+  --term-bg: #14151a;
   /* Behind a grid that is not the frame's shape. Deliberately darker than
    * --term-bg rather than equal to it: the bars are the edge of the agent's
    * screen, and a bar the same colour as the screen hides where that edge
    * is. */
   --letterbox: #000000;
-  --radius: 10px;
-  --bar: 52px;
-  --rail: 320px;
+
+  --shadow-sm: 0 1px 2px rgb(20 20 18 / 6%), 0 1px 1px rgb(20 20 18 / 4%);
+  --shadow-md: 0 8px 28px rgb(20 20 18 / 14%), 0 2px 6px rgb(20 20 18 / 8%);
+  --ring: 0 0 0 3px rgb(161 82 44 / 22%);
+
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --radius: var(--r-sm);
+
+  /* 4px scale */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+
+  --bar: 56px;
+  --rail: 340px;
+
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans TC",
+    "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #16161a;
-    --surface: #1e1e23;
-    --raised: #26262c;
-    --line: #33333a;
-    --track-edge: #6b6b78;
-    --text: #eceae5;
-    --muted: #a5a29a;
-    --accent: #d98b5f;
-    --ok: #6cc08b;
-    --warn: #e0a458;
-    --danger: #e07a7a;
-    --term-bg: #16161a;
+    --bg: #0e0f12;
+    --surface: #16171b;
+    --raised: #1f2025;
+    --line: #26272d;
+    --line-strong: #3a3b43;
+    --track-edge: #6b6c78;
+    --text: #ecebe7;
+    --muted: #9d9b94;
+
+    --accent: #e39a6d;
+    --accent-ink: #1c1109;
+    --accent-soft: rgb(227 154 109 / 10%);
+    --accent-line: rgb(227 154 109 / 50%);
+    --ok: #5fc58a;
+    --ok-soft: rgb(95 197 138 / 16%);
+    --warn: #e3a95a;
+    --warn-soft: rgb(227 169 90 / 12%);
+    --danger: #f08a85;
+    --danger-soft: rgb(240 138 133 / 11%);
+
+    --term-bg: #0b0c0f;
     --letterbox: #000000;
+
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow-md: 0 10px 32px rgb(0 0 0 / 55%), 0 2px 6px rgb(0 0 0 / 40%);
+    --ring: 0 0 0 3px rgb(227 154 109 / 28%);
   }
 }
 
@@ -79,7 +131,9 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif;
+  font: 15px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -94,7 +148,7 @@ body {
     max(12px, env(safe-area-inset-left));
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--s2);
   background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
@@ -103,14 +157,32 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: var(--s2);
 }
 
+/* The mark: drawn, not typed, so it needs no font and no request. */
 #title strong {
   flex: 0 0 auto;
-  font-weight: 650;
-  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+
+#title strong::before {
+  content: ">_";
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 700 12px/1 var(--mono);
+  letter-spacing: -0.04em;
 }
 
 #subtitle {
@@ -122,20 +194,28 @@ body {
   text-overflow: ellipsis;
 }
 
+#subtitle:not(:empty)::before {
+  content: "/";
+  margin-right: var(--s2);
+  color: var(--line-strong);
+}
+
 .pill {
   flex: 0 0 auto;
   font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  padding: 3px 8px;
+  padding: 3px 9px;
   border-radius: 999px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   color: var(--muted);
 }
 
 .pill.operator {
   color: var(--accent);
-  border-color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
 /* The connection light. Colour and motion carry the state; the word beside
@@ -146,6 +226,7 @@ body {
   align-items: center;
   gap: 6px;
   font-size: 12px;
+  font-weight: 500;
   color: var(--muted);
 }
 
@@ -161,6 +242,7 @@ body {
 }
 .status[data-state="live"] .status-dot {
   background: var(--ok);
+  box-shadow: 0 0 0 3px var(--ok-soft);
 }
 
 .status[data-state="connecting"],
@@ -192,25 +274,67 @@ body {
   }
 }
 
-button {
-  font: inherit;
-  color: inherit;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 8px 12px;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
+/* On a phone the link word would crowd the title out; the dot and its
+ * colour stay, and the word stays for assistive tech. */
+@media (max-width: 480px) {
+  .status {
+    gap: 0;
+  }
+  .status span:not(.status-dot) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
-button:active {
+button {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 8px 14px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease,
+    box-shadow 0.12s ease, transform 0.08s ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--raised);
+}
+
+button:active:not(:disabled) {
   background: var(--line);
+  transform: translateY(0.5px);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 button.icon {
   flex: 0 0 auto;
-  padding: 7px 11px;
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
   line-height: 0;
+}
+
+button.icon:hover:not(:disabled) {
+  background: var(--raised);
+  color: var(--text);
 }
 
 /* The rail's fold. It is drawn only where there is a rail beside a terminal
@@ -227,8 +351,8 @@ button.icon {
  * Stroked in currentColor, so one sprite serves both themes and picks up
  * whatever state colour its surroundings carry. */
 .glyph {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   display: block;
   fill: none;
   stroke: currentColor;
@@ -240,6 +364,14 @@ button.icon {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+button:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  box-shadow: var(--ring);
 }
 
 /* ---- panes ----
@@ -267,8 +399,8 @@ main > section {
   flex: 1 1 auto;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 14px max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom))
-    max(14px, env(safe-area-inset-left));
+  padding: var(--s4) max(var(--s4), env(safe-area-inset-right))
+    max(var(--s5), env(safe-area-inset-bottom)) max(var(--s4), env(safe-area-inset-left));
 }
 
 #view {
@@ -288,8 +420,8 @@ body[data-pane="view"] #list {
   flex: 1 1 auto;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 14px max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom))
-    max(14px, env(safe-area-inset-left));
+  padding: var(--s4) max(var(--s4), env(safe-area-inset-right))
+    max(var(--s5), env(safe-area-inset-bottom)) max(var(--s4), env(safe-area-inset-left));
 }
 
 /* A third value for the same switch, so there is still exactly one thing
@@ -312,6 +444,8 @@ body[data-pane="usage"] #view {
     display: flex;
     flex: 0 0 var(--rail);
     border-right: 1px solid var(--line);
+    background: var(--bg);
+    padding: var(--s3);
   }
 
   body[data-pane="view"] #railToggle {
@@ -373,27 +507,54 @@ body[data-pane="usage"] #view {
 
 /* ---- session list ---- */
 
+#list > * {
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+}
+
 #sessions {
   list-style: none;
-  margin: 0;
+  margin-block: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: var(--s3);
+  align-content: start;
+}
+
+/* The rail is a single column of denser rows. */
+@media (min-width: 900px) {
+  body[data-pane="view"] #sessions {
+    grid-template-columns: 1fr;
+    gap: var(--s2);
+  }
 }
 
 .card {
   width: 100%;
   text-align: left;
-  padding: 11px 13px;
+  padding: var(--s3) var(--s4);
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  transition: opacity 0.4s ease;
+  gap: 6px;
+  border-radius: var(--r-md);
+  border-color: var(--line);
+  box-shadow: var(--shadow-sm);
+  transition: opacity 0.4s ease, border-color 0.15s ease, background-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.card:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-md);
 }
 
 .card[aria-current="true"] {
-  border-color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent), var(--shadow-sm);
 }
 
 /* An exited session is on its way out: it greys, then fades, then goes. */
@@ -415,7 +576,7 @@ body[data-pane="usage"] #view {
 .account .row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -425,16 +586,20 @@ body[data-pane="usage"] #view {
   height: 8px;
   border-radius: 50%;
   background: var(--ok);
+  box-shadow: 0 0 0 3px var(--ok-soft);
 }
 
 .dot.exited {
   background: var(--muted);
+  box-shadow: none;
 }
 
 .name {
   flex: 1 1 auto;
   min-width: 0;
   font-weight: 600;
+  font-size: 15px;
+  letter-spacing: -0.005em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -451,27 +616,28 @@ body[data-pane="usage"] #view {
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
 }
 
 .chip {
-  font-size: 11px;
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--muted);
   background: var(--raised);
-  border-radius: 5px;
-  padding: 1px 6px;
+  border-radius: 6px;
+  padding: 2px 7px;
 }
 
 .chip.warn {
   color: var(--danger);
-  background: transparent;
-  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  box-shadow: inset 0 0 0 1px currentColor;
 }
 
 .cwd {
   font-size: 12px;
   color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -484,68 +650,65 @@ body[data-pane="usage"] #view {
  * have I got", and a bar that grows as you spend reads backwards. */
 
 .pane-title {
-  margin: 4px 0 10px;
-  font-size: 11px;
+  margin: var(--s1) 0 var(--s3);
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.07em;
   color: var(--muted);
 }
 
 /* Every heading but the first opens a section, so every heading but the first
- * gets the air that says so. This was three sibling selectors naming the
- * elements a heading might follow, and it missed the one that actually
- * precedes the ledger once #usageEmpty is in the flow. */
+ * gets the air that says so. */
 .pane-title:not(:first-child) {
-  margin-top: 22px;
+  margin-top: var(--s6);
 }
 
 #accounts {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: var(--s3);
 }
 
 .account {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 11px 13px;
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
+  padding: var(--s3) var(--s4) var(--s4);
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: var(--s3);
+  height: 100%;
 }
 
 .meters {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--s3);
 }
 
-/* Two lines, so the bar gets the whole card.
- *
- * As one line it was label | track | sentence, and on a phone the only
- * graphic on the page was left about a third of the width while a sentence
- * that repeated it took the rest. The figure now sits above a full-width
- * track, and what it is about sits beside it in the weight that says so. */
+/* Two lines, so the bar gets the whole card: the figure sits above a
+ * full-width track, and what it is about sits beside it. */
 .meter-row {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 
 .meter-head {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--s2);
 }
 
 .meter-label {
   flex: 0 0 auto;
-  font-size: 12px;
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--muted);
 }
 
@@ -553,7 +716,7 @@ body[data-pane="usage"] #view {
 .meter-resets {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -565,18 +728,19 @@ body[data-pane="usage"] #view {
  * unreadable for anyone who cannot use the hue. */
 .quota {
   flex: 0 0 auto;
-  font-size: 15px;
+  margin-left: auto;
+  font-size: 17px;
   font-weight: 650;
+  letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
   color: var(--text);
   line-height: 1.1;
 }
 
-/* The border is not decoration. Unfilled, the track was --raised on a
- * --surface card: about 1.08:1 in dark mode, so the bar had no visible
- * extent and a nearly-spent window read as a dot floating in nothing. */
+/* The border is not decoration: unfilled, the track on a card was about
+ * 1.08:1 in dark mode, so the bar had no visible extent. */
 .meter {
-  height: 9px;
+  height: 10px;
   border: 1px solid var(--track-edge);
   border-radius: 999px;
   background: var(--raised);
@@ -607,15 +771,21 @@ body[data-pane="usage"] #view {
 
 .note {
   margin: 0;
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 12.5px;
+  line-height: 1.5;
   color: var(--muted);
 }
 
 .ledger {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 13px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
 }
 
 .ledger th {
@@ -623,15 +793,21 @@ body[data-pane="usage"] #view {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   color: var(--muted);
-  padding: 0 8px 6px 0;
+  background: var(--raised);
+  padding: 9px 12px;
 }
 
 .ledger td {
-  padding: 7px 8px 7px 0;
+  padding: 10px 12px;
   border-top: 1px solid var(--line);
   font-variant-numeric: tabular-nums;
+}
+
+.ledger th:not(:first-child):not(:nth-child(2)),
+.ledger td:not(:first-child):not(:nth-child(2)) {
+  text-align: right;
 }
 
 .ledger td:first-child {
@@ -639,7 +815,59 @@ body[data-pane="usage"] #view {
 }
 
 #ledgerNote {
-  margin-top: 10px;
+  margin-top: var(--s3);
+}
+
+/* A phone has no room for eight columns, and a table that scrolls sideways
+ * hides the figures it exists to show. Each row becomes a small card, and
+ * each figure carries its own column name (app.js writes data-label). */
+@media (max-width: 640px) {
+  .ledger,
+  .ledger tbody {
+    display: block;
+    background: none;
+    border: 0;
+    box-shadow: none;
+  }
+  .ledger thead {
+    display: none;
+  }
+  .ledger tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px var(--s4);
+    margin-bottom: var(--s3);
+    padding: var(--s3) var(--s4);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-sm);
+  }
+  .ledger td,
+  .ledger td:not(:first-child):not(:nth-child(2)) {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--s2);
+    padding: 3px 0;
+    border: 0;
+    text-align: right;
+  }
+  .ledger td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 11.5px;
+    text-align: left;
+  }
+  .ledger td:first-child {
+    grid-column: 1 / -1;
+    font-size: 14px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 4px;
+  }
+  .ledger td:first-child::before {
+    content: none;
+  }
 }
 
 /* ---- empty state ----
@@ -649,64 +877,81 @@ body[data-pane="usage"] #view {
  * opened alc's own page, is words nobody reads. */
 
 .empty {
-  padding: 32px 16px;
+  padding: var(--s6) var(--s4);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: var(--s2);
   text-align: center;
 }
 
-/* Centred only where it is the whole pane.
- *
- * `margin: auto` belongs to #empty, which is alone inside #list. #usageEmpty
- * is the fourth of seven children of a column flex container, and no sibling
- * grows - so an auto margin there absorbed every spare pixel and drove the
- * ledger's heading, table and caveat to the bottom of the viewport. That
- * happened in the no-accounts state, which is the first one a new user sees.
- */
+/* Centred only where it is the whole pane: `margin: auto` belongs to #empty,
+ * which is alone inside #list. Elsewhere it would absorb every spare pixel
+ * and drive the content below it to the bottom of the viewport. */
 #empty {
-  margin: auto;
+  margin-block: auto;
+  max-width: 420px;
 }
 
 #usageEmpty {
-  padding: 20px 16px 4px;
+  padding: var(--s5) var(--s4) var(--s1);
+  margin-inline: auto;
+  max-width: 420px;
 }
 
 .empty-mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  border: 2px dashed var(--line);
-  margin-bottom: 4px;
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: var(--s2);
+  color: var(--accent);
+  font: 700 18px/1 var(--mono);
+  letter-spacing: -0.04em;
+}
+
+.empty-mark::before {
+  content: ">_";
 }
 
 .empty-title {
   margin: 0;
-  font-weight: 600;
+  font-weight: 650;
+  font-size: 17px;
+  letter-spacing: -0.01em;
 }
 
 .empty-how {
-  margin: 0;
-  font-size: 13px;
+  margin: 0 0 var(--s2);
+  font-size: 14px;
   color: var(--muted);
+  max-width: 36ch;
 }
 
 /* The icon is the only thing that says this button does anything. Without it
- * a command is just a monospace box, and the copy was found by the people who
- * already guessed it was there. */
+ * a command is just a monospace box. */
 .command {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  gap: 10px;
+  font-family: var(--mono);
   font-size: 13px;
-  background: var(--raised);
-  padding: 7px 12px;
+  font-weight: 500;
+  text-align: left;
+  background: var(--surface);
+  border-color: var(--line-strong);
+  padding: 9px 14px;
+  box-shadow: var(--shadow-sm);
 }
 
 .command .glyph {
   flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
   color: var(--muted);
 }
 
@@ -772,6 +1017,7 @@ body[data-sizing="session"] #terminal > .xterm {
   scrollbar-width: none;
   border-top: 1px solid var(--line);
   background: var(--surface);
+  -webkit-overflow-scrolling: touch;
 }
 
 .keys::-webkit-scrollbar {
@@ -780,14 +1026,22 @@ body[data-sizing="session"] #terminal > .xterm {
 
 .keys button {
   flex: 0 0 auto;
-  padding: 7px 11px;
+  padding: 7px 12px;
   font-size: 13px;
+  font-family: var(--mono);
   min-width: 44px;
+  min-height: 38px;
+  background: var(--raised);
+  border-color: var(--line);
+  border-bottom-width: 2px;
+  border-bottom-color: var(--line-strong);
 }
 
 .keys button.held {
   border-color: var(--accent);
+  background: var(--accent-soft);
   color: var(--accent);
+  font-weight: 700;
 }
 
 #composer {
@@ -810,14 +1064,36 @@ body[data-sizing="session"] #terminal > .xterm {
   font-size: 16px;
   color: inherit;
   background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  padding: 9px 12px;
   max-height: 30vh;
+}
+
+#compose::placeholder {
+  color: var(--muted);
 }
 
 #send {
   flex: 0 0 auto;
+  align-self: stretch;
+  min-height: 40px;
+  padding-inline: var(--s5);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  border-radius: var(--r-md);
+}
+
+#send:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+#send:active:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(0.94);
 }
 
 /* A read-only link cannot type, so the controls that would are gone rather
@@ -852,25 +1128,42 @@ body.viewer .perm button {
   /* Anchored below the header rather than above the composer: the bottom of
    * this page is where the keys and the prompt box live, and a toast landing
    * on the send button is a toast in the way of the one thing being done. */
-  top: calc(var(--bar) + env(safe-area-inset-top) + 10px);
+  top: calc(var(--bar) + env(safe-area-inset-top) + 12px);
   z-index: 10;
-  max-width: min(92vw, 520px);
-  padding: 9px 14px;
-  border-radius: var(--radius);
+  max-width: min(calc(100vw - 32px), 520px);
+  padding: 10px 16px;
+  border-radius: var(--r-md);
   background: var(--surface);
-  border: 1px solid var(--line);
-  box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
-  font-size: 13px;
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-md);
+  font-size: 13.5px;
+  font-weight: 500;
+  animation: toast-in 0.18s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #toast {
+    animation: none;
+  }
 }
 
 #toast.warn {
   border-color: var(--warn);
   color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
 }
 
 #toast.error {
   border-color: var(--danger);
   color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
 }
 
 /* ---- permission control ----
@@ -879,23 +1172,18 @@ body.viewer .perm button {
  * shows a disabled control carrying the reason rather than a button that
  * quietly does nothing. The agent's own word for the mode is always shown
  * beside alc's, because a shared label alone misleads: `auto` is the most
- * permissive setting Goose has and a mid-tier one for Claude Code. */
-
-/* Rows, not a strip.
+ * permissive setting Goose has and a mid-tier one for Claude Code.
  *
- * This was one row with `overflow-x: auto`, and the note shared it on
- * `flex: 1 1 auto; min-width: 0`. Measured at 390px with a full-width label
- * and a live select, that left `This agent gates nothing.` twelve pixels to
- * live in: it wrapped to twelve lines of one character and still needed the
- * bar scrolled sideways to finish. A security sentence is the last thing on
- * this page that may be squeezed by a dropdown, so it gets a row of its own
- * and takes the height it needs. */
+ * Rows, not a strip: a security sentence is the last thing on this page that
+ * may be squeezed by a dropdown, so it gets a row of its own and takes the
+ * height it needs. */
 .perm {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 7px 10px;
+  padding: var(--s2) max(var(--s3), env(safe-area-inset-right)) var(--s2)
+    max(var(--s3), env(safe-area-inset-left));
   background: var(--surface);
   border-bottom: 1px solid var(--line);
   font-size: 13px;
@@ -905,26 +1193,46 @@ body.viewer .perm button {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--s2);
 }
 
 .perm-label {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--muted);
+  font-weight: 500;
 }
 
 .perm select {
   font: inherit;
+  font-size: 13px;
   color: inherit;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 5px 8px;
+  background-color: var(--bg);
+  /* A neutral chevron that reads on both themes; data: is allowed by
+   * `img-src 'self' data:`. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23908d85' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 14px;
+  -webkit-appearance: none;
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 6px 28px 6px 10px;
+  min-height: 34px;
   max-width: 60vw;
+  cursor: pointer;
 }
 
 .perm select:disabled {
   opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.perm-controls button {
+  min-height: 34px;
+  padding: 5px 12px;
+  font-size: 13px;
 }
 
 /* What the agent is, rather than what can be done to it. A chip stays on
@@ -940,11 +1248,13 @@ body.viewer .perm button {
   align-items: center;
   gap: 5px;
   flex: 0 0 auto;
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  padding: 3px 8px 3px 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 3px 9px 3px 7px;
   border-radius: 999px;
   border: 1px solid currentColor;
+  background: var(--danger-soft);
   color: var(--danger);
 }
 
@@ -956,8 +1266,8 @@ body.viewer .perm button {
 .perm-note {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 .perm-note.warn {
@@ -973,10 +1283,13 @@ body.viewer .perm button {
  * ticket, and the phone reading it is not the machine that must run it. */
 #permCommand {
   align-self: flex-start;
+  max-width: 100%;
 }
 
 .perm.unsandboxed {
   border-bottom-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+  box-shadow: inset 3px 0 0 var(--danger);
 }
 
 @media (min-width: 900px) {
@@ -984,5 +1297,44 @@ body.viewer .perm button {
    * and padding here would just be a black margin inside a black frame. */
   body[data-sizing="browser"] #terminal {
     padding: 10px 8px 0 14px;
+  }
+}
+
+/* ---- polish ---- */
+
+.chips:empty {
+  display: none;
+}
+
+#sessions > li {
+  display: flex;
+}
+
+#sessions > li > .card {
+  height: 100%;
+}
+
+@media (max-width: 640px) {
+  .ledger,
+  .ledger tbody {
+    overflow: visible;
+  }
+}
+
+/* A phone with a session open has a back button, the link light and the grade
+ * in the header; the brand yields so the session's name can be read. */
+@media (max-width: 899px) {
+  body[data-pane="view"] #title strong {
+    display: none;
+  }
+  body[data-pane="view"] #subtitle::before {
+    content: none;
+  }
+}
+
+@media (min-width: 900px) {
+  #usage {
+    width: 100%;
+    margin-inline: auto;
   }
 }

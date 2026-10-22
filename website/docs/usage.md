@@ -81,15 +81,14 @@ the existing `schema_version: 1`, `accounts`, and `ledger` fields and adds a
 
 On a terminal — stdout and stdin both a TTY, `TERM` not `dumb` — `alc usage`,
 `alc tps` and `alc doctor` open full-screen views. A pipe, a redirect, `--json`,
-`--chart` or `--wrapped` (usage), `--plain` on any of the three, or
-`ALC_NO_TUI=1` prints the text reports shown on this page, unchanged. Exit codes
+`--chart` or `--wrapped` (usage), `--no-tui` or `-nt` (usage and tps),
+`--plain` on any of the three, or `ALC_NO_TUI=1` prints the text reports shown on this page, unchanged. Exit codes
 are the same either way.
 
-`alc usage` and `alc doctor` share one viewer. The sidebar lists the report's
-sections, each marked `✓`, `!` or `✗` by the worst status it reports, with the
-Summary — the issues and the command that fixes each — first. Sections fill in
-as each lookup or check finishes; for usage, Accounts arrive from the network
-while the local statistics load.
+`alc doctor` opens a viewer whose sidebar lists the report's sections, each
+marked `✓`, `!` or `✗` by the worst status it reports, with the Summary — the
+issues and the command that fixes each — first. Sections fill in as each check
+finishes.
 
 | Keys | Action |
 | --- | --- |
@@ -99,12 +98,31 @@ while the local statistics load.
 | `a` · `w` | Every section on one page · wrap lines |
 | `/` then `n` `N` | Search, next and previous match |
 | `r` · `?` · `q`, `esc` | Run again · help · quit |
-| `p` (usage) | Period: this week → this month → this year → all history by day → by month |
-| `s` (usage) | History source: all → alc → claude → codex |
-| `d` (usage) | Toggle `--details` |
 
-`p`, `s` and `d` reload only the token statistics; account quota lookups do not
-run again.
+`alc usage` opens a dashboard with four tabs. **Overview** has cards for total
+tokens, estimated cost, requests, input/output and the cache-read share; a
+tokens-per-day (or per-month) chart; tokens by hour of day; and share bars for
+the top models, agents and providers. **Periods** lists every day or month,
+newest first, with a bar for each. **Models** lists each agent and model with
+its requests, token kinds, share and cost. **Accounts** is the quota report; it
+arrives from the network while the local statistics load, and a `!` on its tab
+means an account needs attention. The `+` and `~` markers mean the same as in
+the plain report.
+
+| Keys | Action |
+| --- | --- |
+| `tab` `shift-tab`, `←` `→`, `h` `l` · `1`–`4` | Next or previous tab · jump to one |
+| `p` | Period: this week → this month → this year → all history by day → by month |
+| `s` | History source: all → alc → claude → codex |
+| `c` | Charts and share bars by tokens or by estimated cost |
+| `↑` `↓`, `j` `k` · `PgUp` `PgDn` · `g` `G` | Select a row (scroll, on Accounts) · page · top and bottom |
+| `enter` | A period or model in full: every token kind, cost, agents, models and caveats |
+| `o` · `O` | Sort models by tokens → cost → requests → name · reverse |
+| `/`, `f` | Filter models by agent or model |
+| `r` · `?` · `q`, `esc` | Read history and check accounts again · help · quit |
+
+`p` and `s` reload only the token statistics; account quota lookups do not run
+again.
 
 `alc tps` opens a dashboard: a header with the filters in force; cards for
 requests, TTFT p50 (with p95), TTFT mean, weighted stream TPS and weighted E2E

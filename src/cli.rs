@@ -311,6 +311,10 @@ enum HubCommand {
         /// Stop the sessions it is running too.
         #[arg(long)]
         drain: bool,
+        /// Stop every running hub and every session they run; with
+        /// --runtime, only that runtime's.
+        #[arg(short = 'a', long)]
+        all: bool,
     },
     /// Report whether a hub is running and where its page is.
     Status,
@@ -591,7 +595,7 @@ struct KeyArgs {
 }
 
 pub fn run() -> Result<u8> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(short_no_tui(std::env::args_os().collect()));
     let scope = match cli.runtime.as_deref() {
         Some(scope) => crate::runtime::RuntimeScope::parse(scope)?,
         None if matches!(cli.command, Command::ClaudeCredential(_))
@@ -692,7 +696,7 @@ pub fn run() -> Result<u8> {
                     foreground: start.foreground,
                     bind_lan: cli.bind_lan,
                 },
-                Some(HubCommand::Stop { drain }) => remote::HubCommand::Stop { drain },
+                Some(HubCommand::Stop { drain, all }) => remote::HubCommand::Stop { drain, all },
                 None | Some(HubCommand::Status) => remote::HubCommand::Status,
             };
             remote::run_hub(&store, command)
@@ -824,6 +828,48 @@ pub fn run() -> Result<u8> {
             sharing,
         ),
     }
+}
+
+/// Global options that take a value, so the word after one is not mistaken
+/// for the subcommand.
+const VALUED_GLOBALS: [&str; 6] = [
+    "-p",
+    "--provider",
+    "--name",
+    "--permission",
+    "--runtime",
+    "--config-dir",
+];
+
+/// Spells `-nt` as `--no-tui` for `alc usage` and `alc tps`. Clap has no
+/// two-letter short flags, and anywhere else `-nt` may be an agent's own
+/// argument, so only those two subcommands get it, and only before `--`.
+fn short_no_tui(mut args: Vec<OsString>) -> Vec<OsString> {
+    let mut index = 1;
+    let command = loop {
+        let Some(arg) = args.get(index).and_then(|arg| arg.to_str()) else {
+            return args;
+        };
+        if VALUED_GLOBALS.contains(&arg) {
+            index += 2;
+        } else if arg.starts_with('-') {
+            index += 1;
+        } else {
+            break arg;
+        }
+    };
+    if !matches!(command, "usage" | "tps") {
+        return args;
+    }
+    for arg in &mut args[index + 1..] {
+        if arg == "--" {
+            break;
+        }
+        if arg == "-nt" {
+            *arg = OsString::from("--no-tui");
+        }
+    }
+    args
 }
 
 fn provider_selector(cli: &Cli) -> Result<Option<String>> {
@@ -2008,6 +2054,68 @@ mod tests {
             message.contains("alc claude -- <args>"),
             "the way out has to be one that works: {message}"
         );
+    }
+
+    #[test]
+    fn dash_nt_means_no_tui_only_for_usage_and_tps() {
+        let rewrite = |args: &[&str]| -> Vec<String> {
+            short_no_tui(args.iter().map(OsString::from).collect())
+                .into_iter()
+                .map(|arg| arg.into_string().unwrap())
+                .collect()
+        };
+        assert_eq!(
+            rewrite(&["alc", "usage", "-nt"]),
+            ["alc", "usage", "--no-tui"]
+        );
+        assert_eq!(
+            rewrite(&["alc", "--runtime", "legacy", "-p", "codex", "tps", "-nt"]),
+            [
+                "alc",
+                "--runtime",
+                "legacy",
+                "-p",
+                "codex",
+                "tps",
+                "--no-tui"
+            ]
+        );
+        // An agent's own arguments, and anything after `--`, stay as typed.
+        assert_eq!(rewrite(&["alc", "codex", "-nt"]), ["alc", "codex", "-nt"]);
+        assert_eq!(
+            rewrite(&["alc", "-p", "usage", "claude", "-nt"]),
+            ["alc", "-p", "usage", "claude", "-nt"]
+        );
+        assert_eq!(
+            rewrite(&["alc", "usage", "--", "-nt"]),
+            ["alc", "usage", "--", "-nt"]
+        );
+
+        let cli = Cli::try_parse_from(short_no_tui(
+            ["alc", "usage", "-nt"].map(OsString::from).to_vec(),
+        ))
+        .unwrap();
+        let Command::Usage(options) = cli.command else {
+            panic!("usage parses as usage")
+        };
+        assert!(options.plain);
+        for flag in ["--no-tui", "--plain"] {
+            let cli = Cli::try_parse_from(["alc", "tps", flag]).unwrap();
+            assert!(matches!(cli.command, Command::Tps(options) if options.plain));
+        }
+    }
+
+    #[test]
+    fn hub_stop_all_has_a_short_flag() {
+        for flag in ["-a", "--all"] {
+            let cli = Cli::try_parse_from(["alc", "hub", "stop", flag]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Command::Hub(HubArgs {
+                    command: Some(HubCommand::Stop { all: true, .. })
+                })
+            ));
+        }
     }
 
     #[test]

@@ -183,6 +183,7 @@ alc kill 7QK2                # 到真正的 owner 停掉一個 session
 alc rename 7QK2 review       # 到 owner 替卡片改名
 alc hub status
 alc --runtime legacy hub stop --drain # 明確結束該 owner 的 session
+alc hub stop --all           # 停掉所有 owner 與它們全部的 session（-a）
 ```
 
 id 長得像 `claude-7QK2M9XB4T`；任何不會有歧義的前綴，或者只寫後面那一段，
@@ -193,7 +194,8 @@ id 長得像 `claude-7QK2M9XB4T`；任何不會有歧義的前綴，或者只寫
 設定、憑證、用量紀錄與 `remote.toml` 共享政策仍共用。既有 listener 保留綁定的
 位址／port；新世代可以選可用的 port，請用目標 owner 的連結，不要假設所有頁面
 都在 8787。更新不重啟或 drain 舊 hub。多個 owner 執行中時，`hub stop` 與
-`bridge stop` 須明確指定 runtime。`hub stop` 有 session 在跑就拒絕，除非加
+`bridge stop` 須明確指定 runtime，或用 `--all`（`-a`）停掉所有 owner 並結束它們
+全部的 session。`hub stop` 有 session 在跑就拒絕，除非加
 `--drain`；drain 會結束那些 session，停止橋接則可能中斷處理中的請求。兩者都
 不是零中斷，也不是更新的必要步驟。
 

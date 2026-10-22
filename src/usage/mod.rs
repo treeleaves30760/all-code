@@ -18,7 +18,6 @@
 pub(crate) mod accounts;
 mod chart;
 pub(crate) mod forward;
-mod interactive;
 pub(crate) mod ledger;
 mod litellm;
 pub(crate) mod native;
@@ -27,7 +26,7 @@ pub(crate) mod pricing;
 pub(crate) mod query;
 pub(crate) mod quota;
 pub(crate) mod records;
-mod view;
+pub(crate) mod view;
 mod wrapped;
 
 use std::collections::HashMap;
@@ -176,7 +175,7 @@ impl UsageReport {
         self
     }
 
-    fn needs_attention(&self) -> bool {
+    pub(crate) fn needs_attention(&self) -> bool {
         self.accounts
             .iter()
             .any(|account| account.state.is_actionable())
@@ -426,7 +425,7 @@ pub(crate) fn run_statistics(
         && options.wrapped.is_none()
         && crate::dashboard::wanted(options.plain)
     {
-        return interactive::run(store, requested, options);
+        return crate::dashboard::usage::run(store, requested, options);
     }
     let statistics = query::statistics(&store.dir, &store.config, options)?;
     if let Some(path) = options.chart.as_deref() {

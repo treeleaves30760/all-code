@@ -2,13 +2,14 @@
 //!
 //! Each command still renders its plain report, and that report is still
 //! what a pipe, a file, `--json` or `--plain` gets. On a terminal the same
-//! report opens in a full-screen view instead: doctor and usage stream their
-//! sections into [`report::Viewer`] as each check finishes, and tps gets a
-//! dashboard of its own ([`tps`]) over the structured rows.
+//! report opens in a full-screen view instead: doctor streams its sections
+//! into [`report::Viewer`] as each check finishes, and tps and usage
+//! get dashboards of their own ([`tps`], [`usage`]) over the structured rows.
 
 pub(crate) mod ansi;
 pub(crate) mod report;
 pub(crate) mod tps;
+pub(crate) mod usage;
 
 use std::cell::RefCell;
 use std::io::{self, IsTerminal, Stdout};
