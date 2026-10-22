@@ -543,15 +543,30 @@ pub(crate) fn parse_credential(raw: &[u8]) -> Result<AgyToken, AgyAuthError> {
     })
 }
 
-/// The login as stored now. Both sources at once is refused even when they
-/// agree: which one agy updates next is not alc's to guess.
+/// The login as stored now. Both sources at once is what agy leaves behind
+/// after a sign-in through each, so the one that expires later is taken: it
+/// is the one agy wrote last.
 pub(crate) fn load(store: &dyn CredentialStore) -> Result<AgyToken, AgyAuthError> {
     let keyring = store.keyring()?;
     let file = store.file()?;
     match (keyring, file) {
-        (Some(_), Some(_)) => Err(AgyAuthError::AmbiguousSources),
+        (Some(keyring), Some(file)) => freshest(&keyring, &file),
         (Some(raw), None) | (None, Some(raw)) => parse_credential(raw.as_bytes()),
         (None, None) => Err(AgyAuthError::LoginRequired),
+    }
+}
+
+/// The later-expiring of two logins that both read; the one that reads when
+/// only one does. Neither reading is `AmbiguousSources`: alc cannot tell
+/// which of two unreadable stores agy means.
+fn freshest(keyring: &RawCredential, file: &RawCredential) -> Result<AgyToken, AgyAuthError> {
+    match (
+        parse_credential(keyring.as_bytes()),
+        parse_credential(file.as_bytes()),
+    ) {
+        (Ok(a), Ok(b)) => Ok(if b.expires_at > a.expires_at { b } else { a }),
+        (Ok(token), Err(_)) | (Err(_), Ok(token)) => Ok(token),
+        (Err(_), Err(_)) => Err(AgyAuthError::AmbiguousSources),
     }
 }
 
@@ -971,13 +986,11 @@ mod tests {
                 && missing.contains("run `agy` and sign in"),
             "{missing}"
         );
-        let both = require_login(&MemoryStore::with_both(
+        require_login(&MemoryStore::with_both(
             credential("tok-a", 3600),
             credential("tok-b", 3600),
         ))
-        .unwrap_err()
-        .to_string();
-        assert!(both.contains("ambiguous sources"), "{both}");
+        .unwrap();
         let malformed = require_login(&MemoryStore::with_file(b"not json".to_vec()))
             .unwrap_err()
             .to_string();
@@ -1058,13 +1071,27 @@ mod tests {
     }
 
     #[test]
-    fn both_sources_present_is_ambiguous_even_when_identical() {
-        let raw = credential("tok-a", 3600);
-        let store = MemoryStore::with_both(raw.clone(), raw);
+    fn both_sources_present_takes_the_later_expiry() {
+        let stale = credential("tok-stale", 600);
+        let live = credential("tok-live", 3600);
+        let token = |keyring: &[u8], file: &[u8]| {
+            load(&MemoryStore::with_both(keyring.to_vec(), file.to_vec()))
+                .unwrap()
+                .access_token()
+                .to_owned()
+        };
+        assert_eq!(token(&stale, &live), "tok-live");
+        assert_eq!(token(&live, &stale), "tok-live");
+        // One unreadable store does not hide the other.
+        assert_eq!(token(b"not json", &live), "tok-live");
+    }
+
+    #[test]
+    fn two_unreadable_sources_stay_ambiguous() {
+        let store = MemoryStore::with_both(b"junk".to_vec(), b"more junk".to_vec());
         assert_eq!(load(&store).unwrap_err(), AgyAuthError::AmbiguousSources);
         let message = AgyAuthError::AmbiguousSources.message();
         assert!(message.contains("ambiguous sources"), "{message}");
-        assert!(message.contains("resolve it in agy"), "{message}");
         assert_eq!(
             status(&store, now_secs()),
             LoginState::Missing(AgyAuthError::AmbiguousSources)
