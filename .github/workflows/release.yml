@@ -54,7 +54,7 @@ jobs:
         uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: ${{ matrix.msvc_arch }}
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
           target: ${{ matrix.target }}
