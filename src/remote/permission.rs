@@ -298,6 +298,9 @@ pub(crate) fn arm_at_launch(spec: &mut LaunchSpec, requested: Option<SafetyRung>
     if let Some((name, value)) = mode.env {
         spec.env.insert(OsString::from(name), OsString::from(value));
     }
+    if let Some((key, value)) = mode.inline_config {
+        crate::agents::opencode::set_inline_key(&mut spec.env, key, value);
+    }
     PermState::launched(caps, rung)
 }
 
@@ -311,10 +314,18 @@ fn user_already_set_the_mode(caps: &AgentCaps, args: &[OsString]) -> bool {
         .filter(|argument| argument.starts_with('-'))
         .copied()
         .collect();
+    // `opencode run --agent plan` names the agent itself, and alc's
+    // `default_agent` would only be overruled by it, not contradict it - but
+    // the page should not claim a mode the user replaced.
+    let names_an_agent = caps.modes.iter().any(|mode| {
+        mode.inline_config
+            .is_some_and(|(key, _)| key == "default_agent")
+    });
     args.iter().any(|argument| {
-        argument
-            .to_str()
-            .is_some_and(|text| flags.contains(&text.split('=').next().unwrap_or(text)))
+        argument.to_str().is_some_and(|text| {
+            let flag = text.split('=').next().unwrap_or(text);
+            flags.contains(&flag) || (names_an_agent && flag == "--agent")
+        })
     })
 }
 

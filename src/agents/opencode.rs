@@ -1,4 +1,8 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
@@ -69,9 +73,7 @@ pub(crate) fn build(
 
     let model = overrides.model.as_deref().unwrap_or(&provider.model);
     let model_reference = format!("{provider_id}/{model}");
-    let mut inline = json!({
-        "$schema": "https://opencode.ai/config.json"
-    });
+    let mut inline = inline_document(&spec.env);
     if !has_model_override(passthrough) {
         inline["model"] = Value::String(model_reference);
     }
@@ -138,9 +140,9 @@ pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgeP
             .collect()
     };
 
-    let mut inline = json!({
-        "$schema": "https://opencode.ai/config.json"
-    });
+    // Merged rather than replaced: a shared session's `default_agent` was
+    // written here before the bridge's port was known.
+    let mut inline = inline_document(&spec.env);
     if !has_model_override(&spec.args) {
         inline["model"] = Value::String(format!("alc-codex/{}", plan.model));
     }
@@ -179,5 +181,161 @@ fn custom_kind_url(provider: &Provider) -> bool {
         }
         (Some(_), None) => true,
         _ => false,
+    }
+}
+
+const INLINE_CONFIG: &str = "OPENCODE_CONFIG_CONTENT";
+
+/// The inline config document a spec already carries, or a fresh one.
+fn inline_document(env: &BTreeMap<OsString, OsString>) -> Value {
+    env.get(&OsString::from(INLINE_CONFIG))
+        .and_then(|text| serde_json::from_str::<Value>(&text.to_string_lossy()).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({ "$schema": "https://opencode.ai/config.json" }))
+}
+
+/// Sets one top-level key of the inline config, keeping every other key.
+pub(crate) fn set_inline_key(env: &mut BTreeMap<OsString, OsString>, key: &str, value: &str) {
+    let mut inline = inline_document(env);
+    inline[key] = Value::String(value.to_owned());
+    env.insert(
+        OsString::from(INLINE_CONFIG),
+        OsString::from(inline.to_string()),
+    );
+}
+
+/// OpenCode 2 runs every session inside one background service by default,
+/// and a service that is already up never sees this launch's environment:
+/// the provider, model and key alc injects through `OPENCODE_CONFIG_CONTENT`
+/// would silently be someone else's. `--standalone` gives the session a
+/// private server started with this environment, which is what every
+/// OpenCode 1 session was. OpenCode 1 rejects the flag, so the installed
+/// binary is asked its version first.
+pub(crate) fn finish_for_binary(spec: &mut LaunchSpec, program: &Path) {
+    if !wants_private_server(&spec.args) {
+        return;
+    }
+    if major_version(program).is_some_and(|major| major >= 2) {
+        spec.args.insert(0, OsString::from("--standalone"));
+    }
+}
+
+/// Commands that never open a session (or manage the service itself) are
+/// left exactly as typed, as is a launch that already picks its server.
+fn wants_private_server(args: &[OsString]) -> bool {
+    const NO_SESSION: &[&str] = &[
+        "upgrade",
+        "update",
+        "uninstall",
+        "acp",
+        "api",
+        "debug",
+        "auth",
+        "mcp",
+        "plugin",
+        "service",
+        "reload",
+        "pair",
+        "serve",
+        "web",
+        "completion",
+        "-h",
+        "--help",
+        "-v",
+        "--version",
+    ];
+    if args.iter().any(|arg| {
+        let arg = arg.to_string_lossy();
+        arg == "--standalone" || arg == "--server" || arg.starts_with("--server=")
+    }) {
+        return false;
+    }
+    args.first()
+        .is_none_or(|first| !NO_SESSION.contains(&first.to_string_lossy().as_ref()))
+}
+
+/// `opencode v2.2.7` -> 2. None when the binary does not answer promptly
+/// with something that reads as a version.
+fn major_version(program: &Path) -> Option<u64> {
+    let mut child = Command::new(program)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let output = child.wait_with_output().ok()?;
+    parse_major(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_major(text: &str) -> Option<u64> {
+    let version = text.split_whitespace().next_back()?;
+    version
+        .trim_start_matches('v')
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_major_version_out_of_both_spellings() {
+        assert_eq!(parse_major("opencode v2.2.7\n"), Some(2));
+        assert_eq!(parse_major("1.14.3"), Some(1));
+        assert_eq!(parse_major("not a version"), None);
+        assert_eq!(parse_major(""), None);
+    }
+
+    #[test]
+    fn only_session_launches_get_a_private_server() {
+        let args = |list: &[&str]| list.iter().map(OsString::from).collect::<Vec<_>>();
+        assert!(wants_private_server(&args(&[])));
+        assert!(wants_private_server(&args(&["run", "hello"])));
+        assert!(wants_private_server(&args(&["mini"])));
+        assert!(wants_private_server(&args(&["models"])));
+        assert!(wants_private_server(&args(&["."])));
+        assert!(!wants_private_server(&args(&["service", "stop"])));
+        assert!(!wants_private_server(&args(&["--version"])));
+        assert!(!wants_private_server(&args(&["--standalone"])));
+        assert!(!wants_private_server(&args(&["--server", "http://x"])));
+    }
+
+    #[test]
+    fn a_default_agent_survives_the_provider_config_written_after_it() {
+        let mut env = BTreeMap::new();
+        set_inline_key(&mut env, "default_agent", "plan");
+        let mut spec = LaunchSpec::for_test();
+        spec.env = env;
+        let plan = BridgePlan {
+            model: "gpt-6.1-sol".to_owned(),
+            effort: None,
+            context_window: None,
+            options: Vec::new(),
+            api: BridgeApi::Responses,
+            upstream: None,
+        };
+        apply_bridge(&mut spec, "http://127.0.0.1:1", &plan).unwrap();
+        let inline: Value =
+            serde_json::from_str(&spec.env[&OsString::from(INLINE_CONFIG)].to_string_lossy())
+                .unwrap();
+        assert_eq!(inline["default_agent"], "plan");
+        assert_eq!(inline["model"], "alc-codex/gpt-6.1-sol");
+        assert!(inline["provider"]["alc-codex"].is_object());
     }
 }

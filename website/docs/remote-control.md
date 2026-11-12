@@ -144,7 +144,7 @@ the most permissive setting Goose has and a mid-tier one for Claude Code.
 | --- | --- | --- |
 | claude | `--permission-mode plan\|manual\|acceptEdits\|auto\|bypassPermissions` | Shift+Tab cycling only, so the page offers "cycle" |
 | codex | `-s read-only\|workspace-write\|danger-full-access` and `-a on-request\|never` | `/permissions` opens Codex's own picker |
-| opencode | `--agent plan\|build`, `--auto` | Tab toggles build ↔ plan |
+| opencode | `default_agent` plan\|build (inline config), `--auto` | Tab toggles build ↔ plan |
 | goose | `GOOSE_MODE=chat\|approve\|smart_approve\|auto` | `/mode <name>` |
 | qwen | `--approval-mode plan\|default\|auto-edit\|auto\|yolo` | `/approval-mode <name>` |
 | kimi | `--plan`, `--yolo` | relaunch only |

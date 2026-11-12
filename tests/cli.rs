@@ -879,7 +879,10 @@ fn a_verified_agent_gets_a_permission_flag_and_an_unverified_one_does_not() {
         .assert()
         .success()
         .stdout(predicate::str::contains("share:"))
-        .stdout(predicate::str::contains("--agent build"));
+        // OpenCode 2's TUI has no `--agent`; the agent travels in its
+        // inline config, which every release reads.
+        .stdout(predicate::str::contains(r#""default_agent":"build""#))
+        .stdout(predicate::str::contains("--agent").not());
 
     // Qwen's flags are documentation-derived, so an unasked-for launch adds
     // nothing to its arguments.
@@ -2795,7 +2798,7 @@ fn a_cache_written_by_an_older_alc_cannot_hide_a_model_alc_ships() {
         .stdout(predicate::str::contains("\"model\":\"gpt-6-sol\""))
         .stdout(predicate::str::contains("\"model\":\"gpt-6-luna\""))
         .stdout(predicate::str::contains(
-            "catalog: gpt-6.1-sol, gpt-6-astra, gpt-6-sol, gpt-6-luna restored from the catalog alc ships",
+            "catalog: gpt-6.1-sol, gpt-6-astra, gpt-6.1-terra, gpt-6-sol, gpt-6-luna restored from the catalog alc ships",
         ));
 }
 

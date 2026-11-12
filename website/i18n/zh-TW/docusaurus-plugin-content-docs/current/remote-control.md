@@ -140,7 +140,7 @@ agent，給的是一個停用的控制項，上面寫著原因。它會同時顯
 | --- | --- | --- |
 | claude | `--permission-mode plan\|manual\|acceptEdits\|auto\|bypassPermissions` | 只能用 Shift+Tab 循環，所以頁面給的是「循環」 |
 | codex | `-s read-only\|workspace-write\|danger-full-access` 與 `-a on-request\|never` | `/permissions` 會開啟 Codex 自己的選單 |
-| opencode | `--agent plan\|build`、`--auto` | Tab 在 build ↔ plan 之間切換 |
+| opencode | inline config 的 `default_agent` plan\|build、`--auto` | Tab 在 build ↔ plan 之間切換 |
 | goose | `GOOSE_MODE=chat\|approve\|smart_approve\|auto` | `/mode <name>` |
 | qwen | `--approval-mode plan\|default\|auto-edit\|auto\|yolo` | `/approval-mode <name>` |
 | kimi | `--plan`、`--yolo` | 只能重新啟動 |
