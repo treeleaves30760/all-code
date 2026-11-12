@@ -663,6 +663,9 @@ pub(crate) fn prepare(mut spec: LaunchSpec, config_dir: &Path) -> Result<Prepare
     // Held until the child exits so a failed launch still cleans up.
     let cleanup = CleanupFiles(process_file_setup(&spec)?);
     let program = resolve_program(&spec.program, spec.agent)?;
+    if spec.agent == Agent::Opencode {
+        crate::agents::opencode::finish_for_binary(&mut spec, &program);
+    }
 
     // Last, after everything that can still refuse: a missing `codex login`
     // or an agent that is not on PATH must not count as a launch, or typing
@@ -2265,6 +2268,7 @@ mod tests {
             [
                 "gpt-6.1-sol",
                 "gpt-6-astra",
+                "gpt-6.1-terra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",

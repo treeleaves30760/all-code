@@ -1001,7 +1001,7 @@ mod tests {
         let rows = document["modelPicker"]["options"]
             .as_array()
             .expect("the picker's rows");
-        assert_eq!(rows.len(), 7);
+        assert_eq!(rows.len(), 8);
         assert_eq!(rows[0]["model"], "gpt-6.1-sol");
         assert_eq!(
             rows[0]["label"], "GPT-6.1 Sol",

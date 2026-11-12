@@ -49,6 +49,7 @@ error: 'claude' is not installed or not on PATH; install it first, then retry `a
 | --- | --- | --- |
 | `gpt-6.1-sol` | GPT-6.1 Sol，最新的主力模型，適合編碼與日常工作，建議從這個開始 | `low` |
 | `gpt-6-astra` | GPT-6，適合複雜且吃重的工作 | `medium` |
+| `gpt-6.1-terra` | GPT-6.1 Terra，日常編碼的均衡選擇，同樣有 500K 視窗 | `low` |
 | `gpt-6-sol` | GPT-6，日常編碼與代理式工作 | `medium` |
 | `gpt-5.6-sol` | 上一代，適合複雜的專業工作 | `low` |
 | `gpt-5.6-terra` | 上一代，日常編碼的均衡選擇 | `medium` |
