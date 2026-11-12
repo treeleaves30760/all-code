@@ -46,8 +46,8 @@ const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 /// whatever version the caller declares, so this number decides how much of
 /// the catalog comes back. GPT-6.1 Sol's upstream row literally carries
 /// 0.153.0, and 0.159.1 was the first stable Codex bundle containing it. The
-/// floor is 0.160.0, the client the catalog alc ships was captured with on
-/// 2026-10-13. What a row says it needs and what alc declares answer
+/// floor is 0.167.0, the client that last filled `models_cache.json` with the
+/// catalog alc ships (GPT-6.1 Terra included) on 2026-11-12. What a row says it needs and what alc declares answer
 /// different questions and are kept separate. A user whose Codex is newer
 /// still asks as that newer client; this is a floor, not a pin.
 ///
@@ -59,7 +59,7 @@ const REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 /// `codex debug models`. So the weekly job checks this constant directly,
 /// against the version of the Codex it just installed from npm, and says so
 /// when alc has fallen behind it.
-const CODEX_CLIENT_VERSION_FLOOR: &str = "0.160.0";
+const CODEX_CLIENT_VERSION_FLOOR: &str = "0.167.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -776,12 +776,14 @@ mod tests {
     use super::*;
 
     /// Trimmed real-answer fixture, captured from chatgpt.com on 2026-10-13
-    /// with client 0.160.0. Only the per-model prompt text and fields alc
+    /// with client 0.160.0; GPT-6.1 Terra's row from the 2026-11-13 answer
+    /// to client 0.167.0. Only the per-model prompt text and fields alc
     /// never reads are gone. Sol's literal upstream minimum is not alc's
     /// operational client-version floor.
     const CODEX_CURRENT: &str = r#"{"models":[
       {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","description":"Latest workhorse model for coding and everyday work.","context_window":500000,"max_context_window":872000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1,"minimal_client_version":"0.153.0"},
       {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","description":"Frontier intelligence for the most demanding work.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1,"minimal_client_version":"0.153.0"},
+      {"slug":"gpt-6.1-terra","display_name":"GPT-6.1 Terra","description":"GPT-6.1 Terra Codex model.","context_window":500000,"max_context_window":872000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":1,"minimal_client_version":"0.153.0"},
       {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","description":"Previous generation workhorse model.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"visibility":"list","priority":2,"minimal_client_version":"0.155.0"},
       {"slug":"gpt-6-luna","display_name":"GPT-6-Luna","description":"Fast and affordable model for easier tasks.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"list","priority":3,"minimal_client_version":"0.155.0"},
       {"slug":"gpt-reserve","display_name":"GPT-Reserve","description":"Fast and affordable agentic coding model.","context_window":272000,"max_context_window":872000,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}],"visibility":"hide","priority":3,"minimal_client_version":"0.144.0"},
@@ -871,6 +873,7 @@ mod tests {
             [
                 "gpt-6.1-sol",
                 "gpt-6-astra",
+                "gpt-6.1-terra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
@@ -883,7 +886,7 @@ mod tests {
     #[test]
     fn bundled_catalog_has_requested_models_and_efforts() {
         let catalog = ModelCatalog::built_in();
-        assert_eq!(catalog.models.len(), 7);
+        assert_eq!(catalog.models.len(), 8);
         for model in &catalog.models {
             let id = &model.id;
             // Not every model has every tier - both Lunas stop at `max` -
@@ -1005,7 +1008,13 @@ mod tests {
         assert_eq!(ids(&catalog)[0], "gpt-6.1-sol");
         assert_eq!(
             catalog.unreported,
-            ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+            [
+                "gpt-6.1-sol",
+                "gpt-6-astra",
+                "gpt-6.1-terra",
+                "gpt-6-sol",
+                "gpt-6-luna"
+            ]
         );
     }
 
@@ -1045,6 +1054,7 @@ mod tests {
             [
                 "gpt-6.1-sol",
                 "gpt-6-astra",
+                "gpt-6.1-terra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
@@ -1066,7 +1076,7 @@ mod tests {
         // answer predates were put back by alc.
         assert_eq!(
             catalog.unreported,
-            ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]
+            ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna"]
         );
     }
 
@@ -1095,6 +1105,7 @@ mod tests {
             [
                 "gpt-6.1-sol",
                 "gpt-6-astra",
+                "gpt-6.1-terra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-7-nova",
@@ -1131,6 +1142,7 @@ mod tests {
             [
                 "gpt-6.1-sol",
                 "gpt-6-astra",
+                "gpt-6.1-terra",
                 "gpt-6-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
@@ -1177,7 +1189,13 @@ mod tests {
         let mut catalog = catalog_from(CODEX_ONE_RELEASE_BEHIND);
         assert_eq!(
             catalog.unreported,
-            ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+            [
+                "gpt-6.1-sol",
+                "gpt-6-astra",
+                "gpt-6.1-terra",
+                "gpt-6-sol",
+                "gpt-6-luna"
+            ]
         );
         let before = catalog.models.clone();
         let restored = catalog.apply_floor();
@@ -1312,7 +1330,8 @@ mod tests {
     }
 
     /// 0.159.1 was the first stable Codex bundle containing GPT-6.1 Sol, and
-    /// 0.160.0 the client the shipped catalog was captured with. The
+    /// 0.167.0 the client the shipped catalog (with GPT-6.1 Terra) was
+    /// captured with. The
     /// operational floor is deliberately newer than the row's literal
     /// upstream minimum, so an old or missing Codex cannot under-declare.
     #[test]
@@ -1323,13 +1342,15 @@ mod tests {
             Some("0.156.0"),
             Some("0.159.0"),
             Some("0.159.1"),
-            Some("0.160.0-alpha.1"),
             Some("0.160.0"),
+            Some("0.163.0"),
+            Some("0.167.0-alpha.1"),
+            Some("0.167.0"),
             Some("not-a-version"),
         ] {
-            assert_eq!(declared_client_version(stamp), "0.160.0", "{stamp:?}");
+            assert_eq!(declared_client_version(stamp), "0.167.0", "{stamp:?}");
         }
-        assert_eq!(declared_client_version(Some("0.160.2")), "0.160.2");
+        assert_eq!(declared_client_version(Some("0.167.2")), "0.167.2");
     }
 
     #[test]
@@ -1356,9 +1377,11 @@ mod tests {
     #[test]
     fn the_bundled_catalog_carries_the_live_windows() {
         let catalog = ModelCatalog::built_in();
-        let sol = catalog.find("gpt-6.1-sol").unwrap();
-        assert_eq!(sol.context_window, 500_000);
-        assert_eq!(sol.max_context_window, 872_000);
+        for id in ["gpt-6.1-sol", "gpt-6.1-terra"] {
+            let model = catalog.find(id).unwrap();
+            assert_eq!(model.context_window, 500_000, "{id}");
+            assert_eq!(model.max_context_window, 872_000, "{id}");
+        }
         for id in [
             "gpt-6-astra",
             "gpt-6-sol",

@@ -10,6 +10,7 @@ keywords:
   - chatgpt plan coding agent
   - gpt-6.1-sol
   - gpt-6-astra
+  - gpt-6.1-terra
   - gpt-6-sol
   - gpt-6-luna
   - reasoning effort
@@ -54,6 +55,7 @@ Claude Code 會把這幾個列進它自己的 `/model` 選單：
 | --- | --- | --- |
 | `gpt-6.1-sol` | GPT-6.1 Sol。最新的主力模型，適合寫程式與日常工作，建議從這個開始 | `low` |
 | `gpt-6-astra` | GPT-6。適合複雜吃重的工作 | `medium` |
+| `gpt-6.1-terra` | GPT-6.1 Terra。日常寫程式的均衡選擇，同樣有 500K 視窗 | `low` |
 | `gpt-6-sol` | GPT-6。日常寫程式與代理式工作 | `medium` |
 | `gpt-5.6-sol` | 上一代，適合複雜的專業工作 | `low` |
 | `gpt-5.6-terra` | 上一代，日常寫程式的均衡選擇 | `medium` |

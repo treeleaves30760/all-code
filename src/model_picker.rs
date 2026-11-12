@@ -346,6 +346,7 @@ fn beginner_model_hint(model: &str) -> &'static str {
     match model {
         "gpt-6-luna" => "Best for quick fixes, repetitive work, and keeping usage low.",
         "gpt-6.1-sol" => "Best starting point for most coding sessions.",
+        "gpt-6.1-terra" => "A balanced choice for everyday coding at lower usage.",
         "gpt-6-sol" => "Workhorse for everyday coding and agentic work.",
         "gpt-6-astra" => "Best for the most complex work: coding, computer use, and research.",
         "gpt-5.6-luna" => "Previous generation. Quick, routine work at low usage.",
@@ -375,7 +376,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn rendered(app: &PickerApp) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(96, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(96, 30)).unwrap();
         terminal.draw(|frame| draw(frame, app)).unwrap();
         terminal
             .backend()
@@ -459,8 +460,9 @@ mod tests {
                 choose_effort: true,
             },
         );
-        // Sol 6.1 is two rows above the previous default, ahead of Astra.
-        app.move_selected(-2);
+        // Sol 6.1 is three rows above the previous default, ahead of Astra
+        // and Terra 6.1.
+        app.move_selected(-3);
         assert_eq!(app.selected_model().unwrap().id, "gpt-6.1-sol");
         assert!(rendered(&app).contains("starting point"));
         assert!(!beginner_model_hint("gpt-6-sol").contains("starting point"));

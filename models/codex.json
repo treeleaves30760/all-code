@@ -36,6 +36,22 @@
       ]
     },
     {
+      "id": "gpt-6.1-terra",
+      "name": "GPT-6.1 Terra",
+      "description": "GPT-6.1 Terra Codex model.",
+      "context_window": 500000,
+      "max_context_window": 872000,
+      "default_effort": "low",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    },
+    {
       "id": "gpt-6-sol",
       "name": "GPT-6 Sol",
       "description": "Previous generation workhorse model.",

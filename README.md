@@ -53,6 +53,7 @@ in its own `/model` picker:
 | --- | --- | --- |
 | `gpt-6.1-sol` | GPT-6.1 Sol. Latest workhorse for coding and everyday work; recommended starting point | `low` |
 | `gpt-6-astra` | GPT-6. Complex, demanding work | `medium` |
+| `gpt-6.1-terra` | GPT-6.1 Terra. Balanced everyday coding with the 500K window | `low` |
 | `gpt-6-sol` | GPT-6. Everyday coding and agentic work | `medium` |
 | `gpt-5.6-sol` | Previous generation; complex professional work | `low` |
 | `gpt-5.6-terra` | Previous generation; balanced everyday coding | `medium` |
