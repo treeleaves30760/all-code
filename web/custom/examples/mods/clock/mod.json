@@ -1,0 +1,6 @@
+{
+  "name": "Clock",
+  "description": "The time (and optionally a second time zone) in the header, a dock or a window.",
+  "version": "1.0.0",
+  "author": "alc"
+}

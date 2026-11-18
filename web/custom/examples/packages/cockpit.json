@@ -1,0 +1,20 @@
+{
+  "name": "Cockpit",
+  "description": "Everything at a glance: session tiles over the list, quota and a per-session note beside the terminal, the agent's commands under it, the clock in the header and an age bar on every card.",
+  "version": "1.0.0",
+  "author": "alc",
+  "mods": ["clock", "command-deck", "quota-meter", "session-age", "session-notes", "session-overview"],
+  "layout": {
+    "slots": {
+      "bar": [{ "widget": "clock/clock", "options": {} }],
+      "list.top": [{ "widget": "session-overview/tiles", "options": { "byAgent": true } }],
+      "card": [{ "widget": "session-age/bar", "options": { "hours": 8 } }],
+      "view.right": [
+        { "widget": "quota-meter/meter", "options": {} },
+        { "widget": "session-notes/note", "options": {} }
+      ],
+      "view.bottom": [{ "widget": "command-deck/deck", "options": {} }]
+    },
+    "sizes": { "right": 300 }
+  }
+}

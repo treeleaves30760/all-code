@@ -1,0 +1,19 @@
+{
+  "name": "Sakura",
+  "mode": "light",
+  "tokens": {
+    "--bg": "#fdf6f8",
+    "--surface": "#ffffff",
+    "--raised": "#fbeef2",
+    "--line": "#f3dde4",
+    "--line-strong": "#e8c6d1",
+    "--text": "#3b2530",
+    "--muted": "#8a6573",
+    "--accent": "#db2777"
+  },
+  "terminal": {
+    "background": "#2a1820",
+    "foreground": "#fbe7ee",
+    "cursor": "#f472b6"
+  }
+}

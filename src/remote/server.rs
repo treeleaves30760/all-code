@@ -33,6 +33,7 @@ use crate::remote::request::{Denied, Grade, HostPattern, Method, Request, read_r
 use crate::remote::session::Session;
 use crate::remote::settings::{Bind, RemoteSettings, Secrets};
 use crate::remote::web::{self, ModFile, WebDir};
+use crate::remote::web_install;
 use crate::remote::wire::{ClientFrame, Hello, NoticeLevel, ServerFrame};
 
 /// How long a peer may take to send a complete request head before the
@@ -584,6 +585,36 @@ fn serve_http(
     context: &Serving,
 ) -> Result<()> {
     let registry = &*context.registry;
+    // Everything that changes the page's folder: settings, packages, mods,
+    // backgrounds. Operator-only, like every other route that changes
+    // something: a viewer link sees the operator's page, it does not get to
+    // restyle it.
+    if request.method != Method::Get && request.path.starts_with("/api/web/") {
+        if grade < Some(Grade::Operator) {
+            return respond(
+                stream,
+                403,
+                "text/plain; charset=utf-8",
+                None,
+                b"this link can watch but not change the page",
+            );
+        }
+        return match web_write(request, &context.web) {
+            Ok(Some(body)) => respond(
+                stream,
+                200,
+                "application/json; charset=utf-8",
+                None,
+                &serde_json::to_vec(&body)?,
+            ),
+            Ok(None) => respond(stream, 404, "text/plain; charset=utf-8", None, b"not found"),
+            Err(error) => {
+                let body = serde_json::to_vec(&serde_json::json!({ "error": error.to_string() }))?;
+                respond(stream, 400, "application/json; charset=utf-8", None, &body)
+            }
+        };
+    }
+
     // Stopping a session is the one destructive thing the page can do, so
     // it is a method of its own rather than a POST that could be reached by
     // a form submission, and it needs operator rights.
@@ -712,34 +743,6 @@ fn serve_http(
         );
     }
 
-    // The page's settings. Operator-only, like every other route that
-    // changes something: a viewer link sees the operator's page, it does not
-    // get to restyle it.
-    if request.method == Method::Post && request.path == "/api/web/settings" {
-        if grade < Some(Grade::Operator) {
-            return respond(
-                stream,
-                403,
-                "text/plain; charset=utf-8",
-                None,
-                b"this link can watch but not change settings",
-            );
-        }
-        return match context.web.save_settings(&request.body) {
-            Ok(saved) => respond(
-                stream,
-                200,
-                "application/json; charset=utf-8",
-                None,
-                &serde_json::to_vec(&saved)?,
-            ),
-            Err(error) => {
-                let body = serde_json::to_vec(&serde_json::json!({ "error": error.to_string() }))?;
-                respond(stream, 400, "application/json; charset=utf-8", None, &body)
-            }
-        };
-    }
-
     if request.method != Method::Get {
         return respond(
             stream,
@@ -861,6 +864,11 @@ fn serve_http(
                 "themes": snapshot.themes,
                 "revision": snapshot.revision,
                 "dir": snapshot.dir,
+                "packages": snapshot.packages,
+                "backgrounds": snapshot.backgrounds,
+                "catalog": snapshot.catalog,
+                "slots": web::SLOTS,
+                "presets": web::BACKGROUND_PRESETS,
                 // The page otherwise learns its grade only from a session's
                 // socket, and a settings page drawn before one is opened
                 // would offer a viewer controls the server will refuse.
@@ -872,6 +880,17 @@ fn serve_http(
                 },
             }))?;
             respond(stream, 200, "application/json; charset=utf-8", None, &body)
+        }
+        // A background image, for both grades: a viewer sees the page the
+        // operator made. Served to `fetch` with the token and drawn from a
+        // blob, since a CSS url() cannot carry one.
+        path if path.starts_with("/api/web/backgrounds/") => {
+            debug_assert!(grade.is_some());
+            let name = path.trim_start_matches("/api/web/backgrounds/");
+            match context.web.read_background(name) {
+                Ok((bytes, kind)) => respond(stream, 200, kind, None, &bytes),
+                Err(_) => respond(stream, 404, "text/plain; charset=utf-8", None, b"not found"),
+            }
         }
         // One enabled mod's script or stylesheet, as text. The page runs the
         // script inline under the hash the index's policy names, so what is
@@ -1076,14 +1095,15 @@ fn serve_websocket(stream: TcpStream, request: &Request, context: &Serving) {
                 cols,
                 rows,
                 since,
+                take,
             }) => guard
                 .grade_token(&token)
-                .map(|grade| (grade, since, cols, rows)),
+                .map(|grade| (grade, since, cols, rows, take)),
             _ => None,
         },
         _ => None,
     };
-    let Some((grade, since, cols, rows)) = authenticated else {
+    let Some((grade, since, cols, rows, take)) = authenticated else {
         let _ = socket.close(None);
         let _ = socket.flush();
         return;
@@ -1102,12 +1122,11 @@ fn serve_websocket(stream: TcpStream, request: &Request, context: &Serving) {
     // the terminal that launched it and the page letterboxes it instead.
     // Honoured here as well as on a `resize` frame because the browser's
     // first geometry arrives on the auth frame, before this reply.
-    if grade >= Grade::Operator && cols > 0 && rows > 0 {
-        let _ = session.resize_from_viewer(cols, rows);
-    }
-
     let subscription = session.subscribe();
     let viewer = subscription.handle.id();
+    if grade >= Grade::Operator && cols > 0 && rows > 0 {
+        let _ = session.resize_from_viewer(Some(viewer), cols, rows, take);
+    }
 
     let hello = ServerFrame::Hello(Box::new(Hello {
         session: session.card(),
@@ -1199,7 +1218,7 @@ fn serve_websocket(stream: TcpStream, request: &Request, context: &Serving) {
             Ok(Message::Text(text)) => {
                 last_seen = Instant::now();
                 if let Ok(frame) = serde_json::from_str::<ClientFrame>(&text)
-                    && !apply(&session, frame, grade)
+                    && !apply(&session, viewer, frame, grade)
                 {
                     let notice = ServerFrame::Notice {
                         level: NoticeLevel::Warn,
@@ -1221,7 +1240,82 @@ fn serve_websocket(stream: TcpStream, request: &Request, context: &Serving) {
         }
     }
 
+    // A page that fitted a plain session to itself and then went away would
+    // otherwise leave the launching terminal drawing for the page's size.
+    let _ = session.release_viewer(Some(viewer));
     session.unsubscribe(viewer);
+}
+
+/// The page folder's write routes. `Ok(None)` is a 404; an error is a 400
+/// carrying its message, which is alc's own sentence about the folder.
+fn web_write(request: &Request, web: &WebDir) -> Result<Option<serde_json::Value>> {
+    use serde_json::json;
+    let rest = request.path.trim_start_matches("/api/web/");
+    let parts: Vec<&str> = rest.split('/').collect();
+    let body_json = || -> Result<serde_json::Value> {
+        serde_json::from_slice(&request.body).context("the body is not JSON")
+    };
+    let text = |value: &serde_json::Value, key: &str| {
+        value
+            .get(key)
+            .and_then(|field| field.as_str())
+            .map(str::to_owned)
+    };
+    Ok(Some(match (request.method, parts.as_slice()) {
+        (Method::Post, ["settings"]) => json!(web.save_settings(&request.body)?),
+        (Method::Post, ["packages", id]) => json!(web.save_package(id, &request.body)?),
+        (Method::Post, ["packages", id, "apply"]) => json!(web.apply_package(id)?),
+        (Method::Delete, ["packages", id]) => {
+            web.remove_package(id)?;
+            json!({ "removed": id })
+        }
+        (Method::Post, ["catalog"]) => {
+            let body = body_json()?;
+            let kind: web::CatalogKind = serde_json::from_value(
+                body.get("kind").cloned().unwrap_or(serde_json::Value::Null),
+            )
+            .context("kind is mod, package or theme")?;
+            let id = text(&body, "id").context("an id is needed")?;
+            let force = body.get("force").and_then(|value| value.as_bool()) == Some(true);
+            web.install_official(kind, &id, force)?;
+            json!({ "installed": id })
+        }
+        (Method::Post, ["mods", id, "create"]) => {
+            let body = body_json()?;
+            let template = text(&body, "template").unwrap_or_else(|| "widget".to_owned());
+            web.create_mod(id, &template, text(&body, "name").as_deref())?;
+            json!({ "created": id, "dir": web.root().join("mods").join(id).display().to_string() })
+        }
+        (Method::Delete, ["mods", id]) => {
+            web.remove_mod(id)?;
+            json!({ "removed": id })
+        }
+        (Method::Post, ["install"]) => {
+            let body = body_json()?;
+            let source = text(&body, "source").context("a source is needed")?;
+            let source = web_install::Source::parse(&source)?;
+            // A folder on the hub's disk is the CLI's business; the page
+            // installs from GitHub only.
+            if matches!(source, web_install::Source::Folder(_)) {
+                anyhow::bail!(
+                    "the page installs from GitHub; use `alc remote web install` for a folder"
+                );
+            }
+            let bundle = web_install::fetch(&source, text(&body, "name").as_deref())?;
+            let force = body.get("force").and_then(|value| value.as_bool()) == Some(true);
+            let installed = web_install::install(web, &bundle, &source.label(), false, force)?;
+            json!({ "mods": installed.mods, "themes": installed.themes, "packages": installed.packages })
+        }
+        (Method::Post, ["backgrounds", name]) => {
+            web.save_background(name, &request.body)?;
+            json!({ "saved": name })
+        }
+        (Method::Delete, ["backgrounds", name]) => {
+            web.remove_background(name)?;
+            json!({ "removed": name })
+        }
+        _ => return Ok(None),
+    }))
 }
 
 /// The body of a permission change.
@@ -1236,7 +1330,7 @@ struct PermissionRequest {
 /// Applies one client frame. Returns false when the frame needed operator
 /// rights the connection does not have, so the caller can say so once
 /// rather than dropping input silently.
-fn apply(session: &Session, frame: ClientFrame, grade: Grade) -> bool {
+fn apply(session: &Session, viewer: u64, frame: ClientFrame, grade: Grade) -> bool {
     let operator = grade >= Grade::Operator;
     match frame {
         ClientFrame::Input { data } => {
@@ -1255,11 +1349,17 @@ fn apply(session: &Session, frame: ClientFrame, grade: Grade) -> bool {
                 session.notify(NoticeLevel::Error, "the agent is no longer accepting input");
             }
         }
-        ClientFrame::Resize { cols, rows } => {
+        ClientFrame::Resize { cols, rows, take } => {
             if !operator {
                 return false;
             }
-            let _ = session.resize_from_viewer(cols, rows);
+            let _ = session.resize_from_viewer(Some(viewer), cols, rows, take);
+        }
+        ClientFrame::Release => {
+            if !operator {
+                return false;
+            }
+            let _ = session.release_viewer(Some(viewer));
         }
         ClientFrame::Auth { .. } | ClientFrame::Pong => {}
     }
@@ -1710,6 +1810,117 @@ mod live_tests {
             "a response echoed a token"
         );
         let _ = harness.session.kill();
+    }
+
+    #[test]
+    fn a_page_takes_a_plain_sessions_size_only_when_asked_and_gives_it_back() {
+        let harness = harness();
+        let session = &harness.session;
+        // A plain resize from a page is ignored: the terminal owns the size.
+        session.resize_from_viewer(Some(7), 132, 40, false).unwrap();
+        assert_eq!((session.card().cols, session.card().rows), (80, 24));
+        assert!(!session.card().fitted);
+        // Asked to take it, the page holds it.
+        session.resize_from_viewer(Some(7), 132, 40, true).unwrap();
+        let card = session.card();
+        assert_eq!((card.cols, card.rows, card.fitted), (132, 40, true));
+        // Another viewer letting go does not release this one's hold.
+        session.release_viewer(Some(8)).unwrap();
+        assert!(session.card().fitted);
+        // Letting go hands back the terminal's size.
+        session.release_viewer(Some(7)).unwrap();
+        let card = session.card();
+        assert_eq!((card.cols, card.rows, card.fitted), (80, 24, false));
+        // A terminal resize takes it back from a page that holds it.
+        session.resize_from_viewer(Some(7), 132, 40, true).unwrap();
+        session.resize_from_terminal(100, 30).unwrap();
+        let card = session.card();
+        assert_eq!((card.cols, card.rows, card.fitted), (100, 30, false));
+        session.release_viewer(Some(7)).unwrap();
+        assert_eq!((session.card().cols, session.card().rows), (100, 30));
+    }
+
+    #[test]
+    fn the_studio_routes_write_for_an_operator_only() {
+        let harness = harness();
+        let port = harness.address.port();
+        let send = |method: &str, token: &str, path: &str, body: &str| {
+            request(
+                harness.address,
+                &format!(
+                    "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                     Authorization: Bearer {token}\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                ),
+            )
+        };
+        let install = r#"{"kind":"mod","id":"clock"}"#;
+        assert!(
+            status(&send("POST", &harness.viewer, "/api/web/catalog", install)).contains("403")
+        );
+        assert!(
+            status(&send(
+                "POST",
+                &harness.operator,
+                "/api/web/catalog",
+                install
+            ))
+            .contains("200")
+        );
+        let web = harness._config.path().join("web");
+        assert!(web.join("mods/clock/mod.js").is_file());
+
+        let package = r#"{"name":"P","mods":["clock"]}"#;
+        assert!(
+            status(&send(
+                "POST",
+                &harness.operator,
+                "/api/web/packages/p",
+                package
+            ))
+            .contains("200")
+        );
+        let applied = send("POST", &harness.operator, "/api/web/packages/p/apply", "{}");
+        assert!(status(&applied).contains("200"), "{applied}");
+        assert!(applied.contains("\"package\":\"p\""), "{applied}");
+        let bad = send(
+            "POST",
+            &harness.operator,
+            "/api/web/packages/..%2Fx",
+            package,
+        );
+        assert!(status(&bad).contains("400"), "{bad}");
+        assert!(
+            status(&send("DELETE", &harness.viewer, "/api/web/packages/p", "")).contains("403")
+        );
+        assert!(
+            status(&send(
+                "DELETE",
+                &harness.operator,
+                "/api/web/packages/p",
+                ""
+            ))
+            .contains("200")
+        );
+        assert!(status(&send("POST", &harness.operator, "/api/web/nothing", "{}")).contains("404"));
+
+        let created = send(
+            "POST",
+            &harness.operator,
+            "/api/web/mods/fresh/create",
+            r#"{"template":"widget"}"#,
+        );
+        assert!(status(&created).contains("200"), "{created}");
+        assert!(web.join("mods/fresh/mod.js").is_file());
+        // A folder on the hub is the CLI's business, not a link's.
+        let folder = send(
+            "POST",
+            &harness.operator,
+            "/api/web/install",
+            &format!("{{\"source\":{:?}}}", web.display().to_string()),
+        );
+        assert!(status(&folder).contains("400"), "{folder}");
     }
 
     #[test]

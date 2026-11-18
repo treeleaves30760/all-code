@@ -1,14 +1,14 @@
 .scratchpad {
   display: flex;
   flex-direction: column;
-  gap: var(--s3);
+  gap: 12px;
   min-height: 60vh;
 }
 
 .scratchpad-head {
   display: flex;
   align-items: center;
-  gap: var(--s3);
+  gap: 12px;
 }
 
 .scratchpad-head .pane-title {
@@ -17,18 +17,46 @@
 }
 
 .scratchpad-status {
-  color: var(--muted);
   font-size: 12px;
+  color: var(--muted);
 }
 
 .scratchpad-text {
   flex: 1 1 auto;
   min-height: 50vh;
   resize: vertical;
-  padding: var(--s4);
-  border-radius: var(--r-md);
-  border: 1px solid var(--line-strong);
-  background: var(--raised);
-  color: var(--text);
   font: 14px/1.6 var(--mono);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 12px;
+}
+
+.scratchpad-text.small {
+  min-height: 140px;
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 13px;
+}
+
+.win .scratchpad-widget {
+  height: 100%;
+}
+
+.scratchpad-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.win .scratchpad-text.small {
+  flex: 1 1 auto;
+}
+
+.scratchpad-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }

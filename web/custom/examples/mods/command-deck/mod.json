@@ -1,0 +1,6 @@
+{
+  "name": "Command deck",
+  "description": "The slash commands of the agent on screen as buttons - /compact, /clear, /review, /status and so on - picked per agent, plus your own.",
+  "version": "1.0.0",
+  "author": "alc"
+}

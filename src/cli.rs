@@ -451,6 +451,40 @@ enum WebSubcommand {
     Disable { id: String },
     /// Delete a mod and its saved state.
     Remove { id: String },
+    /// Start a new mod from a template (widget, page, window, background, style, blank).
+    New {
+        id: String,
+        /// The template to copy.
+        #[arg(long, default_value = "widget")]
+        template: String,
+        /// A display name for mod.json.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// List the official mods, packages, themes and templates alc ships.
+    Catalog,
+    /// Install an official mod, package or theme by id (mods arrive on).
+    Add {
+        id: String,
+        /// Replace an installed copy.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List packages, or apply one: its mods on, its layout, theme and background.
+    Package {
+        #[command(subcommand)]
+        command: Option<PackageSubcommand>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PackageSubcommand {
+    /// List the packages in packages/.
+    List,
+    /// Make a package the page's (installs official mods it needs).
+    Apply { id: String },
+    /// Delete packages/<id>.json.
+    Remove { id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -1539,6 +1573,16 @@ fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {
             Some(WebSubcommand::Enable { id }) => WebCommand::Enable(id),
             Some(WebSubcommand::Disable { id }) => WebCommand::Disable(id),
             Some(WebSubcommand::Remove { id }) => WebCommand::Remove(id),
+            Some(WebSubcommand::New { id, template, name }) => {
+                WebCommand::New { id, template, name }
+            }
+            Some(WebSubcommand::Catalog) => WebCommand::Catalog,
+            Some(WebSubcommand::Add { id, force }) => WebCommand::Add { id, force },
+            Some(WebSubcommand::Package { command }) => match command {
+                None | Some(PackageSubcommand::List) => WebCommand::Packages,
+                Some(PackageSubcommand::Apply { id }) => WebCommand::ApplyPackage(id),
+                Some(PackageSubcommand::Remove { id }) => WebCommand::RemovePackage(id),
+            },
         }),
         Some(RemoteSubcommand::Token(token)) => {
             if !token.rotate {

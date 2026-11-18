@@ -36,6 +36,9 @@ pub(crate) enum ClientFrame {
         /// The last sequence this client saw, when reconnecting.
         #[serde(default)]
         since: Option<u64>,
+        /// Take a plain session's size for this page (see `Resize`).
+        #[serde(default)]
+        take: bool,
     },
     /// Keystrokes, forwarded to the pty verbatim.
     Input {
@@ -50,7 +53,13 @@ pub(crate) enum ClientFrame {
     Resize {
         cols: u16,
         rows: u16,
+        /// Take a plain session's size for this page ("fit to this page").
+        /// Ignored for a tmux session, whose size an operator page owns.
+        #[serde(default)]
+        take: bool,
     },
+    /// Hand a plain session's size back to the terminal that launched it.
+    Release,
     Pong,
 }
 
@@ -77,6 +86,9 @@ pub(crate) enum ServerFrame {
     Size {
         cols: u16,
         rows: u16,
+        /// Whether a page holds a plain session's size, so a page that had
+        /// fitted it learns when the terminal took it back.
+        fitted: bool,
     },
     Ping,
 }
@@ -152,6 +164,10 @@ pub(crate) struct SessionCard {
     /// browser it is also sent to can do nothing with it.
     #[serde(default)]
     pub tmux: Option<crate::remote::tmux::Tmux>,
+    /// A page has fitted this plain session to itself; its terminal gets
+    /// the size back when it is resized.
+    #[serde(default)]
+    pub fitted: bool,
 }
 
 /// Encodes a binary output frame: opcode, sequence, then the payload.
@@ -176,10 +192,12 @@ mod tests {
                 cols,
                 rows,
                 since,
+                take,
             } => {
                 assert_eq!(token, "x");
                 assert_eq!((cols, rows), (0, 0));
                 assert_eq!(since, None);
+                assert!(!take);
             }
             other => panic!("expected auth, got {other:?}"),
         }

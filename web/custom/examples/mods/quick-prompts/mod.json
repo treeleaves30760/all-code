@@ -1,6 +1,6 @@
 {
   "name": "Quick prompts",
-  "description": "One-tap prompts on the key bar and in the command palette: continue, run the tests, summarise, compact.",
-  "version": "1.0.0",
+  "description": "One-tap prompts on the key bar, in the command palette, and as a widget you can dock beside the terminal or float: continue, run the tests, summarise, compact - or your own.",
+  "version": "1.1.0",
   "author": "alc"
 }

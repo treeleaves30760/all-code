@@ -1,0 +1,11 @@
+.qp-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dock .qp-row,
+.win .qp-row {
+  flex-direction: column;
+  align-items: stretch;
+}

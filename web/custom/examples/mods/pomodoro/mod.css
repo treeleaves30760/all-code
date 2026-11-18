@@ -1,0 +1,70 @@
+.pomo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.pomo-phase {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+[data-phase="rest"] .pomo-phase {
+  color: var(--ok);
+}
+
+.pomo-ring {
+  --pomo: 0deg;
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: conic-gradient(var(--accent) var(--pomo), var(--raised) 0);
+}
+
+[data-phase="rest"] .pomo-ring {
+  background: conic-gradient(var(--ok) var(--pomo), var(--raised) 0);
+}
+
+.pomo-face {
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  font: 600 22px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.pomo-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.pomo-rounds {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pomo-inline {
+  border: 0;
+  background: transparent;
+  padding: 2px 6px;
+}
+
+.pomo-inline .pomo-face {
+  width: auto;
+  height: auto;
+  background: none;
+  font-size: 13px;
+}
+
+[data-running="yes"] .pomo-inline .pomo-face {
+  color: var(--accent);
+}

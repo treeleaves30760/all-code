@@ -222,6 +222,15 @@ impl Bundle {
         ids
     }
 
+    pub(crate) fn packages(&self) -> Vec<String> {
+        self.files
+            .keys()
+            .filter_map(|path| path.strip_prefix("packages/"))
+            .filter_map(|name| name.strip_suffix(".json"))
+            .map(str::to_owned)
+            .collect()
+    }
+
     pub(crate) fn themes(&self) -> Vec<String> {
         self.files
             .keys()
@@ -250,6 +259,10 @@ pub(crate) fn bundle(files: BTreeMap<String, Vec<u8>>, single_id: &str) -> Resul
                 .strip_suffix(".json")
                 .filter(|id| is_slug(id))
                 .map(|id| format!("themes/{id}.json")),
+            ["packages", name] => name
+                .strip_suffix(".json")
+                .filter(|id| is_slug(id))
+                .map(|id| format!("packages/{id}.json")),
             _ => None,
         };
         if let Some(target) = target {
@@ -270,7 +283,7 @@ pub(crate) fn bundle(files: BTreeMap<String, Vec<u8>>, single_id: &str) -> Resul
     }
     ensure!(
         !bundle.files.is_empty(),
-        "found no mod (mod.json + mod.js/mod.css at the root, or mods/<id>/) and no themes/<id>.json"
+        "found no mod (mod.json + mod.js/mod.css at the root, or mods/<id>/), no themes/<id>.json and no packages/<id>.json"
     );
     Ok(bundle)
 }
@@ -383,7 +396,7 @@ fn wanted(relative: &str) -> bool {
     match parts.as_slice() {
         [file] => MOD_FILES.contains(file),
         ["mods", _, file] => MOD_FILES.contains(file),
-        ["themes", name] => name.ends_with(".json"),
+        ["themes", name] | ["packages", name] => name.ends_with(".json"),
         _ => false,
     }
 }
@@ -450,6 +463,7 @@ pub(crate) fn fetch(source: &Source, name: Option<&str>) -> Result<Bundle> {
 pub(crate) struct Installed {
     pub mods: Vec<String>,
     pub themes: Vec<String>,
+    pub packages: Vec<String>,
 }
 
 /// Writes a bundle into the folder. Mods arrive off unless `enable`; an
@@ -468,7 +482,17 @@ pub(crate) fn install(
     }
     let mods = bundle.mods();
     let themes = bundle.themes();
+    let packages = bundle.packages();
     if !force {
+        for id in &packages {
+            ensure!(
+                !web.root()
+                    .join("packages")
+                    .join(format!("{id}.json"))
+                    .exists(),
+                "packages/{id}.json already exists; pass --force to replace it"
+            );
+        }
         for id in &mods {
             ensure!(
                 !web.root().join("mods").join(id).exists(),
@@ -503,7 +527,11 @@ pub(crate) fn install(
     for id in &mods {
         web.set_enabled(id, enable)?;
     }
-    Ok(Installed { mods, themes })
+    Ok(Installed {
+        mods,
+        themes,
+        packages,
+    })
 }
 
 #[cfg(test)]

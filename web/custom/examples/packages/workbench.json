@@ -1,0 +1,18 @@
+{
+  "name": "Workbench",
+  "description": "Files on the left, notes and quick prompts in a right dock, the overview strip in the header - for long sessions on a wide screen.",
+  "version": "1.0.0",
+  "author": "alc",
+  "mods": ["quick-prompts", "scratchpad", "session-overview"],
+  "layout": {
+    "slots": {
+      "bar": [{ "widget": "session-overview/tiles", "options": {} }],
+      "view.right": [
+        { "widget": "scratchpad/notes", "options": {} },
+        { "widget": "quick-prompts/buttons", "options": {} }
+      ]
+    },
+    "filesSide": "left",
+    "sizes": { "files": 360, "right": 300 }
+  }
+}
