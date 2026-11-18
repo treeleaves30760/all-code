@@ -131,6 +131,14 @@ the agent.
 └── examples/          never loaded; copy from here
 ```
 
+[Mods and themes](./mods.md) is the full guide: writing one, the API,
+publishing a mod as a GitHub repository, and installing someone else's:
+
+```sh
+alc remote web install someone/alc-mod-standup   # arrives off; read it, then:
+alc remote web enable standup
+```
+
 `alc remote web` prints the folder. The quickest way to a mod is to ask the
 agent you are already running — the Mods section of Settings has a prompt to
 copy that starts "Read …/AGENTS.md, then make me an alc page mod that". Or copy
@@ -387,6 +395,12 @@ its size. The browser remembers the choice. There is no keyboard shortcut for
 it on purpose: every key belongs to the terminal, and `ctrl-b` is tmux's
 prefix. A phone already shows one pane at a time, so nothing changes there.
 
+When that grid has to shrink to fit — a 120-column terminal on a phone — the
+page says so above the terminal and offers the command that fixes it,
+`alc share --tmux <agent>`, to copy. Hide the note with its ×.
+
+![A plain session on a phone, with the note that offers --tmux](/img/remote/size-note.png)
+
 `--tmux` is for when the page is the side you will actually use. It runs the
 agent inside tmux, so your terminal and the hub each attach as their own
 client with their own size — and this time the page decides the agent's.
@@ -470,6 +484,9 @@ alc remote auto-share on
 alc remote allow-host <host>
 alc remote web               # the page's settings, themes and mods folder
 alc remote web check         # validate it
+alc remote web list          # mods (on/off) and themes
+alc remote web install <owner/repo|url|folder>   # mods arrive off
+alc remote web enable|disable|remove <id>
 
 alc --share --permission plan <agent>
 alc confirm <ticket>

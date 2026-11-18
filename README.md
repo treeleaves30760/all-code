@@ -1099,9 +1099,17 @@ alc.define('hello', (mod) => {
 ```
 
 ```sh
-alc remote web          # print the folder
-alc remote web check    # validate settings, themes and mods
+alc remote web                                  # print the folder
+alc remote web check                            # validate settings, themes and mods
+alc remote web install someone/alc-mod-standup  # from GitHub (or @ref, a URL, a folder)
+alc remote web enable standup                   # installed mods arrive off
+alc remote web list                             # what is installed, on or off
 ```
+
+A repository is a mod source if it holds `mod.json` + `mod.js`/`mod.css` at its
+root (one mod) or `mods/<id>/…` and `themes/<id>.json` (a collection). The
+[Mods and themes guide](https://treeleaves30760.github.io/all-code/mods) covers
+writing a mod, the API, publishing and installing.
 
 The page picks up a saved file within a few seconds — themes and stylesheets
 in place, scripts after a reload it offers. **Mods are not sandboxed:** a mod
@@ -1117,6 +1125,10 @@ type or save through them.
 ![On a phone: sessions, usage and a session](website/static/img/remote/phone.png)
 
 ### Who owns the size
+
+A plain session is drawn at its own terminal's size; when that has to shrink to
+fit (a 120-column grid on a phone), the page says so and offers
+`alc share --tmux <agent>` to copy, which makes the page own the size instead.
 
 A shared session without `--tmux` is one terminal with two viewers, and a
 terminal has one size. That size belongs to the terminal you launched from, which
