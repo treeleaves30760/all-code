@@ -1213,6 +1213,11 @@ fn run_web(store: &Store, command: WebCommand) -> Result<u8> {
             for mod_id in &applied.missing {
                 println!("problem: the package needs mods/{mod_id}, which is not installed");
             }
+            for mod_id in &applied.review {
+                println!(
+                    "left off: mods/{mod_id} came from elsewhere; read it, then `alc remote web enable {mod_id}`"
+                );
+            }
             println!(
                 "applied package {id}; open pages pick it up{}",
                 if applied.reload {
