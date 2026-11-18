@@ -1136,6 +1136,7 @@ fn serve_websocket(stream: TcpStream, request: &Request, context: &Serving) {
             "viewer"
         },
         seq: session.seq(),
+        viewer,
     }));
     if let Ok(rendered) = serde_json::to_string(&hello) {
         let _ = socket.send(Message::Text(rendered.into()));

@@ -581,8 +581,10 @@
 
   async function drawBackdrop() {
     const bg = settings().background;
-    const revision = shell.web().revision;
-    const key = `${bg.kind}:${bg.value}:${bg.kind === 'image' ? revision : ''}:${bg.kind === 'mod' && registry.backgrounds[bg.value] ? 'loaded' : ''}`;
+    // An image is keyed by its name and size, not the folder's revision,
+    // which moves on every settings save; a replaced image changes size.
+    const image = bg.kind === 'image' ? (shell.web().backgrounds || []).find((entry) => entry.name === bg.value) : null;
+    const key = `${bg.kind}:${bg.value}:${image ? image.size : ''}:${bg.kind === 'mod' && registry.backgrounds[bg.value] ? 'loaded' : ''}`;
     el.backdropDim.style.opacity = String(bg.dim / 100);
     el.backdropArt.style.filter = bg.blur ? `blur(${bg.blur}px)` : '';
     el.backdropArt.style.inset = bg.blur ? `-${bg.blur * 2}px` : '';
@@ -609,12 +611,17 @@
           });
           if (!response.ok) throw new Error(`http ${response.status}`);
           url = URL.createObjectURL(await response.blob());
+          // One image held at a time: the last one is let go.
+          for (const old of imageCache.values()) URL.revokeObjectURL(old);
+          imageCache.clear();
           imageCache.set(key, url);
         }
-        if (backdropKey === key) art.style.backgroundImage = `url("${url}")`;
+        // Another background may have been picked while this one loaded.
+        if (backdropKey !== key) return;
+        art.style.backgroundImage = `url("${url}")`;
         art.className = 'bg-image';
       } catch {
-        art.className = '';
+        if (backdropKey === key) art.className = '';
       }
     } else if (bg.kind === 'mod') {
       const source = registry.backgrounds[bg.value];
@@ -630,8 +637,8 @@
           mode: () => root.dataset.themeMode,
           reducedMotion: () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
         };
-        const returned = source.render(host, ctx);
-        if (typeof returned === 'function') cleanups.push(returned);
+        // Set before render, so cleanups a mod registered before throwing
+        // still run when the background changes.
         backdropDown = () => {
           alive = false;
           for (const fn of cleanups) {
@@ -642,6 +649,8 @@
             }
           }
         };
+        const returned = source.render(host, ctx);
+        if (typeof returned === 'function') cleanups.push(returned);
       }
     }
   }

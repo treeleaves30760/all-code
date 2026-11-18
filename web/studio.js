@@ -135,7 +135,8 @@
   function apply(id) {
     return act(() => request('POST', `/api/web/packages/${encodeURIComponent(id)}/apply`, {}), (applied) => {
       if (applied.missing && applied.missing.length) toast(core.fill(T.packageMissing, { m: applied.missing.join(', ') }), 'warn');
-      if (applied.reload) reloadToast(T.packageReload);
+      else if (applied.review && applied.review.length) toast(core.fill(T.packageReview, { m: applied.review.join(', ') }), 'warn');
+      else if (applied.reload) reloadToast(T.packageReload);
       else toast(T.packageApplied);
     });
   }
@@ -626,7 +627,7 @@
           return;
         }
         const ext = (picked.name.split('.').pop() || 'png').toLowerCase().replace('jpeg', 'jpg');
-        const stem = picked.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+/, '').slice(0, 40) || 'background';
+        const stem = picked.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 40) || 'background';
         const name = `${stem}.${ext}`;
         const bytes = await picked.arrayBuffer();
         act(() => request('POST', `/api/web/backgrounds/${encodeURIComponent(name)}`, bytes, true), () => setBackground((bg) => {

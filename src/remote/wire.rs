@@ -89,6 +89,9 @@ pub(crate) enum ServerFrame {
         /// Whether a page holds a plain session's size, so a page that had
         /// fitted it learns when the terminal took it back.
         fitted: bool,
+        /// Which page holds it (the `viewer` its hello carried), so a page
+        /// learns when another page took it.
+        holder: Option<u64>,
     },
     Ping,
 }
@@ -99,6 +102,8 @@ pub(crate) struct Hello {
     pub session: SessionCard,
     pub grade: &'static str,
     pub seq: u64,
+    /// This connection's own id, as `Size::holder` names it.
+    pub viewer: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

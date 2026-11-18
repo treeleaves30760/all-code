@@ -135,8 +135,10 @@ pub(crate) struct WebSettings {
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct Layout {
     /// Slot name -> the widgets in it, in order.
+    #[serde(deserialize_with = "lenient_slots")]
     pub slots: BTreeMap<String, Vec<Placement>>,
     /// Widgets (`mod/widget`) taken out of every slot.
+    #[serde(deserialize_with = "lenient_strings")]
     pub hidden: Vec<String>,
     /// Panel widths in CSS pixels: `rail`, `files`, `left`, `right`.
     pub sizes: BTreeMap<String, u32>,
@@ -221,6 +223,52 @@ impl Background {
         }
         self
     }
+}
+
+/// Slots as the page and a hand edit write them, keeping every entry that
+/// is a placement and dropping the rest, so one bad entry in a package or a
+/// hand-edited settings.json costs that entry rather than the whole file.
+fn lenient_slots<'de, D>(deserializer: D) -> Result<BTreeMap<String, Vec<Placement>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Value::deserialize(deserializer)?;
+    let mut slots = BTreeMap::new();
+    if let Value::Object(map) = raw {
+        for (slot, list) in map {
+            let Value::Array(entries) = list else {
+                continue;
+            };
+            let placements: Vec<Placement> = entries
+                .into_iter()
+                .filter_map(|entry| {
+                    let widget = entry.get("widget")?.as_str()?.to_owned();
+                    let options = match entry.get("options") {
+                        Some(Value::Object(options)) => options.clone(),
+                        _ => Map::new(),
+                    };
+                    Some(Placement { widget, options })
+                })
+                .collect();
+            slots.insert(slot, placements);
+        }
+    }
+    Ok(slots)
+}
+
+/// A list of strings, keeping the strings and dropping anything else.
+fn lenient_strings<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Value::deserialize(deserializer)?;
+    Ok(match raw {
+        Value::Array(entries) => entries
+            .into_iter()
+            .filter_map(|entry| entry.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 impl Default for Layout {
@@ -497,6 +545,9 @@ pub(crate) struct Applied {
     pub installed: Vec<String>,
     /// Mods it names that are neither installed nor official.
     pub missing: Vec<String>,
+    /// Mods it names that were installed from elsewhere and are off. They
+    /// stay off: a package is not a way to switch on code nobody has read.
+    pub review: Vec<String>,
     /// Whether a script the page has not loaded was turned on, so it needs
     /// a reload.
     pub reload: bool,
@@ -958,6 +1009,11 @@ impl WebDir {
                     continue;
                 }
             }
+            let off = settings.disabled_mods.iter().any(|off| off == mod_id);
+            if off && !self.is_trusted_mod(mod_id) {
+                applied.review.push(mod_id.clone());
+                continue;
+            }
             settings.disabled_mods.retain(|off| off != mod_id);
         }
         if let Some(theme) = &package.theme {
@@ -984,6 +1040,15 @@ impl WebDir {
             .any(|info| info.enabled && info.has_js && !before.contains(&info.id));
         applied.settings = settings;
         Ok(applied)
+    }
+
+    /// A mod alc shipped, or one written here (no SOURCE file): nothing a
+    /// person has not had the chance to read before it runs.
+    fn is_trusted_mod(&self, id: &str) -> bool {
+        match fs::read_to_string(self.root.join("mods").join(id).join("SOURCE")) {
+            Ok(source) => source.trim() == "alc (official)",
+            Err(_) => true,
+        }
     }
 
     fn is_known_theme(&self, theme: &str) -> bool {
@@ -1760,6 +1825,40 @@ mod tests {
         web.remove_package("mine").unwrap();
         assert!(web.packages().is_empty());
         assert_eq!(web.load_settings().0.package, None);
+    }
+
+    #[test]
+    fn a_package_does_not_switch_on_a_mod_installed_from_elsewhere() {
+        let (_temp, web) = dir();
+        write(&web, "mods/third/mod.js", "x();");
+        write(&web, "mods/third/SOURCE", "someone/repo\n");
+        write(&web, "mods/mine/mod.js", "y();");
+        write(
+            &web,
+            "settings.json",
+            r#"{"disabledMods":["mine","third"]}"#,
+        );
+        web.save_package("p", br#"{"mods":["mine","third"]}"#)
+            .unwrap();
+        let applied = web.apply_package("p").unwrap();
+        assert_eq!(applied.review, vec!["third".to_owned()]);
+        assert_eq!(applied.settings.disabled_mods, vec!["third".to_owned()]);
+    }
+
+    #[test]
+    fn one_bad_placement_costs_only_itself() {
+        let (_temp, web) = dir();
+        write(
+            &web,
+            "settings.json",
+            r#"{"theme":"fjord","layout":{"slots":{"bar":[{"widget":"a/b"},{"widget":3},"x",
+                {"widget":"c/d","options":[1]}]},"hidden":["e/f",7]}}"#,
+        );
+        let (settings, error) = web.load_settings();
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(settings.theme, "fjord");
+        assert_eq!(settings.layout.slots["bar"].len(), 2);
+        assert_eq!(settings.layout.hidden, vec!["e/f".to_owned()]);
     }
 
     #[test]

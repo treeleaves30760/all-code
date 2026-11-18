@@ -342,6 +342,8 @@
 
     for (const [id, node] of built) {
       if (seen.has(id)) continue;
+      // A card widget's timers and listeners go with its card.
+      if (node.slot._alcDown) node.slot._alcDown();
       node.li.remove();
       built.delete(id);
     }
@@ -859,7 +861,14 @@
     terminalSettings = settings;
     terminalColours = colours || {};
     terminalOpacity = Number.isFinite(opacity) ? Math.min(1, Math.max(0.3, opacity)) : 1;
+    const wanted = wantsFit(attached.value);
     fitPlainDefault = !!(settings && settings.fitPlain);
+    // The default turned off under a session this page was holding: give
+    // the size back rather than keep the terminal drawing for this page.
+    if (wanted && !wantsFit(attached.value)) {
+      send({ t: 'release' });
+      renderFitToggle();
+    }
     if (!term) return;
     const options = terminalOptions();
     baseFontSize = options.fontSize;
@@ -930,6 +939,10 @@
   /* Sessions whose terminal took the size back while this page held it: not
    * taken again until asked, or the two would fight on every resize. */
   const fitYielded = new Set();
+  /* This connection's id, from its hello, and whether the hub last said
+   * this page holds the open session's size. */
+  let myViewer = null;
+  let holdingSize = false;
 
   function wantsFit(card) {
     if (!card || card.tmux || card.exit || fitYielded.has(card.id)) return false;
@@ -1215,6 +1228,8 @@
       case 'hello': {
         attached.value = frame.session;
         everGreeted = true;
+        myViewer = typeof frame.viewer === 'number' ? frame.viewer : null;
+        holdingSize = false;
         // Deliberately not `lastSeq = frame.seq`: that claims bytes the
         // terminal has not written, so a drop before the catch-up frame
         // would resume past them and lose that output for good. Leaving it
@@ -1252,12 +1267,15 @@
         const card = attached.value;
         if (!card) break;
         const fitted = !!frame.fitted;
-        // The terminal that launched a plain session was resized while this
-        // page held its size, which hands the size back to it.
-        if (!card.tmux && card.fitted && !fitted && wantsFit(card)) {
+        const mine = myViewer !== null && frame.holder === myViewer;
+        // This page held a plain session's size and now does not: its
+        // terminal was resized, or another page took it. Either way this
+        // page stops asking, or the two would take turns for ever.
+        if (!card.tmux && holdingSize && !mine && wantsFit(card)) {
           fitYielded.add(card.id);
-          toast(T.fitTaken, 'info', { label: T.fitTake, run: () => setFit(attached.value, true) });
+          toast(fitted ? T.fitTakenPage : T.fitTaken, 'info', { label: T.fitTake, run: () => setFit(attached.value, true) });
         }
+        holdingSize = mine;
         const next = { ...card, cols: frame.cols, rows: frame.rows, fitted };
         if (browserOwnsSize(card) && browserOwnsSize(next)) {
           attached.value = next;

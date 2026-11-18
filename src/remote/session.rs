@@ -83,6 +83,14 @@ pub(crate) struct SessionSpec {
     pub permission: PermState,
 }
 
+/// Who holds a plain session's size (`Session::fit`).
+struct Fit {
+    /// The page viewer holding it, if one asked to take it.
+    holder: Option<u64>,
+    /// The size the launching terminal last stated, to hand back.
+    terminal: (u16, u16),
+}
+
 pub(crate) struct Session {
     id: String,
     name: Mutex<String>,
@@ -106,13 +114,11 @@ pub(crate) struct Session {
 
     perm: Mutex<PermState>,
     size: Mutex<(u16, u16)>,
-    /// The size the launching terminal last stated, so a plain session a
-    /// page has fitted to itself can be handed back (`release_viewer`).
-    terminal_size: Mutex<(u16, u16)>,
-    /// The page viewer holding a plain session's size, if one has asked to
-    /// (`resize_from_viewer` with `take`). Never set for a tmux session,
-    /// where every operator page owns the size anyway.
-    page_holder: Mutex<Option<u64>>,
+    /// Who holds a plain session's size, and what to hand back. One lock,
+    /// held across the resize it decides, so a page taking the size and the
+    /// terminal taking it back cannot interleave into a pty at the page's
+    /// size with nobody holding it.
+    fit: Mutex<Fit>,
     /// The tmux session hosting the agent, when the launch asked for one.
     tmux: Option<TmuxHost>,
     /// The agent pid tmux last reported, refreshed by the watcher.
@@ -205,8 +211,10 @@ impl Session {
             fanout: Fanout::new(),
             perm: Mutex::new(session.permission),
             size: Mutex::new((cols, rows)),
-            terminal_size: Mutex::new((cols, rows)),
-            page_holder: Mutex::new(None),
+            fit: Mutex::new(Fit {
+                holder: None,
+                terminal: (cols, rows),
+            }),
             // Seeded from creation rather than left for the watcher's first
             // poll: a card built in the half second before that would
             // otherwise report a session with no pid at all.
@@ -598,7 +606,7 @@ impl Session {
 
     /// Whether a page holds this plain session's size.
     pub(crate) fn page_fitted(&self) -> bool {
-        self.page_holder.lock().is_ok_and(|holder| holder.is_some())
+        self.fit.lock().is_ok_and(|fit| fit.holder.is_some())
     }
 
     /// The agent's own process id.
@@ -710,15 +718,17 @@ impl Session {
         take: bool,
     ) -> Result<()> {
         if self.tmux.is_some() {
-            return self.set_size(cols, rows);
+            return self.set_size_noting(cols, rows, false, None);
         }
         let Some(viewer) = viewer.filter(|_| take) else {
             return Ok(());
         };
-        if let Ok(mut holder) = self.page_holder.lock() {
-            *holder = Some(viewer);
-        }
-        self.set_size(cols, rows)
+        let Ok(mut fit) = self.fit.lock() else {
+            return Ok(());
+        };
+        let changed = fit.holder != Some(viewer);
+        fit.holder = Some(viewer);
+        self.set_size_noting(cols, rows, changed, fit.holder)
     }
 
     /// Hands a plain session's size back to its terminal, if `viewer` (or,
@@ -727,22 +737,16 @@ impl Session {
         if self.tmux.is_some() {
             return Ok(());
         }
-        let released = self.page_holder.lock().is_ok_and(|mut holder| {
-            let mine = holder.is_some() && (viewer.is_none() || *holder == viewer);
-            if mine {
-                *holder = None;
-            }
-            mine
-        });
-        if !released {
+        let Ok(mut fit) = self.fit.lock() else {
+            return Ok(());
+        };
+        let mine = fit.holder.is_some() && (viewer.is_none() || fit.holder == viewer);
+        if !mine {
             return Ok(());
         }
-        let (cols, rows) = self
-            .terminal_size
-            .lock()
-            .map(|size| *size)
-            .unwrap_or((80, 24));
-        self.set_size_noting(cols, rows, true)
+        fit.holder = None;
+        let (cols, rows) = fit.terminal;
+        self.set_size_noting(cols, rows, true, None)
     }
 
     /// Puts the session at the local terminal's size.
@@ -765,23 +769,26 @@ impl Session {
         if self.tmux.is_some() {
             return Ok(());
         }
-        if let Ok(mut size) = self.terminal_size.lock() {
-            *size = (cols, rows);
-        }
-        let was_held = self
-            .page_holder
-            .lock()
-            .is_ok_and(|mut holder| holder.take().is_some());
-        self.set_size_noting(cols, rows, was_held)
+        let Ok(mut fit) = self.fit.lock() else {
+            return Ok(());
+        };
+        fit.terminal = (cols, rows);
+        let was_held = fit.holder.take().is_some();
+        self.set_size_noting(cols, rows, was_held, None)
     }
 
-    fn set_size(&self, cols: u16, rows: u16) -> Result<()> {
-        self.set_size_noting(cols, rows, false)
-    }
-
-    /// `set_size`, telling viewers even when the grid did not move if
-    /// `holder_changed`: who holds the size is in the frame too.
-    fn set_size_noting(&self, cols: u16, rows: u16, holder_changed: bool) -> Result<()> {
+    /// Resizes the pty and tells every viewer, ahead of anything drawn for
+    /// the new size. `holder` is who holds a plain session's size after
+    /// this; a change of holder is told even when the grid did not move,
+    /// since a page needs to know it lost (or got) the size. Called with
+    /// `fit` held by every path that changes the holder.
+    fn set_size_noting(
+        &self,
+        cols: u16,
+        rows: u16,
+        holder_changed: bool,
+        holder: Option<u64>,
+    ) -> Result<()> {
         let cols = cols.max(20);
         let rows = rows.max(4);
         let unchanged = self.size.lock().is_ok_and(|size| *size == (cols, rows));
@@ -790,11 +797,13 @@ impl Session {
         // size from its five-second poll instead spent up to five seconds
         // writing a redraw for the new width into a grid of the old one, and
         // the wrapped lines that left behind never went away.
-        if let Ok(rendered) = serde_json::to_string(&ServerFrame::Size {
-            cols,
-            rows,
-            fitted: self.page_fitted(),
-        }) && (!unchanged || holder_changed)
+        if (!unchanged || holder_changed)
+            && let Ok(rendered) = serde_json::to_string(&ServerFrame::Size {
+                cols,
+                rows,
+                fitted: holder.is_some(),
+                holder,
+            })
         {
             self.fanout.broadcast(Frame::Text(rendered));
         }
