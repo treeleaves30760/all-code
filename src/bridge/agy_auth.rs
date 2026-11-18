@@ -209,11 +209,8 @@ impl SystemStore {
 /// `ALC_AGY_NO_KEYRING` exists so `tests/cli.rs` can never read the login of
 /// the machine running the suite. Compiled out of release builds.
 fn keyring_enabled() -> bool {
-    #[cfg(debug_assertions)]
-    if std::env::var_os("ALC_AGY_NO_KEYRING").is_some_and(|value| !value.is_empty()) {
-        return false;
-    }
-    true
+    !(cfg!(debug_assertions)
+        && std::env::var_os("ALC_AGY_NO_KEYRING").is_some_and(|value| !value.is_empty()))
 }
 
 impl CredentialStore for SystemStore {
