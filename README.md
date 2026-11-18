@@ -151,7 +151,10 @@ a composer that sends a whole prompt as one block instead of fighting a mobile
 keyboard inside a raw terminal. On a wide screen with a session open, a button
 beside Back folds the session list away so the terminal gets the full width — a
 `--tmux` session gets the extra columns, a plain one is drawn larger — and that
-browser remembers the choice.
+browser remembers the choice. The button at the right end of the header opens a
+read-only file panel on the session's folder: walk its folders, and pick a file
+to read it beside the terminal; picking another swaps it, and the open file
+reloads while it changes.
 
 **Sessions outlive the terminal that started them**, because a background hub
 owns them:
@@ -1198,6 +1201,9 @@ so it is worth being plain about the model:
   creation.
 - A shared session is screen sharing. alc masks the API keys **it** put into the
   environment, but anything else the agent prints, a viewer sees.
+- The page's file panel reads the session's folder and nothing above it, for a
+  link that can type only; a view-only link is refused. Files are capped at
+  512 KB and masked the same way the screen is.
 - `alc remote token --rotate` invalidates links for the selected runtime.
 - alc reads no configuration from the working repository, so a checked-in file
   can never turn sharing on.
