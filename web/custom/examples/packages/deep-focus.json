@@ -1,0 +1,15 @@
+{
+  "name": "Deep focus",
+  "description": "As little as possible: compact density, a quiet blurred gradient, the timer in the header and prompt buttons under the terminal.",
+  "version": "1.0.0",
+  "author": "alc",
+  "mods": ["pomodoro", "quick-prompts"],
+  "density": "compact",
+  "background": { "kind": "preset", "value": "dusk", "dim": 78, "blur": 12, "terminal": 92 },
+  "layout": {
+    "slots": {
+      "bar": [{ "widget": "pomodoro/timer", "options": { "focus": 25, "rest": 5 } }],
+      "view.bottom": [{ "widget": "quick-prompts/buttons", "options": {} }]
+    }
+  }
+}

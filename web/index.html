@@ -17,6 +17,12 @@
     <link rel="stylesheet" href="/assets/app.css" />
   </head>
   <body data-pane="list">
+    <!-- Behind everything: a background the page or a mod draws, and the
+         veil of the page's own colour over it. layout.js fills it. -->
+    <div id="backdrop" aria-hidden="true">
+      <div id="backdropArt"></div>
+      <div id="backdropDim"></div>
+    </div>
     <!-- One sprite for every icon on the page, referenced by <use>. Inline so
          it costs no request and no round trip against a route that needs a
          token, and drawn in `currentColor` so one set serves both themes and
@@ -41,6 +47,28 @@
       <symbol id="i-copy" viewBox="0 0 16 16">
         <rect x="6" y="6" width="7.5" height="7.5" rx="1.6" />
         <path d="M10.4 3.6H4a1.6 1.6 0 0 0-1.6 1.6v6.4" />
+      </symbol>
+      <symbol id="i-fit" viewBox="0 0 16 16">
+        <path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" />
+        <path d="M5.5 5.5l2 2M10.5 5.5l-2 2M5.5 10.5l2-2M10.5 10.5l-2-2" />
+      </symbol>
+      <symbol id="i-window" viewBox="0 0 16 16">
+        <rect x="2" y="2.75" width="12" height="10.5" rx="1.6" />
+        <path d="M2 5.75h12" />
+        <path d="M4 4.25h.01M5.75 4.25h.01" />
+      </symbol>
+      <symbol id="i-layers" viewBox="0 0 16 16">
+        <path d="M8 2.25 14 5.5 8 8.75 2 5.5z" />
+        <path d="M2 8.25 8 11.5l6-3.25" />
+        <path d="M2 11 8 14.25 14 11" />
+      </symbol>
+      <symbol id="i-image" viewBox="0 0 16 16">
+        <rect x="2" y="2.75" width="12" height="10.5" rx="1.6" />
+        <circle cx="5.75" cy="6.25" r="1.1" />
+        <path d="m2.5 12 3.75-3.5 2.5 2.25 2-1.75 2.75 2.5" />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 16 16">
+        <path d="M8 3v10M3 8h10" />
       </symbol>
       <symbol id="i-files" viewBox="0 0 16 16">
         <rect x="2.25" y="2.75" width="11.5" height="10.5" rx="1.6" />
@@ -160,6 +188,12 @@
 
       <span class="bar-spacer"></span>
 
+      <!-- Widgets a mod or package put in the header. -->
+      <div id="barSlot" class="slot slot-bar"></div>
+
+      <!-- Floating windows that are closed, to open again. -->
+      <div id="winTray" class="win-tray" hidden></div>
+
       <!-- Connection state is a light, not a sentence. It is always on
            screen while attached, so it cannot be missed the way a toast
            that has already faded can. -->
@@ -171,6 +205,12 @@
 
       <!-- The file panel's switch. Only beside an open session, and only
            for a link that can type: the panel is operator-only. -->
+      <!-- A plain session's size belongs to the terminal that started it;
+           this lets the page take it, so the terminal fills the page. -->
+      <button id="fitToggle" class="icon" type="button" aria-pressed="false" hidden>
+        <svg class="glyph" aria-hidden="true"><use href="#i-fit" /></svg>
+      </button>
+
       <button id="filesToggle" class="icon" type="button" aria-controls="files" aria-expanded="false" hidden>
         <svg class="glyph" aria-hidden="true"><use href="#i-files" /></svg>
       </button>
@@ -188,12 +228,14 @@
           <h2 id="sessionsTitle" class="pane-title"></h2>
           <span id="sessionsCount" class="count"></span>
         </div>
+        <div id="listTop" class="slot slot-list"></div>
         <label class="filter" id="filterBox" hidden>
           <svg class="glyph" aria-hidden="true"><use href="#i-search" /></svg>
           <input id="filter" type="search" autocomplete="off" spellcheck="false" />
         </label>
         <ul id="sessions"></ul>
         <p id="noMatch" class="note no-match" hidden></p>
+        <div id="listBottom" class="slot slot-list"></div>
 
         <!-- Shown only when there is nothing to list. The command is the
              whole message: there is no session because none was started. -->
@@ -299,6 +341,10 @@
         </div>
       </section>
 
+      <!-- The studio: packages, mods, where each widget goes, the
+           background and the panels. studio.js draws it. -->
+      <section id="studio" aria-label="Studio"></section>
+
       <!-- A tab a mod added. Emptied and handed to the mod each time it is
            opened. -->
       <section id="page" aria-live="off"></section>
@@ -331,6 +377,7 @@
              fill this screen is to start it under --tmux. -->
         <div id="sizeNote" class="size-note" hidden>
           <span id="sizeNoteText" class="size-note-text"></span>
+          <button type="button" id="sizeNoteFit" class="btn small accent"></button>
           <button type="button" id="sizeNoteCommand" class="command small">
             <svg class="glyph" aria-hidden="true"><use href="#i-copy" /></svg>
             <span class="command-text"></span>
@@ -340,7 +387,14 @@
           </button>
         </div>
 
-        <div id="terminal"></div>
+        <!-- The terminal between two docks a package can fill with widgets,
+             with a strip above and below it for more. -->
+        <div id="stage">
+          <aside id="dockLeft" class="dock" data-side="left"></aside>
+          <div id="center">
+            <div id="viewTop" class="slot slot-strip"></div>
+            <div id="terminal"></div>
+            <div id="viewBottom" class="slot slot-strip"></div>
 
         <div id="keys" class="keys" role="group" aria-label="Terminal keys"></div>
 
@@ -356,6 +410,9 @@
           ></textarea>
           <button type="submit" id="send"></button>
         </form>
+          </div>
+          <aside id="dockRight" class="dock" data-side="right"></aside>
+        </div>
       </section>
 
       <!-- The session's folder, read-only. A folder list over the file it
@@ -397,6 +454,9 @@
       </aside>
     </main>
 
+    <!-- Floating windows: a widget placed "floating", or a mod's own. -->
+    <div id="windows"></div>
+
     <div id="palette" class="palette" role="dialog" aria-modal="true" hidden>
       <div class="palette-box">
         <label class="palette-search">
@@ -420,5 +480,7 @@
     <script src="/assets/app.js"></script>
     <script src="/assets/dashboard.js"></script>
     <script src="/assets/shell.js"></script>
+    <script src="/assets/layout.js"></script>
+    <script src="/assets/studio.js"></script>
   </body>
 </html>

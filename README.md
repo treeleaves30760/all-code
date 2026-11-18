@@ -1057,11 +1057,11 @@ including legacy. Multiple running owners require an explicit global
 Sharing policy in `remote.toml` is still shared across generations, and lives
 in `alc config` on the **Sharing & remote** screen.
 
-### The page: sessions, usage, settings, mods
+### The page: sessions, usage, studio, settings, mods
 
 ![The remote page with a session open](website/static/img/remote/session.png)
 
-The page has tabs — **Sessions**, **Usage**, **Settings**, and any a mod adds —
+The page has tabs — **Sessions**, **Usage**, **Studio**, **Settings**, and any a mod adds —
 in the header on a wide screen and as a bottom bar on a phone. `⌘K` (`Ctrl+K`
 outside the terminal) opens a command palette for jumping to a session, a tab,
 a theme, or a mod's command.
@@ -1080,6 +1080,17 @@ a theme, or a mod's command.
   files under the config directory's `web/`, next to an `AGENTS.md` written for
   an agent to read — so "make me a mod that …" is something you can ask the
   agent you are already running.
+- **Studio** is the page's own mods creator. Mods can offer **widgets** that
+  you drag into slots — the header, above or below the session list, every
+  session card, above or below the terminal, docks beside it, or floating
+  windows — and **backgrounds** (presets, your images, or animated ones). A
+  **package** bundles mods with a layout, background and theme; apply one of
+  the official five (Cockpit, Night shift, Deep focus, Retro terminal,
+  Workbench) or save your own. The session list, file panel and docks can be
+  dragged wider and moved to either side.
+- **Fit to this page** lets the page resize a plain (non `--tmux`) session, so
+  opening the file panel or a dock refits the terminal instead of shrinking
+  it; the launching terminal takes the size back when it is resized.
 
 ```text
 <config dir>/web/
@@ -1087,7 +1098,9 @@ a theme, or a mod's command.
 ├── settings.json      what the Settings tab saves
 ├── themes/<id>.json   colour tokens for the page and the terminal
 ├── mods/<id>/         mod.json, mod.js, mod.css
-└── examples/          quick-prompts, scratchpad, session-age, a theme
+├── packages/<id>.json mods + layout + background + theme
+├── backgrounds/       background images
+└── examples/          official mods, packages, themes, new-mod templates
 ```
 
 ```js
@@ -1101,14 +1114,18 @@ alc.define('hello', (mod) => {
 ```sh
 alc remote web                                  # print the folder
 alc remote web check                            # validate settings, themes and mods
+alc remote web catalog                          # official mods, packages, themes, templates
+alc remote web add cockpit                      # install an official one
+alc remote web package apply cockpit            # take its mods, layout and look
+alc remote web new my-widget --template widget  # start a mod from a template
 alc remote web install someone/alc-mod-standup  # from GitHub (or @ref, a URL, a folder)
 alc remote web enable standup                   # installed mods arrive off
 alc remote web list                             # what is installed, on or off
 ```
 
 A repository is a mod source if it holds `mod.json` + `mod.js`/`mod.css` at its
-root (one mod) or `mods/<id>/…` and `themes/<id>.json` (a collection). The
-[Mods and themes guide](https://treeleaves30760.github.io/all-code/mods) covers
+root (one mod) or `mods/<id>/…`, `themes/<id>.json` and `packages/<id>.json`
+(a collection). The [Mods and themes guide](https://treeleaves30760.github.io/all-code/mods) covers
 writing a mod, the API, publishing and installing.
 
 The page picks up a saved file within a few seconds — themes and stylesheets

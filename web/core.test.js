@@ -1122,3 +1122,83 @@ test('a framed grid is too small once shrunk or under 9px', () => {
   assert.equal(core.framedTooSmall(13, 13, 0.8), true);
   assert.equal(core.tmuxCommand({ agent: 'codex' }), 'alc share --tmux codex');
 });
+
+/* ------------------------------------------------------------- layout */
+
+test('a widget the layout does not name is drawn in the slot its mod suggests', () => {
+  const widgets = {
+    'clock/clock': { slots: ['bar', 'float'], defaultSlot: 'bar', options: [{ key: 'seconds', default: false }] },
+    'notes/note': { slots: ['view.right', 'float'], defaultSlot: 'view.right', options: [] },
+    'quiet/w': { slots: ['bar'], defaultSlot: null, options: [] },
+  };
+  const empty = core.normalizeLayout({});
+  assert.deepEqual(core.placementsFor(empty, 'bar', widgets), [{ widget: 'clock/clock', options: { seconds: false } }]);
+  assert.equal(core.placementsFor(empty, 'view.right', widgets).length, 1);
+
+  // Moved to a window: gone from the bar, there with its options kept.
+  const moved = core.placeWidget(empty, 'clock/clock', 'float', undefined, { seconds: true });
+  assert.deepEqual(core.placementsFor(moved, 'bar', widgets), []);
+  assert.deepEqual(core.placementsFor(moved, 'float', widgets), [{ widget: 'clock/clock', options: { seconds: true } }]);
+
+  // Hidden: nowhere, even though its mod suggests a slot.
+  const hidden = core.placeWidget(moved, 'notes/note', null);
+  assert.deepEqual(hidden.hidden, ['notes/note']);
+  assert.deepEqual(core.placementsFor(hidden, 'view.right', widgets), []);
+
+  // A slot the widget does not allow, or a widget not loaded, is skipped.
+  const wrong = core.normalizeLayout({ slots: { card: [{ widget: 'clock/clock' }, { widget: 'gone/x' }] } });
+  assert.deepEqual(core.placementsFor(wrong, 'card', widgets), []);
+});
+
+test('placing reorders within a slot and never duplicates', () => {
+  let layout = core.normalizeLayout({});
+  layout = core.placeWidget(layout, 'a/a', 'view.right');
+  layout = core.placeWidget(layout, 'b/b', 'view.right');
+  layout = core.placeWidget(layout, 'b/b', 'view.right', 0);
+  assert.deepEqual(layout.slots['view.right'].map((entry) => entry.widget), ['b/b', 'a/a']);
+  layout = core.placeWidget(layout, 'a/a', 'bar');
+  assert.deepEqual(layout.slots['view.right'].map((entry) => entry.widget), ['b/b']);
+  assert.deepEqual(layout.slots.bar.map((entry) => entry.widget), ['a/a']);
+});
+
+test('the layout and background are held to the hub’s limits', () => {
+  const layout = core.normalizeLayout({
+    slots: { bar: [{ widget: 'x/y' }, { widget: '../z' }], nowhere: [{ widget: 'a/b' }] },
+    sizes: { rail: 1, files: 1e9, other: 3 },
+    filesSide: 'up',
+  });
+  assert.deepEqual(Object.keys(layout.slots), ['bar']);
+  assert.deepEqual(layout.sizes, { rail: 220, files: 1200 });
+  assert.equal(layout.filesSide, 'right');
+  const bg = core.normalizeBackground({ kind: 'image', value: '../x.png', dim: 500 });
+  assert.equal(bg.kind, 'none');
+  assert.equal(bg.dim, 95);
+  assert.equal(core.normalizeBackground({ kind: 'mod', value: 'ambient/stars' }).kind, 'mod');
+});
+
+test('a window stays reachable however the viewport shrank', () => {
+  const placed = core.clampWindow({ x: 3000, y: -50, width: 5000, height: 90 }, { width: 1280, height: 800 });
+  assert.ok(placed.x <= 1280 - 48);
+  assert.equal(placed.y, 0);
+  assert.equal(placed.width, 1264);
+  assert.equal(placed.height, 120);
+  assert.equal(core.hexToRgba('#0c0d10', 0.5), 'rgba(12,13,16,0.5)');
+  assert.equal(core.hexToRgba('red', 0.5), null);
+});
+
+test('an explicit layout draws only what it places, and a saved one reproduces the page', () => {
+  const widgets = {
+    'clock/clock': { slots: ['bar'], defaultSlot: 'bar', options: [] },
+    'notes/note': { slots: ['view.right'], defaultSlot: 'view.right', options: [] },
+  };
+  const explicit = core.normalizeLayout({ explicit: true, slots: { bar: [{ widget: 'clock/clock' }] } });
+  assert.equal(core.placementsFor(explicit, 'view.right', widgets).length, 0);
+  assert.equal(core.placementsFor(explicit, 'bar', widgets).length, 1);
+  const saved = core.materializeLayout(core.normalizeLayout({}), widgets);
+  assert.equal(saved.explicit, true);
+  assert.deepEqual(Object.keys(saved.slots).sort(), ['bar', 'view.right']);
+  // Hiding in an explicit layout is taking it out, not listing it.
+  const hidden = core.placeWidget(explicit, 'clock/clock', null);
+  assert.deepEqual(hidden.slots, {});
+  assert.deepEqual(hidden.hidden, []);
+});

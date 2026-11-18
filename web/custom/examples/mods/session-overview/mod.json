@@ -1,0 +1,6 @@
+{
+  "name": "Session overview",
+  "description": "Tiles above the session list: how many are running, which agents, who is watching, and the longest-running one - and the same as a compact strip anywhere else.",
+  "version": "1.0.0",
+  "author": "alc"
+}

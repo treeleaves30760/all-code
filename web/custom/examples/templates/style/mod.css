@@ -1,0 +1,11 @@
+/* __MOD_NAME__: CSS only. Stable hooks are listed in AGENTS.md:
+ * body[data-pane], #bar, #nav, #sessions .card, #terminal, #keys,
+ * #composer, .dock, .win, .widget[data-widget="mod/widget"]. */
+
+#sessions .card {
+  border-radius: var(--r-lg);
+}
+
+#bar {
+  border-bottom-color: var(--accent-line);
+}

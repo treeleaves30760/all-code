@@ -1,0 +1,6 @@
+{
+  "name": "CRT",
+  "description": "Scanlines and a soft phosphor glow over the terminal, for the nostalgic. Styles only; turn it off to go back.",
+  "version": "1.0.0",
+  "author": "alc"
+}

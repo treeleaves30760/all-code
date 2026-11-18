@@ -1,0 +1,6 @@
+{
+  "name": "Quota meter",
+  "description": "What is left of each login's 5-hour and weekly windows, as bars beside the terminal or a single worst-case number in the header.",
+  "version": "1.0.0",
+  "author": "alc"
+}

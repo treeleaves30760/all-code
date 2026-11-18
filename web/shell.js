@@ -64,6 +64,14 @@
     search: 'i-search',
     check: 'i-check',
     copy: 'i-copy',
+    layers: 'i-layers',
+    window: 'i-window',
+    image: 'i-image',
+    plus: 'i-plus',
+    fit: 'i-fit',
+    folder: 'i-folder',
+    reload: 'i-reload',
+    close: 'i-close',
   };
 
   /* A sprite icon by name, or a mod's own path on the same 16px grid. */
@@ -104,6 +112,10 @@
     dir: '',
     hub: {},
     settingsError: null,
+    packages: [],
+    backgrounds: [],
+    catalog: { mods: [], packages: [], themes: [], templates: [] },
+    presets: core.BACKGROUND_PRESETS,
   };
   /* The mods as they were when this page loaded their scripts. */
   let loadedMods = [];
@@ -125,7 +137,8 @@
     appliedTokens = Object.keys(theme.tokens);
     for (const [key, value] of Object.entries(theme.tokens)) root.style.setProperty(key, value);
     document.body.dataset.density = web.settings.density;
-    shell.setTerminalLook(web.settings.terminal, theme.terminal);
+    const backdrop = web.settings.background;
+    shell.setTerminalLook(web.settings.terminal, theme.terminal, backdrop.kind === 'none' ? 1 : backdrop.terminal / 100);
     const colour = getComputedStyle(document.body).backgroundColor;
     let meta = document.querySelector('meta[name="theme-color"]');
     if (!meta) {
@@ -219,6 +232,7 @@
   const BASE_PAGES = [
     { id: 'sessions', label: () => T.navSessions, icon: 'sessions', pane: 'list' },
     { id: 'usage', label: () => T.navUsage, icon: 'usage', pane: 'usage' },
+    { id: 'studio', label: () => T.navStudio, icon: 'layers', pane: 'studio' },
     { id: 'settings', label: () => T.navSettings, icon: 'settings', pane: 'settings' },
   ];
   /* Tabs mods added: `{id: 'mod:<mod>/<page>', title, icon, render, mod}`. */
@@ -251,6 +265,7 @@
     if (id === 'sessions') return shell.showPane('list');
     if (id === 'usage') return shell.showPane('usage');
     if (id === 'settings') return shell.showPane('settings');
+    if (id === 'studio') return shell.showPane('studio');
     if (id.startsWith('session:')) {
       const card = shell.lastCards().find((entry) => entry.id === id.slice(8));
       if (card) shell.attach(card);
@@ -319,6 +334,7 @@
       list.push({ group: T.paletteGroupNav, title: `${T.paletteGo}: ${title}`, icon: iconName, run: () => open(id) });
     go('sessions', T.navSessions, 'sessions');
     go('usage', T.navUsage, 'usage');
+    go('studio', T.navStudio, 'layers');
     go('settings', T.navSettings, 'settings');
     for (const page of modPages) go(page.id, page.title, page.icon);
     for (const card of shell.lastCards()) {
@@ -334,7 +350,16 @@
     if (shell.attached.value) {
       list.push({ group: T.paletteGroupView, title: T.paletteToggleFiles, icon: 'files', run: shell.toggleFiles });
       list.push({ group: T.paletteGroupView, title: T.paletteToggleRail, icon: 'sessions', run: shell.toggleRail });
+      if (shell.fit.available()) {
+        list.push({
+          group: T.paletteGroupView,
+          title: shell.fit.wants() ? T.fitRelease : T.fitTake,
+          icon: 'fit',
+          run: () => shell.fit.set(!shell.fit.wants()),
+        });
+      }
     }
+    for (const entry of shell.layoutCommands ? shell.layoutCommands() : []) list.push(entry);
     if (shell.operator.value) {
       for (const theme of themeChoices()) {
         list.push({
@@ -729,8 +754,23 @@
       }, true),
     }, [1000, 5000, 10000, 25000, 50000, 100000].map((lines) => h('option', { value: lines, selected: t.scrollback === lines }, core.fill(T.scrollbackLines, { n: lines.toLocaleString(LOCALE) }))));
 
+    const fit = h('label', { class: 'switch' },
+      h('input', {
+        type: 'checkbox',
+        role: 'switch',
+        checked: t.fitPlain,
+        'data-key': 'fit-plain',
+        disabled: viewer,
+        onchange: (event) => changeSettings((n) => {
+          n.terminal.fitPlain = event.target.checked;
+        }, true),
+      }),
+      h('span', { class: 'switch-track', 'aria-hidden': 'true' }),
+      h('span', { class: 'switch-text' }, T.fitPlain));
+
     return section('terminal', T.terminal, T.terminalHow,
       h('div', { class: 'field wide' }, terminalPreview()),
+      field(T.fitPlainLabel, T.fitPlainHelp, fit),
       field(T.fontSize, null, size),
       field(T.fontFamily, null, family),
       field(T.lineHeight, null, line),
@@ -793,7 +833,10 @@
         h('div', { class: 'field-text' }, h('span', { class: 'field-label' }, T.modsAsk)),
         h('button', { type: 'button', class: 'command prompt', onclick: () => copy(prompt) }, icon('copy'), h('span', { class: 'command-text' }, `${prompt}…`)))
       : null;
-    return section('mods', T.mods, T.modsHow, h('div', { class: 'field wide' }, list), folder, ask);
+    const studio = h('div', { class: 'field wide' },
+      h('div', { class: 'field-text' }, h('span', { class: 'field-label' }, T.navStudio), h('span', { class: 'field-help' }, T.studioPitch)),
+      h('button', { type: 'button', class: 'btn accent', 'data-key': 'open-studio', onclick: () => open('studio') }, icon('layers'), T.studioOpen));
+    return section('mods', T.mods, T.modsHow, studio, h('div', { class: 'field wide' }, list), folder, ask);
   }
 
   function aboutSection() {
@@ -1016,6 +1059,104 @@
       onCleanup(fn) {
         window.addEventListener('beforeunload', guard(fn));
       },
+      /* A widget: something a package or the studio can put in a slot. */
+      addWidget(widget) {
+        if (!widget || !core.isWidgetKey(`${id}/${widget.id}`) || typeof widget.render !== 'function') {
+          throw new Error('addWidget needs {id, title, render}');
+        }
+        const key = `${id}/${widget.id}`;
+        const slots = Array.isArray(widget.slots) ? widget.slots.filter((slot) => core.SLOTS.includes(slot)) : null;
+        registry.widgets[key] = {
+          key,
+          mod: id,
+          id: String(widget.id),
+          title: String(widget.title || widget.id),
+          description: widget.description ? String(widget.description) : '',
+          icon: widget.icon || 'puzzle',
+          slots: slots && slots.length ? slots : core.SLOTS.slice(),
+          defaultSlot: core.SLOTS.includes(widget.defaultSlot) ? widget.defaultSlot : null,
+          options: Array.isArray(widget.options) ? widget.options.filter((option) => option && option.key) : [],
+          size: widget.size && typeof widget.size === 'object' ? widget.size : {},
+          render: guardRender(id, widget.render),
+        };
+        shell.emit('widgets', key);
+        return key;
+      },
+      /* A floating window of the mod's own, opened from the tray, the
+       * palette, or `handle.open()`. */
+      addWindow(win) {
+        if (!win || !win.id || typeof win.render !== 'function') throw new Error('addWindow needs {id, title, render}');
+        const key = `${id}/${win.id}`;
+        if (!core.isWidgetKey(key)) throw new Error('a window id is [a-z0-9_-]');
+        registry.windows[key] = {
+          key,
+          mod: id,
+          title: String(win.title || win.id),
+          icon: win.icon || 'window',
+          width: Number(win.width) || 360,
+          height: Number(win.height) || 280,
+          open: win.open === true,
+          render: guardRender(id, win.render),
+        };
+        shell.emit('windows', key);
+        return {
+          open: () => shell.layout && shell.layout.openWindow(key),
+          close: () => shell.layout && shell.layout.closeWindow(key),
+          toggle: () => shell.layout && shell.layout.toggleWindow(key),
+        };
+      },
+      /* A background the studio can pick: `render(host, ctx)` draws into a
+       * full-page element behind everything. */
+      addBackground(background) {
+        if (!background || !background.id || typeof background.render !== 'function') throw new Error('addBackground needs {id, name, render}');
+        const key = `${id}/${background.id}`;
+        if (!core.isWidgetKey(key)) throw new Error('a background id is [a-z0-9_-]');
+        registry.backgrounds[key] = {
+          key,
+          mod: id,
+          name: String(background.name || background.id),
+          render: guardRender(id, background.render),
+        };
+        shell.emit('backgrounds', key);
+        return key;
+      },
+      /* This device's own storage for the mod: window positions, a timer's
+       * end, anything that should not follow the operator to other
+       * devices. Never throws; a private window just forgets. */
+      local: {
+        get(name, fallback) {
+          try {
+            const raw = window.localStorage.getItem(`alc.mod.${id}.${name}`);
+            return raw === null ? fallback : JSON.parse(raw);
+          } catch {
+            return fallback;
+          }
+        },
+        set(name, value) {
+          try {
+            window.localStorage.setItem(`alc.mod.${id}.${name}`, JSON.stringify(value));
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      },
+    };
+  }
+
+  /* What mods registered for layout.js to draw. */
+  const registry = { widgets: {}, windows: {}, backgrounds: {} };
+
+  /* A render that throws is the mod's error, shown as such, not the page's. */
+  function guardRender(id, render) {
+    return (root, ctx) => {
+      try {
+        return render(root, ctx);
+      } catch (error) {
+        reportModError(id, error);
+        root.append(h('p', { class: 'note error' }, core.fill(T.modFailed, { m: id, e: error.message || error })));
+        return undefined;
+      }
     };
   }
 
@@ -1056,6 +1197,38 @@
       const theme = currentTheme();
       return { id: theme.id, mode: theme.mode };
     },
+    layout: () => structuredClone(web.settings.layout),
+    widgets: () => Object.values(registry.widgets).map(({ render, ...rest }) => structuredClone(rest)),
+    openWindow: (key) => shell.layout && shell.layout.openWindow(String(key)),
+    notify: (title, body) => {
+      // A system notification when the page may show one, a toast always.
+      toast(body ? `${title} — ${body}` : String(title));
+      try {
+        if (!('Notification' in window)) return false;
+        if (Notification.permission === 'granted') {
+          new Notification(String(title), { body: body ? String(body) : undefined });
+          return true;
+        }
+        if (Notification.permission !== 'denied') Notification.requestPermission();
+      } catch {
+        // Not over plain http on a LAN address, which is fine.
+      }
+      return false;
+    },
+  });
+
+  /* What layout.js and studio.js reach. */
+  Object.assign(shell, {
+    web: () => web,
+    registry,
+    changeSettings,
+    renderSettings,
+    h,
+    icon,
+    copy,
+    themeChoices,
+    pull: () => pull(false),
+    loadedMods: () => loadedMods,
   });
 
   /* -------------------------------------------------------------- polls */
@@ -1093,10 +1266,15 @@
       dir: next.dir || '',
       hub: next.hub || {},
       settingsError: next.settingsError || null,
+      packages: Array.isArray(next.packages) ? next.packages : [],
+      backgrounds: Array.isArray(next.backgrounds) ? next.backgrounds : [],
+      catalog: next.catalog && typeof next.catalog === 'object' ? { mods: [], packages: [], themes: [], templates: [], ...next.catalog } : { mods: [], packages: [], themes: [], templates: [] },
+      presets: Array.isArray(next.presets) ? next.presets : core.BACKGROUND_PRESETS,
     };
     if (!changed && !first) return;
     applyLook();
     shell.emit('settings', structuredClone(web.settings));
+    shell.emit('web', web);
     await loadStyles(web.mods);
     if (!scriptsLoaded) {
       scriptsLoaded = true;

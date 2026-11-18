@@ -1,0 +1,6 @@
+.card-slot .age-bar {
+  display: block;
+  width: 100%;
+  height: 4px;
+  min-width: 120px;
+}

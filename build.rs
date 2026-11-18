@@ -15,11 +15,13 @@ use std::path::{Path, PathBuf};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-const ASSETS: [&str; 9] = [
+const ASSETS: [&str; 11] = [
     "index.html",
     "app.js",
     "dashboard.js",
     "shell.js",
+    "layout.js",
+    "studio.js",
     "core.js",
     "app.css",
     "vendor/xterm.js",
@@ -48,5 +50,48 @@ fn main() {
         let name = asset.replace('/', "-");
         fs::write(out_dir.join(format!("{name}.gz")), compressed)
             .unwrap_or_else(|error| panic!("failed to write {name}.gz: {error}"));
+    }
+
+    write_custom_files(&out_dir);
+}
+
+/// Lists every file under `web/custom/examples` - the official mods,
+/// packages, themes and new-mod templates - as `include_str!`s, so adding
+/// one is dropping it in the folder rather than editing a table.
+fn write_custom_files(out_dir: &Path) {
+    let root = Path::new("web/custom");
+    let mut files = Vec::new();
+    collect(&root.join("examples"), root, &mut files);
+    files.sort();
+    let mut source = String::from("pub(crate) const CUSTOM_FILES: &[(&str, &str)] = &[\n");
+    for relative in files {
+        let absolute = fs::canonicalize(root.join(&relative))
+            .unwrap_or_else(|error| panic!("failed to resolve {relative}: {error}"));
+        source.push_str(&format!(
+            "    ({relative:?}, include_str!({:?})),\n",
+            absolute.display().to_string()
+        ));
+    }
+    source.push_str("];\n");
+    fs::write(out_dir.join("custom_files.rs"), source).expect("write custom_files.rs");
+}
+
+fn collect(dir: &Path, root: &Path, files: &mut Vec<String>) {
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect(&path, root, files);
+        } else if path.file_name().is_some_and(|name| name != ".DS_Store") {
+            let relative = path
+                .strip_prefix(root)
+                .expect("under the root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.push(relative);
+        }
     }
 }

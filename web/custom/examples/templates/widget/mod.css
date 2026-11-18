@@ -1,0 +1,6 @@
+/* Styles for __MOD_NAME__. Use the page's tokens (var(--accent), var(--muted),
+ * var(--surface) …) so it fits every theme. */
+.__MOD_ID__-line {
+  margin: 0;
+  color: var(--text);
+}

@@ -1,0 +1,33 @@
+/* CRT: an overlay on the terminal's frame - never on the text itself, so
+ * selection and the cursor are untouched. */
+#terminal {
+  position: relative;
+}
+
+#terminal::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+  background:
+    repeating-linear-gradient(180deg, rgb(0 0 0 / 0%) 0, rgb(0 0 0 / 0%) 2px, rgb(0 0 0 / 22%) 3px),
+    radial-gradient(120% 90% at 50% 50%, transparent 60%, rgb(0 0 0 / 45%) 100%);
+  mix-blend-mode: multiply;
+}
+
+#terminal .xterm-rows {
+  text-shadow: 0 0 4px color-mix(in srgb, currentColor 55%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #terminal::after {
+    animation: crt-flicker 6s infinite steps(1);
+  }
+}
+
+@keyframes crt-flicker {
+  0%, 97% { opacity: 1; }
+  98% { opacity: 0.85; }
+  99% { opacity: 0.95; }
+}

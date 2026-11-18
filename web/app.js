@@ -37,6 +37,9 @@
     'filesToggle', 'files', 'filesUp', 'crumbs', 'filesHide', 'tree', 'treeNote',
     'viewer', 'viewerHead', 'viewerName', 'viewerSize', 'viewerReload', 'viewerClose',
     'viewerNote', 'code', 'gutter', 'source', 'viewerEmpty', 'viewerEmptyText',
+    'stage', 'center', 'dockLeft', 'dockRight', 'viewTop', 'viewBottom', 'listTop', 'listBottom',
+    'barSlot', 'winTray', 'windows', 'studio', 'backdrop', 'backdropArt', 'backdropDim',
+    'fitToggle', 'sizeNoteFit',
   ]) {
     el[id] = document.getElementById(id);
   }
@@ -339,6 +342,8 @@
 
     for (const [id, node] of built) {
       if (seen.has(id)) continue;
+      // A card widget's timers and listeners go with its card.
+      if (node.slot._alcDown) node.slot._alcDown();
       node.li.remove();
       built.delete(id);
     }
@@ -404,11 +409,19 @@
     const chips = document.createElement('span');
     chips.className = 'chips';
 
-    main.append(head, meta, cwd, chips);
+    // Widgets a package put on every card. Inside the button, so what is
+    // drawn here is something to read, not something to press.
+    const slot = document.createElement('span');
+    slot.className = 'card-slot';
+
+    main.append(head, meta, cwd, chips, slot);
     button.append(avatar, main);
     li.append(button);
-    return { li, button, avatar, dot, name, age, meta, chips, cwd, id: null };
+    return { li, button, avatar, dot, name, age, meta, chips, cwd, slot, id: null };
   }
+
+  /* layout.js puts its renderer here. */
+  const cardSlot = { render: null };
 
   function updateRow(node, row) {
     const card = row.card;
@@ -444,6 +457,13 @@
     renderChips(node.chips, chips, card.unsandboxed);
     setText(node.cwd, core.elidePath(card.cwd));
     if (node.cwd.title !== card.cwd) node.cwd.title = card.cwd;
+    if (cardSlot.render) {
+      try {
+        cardSlot.render(node.slot, card);
+      } catch (error) {
+        console.error(error);
+      }
+    }
 
     node.button.onclick = () => attach(card);
   }
@@ -810,6 +830,16 @@
    * shell.js sets both; null means the page's own defaults. */
   let terminalSettings = null;
   let terminalColours = {};
+  /* How opaque the terminal is over a background, 0.3-1. Below 1 the
+   * terminal's own background is drawn translucent so a package's
+   * background shows through it. */
+  let terminalOpacity = 1;
+
+  function withOpacity(theme, opacity) {
+    if (opacity >= 1) return theme;
+    const rgba = core.hexToRgba(theme.background, opacity);
+    return rgba ? { ...theme, background: rgba } : theme;
+  }
 
   function terminalOptions() {
     const t = terminalSettings || {};
@@ -821,15 +851,24 @@
       cursorStyle: t.cursorStyle || 'block',
       cursorBlink: t.cursorBlink !== false,
       scrollback: t.scrollback || 5000,
-      theme: { ...DARK, ...terminalColours },
+      theme: withOpacity({ ...DARK, ...terminalColours }, terminalOpacity),
     };
   }
 
   /* Applied to a terminal that is already open, then refitted: a font change
    * changes how many cells fit. */
-  function setTerminalLook(settings, colours) {
+  function setTerminalLook(settings, colours, opacity) {
     terminalSettings = settings;
     terminalColours = colours || {};
+    terminalOpacity = Number.isFinite(opacity) ? Math.min(1, Math.max(0.3, opacity)) : 1;
+    const wanted = wantsFit(attached.value);
+    fitPlainDefault = !!(settings && settings.fitPlain);
+    // The default turned off under a session this page was holding: give
+    // the size back rather than keep the terminal drawing for this page.
+    if (wanted && !wantsFit(attached.value)) {
+      send({ t: 'release' });
+      renderFitToggle();
+    }
     if (!term) return;
     const options = terminalOptions();
     baseFontSize = options.fontSize;
@@ -843,6 +882,9 @@
     baseFontSize = options.fontSize;
     term = new window.Terminal({
       allowProposedApi: true,
+      // Lets the theme's background carry an alpha, for a background drawn
+      // behind the page. Costs nothing visible when it is opaque.
+      allowTransparency: true,
       convertEol: false,
       drawBoldTextInBrightColors: false,
       ...options,
@@ -883,8 +925,62 @@
    * resize frames, so acting as though it had one would only render the
    * screen at a shape the agent is not using. */
   function browserOwnsSize(card) {
-    return !!(card && card.tmux) && operator.value;
+    if (!card || !operator.value) return false;
+    return !!card.tmux || wantsFit(card);
   }
+
+  /* "Fit to this page" for a plain session: the page asks the hub for the
+   * pty's size, and holds it until the local terminal is resized (which
+   * takes it straight back), the page lets go, or the page disconnects.
+   * Remembered per session for this visit; the settings switch is the
+   * default for every plain session. */
+  let fitPlainDefault = false;
+  const fitChoice = new Map();
+  /* Sessions whose terminal took the size back while this page held it: not
+   * taken again until asked, or the two would fight on every resize. */
+  const fitYielded = new Set();
+  /* This connection's id, from its hello, and whether the hub last said
+   * this page holds the open session's size. */
+  let myViewer = null;
+  let holdingSize = false;
+
+  function wantsFit(card) {
+    if (!card || card.tmux || card.exit || fitYielded.has(card.id)) return false;
+    return fitChoice.has(card.id) ? fitChoice.get(card.id) : fitPlainDefault;
+  }
+
+  function setFit(card, on) {
+    if (!card || card.tmux) return;
+    fitChoice.set(card.id, !!on);
+    fitYielded.delete(card.id);
+    if (!on) send({ t: 'release' });
+    renderFitToggle();
+    relayout();
+  }
+
+  function renderFitToggle() {
+    const card = attached.value;
+    const show = document.body.dataset.pane === 'view' && !!card && !card.tmux && !card.exit && operator.value;
+    el.fitToggle.hidden = !show;
+    if (!show) return;
+    const on = wantsFit(card);
+    const label = on ? T.fitRelease : T.fitTake;
+    el.fitToggle.setAttribute('aria-pressed', String(on));
+    el.fitToggle.setAttribute('aria-label', label);
+    el.fitToggle.title = label;
+    el.fitToggle.classList.toggle('on', on);
+  }
+
+  el.fitToggle.addEventListener('mousedown', (event) => event.preventDefault());
+  el.fitToggle.addEventListener('click', () => {
+    const card = attached.value;
+    if (card) setFit(card, !wantsFit(card));
+  });
+  el.sizeNoteFit.textContent = T.fitTake;
+  el.sizeNoteFit.addEventListener('click', () => {
+    const card = attached.value;
+    if (card) setFit(card, true);
+  });
 
   function relayout() {
     if (!term) return;
@@ -930,7 +1026,8 @@
       // parent). The next resize or attach will fit it.
       return;
     }
-    send({ t: 'resize', cols: term.cols, rows: term.rows });
+    const card = attached.value;
+    send({ t: 'resize', cols: term.cols, rows: term.rows, take: !!card && !card.tmux });
   }
 
   /* The session's own grid, drawn as large as the frame allows.
@@ -997,7 +1094,8 @@
   function showSizeNote(card, small) {
     const show = !!card && small && !sizeNoteHidden.has(card.id);
     if (show) {
-      setText(el.sizeNoteText, core.fill(T.sizeFramed, { c: card.cols, r: card.rows }));
+      el.sizeNoteFit.hidden = !operator.value;
+      setText(el.sizeNoteText, core.fill(operator.value ? T.sizeFramedFit : T.sizeFramed, { c: card.cols, r: card.rows }));
       commandText(el.sizeNoteCommand, core.tmuxCommand(card));
     }
     if (el.sizeNote.hidden === !show) return;
@@ -1082,6 +1180,7 @@
       if (browserOwnsSize(card)) {
         frame.cols = term ? term.cols : 80;
         frame.rows = term ? term.rows : 24;
+        frame.take = !card.tmux;
       }
       send(frame);
     });
@@ -1129,12 +1228,15 @@
       case 'hello': {
         attached.value = frame.session;
         everGreeted = true;
+        myViewer = typeof frame.viewer === 'number' ? frame.viewer : null;
+        holdingSize = false;
         // Deliberately not `lastSeq = frame.seq`: that claims bytes the
         // terminal has not written, so a drop before the catch-up frame
         // would resume past them and lose that output for good. Leaving it
         // null asks for a snapshot instead, which is always safe.
         setGrade(frame.grade);
         renderFilesSwitch();
+        renderFitToggle();
         if (filesOpen.value && filesAvailable() && !el.tree.childElementCount) loadFolder(folder);
         setText(el.subtitle, `${frame.session.name} · ${core.describeSession(frame.session).join(' · ')}`);
         renderPermission(frame.session);
@@ -1163,9 +1265,25 @@
         // notice wrote a redraw for the new width into a grid of the old
         // one. A page that drives the size already knows it.
         const card = attached.value;
-        if (!card || browserOwnsSize(card)) break;
-        if (card.cols === frame.cols && card.rows === frame.rows) break;
-        attached.value = { ...card, cols: frame.cols, rows: frame.rows };
+        if (!card) break;
+        const fitted = !!frame.fitted;
+        const mine = myViewer !== null && frame.holder === myViewer;
+        // This page held a plain session's size and now does not: its
+        // terminal was resized, or another page took it. Either way this
+        // page stops asking, or the two would take turns for ever.
+        if (!card.tmux && holdingSize && !mine && wantsFit(card)) {
+          fitYielded.add(card.id);
+          toast(fitted ? T.fitTakenPage : T.fitTaken, 'info', { label: T.fitTake, run: () => setFit(attached.value, true) });
+        }
+        holdingSize = mine;
+        const next = { ...card, cols: frame.cols, rows: frame.rows, fitted };
+        if (browserOwnsSize(card) && browserOwnsSize(next)) {
+          attached.value = next;
+          break;
+        }
+        if (card.cols === frame.cols && card.rows === frame.rows && card.fitted === fitted && !fitYielded.has(card.id)) break;
+        attached.value = next;
+        renderFitToggle();
         relayout();
         break;
       }
@@ -1220,6 +1338,7 @@
 
     resetFiles();
     renderFilesSwitch();
+    renderFitToggle();
 
     requestAnimationFrame(() => {
       relayout();
@@ -1268,6 +1387,7 @@
     el.grade.hidden = true;
     el.perm.hidden = true;
     el.sizeNote.hidden = true;
+    el.fitToggle.hidden = true;
     // A ticket is minted for one change on one session. Leaving it here meant
     // the next session attached to could spend it.
     pendingTicket = null;
@@ -1854,6 +1974,7 @@
   // Which mode this is depends on the grade, and the grade arrives with the
   // hello - after the first attach has already laid the terminal out.
   operator.subscribe(scheduleRelayout);
+  operator.subscribe(() => renderFitToggle());
 
   /* The session rail, folded away on a wide screen.
    *
@@ -1996,5 +2117,11 @@
       if (document.body.dataset.pane === 'view') el.railToggle.click();
     },
     lastCards: () => lastCards,
+    cardSlot,
+    fit: {
+      wants: () => wantsFit(attached.value),
+      set: (on) => setFit(attached.value, on),
+      available: () => !el.fitToggle.hidden,
+    },
   };
 })();

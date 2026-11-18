@@ -1210,6 +1210,315 @@
 
   const ACCENTS = ['#4f46e5', '#2563eb', '#0891b2', '#059669', '#65a30d', '#d97706', '#e11d48', '#c026d3'];
 
+  /* The studio, widgets, windows, backgrounds, panels and fitting. */
+  Object.assign(STRINGS.en, {
+    navStudio: 'Studio',
+    studioSub: 'Packages, widgets, backgrounds and panels — how the session list and the coding view are put together.',
+    studioViewer: 'This link can look but not change anything here. This is the operator’s page.',
+    studioPitch: 'Arrange widgets, apply packages, pick a background and size the panels.',
+    studioOpen: 'Open the studio',
+    studioPackages: 'Packages',
+    studioLayout: 'Layout',
+    studioMods: 'Mods',
+    studioBackground: 'Background',
+    studioPanels: 'Panels',
+    packagesLede: 'A package is a set of mods together with where their widgets go, a background and a theme. Applying one turns its mods on and takes its layout; mods it does not name stay as they are.',
+    packagesYours: 'Installed packages',
+    packagesNone: 'No packages yet. Install an official one below, or save this page as one.',
+    packagesOfficial: 'Official packages',
+    packageActive: 'Active',
+    packageApply: 'Apply',
+    packageReapply: 'Apply again',
+    packageApplied: 'Package applied.',
+    packageReload: 'Package applied. Reload to run its mods.',
+    packageMissing: 'This package needs mods that are not installed: {m}',
+    packageReview: 'Left off until you have read them (installed from elsewhere): {m}. Turn them on in Mods.',
+    packageExport: 'Download',
+    packageCopy: 'Copy JSON',
+    packageRemoveConfirm: 'Remove the package “{p}”? Its mods stay installed.',
+    packageSave: 'Save this page as a package',
+    packageSaveHelp: 'Takes the mods that are on, the layout, background, theme and density as they are now.',
+    packageId: 'Package id',
+    packageName: 'Name',
+    packageNameHint: 'Name',
+    packageDesc: 'Description',
+    packageDescHint: 'What it is for (optional)',
+    packageSaveButton: 'Save package',
+    packageSaved: 'Saved packages/{p}.json',
+    packageImport: 'Import a package',
+    packageImportHelp: 'Paste a package’s JSON or pick its file. Its mods must be installed (official ones are installed when it is applied).',
+    packageImportButton: 'Import',
+    chooseFile: 'Choose file…',
+    badId: 'An id is lowercase letters, digits, - and _, up to 48.',
+    badJson: 'That is not valid JSON.',
+    official: 'Official',
+    installed: 'Installed',
+    install: 'Install',
+    installApply: 'Install and apply',
+    reinstall: 'Reinstall',
+    remove: 'Remove',
+    reset: 'Reset',
+    layoutLede: 'Drag a widget from the library into a slot, or pick it and choose where it goes. A widget no slot names is drawn where its mod suggests until you move or hide it.',
+    layoutLedeExplicit: 'This layout came from a package, so only the widgets placed here are drawn. Drag one from the library to add it; Reset layout goes back to each mod’s suggested places.',
+    library: 'Widget library',
+    libraryHelp: 'Every widget the mods that are on offer.',
+    libraryEmpty: 'No widgets yet. Turn on or install a mod that has some — the official ones do.',
+    inspector: 'Widget',
+    inspectorEmpty: 'Pick a widget to place it and set its options.',
+    inspectorSlot: 'Where',
+    slotHidden: 'Hidden',
+    slotHide: 'Hide',
+    placeFirst: 'Place it to set this.',
+    noOptions: 'This widget has no options.',
+    layoutReset: 'Reset layout',
+    layoutResetConfirm: 'Put every widget back where its mod suggests?',
+    screenList: 'Session list',
+    screenView: 'Coding view',
+    screenFloat: 'Floating windows',
+    zoneEmpty: 'Drop a widget here',
+    slotNotAllowed: '{w} cannot go in {s}.',
+    slot_bar: 'Header',
+    slot_list_top: 'Above the sessions',
+    slot_list_bottom: 'Below the sessions',
+    slot_card: 'On each session card',
+    slot_view_top: 'Above the terminal',
+    slot_view_bottom: 'Below the terminal',
+    slot_view_left: 'Left dock',
+    slot_view_right: 'Right dock',
+    slot_float: 'Floating window',
+    modsLede: 'Mods are scripts and stylesheets in the hub’s web/mods folder. They run with this page’s access, so read one before turning it on.',
+    modsInstalled: 'Installed mods',
+    modsOfficial: 'Official mods',
+    modsOfficialHelp: 'Shipped with alc; installing one turns it on.',
+    modRemoveConfirm: 'Delete the mod “{m}” and its saved state?',
+    installGithub: 'Install from GitHub',
+    installGithubHelp: 'A repository with mod.json at its root, or mods/, themes/ and packages/ folders.',
+    installSource: 'GitHub repository',
+    installWarning: 'What arrives is off. Read it in the folder before you turn it on.',
+    installedFrom: 'Installed: {w}',
+    newMod: 'New mod',
+    newModHelp: 'Starts a mod from a template in web/mods, turned on, with its id and name filled in.',
+    newModId: 'Mod id',
+    newModName: 'Name',
+    newModNameHint: 'Name (optional)',
+    newModTemplate: 'Template',
+    newModCreate: 'Create',
+    newModCreated: 'Created {d}. Edit mod.js, then reload.',
+    newModReload: 'Mod created. Reload to run it.',
+    newModPrompt: 'Read the AGENTS.md next to {d}, then change this mod so that ',
+    newModCli: 'Same from a shell: alc remote web new <id> --template widget',
+    bgLede: 'Drawn behind the whole page. Cards and panels stay solid; the dim and blur keep text readable.',
+    bgPresets: 'Built in',
+    bgNone: 'None',
+    bgImages: 'Your images',
+    bgImagesHelp: 'PNG, JPEG, WebP or GIF up to 1 MiB from here; larger files can go in web/backgrounds/ directly.',
+    bgUpload: 'Upload',
+    bgImagesNone: 'No images uploaded yet.',
+    bgRemoveConfirm: 'Delete {n}?',
+    bgTooBig: 'That image is over 1 MiB; put it in web/backgrounds/ on the hub instead.',
+    bgMods: 'From mods',
+    bgModsHelp: 'Backgrounds a mod draws, often animated.',
+    bgModsNone: 'No mod offers a background. The official Ambient mod has several.',
+    bgTuning: 'Tuning',
+    bgTuningHelp: 'How much of the page’s colour covers it, and how see-through the terminal is.',
+    bgDim: 'Dim',
+    bgBlur: 'Blur',
+    bgTerminal: 'Terminal opacity',
+    bg_aurora: 'Aurora',
+    bg_dusk: 'Dusk',
+    bg_mesh: 'Mesh',
+    bg_grid: 'Grid',
+    bg_dots: 'Dots',
+    bg_blueprint: 'Blueprint',
+    bg_sunrise: 'Sunrise',
+    bg_forest: 'Forest',
+    panelsLede: 'Drag the edge of the session list, the file panel or a dock to resize it, or set it here. The terminal refits to whatever is left.',
+    panelWidths: 'Widths',
+    panelWidthsHelp: 'Double-click an edge to reset it.',
+    panelSides: 'Sides',
+    panelSidesHelp: 'Which side of the terminal each panel sits on.',
+    panel_rail: 'Session list',
+    panel_files: 'File panel',
+    panel_left: 'Left dock',
+    panel_right: 'Right dock',
+    panelResize: 'Resize {p}',
+    panelResizeHint: 'Drag to resize · double-click to reset',
+    sideLeft: 'Left',
+    sideRight: 'Right',
+    windowsReset: 'Floating windows',
+    windowsResetButton: 'Reset positions',
+    windowsResetHelp: 'Puts every window back and shows the closed ones (this device only).',
+    winClose: 'Close window',
+    winTray: 'Windows',
+    winShown: 'shown',
+    winHidden: 'hidden',
+    winShow: 'Show window',
+    winHide: 'Hide window',
+    paletteGroupWindows: 'Windows',
+    fitTake: 'Fit to this page',
+    fitRelease: 'Give the size back',
+    fitTaken: 'The terminal that started this session was resized, so it has its size back.',
+    fitTakenPage: 'Another page took this session’s size, so this one shows it framed.',
+    fitPlain: 'Fit plain sessions to this page',
+    fitPlainLabel: 'Plain sessions',
+    fitPlainHelp: 'A session started without --tmux is drawn at its own terminal’s size. This lets the page resize it instead, until that terminal is resized again.',
+    sizeFramedFit: 'Shown at {c}×{r}, the size of the terminal it was started in. Fit it to this page, or start it with --tmux:',
+  });
+
+  Object.assign(STRINGS['zh-TW'], {
+    navStudio: '工作室',
+    studioSub: '套件、小工具、背景與面板——決定 session 清單與編碼畫面的樣子。',
+    studioViewer: '這個連結只能看，不能修改。這是操作者的頁面。',
+    studioPitch: '排列小工具、套用套件、挑選背景、調整面板。',
+    studioOpen: '開啟工作室',
+    studioPackages: '套件',
+    studioLayout: '版面',
+    studioMods: 'Mods',
+    studioBackground: '背景',
+    studioPanels: '面板',
+    packagesLede: '套件是一組 mods，加上它們的小工具放在哪裡、背景與主題。套用時會開啟它的 mods 並採用它的版面；沒有列出的 mods 維持原狀。',
+    packagesYours: '已安裝的套件',
+    packagesNone: '還沒有套件。安裝下方的官方套件，或把目前的頁面存成套件。',
+    packagesOfficial: '官方套件',
+    packageActive: '使用中',
+    packageApply: '套用',
+    packageReapply: '再次套用',
+    packageApplied: '已套用套件。',
+    packageReload: '已套用套件。重新載入以執行它的 mods。',
+    packageMissing: '這個套件需要尚未安裝的 mods：{m}',
+    packageReview: '這些 mods 來自其他來源，在你讀過之前維持關閉：{m}。請在 Mods 中開啟。',
+    packageExport: '下載',
+    packageCopy: '複製 JSON',
+    packageRemoveConfirm: '移除套件「{p}」？它的 mods 會保留。',
+    packageSave: '把目前的頁面存成套件',
+    packageSaveHelp: '記下目前開啟的 mods、版面、背景、主題與密度。',
+    packageId: '套件 id',
+    packageName: '名稱',
+    packageNameHint: '名稱',
+    packageDesc: '說明',
+    packageDescHint: '用途（選填）',
+    packageSaveButton: '儲存套件',
+    packageSaved: '已儲存 packages/{p}.json',
+    packageImport: '匯入套件',
+    packageImportHelp: '貼上套件的 JSON 或選擇檔案。它的 mods 必須已安裝（套用時會自動安裝官方 mods）。',
+    packageImportButton: '匯入',
+    chooseFile: '選擇檔案…',
+    badId: 'id 只能用小寫字母、數字、- 與 _，最多 48 字元。',
+    badJson: '這不是有效的 JSON。',
+    official: '官方',
+    installed: '已安裝',
+    install: '安裝',
+    installApply: '安裝並套用',
+    reinstall: '重新安裝',
+    remove: '移除',
+    reset: '重設',
+    layoutLede: '把小工具從工具庫拖進某個位置，或點選後選擇要放哪裡。沒有被指定位置的小工具，會先顯示在它的 mod 建議的位置，直到你移動或隱藏它。',
+    layoutLedeExplicit: '這個版面來自套件，所以只會顯示放在這裡的小工具。從工具庫拖曳即可加入；「重設版面」會回到每個 mod 建議的位置。',
+    library: '小工具庫',
+    libraryHelp: '目前開啟的 mods 提供的所有小工具。',
+    libraryEmpty: '還沒有小工具。開啟或安裝提供小工具的 mod——官方 mods 都有。',
+    inspector: '小工具',
+    inspectorEmpty: '選一個小工具來放置並設定選項。',
+    inspectorSlot: '位置',
+    slotHidden: '隱藏',
+    slotHide: '隱藏',
+    placeFirst: '放置後才能設定。',
+    noOptions: '這個小工具沒有選項。',
+    layoutReset: '重設版面',
+    layoutResetConfirm: '把每個小工具放回它的 mod 建議的位置？',
+    screenList: 'Session 清單',
+    screenView: '編碼畫面',
+    screenFloat: '浮動視窗',
+    zoneEmpty: '把小工具拖到這裡',
+    slotNotAllowed: '{w} 不能放在{s}。',
+    slot_bar: '頁首',
+    slot_list_top: 'Session 上方',
+    slot_list_bottom: 'Session 下方',
+    slot_card: '每張 session 卡片',
+    slot_view_top: '終端機上方',
+    slot_view_bottom: '終端機下方',
+    slot_view_left: '左側面板',
+    slot_view_right: '右側面板',
+    slot_float: '浮動視窗',
+    modsLede: 'Mods 是 hub 的 web/mods 資料夾裡的腳本與樣式表，以這個頁面的權限執行，開啟前請先讀過。',
+    modsInstalled: '已安裝的 mods',
+    modsOfficial: '官方 mods',
+    modsOfficialHelp: '隨 alc 提供；安裝後即開啟。',
+    modRemoveConfirm: '刪除 mod「{m}」與它儲存的狀態？',
+    installGithub: '從 GitHub 安裝',
+    installGithubHelp: '根目錄有 mod.json 的 repo，或含 mods/、themes/、packages/ 資料夾的 repo。',
+    installSource: 'GitHub repo',
+    installWarning: '安裝後預設關閉。開啟前請先在資料夾中讀過。',
+    installedFrom: '已安裝：{w}',
+    newMod: '新 mod',
+    newModHelp: '從範本在 web/mods 建立一個 mod（已開啟），id 與名稱會自動填入。',
+    newModId: 'Mod id',
+    newModName: '名稱',
+    newModNameHint: '名稱（選填）',
+    newModTemplate: '範本',
+    newModCreate: '建立',
+    newModCreated: '已建立 {d}。編輯 mod.js 後重新載入。',
+    newModReload: '已建立 mod。重新載入以執行。',
+    newModPrompt: '讀 {d} 旁邊的 AGENTS.md，然後修改這個 mod，讓它',
+    newModCli: '在 shell 中也可以：alc remote web new <id> --template widget',
+    bgLede: '畫在整個頁面後方。卡片與面板保持不透明；變暗與模糊讓文字維持易讀。',
+    bgPresets: '內建',
+    bgNone: '無',
+    bgImages: '你的圖片',
+    bgImagesHelp: '可從這裡上傳 1 MiB 以內的 PNG、JPEG、WebP 或 GIF；更大的檔案可直接放到 web/backgrounds/。',
+    bgUpload: '上傳',
+    bgImagesNone: '還沒有上傳圖片。',
+    bgRemoveConfirm: '刪除 {n}？',
+    bgTooBig: '這張圖片超過 1 MiB，請直接放到 hub 的 web/backgrounds/。',
+    bgMods: '來自 mods',
+    bgModsHelp: 'Mod 繪製的背景，常常是動態的。',
+    bgModsNone: '沒有 mod 提供背景。官方的 Ambient mod 有好幾種。',
+    bgTuning: '微調',
+    bgTuningHelp: '頁面顏色覆蓋多少，以及終端機的透明度。',
+    bgDim: '變暗',
+    bgBlur: '模糊',
+    bgTerminal: '終端機不透明度',
+    bg_aurora: '極光',
+    bg_dusk: '黃昏',
+    bg_mesh: '漸層網',
+    bg_grid: '格線',
+    bg_dots: '點陣',
+    bg_blueprint: '藍圖',
+    bg_sunrise: '日出',
+    bg_forest: '森林',
+    panelsLede: '拖曳 session 清單、檔案面板或側面板的邊緣來調整寬度，或在這裡設定。終端機會依剩下的空間重新調整。',
+    panelWidths: '寬度',
+    panelWidthsHelp: '雙擊邊緣可重設。',
+    panelSides: '位置',
+    panelSidesHelp: '每個面板放在終端機的哪一側。',
+    panel_rail: 'Session 清單',
+    panel_files: '檔案面板',
+    panel_left: '左側面板',
+    panel_right: '右側面板',
+    panelResize: '調整{p}寬度',
+    panelResizeHint: '拖曳調整 · 雙擊重設',
+    sideLeft: '左',
+    sideRight: '右',
+    windowsReset: '浮動視窗',
+    windowsResetButton: '重設位置',
+    windowsResetHelp: '把每個視窗放回原位並顯示已關閉的視窗（僅限這台裝置）。',
+    winClose: '關閉視窗',
+    winTray: '視窗',
+    winShown: '顯示中',
+    winHidden: '已隱藏',
+    winShow: '顯示視窗',
+    winHide: '隱藏視窗',
+    paletteGroupWindows: '視窗',
+    fitTake: '符合這個頁面',
+    fitRelease: '交還大小',
+    fitTaken: '啟動這個 session 的終端機調整了大小，所以大小已交還給它。',
+    fitTakenPage: '另一個頁面取得了這個 session 的大小，所以這裡改以原尺寸顯示。',
+    fitPlain: '讓一般 session 符合這個頁面',
+    fitPlainLabel: '一般 session',
+    fitPlainHelp: '沒有用 --tmux 啟動的 session 會以它自己終端機的大小顯示。開啟後由頁面決定大小，直到那個終端機再次調整大小。',
+    sizeFramedFit: '以 {c}×{r} 顯示，也就是啟動它的那個終端機的大小。讓它符合這個頁面，或用 --tmux 啟動：',
+  });
+
   /* The settings the page draws from, with every field present. Whatever the
    * server sent is trusted for shape only after this. */
   function normalizeWebSettings(raw) {
@@ -1229,10 +1538,183 @@
         cursorStyle: ['block', 'bar', 'underline'].includes(terminal.cursorStyle) ? terminal.cursorStyle : 'block',
         cursorBlink: terminal.cursorBlink !== false,
         scrollback: Number.isFinite(scroll) ? Math.min(100000, Math.max(500, Math.round(scroll))) : 5000,
+        fitPlain: terminal.fitPlain === true,
       },
       disabledMods: Array.isArray(input.disabledMods) ? input.disabledMods.filter((id) => typeof id === 'string') : [],
       modSettings: input.modSettings && typeof input.modSettings === 'object' ? input.modSettings : {},
+      layout: normalizeLayout(input.layout),
+      background: normalizeBackground(input.background),
+      package: typeof input.package === 'string' && SLUG.test(input.package) ? input.package : null,
     };
+  }
+
+  /* ------------------------------------------------------------- layout */
+
+  const SLUG = /^[a-z0-9][a-z0-9_-]{0,47}$/i;
+  const SLOTS = ['bar', 'list.top', 'list.bottom', 'card', 'view.top', 'view.bottom', 'view.left', 'view.right', 'float'];
+  const PANEL_SIZES = { rail: [220, 640], files: [260, 1200], left: [180, 900], right: [180, 900] };
+  const PANEL_DEFAULTS = { rail: 320, files: 420, left: 300, right: 320 };
+  const BACKGROUND_PRESETS = ['aurora', 'dusk', 'mesh', 'grid', 'dots', 'blueprint', 'sunrise', 'forest'];
+
+  function isWidgetKey(value) {
+    if (typeof value !== 'string') return false;
+    const parts = value.split('/');
+    return parts.length === 2 && SLUG.test(parts[0]) && SLUG.test(parts[1]);
+  }
+
+  /* The same shape and the same limits the hub's `Layout::clamp` keeps. */
+  function normalizeLayout(raw) {
+    const input = raw && typeof raw === 'object' ? raw : {};
+    const slots = {};
+    if (input.slots && typeof input.slots === 'object') {
+      for (const slot of SLOTS) {
+        const list = Array.isArray(input.slots[slot]) ? input.slots[slot] : [];
+        const kept = list
+          .filter((entry) => entry && isWidgetKey(entry.widget))
+          .slice(0, 24)
+          .map((entry) => ({
+            widget: entry.widget,
+            options: entry.options && typeof entry.options === 'object' && !Array.isArray(entry.options) ? entry.options : {},
+          }));
+        if (kept.length) slots[slot] = kept;
+      }
+    }
+    const sizes = {};
+    if (input.sizes && typeof input.sizes === 'object') {
+      for (const [key, [min, max]] of Object.entries(PANEL_SIZES)) {
+        const value = Number(input.sizes[key]);
+        if (Number.isFinite(value) && value > 0) sizes[key] = Math.min(max, Math.max(min, Math.round(value)));
+      }
+    }
+    return {
+      slots,
+      hidden: Array.isArray(input.hidden) ? [...new Set(input.hidden.filter(isWidgetKey))].sort() : [],
+      sizes,
+      filesSide: input.filesSide === 'left' ? 'left' : 'right',
+      railSide: input.railSide === 'right' ? 'right' : 'left',
+      explicit: input.explicit === true,
+    };
+  }
+
+  function normalizeBackground(raw) {
+    const input = raw && typeof raw === 'object' ? raw : {};
+    const kind = ['preset', 'image', 'mod'].includes(input.kind) ? input.kind : 'none';
+    const value = typeof input.value === 'string' ? input.value : '';
+    const valid = (kind === 'preset' && BACKGROUND_PRESETS.includes(value))
+      || (kind === 'image' && /^[a-z0-9][a-z0-9_-]{0,47}\.(png|jpe?g|webp|gif)$/i.test(value))
+      || (kind === 'mod' && isWidgetKey(value));
+    const num = (key, min, max, fallback) => {
+      const n = Number(input[key]);
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+    };
+    return {
+      kind: valid ? kind : 'none',
+      value: valid ? value : '',
+      dim: num('dim', 0, 95, 35),
+      blur: num('blur', 0, 40, 0),
+      terminal: num('terminal', 30, 100, 100),
+    };
+  }
+
+  /* Which widgets a slot draws, in order: the ones the layout puts there,
+   * then any widget the layout neither places nor hides whose mod suggests
+   * this slot - so turning a mod on shows its widget without a trip to the
+   * studio. `widgets` is `{key: {slots, defaultSlot, options}}`; a placement
+   * naming a widget that is not loaded, or a slot it does not allow, is
+   * skipped rather than drawn empty. */
+  function placementsFor(layout, slot, widgets) {
+    const known = widgets || {};
+    const allowed = (key) => known[key] && (!known[key].slots || known[key].slots.includes(slot));
+    const placed = new Set();
+    for (const list of Object.values(layout.slots || {})) {
+      for (const entry of list) placed.add(entry.widget);
+    }
+    const hidden = new Set(layout.hidden || []);
+    const out = (layout.slots && layout.slots[slot] ? layout.slots[slot] : [])
+      .filter((entry) => allowed(entry.widget))
+      .map((entry) => ({ widget: entry.widget, options: withDefaults(known[entry.widget], entry.options) }));
+    if (layout.explicit) return out;
+    for (const [key, widget] of Object.entries(known)) {
+      if (placed.has(key) || hidden.has(key) || widget.defaultSlot !== slot || !allowed(key)) continue;
+      out.push({ widget: key, options: withDefaults(widget, {}) });
+    }
+    return out;
+  }
+
+  function withDefaults(widget, options) {
+    const out = {};
+    for (const option of (widget && widget.options) || []) {
+      if (option && option.key !== undefined && option.default !== undefined) out[option.key] = option.default;
+    }
+    return { ...out, ...(options || {}) };
+  }
+
+  /* Moves a widget to `slot` at `index` (end when omitted), taking it out of
+   * wherever it was; `slot` null hides it. Returns a new layout. */
+  function placeWidget(layout, key, slot, index, options) {
+    const next = normalizeLayout(JSON.parse(JSON.stringify(layout)));
+    // With an explicit layout a hidden widget is simply one not placed.
+    if (!slot && next.explicit) {
+      for (const name of Object.keys(next.slots)) {
+        next.slots[name] = next.slots[name].filter((entry) => entry.widget !== key);
+        if (!next.slots[name].length) delete next.slots[name];
+      }
+      return next;
+    }
+    let kept = options;
+    for (const name of Object.keys(next.slots)) {
+      const found = next.slots[name].find((entry) => entry.widget === key);
+      if (found && kept === undefined) kept = found.options;
+      next.slots[name] = next.slots[name].filter((entry) => entry.widget !== key);
+      if (!next.slots[name].length) delete next.slots[name];
+    }
+    next.hidden = next.hidden.filter((entry) => entry !== key);
+    if (!slot) {
+      next.hidden = [...next.hidden, key].sort();
+      return next;
+    }
+    const list = next.slots[slot] ? next.slots[slot] : [];
+    const at = Number.isInteger(index) ? Math.max(0, Math.min(list.length, index)) : list.length;
+    list.splice(at, 0, { widget: key, options: kept || {} });
+    next.slots[slot] = list;
+    return next;
+  }
+
+  /* The layout as drawn, written out: every slot's widgets including the
+   * ones drawn by default, marked explicit. What a package saves, so it
+   * reproduces the page exactly wherever it is applied. */
+  function materializeLayout(layout, widgets) {
+    const out = normalizeLayout(JSON.parse(JSON.stringify(layout)));
+    out.slots = {};
+    for (const slot of SLOTS) {
+      const list = placementsFor(layout, slot, widgets);
+      if (list.length) out.slots[slot] = list;
+    }
+    out.hidden = [];
+    out.explicit = true;
+    return out;
+  }
+
+  /* `#rrggbb` (or `#rgb`) at an alpha, as `rgba()`. Null for anything else. */
+  function hexToRgba(hex, alpha) {
+    let text = String(hex || '').trim();
+    if (/^#[0-9a-f]{3}$/i.test(text)) text = `#${[...text.slice(1)].map((c) => c + c).join('')}`;
+    const match = /^#([0-9a-f]{6})$/i.exec(text);
+    if (!match) return null;
+    const value = parseInt(match[1], 16);
+    const a = Math.round(Math.min(1, Math.max(0, alpha)) * 100) / 100;
+    return `rgba(${(value >> 16) & 255},${(value >> 8) & 255},${value & 255},${a})`;
+  }
+
+  /* Keeps a floating window on screen: at least `grip` pixels of its title
+   * bar stay reachable whatever the viewport did since it was placed. */
+  function clampWindow(rect, viewport, grip) {
+    const g = grip || 48;
+    const width = Math.min(Math.max(220, rect.width || 360), Math.max(220, viewport.width - 16));
+    const height = Math.min(Math.max(120, rect.height || 260), Math.max(120, viewport.height - 16));
+    const x = Math.min(Math.max(rect.x || 0, g - width), viewport.width - g);
+    const y = Math.min(Math.max(rect.y || 0, 0), viewport.height - 40);
+    return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
   }
 
   /* Which palette is in effect: the theme's mode decides the base, then its
@@ -1484,5 +1966,17 @@
     changedScripts,
     framedTooSmall,
     tmuxCommand,
+    SLOTS,
+    PANEL_SIZES,
+    PANEL_DEFAULTS,
+    BACKGROUND_PRESETS,
+    isWidgetKey,
+    normalizeLayout,
+    normalizeBackground,
+    placementsFor,
+    placeWidget,
+    materializeLayout,
+    hexToRgba,
+    clampWindow,
   };
 });

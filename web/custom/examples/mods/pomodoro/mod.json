@@ -1,0 +1,6 @@
+{
+  "name": "Focus timer",
+  "description": "A pomodoro timer in a floating window (or a dock): focus, break, repeat, with a notification when each ends. Kept per device.",
+  "version": "1.0.0",
+  "author": "alc"
+}

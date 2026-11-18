@@ -1,0 +1,6 @@
+{
+  "name": "Session notes",
+  "description": "A note per session, beside its terminal: what you asked it, what to check when it is done. Kept on the hub, keyed by the session's name.",
+  "version": "1.0.0",
+  "author": "alc"
+}

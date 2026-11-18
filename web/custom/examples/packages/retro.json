@@ -1,0 +1,14 @@
+{
+  "name": "Retro terminal",
+  "description": "Scanlines and phosphor glow on the terminal, a rain of glyphs behind it, the Ember theme and a notes window.",
+  "version": "1.0.0",
+  "author": "alc",
+  "mods": ["ambient", "crt", "scratchpad"],
+  "theme": "ember",
+  "background": { "kind": "mod", "value": "ambient/glyph-rain", "dim": 45, "blur": 0, "terminal": 88 },
+  "layout": {
+    "slots": {
+      "float": [{ "widget": "scratchpad/notes", "options": {} }]
+    }
+  }
+}

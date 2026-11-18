@@ -114,6 +114,19 @@ pub enum WebCommand {
     Enable(String),
     Disable(String),
     Remove(String),
+    New {
+        id: String,
+        template: String,
+        name: Option<String>,
+    },
+    Catalog,
+    Add {
+        id: String,
+        force: bool,
+    },
+    Packages,
+    ApplyPackage(String),
+    RemovePackage(String),
 }
 
 /// Runs the agent under a pty, mirrors it to this terminal and to a loopback
@@ -1064,6 +1077,11 @@ fn run_web(store: &Store, command: WebCommand) -> Result<u8> {
             for id in &installed.themes {
                 println!("installed themes/{id}.json");
             }
+            for id in &installed.packages {
+                println!(
+                    "installed packages/{id}.json (apply it with `alc remote web package apply {id}`)"
+                );
+            }
             if !enable && !installed.mods.is_empty() {
                 println!(
                     "\nmods run with the page's link and are not sandboxed; read them first:\n  {}\nthen turn one on with `alc remote web enable <id>` or the switch in Settings",
@@ -1087,6 +1105,132 @@ fn run_web(store: &Store, command: WebCommand) -> Result<u8> {
         WebCommand::Remove(id) => {
             folder.remove_mod(&id)?;
             println!("removed mods/{id}");
+            Ok(0)
+        }
+        WebCommand::New { id, template, name } => {
+            folder.create_mod(&id, &template, name.as_deref())?;
+            let dir = folder.root().join("mods").join(&id);
+            println!(
+                "created {} from the `{template}` template; it is on",
+                dir.display()
+            );
+            println!("edit mod.js, then run `alc remote web check`; open pages offer a reload");
+            Ok(0)
+        }
+        WebCommand::Catalog => {
+            let catalog = folder.catalog();
+            let mark = |installed: bool| if installed { "installed" } else { "" };
+            println!("mods (alc remote web add <id>):");
+            for entry in &catalog.mods {
+                println!(
+                    "  {:<18} {:<10} {}",
+                    entry.id,
+                    mark(entry.installed),
+                    entry.description
+                );
+            }
+            println!("packages (alc remote web add <id>, then package apply <id>):");
+            for entry in &catalog.packages {
+                println!(
+                    "  {:<18} {:<10} {}",
+                    entry.id,
+                    mark(entry.installed),
+                    entry.description
+                );
+            }
+            println!("themes:");
+            for entry in &catalog.themes {
+                println!(
+                    "  {:<18} {:<10} {}",
+                    entry.id,
+                    mark(entry.installed),
+                    entry.name
+                );
+            }
+            println!("templates (alc remote web new <id> --template <template>):");
+            for entry in &catalog.templates {
+                println!("  {:<18} {}", entry.id, entry.description);
+            }
+            Ok(0)
+        }
+        WebCommand::Add { id, force } => {
+            let catalog = folder.catalog();
+            let kind = if catalog.mods.iter().any(|entry| entry.id == id) {
+                web::CatalogKind::Mod
+            } else if catalog.packages.iter().any(|entry| entry.id == id) {
+                web::CatalogKind::Package
+            } else if catalog.themes.iter().any(|entry| entry.id == id) {
+                web::CatalogKind::Theme
+            } else {
+                anyhow::bail!(
+                    "alc ships nothing called `{id}`; `alc remote web catalog` lists what it does"
+                );
+            };
+            folder.install_official(kind, &id, force)?;
+            match kind {
+                web::CatalogKind::Mod => {
+                    println!("installed mods/{id} (on); open pages offer a reload")
+                }
+                web::CatalogKind::Package => println!(
+                    "installed packages/{id}.json; apply it with `alc remote web package apply {id}`"
+                ),
+                web::CatalogKind::Theme => println!("installed themes/{id}.json"),
+            }
+            Ok(0)
+        }
+        WebCommand::Packages => {
+            let packages = folder.packages();
+            let (settings, _) = folder.load_settings();
+            if packages.is_empty() {
+                println!(
+                    "no packages in {}; `alc remote web catalog` lists official ones",
+                    folder.root().join("packages").display()
+                );
+            }
+            for info in &packages {
+                let active = if settings.package.as_deref() == Some(info.id.as_str()) {
+                    "*"
+                } else {
+                    " "
+                };
+                println!(
+                    "{active} {:<20} {}  [{}]",
+                    info.id,
+                    info.package.name,
+                    info.package.mods.join(", ")
+                );
+                if let Some(error) = &info.error {
+                    println!("    problem: {error}");
+                }
+            }
+            Ok(0)
+        }
+        WebCommand::ApplyPackage(id) => {
+            let applied = folder.apply_package(&id)?;
+            for mod_id in &applied.installed {
+                println!("installed official mods/{mod_id}");
+            }
+            for mod_id in &applied.missing {
+                println!("problem: the package needs mods/{mod_id}, which is not installed");
+            }
+            for mod_id in &applied.review {
+                println!(
+                    "left off: mods/{mod_id} came from elsewhere; read it, then `alc remote web enable {mod_id}`"
+                );
+            }
+            println!(
+                "applied package {id}; open pages pick it up{}",
+                if applied.reload {
+                    " and offer a reload"
+                } else {
+                    ""
+                }
+            );
+            Ok(0)
+        }
+        WebCommand::RemovePackage(id) => {
+            folder.remove_package(&id)?;
+            println!("removed packages/{id}.json");
             Ok(0)
         }
     }

@@ -83,6 +83,14 @@ pub(crate) struct SessionSpec {
     pub permission: PermState,
 }
 
+/// Who holds a plain session's size (`Session::fit`).
+struct Fit {
+    /// The page viewer holding it, if one asked to take it.
+    holder: Option<u64>,
+    /// The size the launching terminal last stated, to hand back.
+    terminal: (u16, u16),
+}
+
 pub(crate) struct Session {
     id: String,
     name: Mutex<String>,
@@ -106,6 +114,11 @@ pub(crate) struct Session {
 
     perm: Mutex<PermState>,
     size: Mutex<(u16, u16)>,
+    /// Who holds a plain session's size, and what to hand back. One lock,
+    /// held across the resize it decides, so a page taking the size and the
+    /// terminal taking it back cannot interleave into a pty at the page's
+    /// size with nobody holding it.
+    fit: Mutex<Fit>,
     /// The tmux session hosting the agent, when the launch asked for one.
     tmux: Option<TmuxHost>,
     /// The agent pid tmux last reported, refreshed by the watcher.
@@ -198,6 +211,10 @@ impl Session {
             fanout: Fanout::new(),
             perm: Mutex::new(session.permission),
             size: Mutex::new((cols, rows)),
+            fit: Mutex::new(Fit {
+                holder: None,
+                terminal: (cols, rows),
+            }),
             // Seeded from creation rather than left for the watcher's first
             // poll: a card built in the half second before that would
             // otherwise report a session with no pid at all.
@@ -583,7 +600,13 @@ impl Session {
             unsandboxed: !caps(self.agent).sandboxed,
             permission: self.permission(),
             tmux: self.tmux.as_ref().map(|host| host.tmux.clone()),
+            fitted: self.page_fitted(),
         }
+    }
+
+    /// Whether a page holds this plain session's size.
+    pub(crate) fn page_fitted(&self) -> bool {
+        self.fit.lock().is_ok_and(|fit| fit.holder.is_some())
     }
 
     /// The agent's own process id.
@@ -669,29 +692,61 @@ impl Session {
 
     /// Puts the session at a browser viewer's size.
     ///
-    /// Honoured only for a tmux session, and that is the trade `--tmux`
-    /// makes: the page owns the size, because the page is what somebody
-    /// asking for `--tmux` is about to go and use. Resizing this pty is the
-    /// whole mechanism - the pty's child is a `tmux attach-session` client,
-    /// so the kernel raises SIGWINCH in it, the client reports its new size,
-    /// and `window-size smallest` with the mirror as the only voter makes
-    /// the window exactly this. One event moves the mirror and the window
-    /// together, so they cannot drift apart into the mismatch that has tmux
-    /// re-emitting the pane row by row.
+    /// For a tmux session that is the trade `--tmux` makes: the page owns
+    /// the size, because the page is what somebody asking for `--tmux` is
+    /// about to go and use. Resizing this pty is the whole mechanism - the
+    /// pty's child is a `tmux attach-session` client, so the kernel raises
+    /// SIGWINCH in it, the client reports its new size, and `window-size
+    /// smallest` with the mirror as the only voter makes the window exactly
+    /// this.
     ///
-    /// Ignored for a plain session, where there is one pty and its size
-    /// belongs to the terminal that launched it (`resize_from_terminal`).
-    /// Honouring a browser here is what put a shared session at a phone's
-    /// width and left the user's own terminal drawing for a size it no
-    /// longer had; the page draws that grid scaled to fit instead.
+    /// A plain session has one pty, and its size belongs to the terminal
+    /// that launched it, so a page is ignored here unless it asks to `take`
+    /// the size ("fit to this page", which a person turns on). The page then
+    /// holds it until it lets go or disconnects (`release_viewer`), or until
+    /// the launching terminal is resized, which takes it straight back: the
+    /// last person to act on the size wins, and nobody is left drawing for a
+    /// size they did not choose without having just chosen it.
     ///
     /// The clamps match `tmux::create`'s `-x`/`-y`, so a phone cannot ask
     /// for a window narrower than the pane can hold.
-    pub(crate) fn resize_from_viewer(&self, cols: u16, rows: u16) -> Result<()> {
-        if self.tmux.is_none() {
+    pub(crate) fn resize_from_viewer(
+        &self,
+        viewer: Option<u64>,
+        cols: u16,
+        rows: u16,
+        take: bool,
+    ) -> Result<()> {
+        if self.tmux.is_some() {
+            return self.set_size_noting(cols, rows, false, None);
+        }
+        let Some(viewer) = viewer.filter(|_| take) else {
+            return Ok(());
+        };
+        let Ok(mut fit) = self.fit.lock() else {
+            return Ok(());
+        };
+        let changed = fit.holder != Some(viewer);
+        fit.holder = Some(viewer);
+        self.set_size_noting(cols, rows, changed, fit.holder)
+    }
+
+    /// Hands a plain session's size back to its terminal, if `viewer` (or,
+    /// with `None`, any page) was holding it.
+    pub(crate) fn release_viewer(&self, viewer: Option<u64>) -> Result<()> {
+        if self.tmux.is_some() {
             return Ok(());
         }
-        self.set_size(cols, rows)
+        let Ok(mut fit) = self.fit.lock() else {
+            return Ok(());
+        };
+        let mine = fit.holder.is_some() && (viewer.is_none() || fit.holder == viewer);
+        if !mine {
+            return Ok(());
+        }
+        fit.holder = None;
+        let (cols, rows) = fit.terminal;
+        self.set_size_noting(cols, rows, true, None)
     }
 
     /// Puts the session at the local terminal's size.
@@ -703,6 +758,9 @@ impl Session {
     /// a `CtlRequest` is the local `alc` process - so the distinction is
     /// made at the call sites and named here.
     ///
+    /// A terminal resize also takes the size back from a page that had
+    /// fitted the session to itself.
+    ///
     /// Ignored for a tmux session, where this terminal is a tmux client in
     /// its own right and gets no vote (`tmux::attach_argv`). In practice it
     /// is never called for one either: `remote::attach` diverts to
@@ -711,10 +769,26 @@ impl Session {
         if self.tmux.is_some() {
             return Ok(());
         }
-        self.set_size(cols, rows)
+        let Ok(mut fit) = self.fit.lock() else {
+            return Ok(());
+        };
+        fit.terminal = (cols, rows);
+        let was_held = fit.holder.take().is_some();
+        self.set_size_noting(cols, rows, was_held, None)
     }
 
-    fn set_size(&self, cols: u16, rows: u16) -> Result<()> {
+    /// Resizes the pty and tells every viewer, ahead of anything drawn for
+    /// the new size. `holder` is who holds a plain session's size after
+    /// this; a change of holder is told even when the grid did not move,
+    /// since a page needs to know it lost (or got) the size. Called with
+    /// `fit` held by every path that changes the holder.
+    fn set_size_noting(
+        &self,
+        cols: u16,
+        rows: u16,
+        holder_changed: bool,
+        holder: Option<u64>,
+    ) -> Result<()> {
         let cols = cols.max(20);
         let rows = rows.max(4);
         let unchanged = self.size.lock().is_ok_and(|size| *size == (cols, rows));
@@ -723,7 +797,13 @@ impl Session {
         // size from its five-second poll instead spent up to five seconds
         // writing a redraw for the new width into a grid of the old one, and
         // the wrapped lines that left behind never went away.
-        if !unchanged && let Ok(rendered) = serde_json::to_string(&ServerFrame::Size { cols, rows })
+        if (!unchanged || holder_changed)
+            && let Ok(rendered) = serde_json::to_string(&ServerFrame::Size {
+                cols,
+                rows,
+                fitted: holder.is_some(),
+                holder,
+            })
         {
             self.fanout.broadcast(Frame::Text(rendered));
         }

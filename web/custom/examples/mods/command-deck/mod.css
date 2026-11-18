@@ -1,0 +1,27 @@
+.deck {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.deck-agent {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.deck-cmd {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+}
+
+.dock .deck,
+.win .deck {
+  flex-wrap: wrap;
+}

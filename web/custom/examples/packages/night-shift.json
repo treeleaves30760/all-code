@@ -1,0 +1,15 @@
+{
+  "name": "Night shift",
+  "description": "A starfield behind a translucent terminal, the Midnight theme, a focus timer floating at the side and the clock in the header.",
+  "version": "1.0.0",
+  "author": "alc",
+  "mods": ["ambient", "clock", "pomodoro"],
+  "theme": "midnight",
+  "background": { "kind": "mod", "value": "ambient/starfield", "dim": 30, "blur": 0, "terminal": 82 },
+  "layout": {
+    "slots": {
+      "bar": [{ "widget": "clock/clock", "options": { "seconds": false } }],
+      "float": [{ "widget": "pomodoro/timer", "options": { "focus": 50, "rest": 10 } }]
+    }
+  }
+}
