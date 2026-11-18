@@ -25,6 +25,9 @@ jobs:
         run: |
           node --check web/app.js
           node --check web/core.js
+          node --check web/dashboard.js
+          node --check web/shell.js
+          for mod in web/custom/examples/mods/*/mod.js; do node --check "$mod"; done
 
       # Everything the page decides lives in core.js precisely so it can be
       # tested without a browser.

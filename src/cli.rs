@@ -414,6 +414,18 @@ enum RemoteSubcommand {
         /// on or off.
         state: OnOff,
     },
+    /// The page's settings, themes and mods folder; `check` validates it.
+    Web {
+        /// `path` (default) prints the folder; `check` reports every problem in it.
+        #[arg(value_enum, default_value_t = WebAction::Path)]
+        action: WebAction,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum WebAction {
+    Path,
+    Check,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -1483,6 +1495,9 @@ fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {
         Some(RemoteSubcommand::Url) => RemoteCommand::Url,
         Some(RemoteSubcommand::AutoShare { state }) => RemoteCommand::AutoShare {
             on: state == OnOff::On,
+        },
+        Some(RemoteSubcommand::Web { action }) => RemoteCommand::Web {
+            check: action == WebAction::Check,
         },
         Some(RemoteSubcommand::Token(token)) => {
             if !token.rotate {

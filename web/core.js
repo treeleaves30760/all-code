@@ -862,6 +862,548 @@
     return Math.min(ceiling, step * 2 ** (attempt - 1));
   }
 
+  /* ------------------------------------------------------- page strings */
+
+  /* The tabs, settings and dashboard arrived after the strings above, and
+   * are kept apart so a translator can see what is new. */
+  Object.assign(STRINGS.en, {
+    navSessions: 'Sessions',
+    navUsage: 'Usage',
+    navSettings: 'Settings',
+    navLabel: 'Pages',
+    palette: 'Command palette',
+    paletteHint: 'Type a command or a session name…',
+    paletteEmpty: 'No matching commands.',
+    paletteGo: 'Go to',
+    paletteOpen: 'Open session',
+    paletteTheme: 'Theme',
+    paletteGroupNav: 'Navigate',
+    paletteGroupSessions: 'Sessions',
+    paletteGroupTheme: 'Appearance',
+    paletteGroupMods: 'Mods',
+    paletteGroupView: 'View',
+    paletteToggleFiles: 'Toggle file panel',
+    paletteToggleRail: 'Toggle session list',
+    paletteReloadMods: 'Reload mods',
+    paletteDensity: 'Toggle compact density',
+    rangeLabel: 'Range',
+    range7: '7 days',
+    range30: '30 days',
+    range90: '90 days',
+    statTokens: 'Tokens',
+    statCost: 'Estimated cost',
+    statOutput: 'Output',
+    statCache: 'Cache hits',
+    statSessions: 'Sessions',
+    statActiveDays: '{n} active days',
+    statApprox: 'lower bound',
+    statOfInput: 'of input from cache',
+    statRecords: '{n} records',
+    chartDaily: 'Daily usage',
+    chartTokens: 'Tokens',
+    chartCost: 'Cost',
+    chartHours: 'When you work',
+    chartHoursNote: 'Tokens by hour of day, {z}',
+    seriesUncached: 'Input',
+    seriesCacheRead: 'Cache read',
+    seriesCacheWrite: 'Cache write',
+    seriesOutput: 'Output',
+    topModels: 'Models',
+    byAgentShort: 'Agents',
+    byProvider: 'Providers',
+    historyEmpty: 'No token records in this range yet. alc reads its own ledger plus Claude Code and Codex histories on the hub machine.',
+    historyFailed: 'Could not load usage history.',
+    pricedWith: 'Prices from {s}. Estimates exclude taxes and discounts.',
+    settingsTitle: 'Settings',
+    settingsSubtitle: 'Kept in settings.json on the hub — edit it here, by hand, or ask an agent.',
+    settingsViewer: 'This link can watch but not change settings. These are the operator’s.',
+    settingsSaved: 'Saved',
+    settingsSaving: 'Saving…',
+    settingsFailed: 'Could not save settings.',
+    settingsFileError: 'settings.json has an error, so the defaults are in use:',
+    appearance: 'Appearance',
+    appearanceHow: 'Saved on the hub, so every device that opens this page gets the same look.',
+    theme: 'Theme',
+    themeSystem: 'System',
+    themeLight: 'Light',
+    themeDark: 'Dark',
+    themeCustom: 'from themes/',
+    accent: 'Accent',
+    accentDefault: 'Theme default',
+    accentCustom: 'Custom colour',
+    density: 'Density',
+    densityComfortable: 'Comfortable',
+    densityCompact: 'Compact',
+    terminal: 'Terminal',
+    terminalHow: 'How sessions are drawn in this page. The agent itself is not affected.',
+    fontSize: 'Font size',
+    fontAuto: 'Auto',
+    fontFamily: 'Font',
+    fontSystem: 'System monospace',
+    lineHeight: 'Line height',
+    cursorStyle: 'Cursor',
+    cursorBlock: 'Block',
+    cursorBar: 'Bar',
+    cursorUnderline: 'Underline',
+    cursorBlink: 'Blinking cursor',
+    scrollback: 'Scrollback',
+    scrollbackLines: '{n} lines',
+    preview: 'Preview',
+    mods: 'Mods',
+    modsHow: 'Mods are small scripts and stylesheets in the folder below that add tabs, commands, keys and looks to this page. They run with this page’s access — read one before you turn it on.',
+    modsNone: 'No mods installed yet.',
+    modsFolder: 'Folder',
+    modsAsk: 'Ask your agent',
+    modsPrompt: 'Read {d}/AGENTS.md, then make me an alc page mod that ',
+    modsExamples: 'Examples to copy are in examples/ next to it.',
+    modOn: 'On',
+    modOff: 'Off',
+    modError: 'Error',
+    modFailed: 'Mod {m} failed: {e}',
+    modsChanged: 'Mods changed on disk.',
+    reload: 'Reload',
+    about: 'About',
+    aboutVersion: 'alc version',
+    aboutCeiling: 'Permission ceiling',
+    aboutLink: 'This link',
+    aboutLanguage: 'Language',
+    aboutSessions: 'Sessions on this hub',
+    aboutShortcuts: 'Shortcuts',
+    shortcutPalette: 'Command palette',
+    shortcutSend: 'Send prompt',
+  });
+
+  Object.assign(STRINGS['zh-TW'], {
+    navSessions: 'Session',
+    navUsage: '用量',
+    navSettings: '設定',
+    navLabel: '頁面',
+    palette: '指令面板',
+    paletteHint: '輸入指令或 session 名稱…',
+    paletteEmpty: '沒有符合的指令。',
+    paletteGo: '前往',
+    paletteOpen: '開啟 session',
+    paletteTheme: '主題',
+    paletteGroupNav: '導覽',
+    paletteGroupSessions: 'Session',
+    paletteGroupTheme: '外觀',
+    paletteGroupMods: 'Mods',
+    paletteGroupView: '檢視',
+    paletteToggleFiles: '切換檔案面板',
+    paletteToggleRail: '切換 session 清單',
+    paletteReloadMods: '重新載入 mods',
+    paletteDensity: '切換緊湊密度',
+    rangeLabel: '範圍',
+    range7: '7 天',
+    range30: '30 天',
+    range90: '90 天',
+    statTokens: 'Token',
+    statCost: '估計費用',
+    statOutput: '輸出',
+    statCache: '快取命中',
+    statSessions: 'Session',
+    statActiveDays: '{n} 天有使用',
+    statApprox: '下限值',
+    statOfInput: '的輸入來自快取',
+    statRecords: '{n} 筆紀錄',
+    chartDaily: '每日用量',
+    chartTokens: 'Token',
+    chartCost: '費用',
+    chartHours: '工作時段',
+    chartHoursNote: '各時段的 token 數，{z}',
+    seriesUncached: '輸入',
+    seriesCacheRead: '快取讀取',
+    seriesCacheWrite: '快取寫入',
+    seriesOutput: '輸出',
+    topModels: '模型',
+    byAgentShort: 'Agent',
+    byProvider: 'Provider',
+    historyEmpty: '這段期間還沒有 token 紀錄。alc 會讀取 hub 那台機器上自己的帳本，以及 Claude Code 與 Codex 的歷史紀錄。',
+    historyFailed: '無法載入用量歷史。',
+    pricedWith: '價格來自 {s}。估計值不含稅與折扣。',
+    settingsTitle: '設定',
+    settingsSubtitle: '存放在 hub 上的 settings.json —— 可以在這裡改、手動編輯，或請 agent 幫忙。',
+    settingsViewer: '這個連結只能觀看，不能更改設定。以下是操作者的設定。',
+    settingsSaved: '已儲存',
+    settingsSaving: '儲存中…',
+    settingsFailed: '無法儲存設定。',
+    settingsFileError: 'settings.json 有錯誤，目前使用預設值：',
+    appearance: '外觀',
+    appearanceHow: '儲存在 hub 上，所以每台打開這個頁面的裝置看起來都一樣。',
+    theme: '主題',
+    themeSystem: '跟隨系統',
+    themeLight: '淺色',
+    themeDark: '深色',
+    themeCustom: '來自 themes/',
+    accent: '強調色',
+    accentDefault: '主題預設',
+    accentCustom: '自訂顏色',
+    density: '密度',
+    densityComfortable: '舒適',
+    densityCompact: '緊湊',
+    terminal: '終端機',
+    terminalHow: '只影響這個頁面畫 session 的方式，不影響 agent 本身。',
+    fontSize: '字級',
+    fontAuto: '自動',
+    fontFamily: '字型',
+    fontSystem: '系統等寬字型',
+    lineHeight: '行高',
+    cursorStyle: '游標',
+    cursorBlock: '方塊',
+    cursorBar: '直線',
+    cursorUnderline: '底線',
+    cursorBlink: '游標閃爍',
+    scrollback: '捲動緩衝',
+    scrollbackLines: '{n} 行',
+    preview: '預覽',
+    mods: 'Mods',
+    modsHow: 'Mods 是放在下方資料夾裡的小型腳本與樣式表，可以替這個頁面加上分頁、指令、按鍵與外觀。它們擁有與這個頁面相同的權限 —— 啟用前請先讀過。',
+    modsNone: '還沒有安裝任何 mod。',
+    modsFolder: '資料夾',
+    modsAsk: '請 agent 幫忙',
+    modsPrompt: '閱讀 {d}/AGENTS.md，然後幫我做一個 alc 頁面 mod，功能是',
+    modsExamples: '旁邊的 examples/ 有可以複製的範例。',
+    modOn: '開',
+    modOff: '關',
+    modError: '錯誤',
+    modFailed: 'Mod {m} 執行失敗：{e}',
+    modsChanged: '磁碟上的 mods 有變更。',
+    reload: '重新載入',
+    about: '關於',
+    aboutVersion: 'alc 版本',
+    aboutCeiling: '權限上限',
+    aboutLink: '這個連結',
+    aboutLanguage: '語言',
+    aboutSessions: '這個 hub 上的 session',
+    aboutShortcuts: '快捷鍵',
+    shortcutPalette: '指令面板',
+    shortcutSend: '送出提示詞',
+  });
+
+  /* ------------------------------------------------------------- themes */
+
+  /* Built-in themes, as overrides on the light or dark base palette that
+   * app.css defines. A file in themes/ has exactly this shape, so the
+   * built-ins double as the examples. */
+  const THEMES = {
+    midnight: {
+      name: 'Midnight',
+      mode: 'dark',
+      tokens: {
+        '--bg': '#070a14',
+        '--surface': '#0d1222',
+        '--raised': '#141a2e',
+        '--line': '#1b2236',
+        '--line-strong': '#2a3350',
+        '--text': '#e6e9f5',
+        '--muted': '#97a0bd',
+        '--accent': '#7c9cff',
+        '--chart-1': '#7c9cff',
+        '--chart-2': '#3b4a8f',
+        '--chart-3': '#c084fc',
+        '--chart-4': '#34d399',
+      },
+      terminal: { background: '#060913', cursor: '#7c9cff' },
+    },
+    daylight: {
+      name: 'Daylight',
+      mode: 'light',
+      tokens: {
+        '--bg': '#f4f6fb',
+        '--surface': '#ffffff',
+        '--raised': '#eef1f7',
+        '--accent': '#2563eb',
+        '--chart-1': '#2563eb',
+        '--chart-2': '#93c5fd',
+        '--chart-3': '#a78bfa',
+        '--chart-4': '#059669',
+      },
+      terminal: {},
+    },
+    fjord: {
+      name: 'Fjord',
+      mode: 'dark',
+      tokens: {
+        '--bg': '#242933',
+        '--surface': '#2e3440',
+        '--raised': '#3b4252',
+        '--line': '#3b4252',
+        '--line-strong': '#4c566a',
+        '--text': '#eceff4',
+        '--muted': '#a7b1c2',
+        '--accent': '#88c0d0',
+        '--ok': '#a3be8c',
+        '--warn': '#ebcb8b',
+        '--danger': '#bf616a',
+        '--term-bg': '#2e3440',
+        '--chart-1': '#88c0d0',
+        '--chart-2': '#5e81ac',
+        '--chart-3': '#b48ead',
+        '--chart-4': '#a3be8c',
+      },
+      terminal: {
+        background: '#2e3440',
+        foreground: '#d8dee9',
+        cursor: '#88c0d0',
+        cursorAccent: '#2e3440',
+        black: '#3b4252',
+        red: '#bf616a',
+        green: '#a3be8c',
+        yellow: '#ebcb8b',
+        blue: '#81a1c1',
+        magenta: '#b48ead',
+        cyan: '#88c0d0',
+        white: '#e5e9f0',
+        brightBlack: '#616e88',
+        brightRed: '#d08770',
+        brightGreen: '#b5d19c',
+        brightYellow: '#f0d9a6',
+        brightBlue: '#8fbcbb',
+        brightMagenta: '#c9a7c3',
+        brightCyan: '#a3d6e2',
+        brightWhite: '#eceff4',
+      },
+    },
+    ember: {
+      name: 'Ember',
+      mode: 'dark',
+      tokens: {
+        '--bg': '#0f0d0c',
+        '--surface': '#181412',
+        '--raised': '#221c19',
+        '--line': '#2a2320',
+        '--line-strong': '#3d332e',
+        '--text': '#f3ece7',
+        '--muted': '#b3a59c',
+        '--accent': '#fb923c',
+        '--chart-1': '#fb923c',
+        '--chart-2': '#9a3412',
+        '--chart-3': '#facc15',
+        '--chart-4': '#f472b6',
+      },
+      terminal: { background: '#0c0a09', cursor: '#fb923c' },
+    },
+    paper: {
+      name: 'Paper',
+      mode: 'light',
+      tokens: {
+        '--bg': '#f6f3ec',
+        '--surface': '#fffdf8',
+        '--raised': '#efeadf',
+        '--line': '#e5dfd2',
+        '--line-strong': '#d3cab8',
+        '--text': '#24201a',
+        '--muted': '#6b6253',
+        '--accent': '#b45309',
+        '--chart-1': '#b45309',
+        '--chart-2': '#e7c08f',
+        '--chart-3': '#7c3aed',
+        '--chart-4': '#047857',
+      },
+      terminal: {},
+    },
+  };
+
+  const ACCENTS = ['#4f46e5', '#2563eb', '#0891b2', '#059669', '#65a30d', '#d97706', '#e11d48', '#c026d3'];
+
+  /* The settings the page draws from, with every field present. Whatever the
+   * server sent is trusted for shape only after this. */
+  function normalizeWebSettings(raw) {
+    const input = raw && typeof raw === 'object' ? raw : {};
+    const terminal = input.terminal && typeof input.terminal === 'object' ? input.terminal : {};
+    const size = Number(terminal.fontSize);
+    const line = Number(terminal.lineHeight);
+    const scroll = Number(terminal.scrollback);
+    return {
+      theme: typeof input.theme === 'string' && input.theme ? input.theme : 'system',
+      accent: typeof input.accent === 'string' && /^#[0-9a-f]{6}$/i.test(input.accent) ? input.accent : null,
+      density: input.density === 'compact' ? 'compact' : 'comfortable',
+      terminal: {
+        fontSize: Number.isFinite(size) && size > 0 ? Math.min(28, Math.max(8, Math.round(size))) : null,
+        fontFamily: typeof terminal.fontFamily === 'string' && terminal.fontFamily.trim() ? terminal.fontFamily.trim() : null,
+        lineHeight: Number.isFinite(line) ? Math.min(2, Math.max(1, line)) : 1,
+        cursorStyle: ['block', 'bar', 'underline'].includes(terminal.cursorStyle) ? terminal.cursorStyle : 'block',
+        cursorBlink: terminal.cursorBlink !== false,
+        scrollback: Number.isFinite(scroll) ? Math.min(100000, Math.max(500, Math.round(scroll))) : 5000,
+      },
+      disabledMods: Array.isArray(input.disabledMods) ? input.disabledMods.filter((id) => typeof id === 'string') : [],
+      modSettings: input.modSettings && typeof input.modSettings === 'object' ? input.modSettings : {},
+    };
+  }
+
+  /* Which palette is in effect: the theme's mode decides the base, then its
+   * tokens, then the accent on top. `custom` is the list from themes/. */
+  function resolveTheme(settings, custom, systemDark) {
+    const id = settings.theme;
+    let theme = null;
+    if (id === 'light' || id === 'dark') theme = { id, name: id, mode: id, tokens: {}, terminal: {} };
+    else if (THEMES[id]) theme = { id, ...THEMES[id] };
+    else {
+      const found = (custom || []).find((entry) => entry.id === id && !entry.error);
+      if (found) theme = { id, name: found.name, mode: found.mode === 'light' ? 'light' : 'dark', tokens: found.tokens || {}, terminal: found.terminal || {} };
+    }
+    if (!theme) theme = { id: 'system', name: 'system', mode: systemDark ? 'dark' : 'light', tokens: {}, terminal: {} };
+    const tokens = { ...theme.tokens };
+    if (settings.accent) tokens['--accent'] = settings.accent;
+    if (tokens['--accent']) {
+      if (!theme.tokens['--accent-ink'] || settings.accent) tokens['--accent-ink'] = inkFor(tokens['--accent']);
+      if (!theme.tokens['--accent-soft'] || settings.accent) tokens['--accent-soft'] = `color-mix(in srgb, ${tokens['--accent']} 12%, transparent)`;
+      if (!theme.tokens['--accent-line'] || settings.accent) tokens['--accent-line'] = `color-mix(in srgb, ${tokens['--accent']} 45%, transparent)`;
+      tokens['--ring'] = `0 0 0 3px color-mix(in srgb, ${tokens['--accent']} 28%, transparent)`;
+      if (!tokens['--chart-1']) tokens['--chart-1'] = tokens['--accent'];
+    }
+    return { id: theme.id, name: theme.name, mode: theme.mode, tokens, terminal: { ...theme.terminal } };
+  }
+
+  /* Black or white text on a colour, whichever reads better (WCAG). */
+  function inkFor(hex) {
+    const match = /^#([0-9a-f]{6})$/i.exec(String(hex || ''));
+    if (!match) return '#ffffff';
+    const value = parseInt(match[1], 16);
+    const channel = (shift) => {
+      const c = ((value >> shift) & 255) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0);
+    return (luminance + 0.05) / 0.05 > 1.05 / (luminance + 0.05) ? '#0b0c10' : '#ffffff';
+  }
+
+  /* ----------------------------------------------------------- dashboard */
+
+  /* `YYYY-MM-DD` plus `n` days, computed on the calendar, never the clock. */
+  function shiftDate(date, n) {
+    const [y, m, d] = String(date).split('-').map(Number);
+    const when = new Date(Date.UTC(y, m - 1, d + n));
+    return when.toISOString().slice(0, 10);
+  }
+
+  /* Today in a timezone, as `YYYY-MM-DD`. */
+  function todayIn(zone, now) {
+    try {
+      return new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' })
+        .format(now || new Date());
+    } catch {
+      return (now || new Date()).toISOString().slice(0, 10);
+    }
+  }
+
+  /* One entry per day of the range, oldest first, with the days the server
+   * had nothing for filled as zeros: a gap on a chart is a day off, not a
+   * missing bar. */
+  function fillDays(daily, days, today) {
+    const byDate = new Map((daily || []).map((day) => [day.date, day]));
+    const out = [];
+    for (let back = days - 1; back >= 0; back -= 1) {
+      const date = shiftDate(today, -back);
+      const day = byDate.get(date) || {};
+      const uncached = Number(day.uncached) || 0;
+      const cacheRead = Number(day.cacheRead) || 0;
+      const cacheWrite = Number(day.cacheWrite) || 0;
+      const output = Number(day.output) || 0;
+      out.push({
+        date,
+        uncached,
+        cacheRead,
+        cacheWrite,
+        output,
+        total: uncached + cacheRead + cacheWrite + output,
+        usd: Number(day.usd) || 0,
+        requests: Number(day.requests) || 0,
+      });
+    }
+    return out;
+  }
+
+  /* An axis maximum and its ticks on a 1-2-5 ladder, so the grid lines land
+   * on numbers a person would write. */
+  function niceScale(max, count) {
+    const want = count || 4;
+    if (!(max > 0)) return { max: 1, ticks: [0, 1] };
+    const raw = max / want;
+    const power = 10 ** Math.floor(Math.log10(raw));
+    const step = [1, 2, 2.5, 5, 10].map((m) => m * power).find((s) => s >= raw) || power * 10;
+    const top = Math.ceil(max / step) * step;
+    const ticks = [];
+    for (let value = 0; value <= top + step / 2; value += step) ticks.push(Number(value.toPrecision(12)));
+    return { max: top, ticks };
+  }
+
+  function formatUsd(value) {
+    const amount = Number(value) || 0;
+    if (amount === 0) return '$0';
+    if (amount < 0.01) return '<$0.01';
+    if (amount < 1000) return `$${amount.toFixed(2)}`;
+    return `$${compactCount(Math.round(amount))}`;
+  }
+
+  /* Larger magnitudes than compactCount, for token totals in the billions. */
+  function compactTokens(value) {
+    const count = Math.max(0, Number(value) || 0);
+    if (count >= 1e9) return `${(count / 1e9).toFixed(count >= 1e10 ? 0 : 1).replace('.0', '')}B`;
+    return compactCount(count);
+  }
+
+  /* What share of input came from cache, as a whole percent, or null. */
+  function cacheShare(totals) {
+    const t = totals || {};
+    const input = (Number(t.uncached) || 0) + (Number(t.cacheRead) || 0) + (Number(t.cacheWrite) || 0);
+    if (!input) return null;
+    return Math.round(((Number(t.cacheRead) || 0) / input) * 100);
+  }
+
+  /* Bars for a ranked list, each as a share of the largest. */
+  function shareBars(list, key) {
+    const field = key || 'tokens';
+    const top = Math.max(0, ...(list || []).map((item) => Number(item[field]) || 0));
+    return (list || []).map((item) => ({ ...item, share: top ? (Number(item[field]) || 0) / top : 0 }));
+  }
+
+  /* -------------------------------------------------------------- palette */
+
+  /* Commands ranked against a query: a title that starts with it first, then
+   * a word in it that does, then anything containing every word. */
+  function rankCommands(commands, query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) return commands.slice();
+    const scored = [];
+    commands.forEach((command, index) => {
+      const title = String(command.title || '').toLowerCase();
+      const text = `${title} ${String(command.hint || '').toLowerCase()} ${String(command.group || '').toLowerCase()}`;
+      if (!matchesQuery(text, q)) return;
+      let score = 3;
+      if (title.startsWith(q)) score = 0;
+      else if (title.split(/[\s/:·-]+/).some((word) => word.startsWith(q))) score = 1;
+      else if (title.includes(q)) score = 2;
+      scored.push({ command, score, index });
+    });
+    scored.sort((a, b) => a.score - b.score || a.index - b.index);
+    return scored.map((entry) => entry.command);
+  }
+
+  /* ----------------------------------------------------------------- mods */
+
+  /* What a mod's chip function returned, as `{text, tone}` or null. */
+  function normalizeChip(value) {
+    if (value === null || value === undefined || value === false || value === '') return null;
+    if (typeof value === 'string' || typeof value === 'number') return { text: String(value), tone: '' };
+    if (typeof value === 'object' && value.text) {
+      const tone = ['ok', 'warn', 'danger', 'accent'].includes(value.tone) ? value.tone : '';
+      return { text: String(value.text), tone };
+    }
+    return null;
+  }
+
+  /* Which mods' scripts differ between two /api/web answers. */
+  function changedScripts(before, after) {
+    const key = (mods) => new Map((mods || []).filter((m) => m.enabled && m.hasJs).map((m) => [m.id, m.scriptHash || '']));
+    const a = key(before);
+    const b = key(after);
+    const changed = [];
+    for (const [id, hash] of b) if (a.get(id) !== hash) changed.push(id);
+    for (const id of a.keys()) if (!b.has(id)) changed.push(id);
+    return changed.sort();
+  }
+
   return {
     signal,
     STRINGS,
@@ -909,5 +1451,21 @@
     OP_SNAPSHOT,
     decodeFrame,
     backoffDelay,
+    THEMES,
+    ACCENTS,
+    normalizeWebSettings,
+    resolveTheme,
+    inkFor,
+    shiftDate,
+    todayIn,
+    fillDays,
+    niceScale,
+    formatUsd,
+    compactTokens,
+    cacheShare,
+    shareBars,
+    rankCommands,
+    normalizeChip,
+    changedScripts,
   };
 });

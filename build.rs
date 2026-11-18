@@ -15,9 +15,11 @@ use std::path::{Path, PathBuf};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-const ASSETS: [&str; 7] = [
+const ASSETS: [&str; 9] = [
     "index.html",
     "app.js",
+    "dashboard.js",
+    "shell.js",
     "core.js",
     "app.css",
     "vendor/xterm.js",

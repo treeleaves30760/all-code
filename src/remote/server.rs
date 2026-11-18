@@ -32,6 +32,7 @@ use crate::remote::permission::{self, EscalationGate};
 use crate::remote::request::{Denied, Grade, HostPattern, Method, Request, read_request};
 use crate::remote::session::Session;
 use crate::remote::settings::{Bind, RemoteSettings, Secrets};
+use crate::remote::web::{self, ModFile, WebDir};
 use crate::remote::wire::{ClientFrame, Hello, NoticeLevel, ServerFrame};
 
 /// How long a peer may take to send a complete request head before the
@@ -147,6 +148,46 @@ impl UsageCache {
     }
 }
 
+/// The page's usage history, one entry per range and zone it has asked for.
+///
+/// Reading native Claude and Codex histories is the slow part of `alc usage`,
+/// and the page asks again every time the usage tab is opened, so answers
+/// are kept for the same minute as the account report.
+struct HistoryCache {
+    config_dir: std::path::PathBuf,
+    state: Mutex<BTreeMap<(u32, String), (Instant, crate::usage::history::History)>>,
+}
+
+impl HistoryCache {
+    fn new(config_dir: &std::path::Path) -> Self {
+        Self {
+            config_dir: config_dir.to_path_buf(),
+            state: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn history(&self, days: u32, zone: &str) -> Result<crate::usage::history::History> {
+        let days = days.clamp(1, crate::usage::history::MAX_DAYS);
+        let zone = crate::usage::history::timezone(Some(zone));
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("the history cache lock was poisoned"))?;
+        state.retain(|_, (built, _)| built.elapsed() < USAGE_TTL);
+        if let Some((_, history)) = state.get(&(days, zone.clone())) {
+            return Ok(history.clone());
+        }
+        let store = crate::config::Store::load(Some(self.config_dir.clone()))?;
+        let history = crate::usage::history::build(&store, days, &zone)?;
+        // Bounded: a page cycling ranges and zones cannot grow this forever.
+        if state.len() >= 8 {
+            state.clear();
+        }
+        state.insert((days, zone), (Instant::now(), history.clone()));
+        Ok(history)
+    }
+}
+
 /// Everything a connection thread needs that outlives the connection.
 /// Named for what it does rather than `Context`, which `anyhow` already
 /// owns in this file.
@@ -158,6 +199,9 @@ struct Serving {
     /// a terminal on this machine.
     ceiling: SafetyRung,
     usage: UsageCache,
+    history: HistoryCache,
+    /// The page's settings, themes and mods.
+    web: WebDir,
 }
 
 pub(crate) struct Server {
@@ -208,6 +252,12 @@ impl Server {
             .parse()
             .unwrap_or(SafetyRung::AutoEdit);
 
+        // The folder and its reference are made here, so the first person to
+        // open the page - or the agent they ask - finds AGENTS.md waiting. A
+        // read-only config directory only costs the scaffold, not the hub.
+        let web = WebDir::new(config_dir);
+        let _ = web.scaffold();
+
         Ok(Self {
             listener,
             context: Arc::new(Serving {
@@ -216,6 +266,8 @@ impl Server {
                 gate: EscalationGate::new(config_dir)?,
                 ceiling,
                 usage: UsageCache::new(config_dir),
+                history: HistoryCache::new(config_dir),
+                web,
             }),
             connections: Arc::new(AtomicUsize::new(0)),
             max_connections: settings.max_connections,
@@ -638,6 +690,34 @@ fn serve_http(
         );
     }
 
+    // The page's settings. Operator-only, like every other route that
+    // changes something: a viewer link sees the operator's page, it does not
+    // get to restyle it.
+    if request.method == Method::Post && request.path == "/api/web/settings" {
+        if grade < Some(Grade::Operator) {
+            return respond(
+                stream,
+                403,
+                "text/plain; charset=utf-8",
+                None,
+                b"this link can watch but not change settings",
+            );
+        }
+        return match context.web.save_settings(&request.body) {
+            Ok(saved) => respond(
+                stream,
+                200,
+                "application/json; charset=utf-8",
+                None,
+                &serde_json::to_vec(&saved)?,
+            ),
+            Err(error) => {
+                let body = serde_json::to_vec(&serde_json::json!({ "error": error.to_string() }))?;
+                respond(stream, 400, "application/json; charset=utf-8", None, &body)
+            }
+        };
+    }
+
     if request.method != Method::Get {
         return respond(
             stream,
@@ -649,6 +729,20 @@ fn serve_http(
     }
 
     if let Some(asset) = assets::find(&request.path) {
+        // The index carries the hash of every enabled mod's script, so the
+        // page may run those exact bytes inline and nothing else. Read per
+        // request: an edited mod is picked up by a reload, with no restart.
+        if asset.path == "/" {
+            let policy = web::content_security_policy(&context.web.script_hashes());
+            return respond_with_policy(
+                stream,
+                200,
+                asset.content_type,
+                Some("gzip"),
+                asset.gzipped,
+                &policy,
+            );
+        }
         return respond(stream, 200, asset.content_type, Some("gzip"), asset.gzipped);
     }
 
@@ -698,6 +792,90 @@ fn serve_http(
                 }
             };
             respond(stream, 200, "application/json; charset=utf-8", None, &body)
+        }
+        "/api/usage/history" => {
+            debug_assert!(grade.is_some());
+            let days = request
+                .query_param("days")
+                .and_then(|days| days.parse::<u32>().ok())
+                .unwrap_or(30);
+            let zone = request.query_param("tz").unwrap_or_default();
+            match context.history.history(days, &zone) {
+                Ok(history) => respond(
+                    stream,
+                    200,
+                    "application/json; charset=utf-8",
+                    None,
+                    &serde_json::to_vec(&history)?,
+                ),
+                // Fixed text for the same reason as /api/usage: the error
+                // can quote a config file.
+                Err(_) => {
+                    let body = serde_json::to_vec(&serde_json::json!({
+                        "error": "the usage history could not be built; run `alc usage` on the machine running the hub"
+                    }))?;
+                    respond(stream, 500, "application/json; charset=utf-8", None, &body)
+                }
+            }
+        }
+        // Settings, themes and the list of mods, for both grades: a viewer
+        // sees the page the operator made. Only the operator is told where
+        // the folder is.
+        "/api/web" => {
+            debug_assert!(grade.is_some());
+            let snapshot = context.web.snapshot(grade >= Some(Grade::Operator));
+            let body = serde_json::to_vec(&serde_json::json!({
+                "settings": snapshot.settings,
+                "settingsError": snapshot.settings_error,
+                "mods": snapshot.mods,
+                "themes": snapshot.themes,
+                "revision": snapshot.revision,
+                "dir": snapshot.dir,
+                "hub": {
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "ceiling": context.ceiling,
+                    "sessions": registry.cards().len(),
+                },
+            }))?;
+            respond(stream, 200, "application/json; charset=utf-8", None, &body)
+        }
+        // One enabled mod's script or stylesheet, as text. The page runs the
+        // script inline under the hash the index's policy names, so what is
+        // served here and what is hashed there are read from the same file.
+        path if path.starts_with("/api/web/mods/") => {
+            debug_assert!(grade.is_some());
+            let rest = path.trim_start_matches("/api/web/mods/");
+            let (id, file) = match rest.split_once('/') {
+                Some((id, "mod.js")) => (id, ModFile::Script),
+                Some((id, "mod.css")) => (id, ModFile::Style),
+                _ => return respond(stream, 404, "text/plain; charset=utf-8", None, b"not found"),
+            };
+            let (settings, _) = context.web.load_settings();
+            if settings.disabled_mods.iter().any(|off| off == id) {
+                return respond(
+                    stream,
+                    404,
+                    "text/plain; charset=utf-8",
+                    None,
+                    b"mod is off",
+                );
+            }
+            match context.web.mod_file(id, file) {
+                Ok(text) => respond(
+                    stream,
+                    200,
+                    "text/plain; charset=utf-8",
+                    None,
+                    text.as_bytes(),
+                ),
+                Err(error) => respond(
+                    stream,
+                    404,
+                    "text/plain; charset=utf-8",
+                    None,
+                    error.to_string().as_bytes(),
+                ),
+            }
         }
         // The file panel. Operator-only: a viewer link is something to hand
         // to a person to watch, and the project's source tree is more than
@@ -776,6 +954,26 @@ fn respond(
     encoding: Option<&str>,
     body: &[u8],
 ) -> Result<()> {
+    respond_with_policy(
+        stream,
+        status,
+        content_type,
+        encoding,
+        body,
+        &web::content_security_policy(&[]),
+    )
+}
+
+/// `respond`, with the page's own policy: the index is the one response
+/// whose policy names the mods' script hashes.
+fn respond_with_policy(
+    stream: &TcpStream,
+    status: u16,
+    content_type: &str,
+    encoding: Option<&str>,
+    body: &[u8],
+    policy: &str,
+) -> Result<()> {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -795,9 +993,7 @@ fn respond(
          referrer-policy: no-referrer\r\n\
          x-content-type-options: nosniff\r\n\
          x-frame-options: DENY\r\n\
-         content-security-policy: default-src 'self'; script-src 'self'; \
-         style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
-         frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n\
+         content-security-policy: {policy}\r\n\
          connection: close\r\n",
         body.len()
     );
@@ -1325,6 +1521,85 @@ mod live_tests {
                 "a viewer was told a filesystem path: {body}"
             );
         }
+        let _ = harness.session.kill();
+    }
+
+    #[test]
+    fn the_web_routes_serve_mods_under_their_hashes_and_guard_saves() {
+        let harness = harness();
+        let web = harness._config.path().join("web");
+        std::fs::create_dir_all(web.join("mods/hello")).unwrap();
+        std::fs::write(web.join("mods/hello/mod.js"), "alc.toast('hi');").unwrap();
+        std::fs::write(web.join("mods/hello/mod.css"), "body{}").unwrap();
+        let port = harness.address.port();
+        let get = |token: Option<&str>, path: &str| {
+            let authorization = token
+                .map(|token| format!("Authorization: Bearer {token}\r\n"))
+                .unwrap_or_default();
+            request(
+                harness.address,
+                &format!(
+                    "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                     {authorization}Connection: close\r\n\r\n"
+                ),
+            )
+        };
+        let post = |token: &str, body: &str| {
+            request(
+                harness.address,
+                &format!(
+                    "POST /api/web/settings HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                     Authorization: Bearer {token}\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                ),
+            )
+        };
+
+        // The index names the enabled script's hash; nothing else does.
+        let index = get(None, "/");
+        let hash = web::csp_hash("alc.toast('hi');");
+        assert!(index.contains(&hash), "{index}");
+        let other = get(None, "/assets/app.js");
+        assert!(!other.contains(&hash));
+
+        // Bound to a token, both grades; only the operator learns the folder.
+        assert!(status(&get(None, "/api/web")).contains("401"));
+        let operator = get(Some(&harness.operator), "/api/web");
+        assert!(operator.contains("\"hello\""), "{operator}");
+        assert!(operator.contains(&*web.to_string_lossy()), "{operator}");
+        let viewer = get(Some(&harness.viewer), "/api/web");
+        assert!(status(&viewer).contains("200"), "{viewer}");
+        assert!(!viewer.contains(&*web.to_string_lossy()), "{viewer}");
+
+        let script = get(Some(&harness.viewer), "/api/web/mods/hello/mod.js");
+        assert!(script.ends_with("alc.toast('hi');"), "{script}");
+        // Refused one way or another - the request parser or the id check.
+        let escape = get(Some(&harness.operator), "/api/web/mods/..%2F..%2Fx/mod.js");
+        assert!(!status(&escape).contains("200"), "{escape}");
+        assert!(
+            status(&get(
+                Some(&harness.operator),
+                "/api/web/mods/hello/mod.json"
+            ))
+            .contains("404")
+        );
+
+        // A viewer cannot save; an operator's save is clamped and kept.
+        assert!(status(&post(&harness.viewer, r#"{"theme":"dark"}"#)).contains("403"));
+        let saved = post(
+            &harness.operator,
+            r#"{"theme":"fjord","disabledMods":["hello"]}"#,
+        );
+        assert!(status(&saved).contains("200"), "{saved}");
+        assert!(status(&post(&harness.operator, "not json")).contains("400"));
+
+        // Turned off, the script is neither hashed nor served.
+        let index = get(None, "/");
+        assert!(!index.contains(&hash), "{index}");
+        assert!(
+            status(&get(Some(&harness.operator), "/api/web/mods/hello/mod.js")).contains("404")
+        );
         let _ = harness.session.kill();
     }
 

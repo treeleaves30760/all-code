@@ -1,0 +1,6 @@
+{
+  "name": "Session age",
+  "description": "Adds an hours chip to sessions that have been running for over an hour; amber past four.",
+  "version": "1.0.0",
+  "author": "alc"
+}

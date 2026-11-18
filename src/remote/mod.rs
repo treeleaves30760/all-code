@@ -48,6 +48,7 @@ mod session;
 mod settings;
 mod tmux;
 mod utf8;
+mod web;
 #[cfg(windows)]
 pub(crate) mod win;
 mod wire;
@@ -92,6 +93,10 @@ pub enum RemoteCommand {
     },
     /// Report the resolved posture without binding anything.
     DryRun,
+    /// Print, or with `check` validate, the page's customisation folder.
+    Web {
+        check: bool,
+    },
 }
 
 /// Runs the agent under a pty, mirrors it to this terminal and to a loopback
@@ -572,6 +577,31 @@ pub fn run_command(store: &Store, command: RemoteCommand) -> Result<u8> {
                 println!("`alc <agent>` now shares without --share; `--no-share` opts one out.");
             }
             Ok(0)
+        }
+        RemoteCommand::Web { check } => {
+            let folder = web::WebDir::new(&store.dir);
+            folder.scaffold()?;
+            if !check {
+                println!("{}", folder.root().display());
+                return Ok(0);
+            }
+            let problems = folder.check();
+            if problems.is_empty() {
+                let (settings, _) = folder.load_settings();
+                let mods = folder.mods(&settings);
+                let on = mods.iter().filter(|info| info.enabled).count();
+                println!(
+                    "ok: {} mod(s), {on} on; {} theme(s); {}",
+                    mods.len(),
+                    folder.themes().len(),
+                    folder.root().display()
+                );
+                return Ok(0);
+            }
+            for problem in &problems {
+                println!("problem: {problem}");
+            }
+            Ok(1)
         }
         RemoteCommand::RotateTokens => {
             Secrets::rotate(&store.dir)?;
