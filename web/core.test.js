@@ -914,3 +914,49 @@ test('the scale always makes the measured grid fit, converged or not', () => {
     }
   }
 });
+
+/* ---------------------------------------------------------- file panel */
+
+test('file sizes read the way a person reads them', () => {
+  assert.equal(core.formatBytes(0), '0 B');
+  assert.equal(core.formatBytes(1023), '1023 B');
+  assert.equal(core.formatBytes(1536), '1.5 KB');
+  assert.equal(core.formatBytes(200 * 1024), '200 KB');
+  assert.equal(core.formatBytes(3 * 1024 * 1024), '3.0 MB');
+  assert.equal(core.formatBytes(undefined), '');
+});
+
+test('panel paths join and climb without a leading slash', () => {
+  assert.equal(core.joinPath('', 'src'), 'src');
+  assert.equal(core.joinPath('src/', 'main.rs'), 'src/main.rs');
+  assert.equal(core.parentPath('src/remote/files.rs'), 'src/remote');
+  assert.equal(core.parentPath('src'), '');
+  assert.equal(core.parentPath(''), '');
+});
+
+test('the breadcrumb starts at the session folder and names each step', () => {
+  assert.deepEqual(core.crumbs('/Users/me/proj', 'src/remote'), [
+    { label: 'proj', path: '' },
+    { label: 'src', path: 'src' },
+    { label: 'remote', path: 'src/remote' },
+  ]);
+  assert.deepEqual(core.crumbs('/', ''), [{ label: '/', path: '' }]);
+});
+
+test('a filter needs every word, in any case', () => {
+  assert.ok(core.matchesQuery('claude anthropic sonnet', 'Son claude'));
+  assert.ok(!core.matchesQuery('claude anthropic', 'codex'));
+  assert.ok(core.matchesQuery('anything', '  '));
+});
+
+test('the file panel preference survives storage that throws', () => {
+  const throwing = { getItem() { throw new Error('no'); }, setItem() { throw new Error('no'); }, removeItem() { throw new Error('no'); } };
+  assert.equal(core.loadFilesOpen(throwing), false);
+  core.saveFilesOpen(throwing, true);
+  const map = new Map();
+  const memory = { getItem: (k) => map.get(k) ?? null, setItem: (k, v) => map.set(k, v), removeItem: (k) => map.delete(k) };
+  core.saveFilesOpen(memory, true);
+  assert.equal(core.loadFilesOpen(memory), true);
+  core.saveFilesOpen(memory, false);
+  assert.equal(core.loadFilesOpen(memory), false);
+});
