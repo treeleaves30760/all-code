@@ -39,7 +39,7 @@ Remote control works on Windows 10 and 11 as it does on macOS and Linux;
 
 ## The page
 
-The page has tabs — **Sessions**, **Usage**, **Settings**, and any a
+The page has tabs — **Sessions**, **Usage**, **Studio**, **Settings**, and any a
 [mod](#mods) adds. They sit in the header on a wide screen and become a bottom
 bar on a phone, where an open session takes the whole screen.
 
@@ -48,6 +48,9 @@ bar on a phone, where an open session takes the whole screen.
   [permission](#permission-modes) bar and the read-only file panel.
 - **Usage** is a dashboard of what the agents on this machine have spent — see
   [Usage on the page](#usage-on-the-page).
+- **Studio** arranges the page: packages, where each mod's widgets go,
+  backgrounds, floating windows and panel widths — see
+  [Mods and themes](./mods.md#the-studio).
 - **Settings** is the page's look and the terminal's, saved on the hub — see
   [Settings and themes](#settings-and-themes).
 
@@ -395,9 +398,14 @@ its size. The browser remembers the choice. There is no keyboard shortcut for
 it on purpose: every key belongs to the terminal, and `ctrl-b` is tmux's
 prefix. A phone already shows one pane at a time, so nothing changes there.
 
-When that grid has to shrink to fit — a 120-column terminal on a phone — the
-page says so above the terminal and offers the command that fixes it,
-`alc share --tmux <agent>`, to copy. Hide the note with its ×.
+When that grid has to shrink to fit — a 120-column terminal on a phone, or a
+narrow space beside the file panel — the page says so above the terminal and
+offers two ways out: **Fit to this page**, which lets this page resize the
+session (the button beside the file panel's does the same, and *Plain sessions*
+in Settings or the Studio makes it the default), or the command
+`alc share --tmux <agent>`, to copy. A fitted session goes back to its own
+terminal's size as soon as that terminal is resized, or when the page lets go
+or closes. Hide the note with its ×.
 
 ![A plain session on a phone, with the note that offers --tmux](/img/remote/size-note.png)
 
@@ -485,6 +493,10 @@ alc remote allow-host <host>
 alc remote web               # the page's settings, themes and mods folder
 alc remote web check         # validate it
 alc remote web list          # mods (on/off) and themes
+alc remote web catalog       # official mods, packages, themes and templates
+alc remote web add <id>      # install an official one
+alc remote web new <id> --template widget        # start a mod from a template
+alc remote web package [list|apply <id>|remove <id>]
 alc remote web install <owner/repo|url|folder>   # mods arrive off
 alc remote web enable|disable|remove <id>
 

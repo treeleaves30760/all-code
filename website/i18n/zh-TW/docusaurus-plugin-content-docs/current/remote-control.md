@@ -38,13 +38,15 @@ alc session claude-7QK2M9XB4T (claude@all-code)
 
 ## 頁面
 
-頁面有幾個分頁 ——「Session」「用量」「設定」，以及任何 [mod](#mods) 加上的分頁。
+頁面有幾個分頁 ——「Session」「用量」「工作室」「設定」，以及任何 [mod](#mods) 加上的分頁。
 寬螢幕時它們在標題列，手機上則變成底部列，打開的 session 會佔滿整個畫面。
 
 - **Session** 是清單，旁邊是打開的 session：終端機、按鍵列（Esc、Tab、⇧Tab、
   黏著的 Ctrl、方向鍵）、寫長提示用的輸入框、[權限](#權限模式)列與唯讀的檔案面板。
 - **用量**是一張儀表板，列出這台機器上的 agent 花了多少 —— 見
   [頁面上的用量](#頁面上的用量)。
+- **工作室**負責排列頁面：套件、每個 mod 的小工具放在哪裡、背景、浮動視窗與面板
+  寬度 —— 見 [Mods 與主題](./mods.md#工作室)。
 - **設定**是頁面與終端機的外觀，存在 hub 上 —— 見[設定與主題](#設定與主題)。
 
 在 Mac 上按 `⌘K`，或在終端機以外的任何地方按 `Ctrl+K`，會開啟「指令面板」：跳到
@@ -366,9 +368,12 @@ agent 的尺寸：它把真正的字元格線在放得下的範圍內畫到最�
 每一個按鍵都屬於終端機 —— `ctrl-b` 就是 tmux 的 prefix。手機上什麼都沒變，它本來
 就一次只顯示一個窗格。
 
-當那個格線得縮小才放得下 —— 例如在手機上看 120 欄的終端機 —— 頁面會在終端機上方
-說明這件事，並提供能解決它的指令 `alc share --tmux <agent>` 讓你複製。按提示上的
-× 就能把它關掉。
+當那個格線得縮小才放得下 —— 例如在手機上看 120 欄的終端機，或檔案面板旁的窄空間
+—— 頁面會在終端機上方說明這件事，並提供兩個解法：**符合這個頁面**，讓這個頁面改變
+session 的大小（檔案面板按鈕旁的按鈕也一樣，而設定或工作室裡的*一般 session* 會把它
+設為預設），或複製指令 `alc share --tmux <agent>`。符合頁面的 session，只要它自己的
+終端機一調整大小、或頁面放手或關閉，就會回到原本終端機的大小。按提示上的 × 就能
+把它關掉。
 
 ![手機上的一般 session，附上建議改用 --tmux 的提示](/img/remote/size-note.png)
 
@@ -450,6 +455,10 @@ alc remote allow-host <host>
 alc remote web               # the page's settings, themes and mods folder
 alc remote web check         # validate it
 alc remote web list          # mods (on/off) and themes
+alc remote web catalog       # official mods, packages, themes and templates
+alc remote web add <id>      # install an official one
+alc remote web new <id> --template widget        # start a mod from a template
+alc remote web package [list|apply <id>|remove <id>]
 alc remote web install <owner/repo|url|folder>   # mods arrive off
 alc remote web enable|disable|remove <id>
 

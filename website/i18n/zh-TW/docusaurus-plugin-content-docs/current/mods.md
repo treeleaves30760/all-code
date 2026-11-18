@@ -3,13 +3,16 @@ id: mods
 title: Mods 與主題
 sidebar_label: Mods 與主題
 sidebar_position: 6
-description: 用主題與 mod 自訂 alc 的遠端控制頁面 —— 自己寫、請 agent 幫你寫、把它當成 GitHub repository 發佈，並用一行指令安裝別人寫的。
+description: 用主題、mod、小工具與套件自訂 alc 的遠端控制頁面 —— 在頁面內建的工作室排列它、從範本寫自己的 mod、把它當成 GitHub repository 發佈，並用一行指令安裝別人寫的。
 keywords:
   - alc mods
   - alc themes
   - remote page customisation
   - herdr mods
   - install mod from github
+  - alc studio
+  - mod packages
+  - page widgets
   - 中文
 ---
 
@@ -17,10 +20,108 @@ keywords:
 
 [遠端控制頁面](./remote-control.md)可以用跑 hub 那台機器上的純文字檔案來改：**主題**
 替它換顏色，**mod** 替它加東西 —— 一個分頁、指令面板裡的指令、按鍵列上的按鈕、
-session 卡片上的小標籤，或樣式。這個想法來自 herdr-app：頁面的行為是 agent
-寫得出來的檔案，旁邊附一份寫給那個 agent 看的參考文件。
+session 卡片上的小標籤，或樣式 —— 還有可以放在 session 清單與編碼畫面任何位置的
+**小工具**、**浮動視窗**與**背景**。**套件**把 mods 連同它們的版面、背景與主題打包在
+一起。這個想法來自 herdr-app：頁面的行為是 agent 寫得出來的檔案，旁邊附一份寫給
+那個 agent 看的參考文件。
 
-![「設定」分頁裡的 Mods](/img/remote/mods.png)
+這裡的每件事都可以在頁面的**工作室**分頁完成、直接在資料夾裡手動改，或請你的
+agent 幫忙。
+
+![工作室的套件](/img/remote/studio-packages.png)
+
+## 工作室
+
+**工作室**分頁是頁面內建的 mods 編輯器。它的五個分頁都寫進 hub 上的同一個資料夾，
+所以在筆電上做的改動，手機上也看得到：
+
+- **套件** —— 套用官方套件（Cockpit、Night shift、Deep focus、Retro terminal、
+  Workbench）或你自己的；把目前的頁面存成套件；從 JSON 或檔案匯入；下載或複製
+  一個套件來分享。
+- **版面** —— 一個列出所有已開啟 mods 提供的小工具的工具庫，以及 session 清單與
+  編碼畫面的縮圖。把小工具拖進某個位置（或點選它再選擇**位置**）、調整順序、隱藏，
+  並在檢視器裡設定選項。
+- **Mods** —— 開關 mods、安裝官方 mods、從 GitHub 安裝、移除，以及從範本建立
+  **新 mod**。
+- **背景** —— 內建的漸層或圖樣、你上傳的圖片，或 mod 繪製的動態背景；可調整
+  變暗、模糊與終端機不透明度。
+- **面板** —— session 清單、檔案面板與兩側面板的寬度，清單與檔案面板放在哪一側，
+  以及一般 session 是否要符合頁面大小。
+
+![在工作室裡放置小工具](/img/remote/studio-layout.png)
+
+唯讀連結看得到工作室，但不能改任何東西。
+
+### 位置（slot）
+
+| 位置 | 在哪裡 |
+| --- | --- |
+| `bar` | 頁首，連線指示燈旁邊 —— 請保持一行 |
+| `list.top`、`list.bottom` | session 卡片的上方與下方 |
+| `card` | 每張 session 卡片裡（只能顯示：卡片本身是按鈕） |
+| `view.top`、`view.bottom` | 終端機的上方與下方 |
+| `view.left`、`view.right` | 終端機旁的側面板；每個小工具有一個可收合的區塊 |
+| `float` | 自己的浮動視窗 |
+
+沒有人放置過的小工具，會先畫在它的 mod 建議的位置，直到你移動或隱藏它，所以開啟
+一個 mod 就會立刻看到它的小工具。套件的版面則是*明確的*：只畫它放置的東西。
+**重設版面**會回到各 mod 的建議。
+
+### 面板，以及讓一般 session 符合頁面
+
+拖曳 session 清單、檔案面板或側面板的內側邊緣來調整寬度；雙擊邊緣可重設，也可以
+在邊緣上用方向鍵。終端機會依剩下的空間重新調整。
+
+用 `--tmux` 啟動的 session 本來就採用頁面的大小。一般的 session 則以它自己終端機的
+大小顯示，所以以前打開檔案面板時，它會被縮小成上下留黑。**符合這個頁面**（檔案面板
+按鈕旁的按鈕、大小提示、指令面板，或在工作室「面板」分頁中對所有 session 開啟
+*一般 session*）讓頁面改變它的大小，終端機就會填滿面板留下的空間。啟動它的終端機
+一旦調整大小，就會把大小拿回去；頁面放手或關閉時，hub 也會把大小交還。
+
+![在檔案面板旁符合頁面的一般 session](/img/remote/fit.png)
+
+### 視窗
+
+放在 `float` 位置的小工具，或 mod 自己用 `mod.addWindow` 建立的視窗，可以拖曳標題列
+移動、從角落調整大小。位置與是否開啟會在每台裝置各自記住；關閉的視窗會待在頁首的
+視窗匣（以及指令面板）裡。在手機上，視窗一開始是關閉的，打開時會以面板形式出現在
+按鍵列上方。
+
+## 官方 mods 與套件
+
+alc 把這些放在 `examples/`。從工作室安裝，或用 `alc remote web add <id>` —— 官方
+mods 安裝後即開啟。
+
+| Mod | 加上什麼 |
+| --- | --- |
+| `clock` | 時間（可加第二時區），放在頁首或視窗 |
+| `session-overview` | 在清單上方以方塊顯示執行中、代理、觀看者與最久的 session |
+| `quota-meter` | 每個登入的 5 小時與每週配額長條，或在頁首顯示最高的一個 |
+| `session-notes` | 每個 session 一份筆記，放在它的終端機旁，存在 hub 上 |
+| `command-deck` | 目前代理的 slash 指令按鈕（`/compact`、`/review`、`/status` …） |
+| `pomodoro` | 會發出通知的專注計時器視窗 |
+| `ambient` | 動態背景：星空、字元雨、波浪、粒子 |
+| `crt` | 終端機上的掃描線與螢光光暈（只有 CSS） |
+| `quick-prompts` | 按鍵列、指令面板上的提示按鈕，以及可編輯的小工具 |
+| `scratchpad` | 筆記分頁與筆記小工具 |
+| `session-age` | 執行時數標籤，以及每張卡片上的時間條 |
+
+| 套件 | 內容 |
+| --- | --- |
+| `cockpit` | 清單上方的方塊、右側面板的配額與 session 筆記、終端機下方的指令列、時鐘、時間條 |
+| `night-shift` | 半透明終端機後的星空、Midnight 主題、專注計時器與時鐘 |
+| `deep-focus` | 緊湊密度、模糊漸層、頁首的計時器、終端機下方的提示按鈕 |
+| `retro` | CRT 終端機、字元雨、Ember 主題、筆記視窗 |
+| `workbench` | 檔案在左、右側面板放筆記與快速提示、頁首放總覽 |
+
+```sh
+alc remote web catalog                 # everything official, and what is installed
+alc remote web add cockpit             # an official package (or mod, or theme)
+alc remote web package apply cockpit   # installs the official mods it needs, too
+alc remote web package                 # list packages; * marks the applied one
+```
+
+![Cockpit 套件](/img/remote/cockpit.png)
 
 ## 檔案放在哪裡
 
@@ -31,14 +132,16 @@ alc remote web          # prints the folder, usually ~/.config/alc/web
 ```text
 web/
 ├── AGENTS.md          the API reference, written for an agent; alc keeps it current
-├── settings.json      what the Settings tab saves (theme, terminal, which mods are off)
+├── settings.json      what Settings and the Studio save (theme, terminal, mods, layout, background)
 ├── themes/<id>.json   colour tokens for the page and the terminal
 ├── mods/<id>/
 │   ├── mod.json       {"name", "description", "version", "author"}
 │   ├── mod.js         optional: runs once when the page loads
 │   ├── mod.css        optional: added after the page's own stylesheet
 │   └── README.md      optional: shown to people, not loaded
-└── examples/          quick-prompts, scratchpad, session-age, tidepool; never loaded
+├── packages/<id>.json a set of mods with a layout, background and theme
+├── backgrounds/       images for the background (png, jpg, webp, gif)
+└── examples/          the official mods, packages and themes, and new-mod templates; never loaded
 ```
 
 id 只能用 `[a-z0-9_-]`，開頭必須是字母或數字，最長 48 個字元。一個 mod 需要
@@ -59,7 +162,13 @@ Read ~/.config/alc/web/AGENTS.md, then make me an alc page mod that adds a
 
 ## 自己動手寫
 
-從一個範例開始：
+從範本開始 —— 在工作室的 Mods 分頁，或：
+
+```sh
+alc remote web new my-widget --template widget   # or page, window, background, style, blank
+```
+
+這會寫出 `mods/my-widget/`，id 與名稱都已填好，並且已開啟。或者複製一個官方 mod：
 
 ```sh
 WEB="$(alc remote web)"
@@ -128,6 +237,62 @@ alc.define('today', (mod) => {
 
 ![scratchpad 範例的 Notes 分頁](/img/remote/mod-page.png)
 
+### 小工具
+
+小工具是工作室或套件可以放置的東西。mod 說明它*可以*放在哪裡，以及在有人放置
+之前它在哪裡；選項會出現在工作室的檢視器裡。
+
+```js
+alc.define('build-light', (mod) => {
+  mod.addWidget({
+    id: 'light',
+    title: 'Build light',
+    icon: 'bolt',
+    defaultSlot: 'bar',
+    slots: ['bar', 'view.right', 'float'],
+    options: [{ key: 'label', type: 'text', label: 'Label', default: 'CI' }],
+    render(root, ctx) {
+      const dot = alc.h('span', { class: 'chip' }, `${ctx.options.label}: …`);
+      root.append(dot);
+      // Undone automatically when the widget is moved or removed.
+      ctx.every(30000, async () => {
+        const cards = await alc.api('/api/sessions');
+        dot.textContent = `${ctx.options.label}: ${cards.length} sessions`;
+      });
+    },
+  });
+});
+```
+
+`ctx` 還有 `session()`（打開的 session）、`card`（在卡片位置時）、`on(event, fn)`、
+`onCleanup(fn)`、`active()` 與 `setOptions({...})`。編碼畫面的位置在你打開每個
+session 時都會重畫，所以放在那裡的小工具直接讀 `ctx.session()` 就好。
+
+### 視窗與背景
+
+```js
+alc.define('peek', (mod) => {
+  const win = mod.addWindow({
+    id: 'main', title: 'Peek', width: 320, height: 200,
+    render(root, ctx) {
+      root.append(alc.h('pre', {}, JSON.stringify(ctx.session(), null, 2)));
+    },
+  });
+  mod.addKey({ label: 'Peek', run: () => win.toggle() });
+
+  mod.addBackground({
+    id: 'glow', name: 'Glow',
+    render(host, ctx) {
+      host.style.background = 'radial-gradient(circle at 30% 20%, #4f46e5, #050608 70%)';
+      return () => { host.style.background = ''; };
+    },
+  });
+});
+```
+
+背景 mod 在 `ctx.reducedMotion()` 為 true 時應該只畫一張靜止畫面，並在分頁隱藏時
+暫停。
+
 ### 保存狀態
 
 `mod.state` 是這個 mod 存下來的物件，`mod.save(next)` 會把它寫進 `settings.json` 的
@@ -163,7 +328,10 @@ alc.define('counter', (mod) => {
 | `alc.settings()` / `alc.theme()` | 目前生效的設定／`{id, mode}` |
 | `alc.canType`、`alc.locale`、`alc.version` | 連結的權限等級、`en` 或 `zh-TW`、alc 的版本 |
 | `mod.addPage`、`addCommand`、`addKey`、`addSessionChip`、`addStyle`、`onCleanup` | 替頁面加東西 |
+| `mod.addWidget`、`addWindow`、`addBackground` | 可放置的小工具、浮動視窗、背景 |
 | `mod.state`、`mod.save(next)` | 這個 mod 存下來的物件 |
+| `mod.local.get(name)`、`mod.local.set(name, value)` | 只存在這台裝置上的儲存空間 |
+| `alc.layout()`、`alc.widgets()`、`alc.openWindow(key)`、`alc.notify(title, body)` | 版面、小工具、打開視窗、通知 |
 
 資料夾裡的 `AGENTS.md` 是完整的參考，包括卡片的欄位與 CSS 掛鉤（`body[data-pane]`、
 `#nav`、`#keys`、`.panel`、`.chip` …）。
@@ -192,6 +360,34 @@ alc.define('counter', (mod) => {
 值可以是顏色、`rgb()`、`color-mix()` 與長度 —— 不能有 `url()`、引號或分號；其他的
 alc 都會丟掉。`AGENTS.md` 列出了每一個 token。
 
+## 套件
+
+套件是 `packages/<id>.json`：
+
+```json
+{
+  "name": "My setup",
+  "description": "Notes on the right, the clock up top, a quiet background.",
+  "mods": ["clock", "session-notes"],
+  "theme": "fjord",
+  "density": "compact",
+  "background": { "kind": "preset", "value": "aurora", "dim": 50, "blur": 0, "terminal": 92 },
+  "layout": {
+    "slots": {
+      "bar": [{ "widget": "clock/clock", "options": { "seconds": false } }],
+      "view.right": [{ "widget": "session-notes/note", "options": {} }]
+    },
+    "sizes": { "right": 300 },
+    "filesSide": "left"
+  }
+}
+```
+
+套用時會開啟它的 mods（缺少的官方 mods 會自動安裝），並採用它的版面、背景、主題、
+強調色與密度。它沒有列出的 mods 維持原本的開關。最簡單的做法是先把頁面排好，再在
+工作室按**把目前的頁面存成套件**；**下載**會給你可以分享的檔案，repository 裡的
+`packages/` 資料夾也會跟其他東西一起安裝。
+
 ## 在 GitHub 上分享你的 mod
 
 一個 repository 只要符合下面任一種結構（或兩種都有），就是 mod 的來源：
@@ -207,14 +403,16 @@ my-alc-mods/                  a collection: each folder keeps its id
 ├── mods/
 │   ├── standup/mod.json, mod.js
 │   └── focus-timer/mod.json, mod.js, mod.css
-└── themes/
-    └── harbour.json
+├── themes/
+│   └── harbour.json
+└── packages/
+    └── standup-desk.json
 ```
 
 - 單一 mod 的 repository 會以它的名字安裝，並去掉 `alc-mod-`、`alc-page-mod-` 或
   `alc-` 前綴；用 `--name` 可以改成別的名字。
 - 從一個 mod 只會取 `mod.json`、`mod.js`、`mod.css` 與 `README.md`，另外只取
-  `themes/*.json`；repository 裡其他的東西一律忽略，所以可以放測試、截圖或建置流程。
+  `themes/*.json` 與 `packages/*.json`；repository 裡其他的東西一律忽略，所以可以放測試、截圖或建置流程。
 - 在 README 裡放一張截圖和一句說明 mod 做什麼的話，並替 repository 加上 `alc-mod`
   這個 topic，讓別人找得到。
 - mod 裡不能有任何機密：唯讀連結也會下載 mod 的檔案。

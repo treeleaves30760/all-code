@@ -943,11 +943,11 @@ alc remote web check         # 驗證頁面的設定、主題與 mods
 `remote.toml` 的共享政策仍由各世代共用，也能在 `alc config` 的
 **Sharing & remote** 畫面設定。
 
-### 頁面：session、用量、設定、mods
+### 頁面：session、用量、工作室、設定、mods
 
 ![開著一個 session 的遠端頁面](../website/static/img/remote/session.png)
 
-頁面有幾個分頁 ——「Session」「用量」「設定」，以及 mod 加上的任何分頁 ——
+頁面有幾個分頁 ——「Session」「用量」「工作室」「設定」，以及 mod 加上的任何分頁 ——
 寬螢幕時放在標題列，手機上則變成底部列。`⌘K`（在終端機以外按 `Ctrl+K`）會開啟
 「指令面板」，可以跳到某個 session、某個分頁、某個主題，或執行 mod 的指令。
 
@@ -962,6 +962,14 @@ alc remote web check         # 驗證頁面的設定、主題與 mods
   樣式，精神上和 herdr-app 的 mods 相同。每個 mod 都是設定目錄 `web/` 底下的一個
   資料夾、裡面是純文字檔案，旁邊有一份寫給 agent 讀的 `AGENTS.md` —— 所以「幫我做
   一個會……的 mod」這件事，可以直接交給你正在跑的 agent。
+- **工作室**是頁面內建的 mods 編輯器。Mods 可以提供**小工具**，讓你拖進各個位置
+  —— 頁首、session 清單上下方、每張 session 卡片、終端機上下方、終端機旁的側面板，
+  或浮動視窗 —— 也可以提供**背景**（內建、你的圖片，或動態背景）。**套件**把 mods
+  連同版面、背景與主題打包在一起；套用官方的五個（Cockpit、Night shift、Deep focus、
+  Retro terminal、Workbench）或存成你自己的。session 清單、檔案面板與側面板都可以
+  拖曳加寬，也能放到任一側。
+- **符合這個頁面**讓頁面改變一般（沒有 `--tmux`）session 的大小，所以打開檔案面板或
+  側面板時終端機會重新調整，而不是被縮小；啟動它的終端機一調整大小就會把大小拿回去。
 
 ```text
 <config dir>/web/
@@ -969,7 +977,9 @@ alc remote web check         # 驗證頁面的設定、主題與 mods
 ├── settings.json      「設定」分頁儲存的內容
 ├── themes/<id>.json   頁面與終端機的顏色 token
 ├── mods/<id>/         mod.json、mod.js、mod.css
-└── examples/          quick-prompts、scratchpad、session-age 與一個主題
+├── packages/<id>.json mods + 版面 + 背景 + 主題
+├── backgrounds/       背景圖片
+└── examples/          官方 mods、套件、主題與新 mod 範本
 ```
 
 ```js
@@ -983,13 +993,17 @@ alc.define('hello', (mod) => {
 ```sh
 alc remote web                                  # 印出資料夾位置
 alc remote web check                            # 驗證設定、主題與 mods
+alc remote web catalog                          # 官方 mods、套件、主題與範本
+alc remote web add cockpit                      # 安裝官方的一個
+alc remote web package apply cockpit            # 採用它的 mods、版面與外觀
+alc remote web new my-widget --template widget  # 從範本開始一個 mod
 alc remote web install someone/alc-mod-standup  # 從 GitHub 安裝（或 @ref、網址、資料夾）
 alc remote web enable standup                   # 剛裝好的 mod 預設是關的
 alc remote web list                             # 裝了什麼、哪些開著哪些關著
 ```
 
 一個 repository 只要在根目錄放了 `mod.json` + `mod.js`／`mod.css`（單一 mod），或是
-`mods/<id>/…` 與 `themes/<id>.json`（一個合集），就是 mod 的來源。
+`mods/<id>/…`、`themes/<id>.json` 與 `packages/<id>.json`（一個合集），就是 mod 的來源。
 [Mods 與主題指南](https://treeleaves30760.github.io/all-code/zh-TW/mods)涵蓋了怎麼寫
 mod、API、發佈與安裝。
 
