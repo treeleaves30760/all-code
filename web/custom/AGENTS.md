@@ -202,6 +202,22 @@ The page is plain HTML. Stable hooks: `body[data-pane]` (`list`, `view`,
 `#composer`, `#usage`, `#settings`, `#page` (mod pages), `.panel`, `.btn`,
 `.chip`. Prefer tokens over hard-coded colours so a mod works in every theme.
 
+## Installing and sharing
+
+```sh
+alc remote web list                          # what is installed, on or off
+alc remote web install owner/repo[@ref]      # also owner/repo/folder@ref, a github.com URL, or a local folder
+alc remote web enable <id>                   # installed mods arrive off
+alc remote web disable <id> | remove <id>
+```
+
+A repository is a source when it has `mod.json` + `mod.js`/`mod.css` at its
+root (one mod, named after the repository without an `alc-mod-` prefix) or
+`mods/<id>/…` and `themes/<id>.json` (a collection). Only `mod.json`, `mod.js`,
+`mod.css` and `README.md` are copied from a mod. Each installed mod records its
+source in `mods/<id>/SOURCE`. To publish a mod, push that layout to a public
+GitHub repository with a README and the `alc-mod` topic.
+
 ## Rules
 
 1. Copy from `examples/` into `mods/` or `themes/`; do not edit `examples/`

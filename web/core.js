@@ -971,6 +971,8 @@
     aboutShortcuts: 'Shortcuts',
     shortcutPalette: 'Command palette',
     shortcutSend: 'Send prompt',
+    sizeFramed: 'Shown at {c}×{r}, the size of the terminal it was started in. To fill this screen, start it with --tmux:',
+    sizeHide: 'Hide',
   });
 
   Object.assign(STRINGS['zh-TW'], {
@@ -1078,6 +1080,8 @@
     aboutShortcuts: '快捷鍵',
     shortcutPalette: '指令面板',
     shortcutSend: '送出提示詞',
+    sizeFramed: '以 {c}×{r} 顯示，也就是啟動它的那個終端機的大小。想填滿這個畫面，請用 --tmux 啟動：',
+    sizeHide: '隱藏',
   });
 
   /* ------------------------------------------------------------- themes */
@@ -1266,6 +1270,17 @@
     };
     const luminance = 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0);
     return (luminance + 0.05) / 0.05 > 1.05 / (luminance + 0.05) ? '#0b0c10' : '#ffffff';
+  }
+
+  /* Whether a framed grid is drawn too small to read comfortably: shrunk
+   * below the page's own font, or past 9px. */
+  function framedTooSmall(fontSize, baseFontSize, scale) {
+    return scale < 1 || fontSize < Math.min(9, baseFontSize - 2);
+  }
+
+  /* The command that starts the same agent so this page owns its size. */
+  function tmuxCommand(card) {
+    return `alc share --tmux ${(card && card.agent) || 'claude'}`;
   }
 
   /* ----------------------------------------------------------- dashboard */
@@ -1467,5 +1482,7 @@
     rankCommands,
     normalizeChip,
     changedScripts,
+    framedTooSmall,
+    tmuxCommand,
   };
 });

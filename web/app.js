@@ -29,7 +29,7 @@
     'perm', 'permLabel', 'permPick', 'permCycle', 'permNote', 'permFlags', 'permCommand',
     'composer', 'compose', 'send', 'toast',
     'usage', 'accountsTitle', 'nav', 'paletteToggle', 'toastText', 'toastAction',
-    'settings', 'page', 'accounts', 'usageNote',
+    'settings', 'page', 'sizeNote', 'sizeNoteText', 'sizeNoteCommand', 'sizeNoteHide', 'accounts', 'usageNote',
     'usageEmpty', 'usageEmptyTitle', 'usageEmptyHow', 'usageEmptyCommand',
     'ledgerTitle', 'ledger', 'ledgerProvider', 'ledgerAgent', 'ledgerLaunches',
     'ledgerTurns', 'ledgerInput', 'ledgerCached', 'ledgerCacheShare', 'ledgerOutput', 'ledgerNote',
@@ -503,6 +503,7 @@
   wireCopy(el.emptyCommand);
   wireCopy(el.usageEmptyCommand);
   wireCopy(el.permCommand);
+  wireCopy(el.sizeNoteCommand);
 
   /* --------------------------------------------------------- permission */
 
@@ -905,6 +906,7 @@
   /* The page's window is the size, so the agent is told what fits in it. */
   function driveSize() {
     if (!fit) return;
+    if (!el.sizeNote.hidden) el.sizeNote.hidden = true;
     // The framed mode leaves a font size and a transform behind, and there
     // is one terminal for every session on the page: attaching to a plain
     // session and then to a `--tmux` one would otherwise fit this window
@@ -986,7 +988,32 @@
     // transformed instead, which costs xterm's hit-testing the same factor
     // and is the lesser of the two. In the ordinary case it is 1.
     term.element.style.transform = placed.scale < 1 ? `scale(${placed.scale})` : '';
+    showSizeNote(card, core.framedTooSmall(placed.fontSize, baseFontSize, placed.scale));
   }
+
+  /* Sessions whose size note was dismissed, for this visit. */
+  const sizeNoteHidden = new Set();
+
+  function showSizeNote(card, small) {
+    const show = !!card && small && !sizeNoteHidden.has(card.id);
+    if (show) {
+      setText(el.sizeNoteText, core.fill(T.sizeFramed, { c: card.cols, r: card.rows }));
+      commandText(el.sizeNoteCommand, core.tmuxCommand(card));
+    }
+    if (el.sizeNote.hidden === !show) return;
+    el.sizeNote.hidden = !show;
+    // The note takes height from the terminal's box; fit again around it.
+    scheduleRelayout();
+  }
+
+  el.sizeNoteHide.setAttribute('aria-label', T.sizeHide);
+  el.sizeNoteHide.title = T.sizeHide;
+  el.sizeNoteHide.addEventListener('click', () => {
+    const card = attached.value;
+    if (card) sizeNoteHidden.add(card.id);
+    el.sizeNote.hidden = true;
+    scheduleRelayout();
+  });
 
   /* One character's box, in CSS pixels.
    *
@@ -1240,6 +1267,7 @@
     el.back.hidden = true;
     el.grade.hidden = true;
     el.perm.hidden = true;
+    el.sizeNote.hidden = true;
     // A ticket is minted for one change on one session. Leaving it here meant
     // the next session attached to could spend it.
     pendingTicket = null;

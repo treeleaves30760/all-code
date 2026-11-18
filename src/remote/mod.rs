@@ -49,11 +49,13 @@ mod settings;
 mod tmux;
 mod utf8;
 mod web;
+mod web_install;
 #[cfg(windows)]
 pub(crate) mod win;
 mod wire;
 
 use std::env;
+use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -93,10 +95,25 @@ pub enum RemoteCommand {
     },
     /// Report the resolved posture without binding anything.
     DryRun,
-    /// Print, or with `check` validate, the page's customisation folder.
-    Web {
-        check: bool,
+    /// The page's customisation folder: settings, themes and mods.
+    Web(WebCommand),
+}
+
+/// What `alc remote web` was asked to do.
+#[derive(Debug, Clone)]
+pub enum WebCommand {
+    Path,
+    Check,
+    List,
+    Install {
+        source: String,
+        name: Option<String>,
+        enable: bool,
+        force: bool,
     },
+    Enable(String),
+    Disable(String),
+    Remove(String),
 }
 
 /// Runs the agent under a pty, mirrors it to this terminal and to a loopback
@@ -578,31 +595,7 @@ pub fn run_command(store: &Store, command: RemoteCommand) -> Result<u8> {
             }
             Ok(0)
         }
-        RemoteCommand::Web { check } => {
-            let folder = web::WebDir::new(&store.dir);
-            folder.scaffold()?;
-            if !check {
-                println!("{}", folder.root().display());
-                return Ok(0);
-            }
-            let problems = folder.check();
-            if problems.is_empty() {
-                let (settings, _) = folder.load_settings();
-                let mods = folder.mods(&settings);
-                let on = mods.iter().filter(|info| info.enabled).count();
-                println!(
-                    "ok: {} mod(s), {on} on; {} theme(s); {}",
-                    mods.len(),
-                    folder.themes().len(),
-                    folder.root().display()
-                );
-                return Ok(0);
-            }
-            for problem in &problems {
-                println!("problem: {problem}");
-            }
-            Ok(1)
-        }
+        RemoteCommand::Web(command) => run_web(store, command),
         RemoteCommand::RotateTokens => {
             Secrets::rotate(&store.dir)?;
             println!("rotated the remote-control tokens; existing links no longer work");
@@ -992,6 +985,119 @@ fn resolve_owned<'a>(owners: &'a [Owner], prefix: &str) -> Result<(&'a Owner, St
         .find(|owner| owner.scope.identity() == session.runtime)
         .context("the session's owner disappeared")?;
     Ok((owner, id))
+}
+
+fn run_web(store: &Store, command: WebCommand) -> Result<u8> {
+    let folder = web::WebDir::new(&store.dir);
+    folder.scaffold()?;
+    match command {
+        WebCommand::Path => {
+            println!("{}", folder.root().display());
+            Ok(0)
+        }
+        WebCommand::Check => {
+            let problems = folder.check();
+            if problems.is_empty() {
+                let (settings, _) = folder.load_settings();
+                let mods = folder.mods(&settings);
+                let on = mods.iter().filter(|info| info.enabled).count();
+                println!(
+                    "ok: {} mod(s), {on} on; {} theme(s); {}",
+                    mods.len(),
+                    folder.themes().len(),
+                    folder.root().display()
+                );
+                return Ok(0);
+            }
+            for problem in &problems {
+                println!("problem: {problem}");
+            }
+            Ok(1)
+        }
+        WebCommand::List => {
+            let (settings, error) = folder.load_settings();
+            if let Some(error) = &error {
+                println!("problem: {error} (no mods load until it is fixed)");
+            }
+            let mods = folder.mods(&settings);
+            if mods.is_empty() {
+                println!("no mods in {}", folder.root().join("mods").display());
+            }
+            for info in &mods {
+                let state = if info.error.is_some() {
+                    "error"
+                } else if info.enabled && error.is_none() {
+                    "on"
+                } else {
+                    "off"
+                };
+                let source =
+                    fs::read_to_string(folder.root().join("mods").join(&info.id).join("SOURCE"))
+                        .map(|text| format!("  from {}", text.trim()))
+                        .unwrap_or_default();
+                println!("{:<5} {:<24} {}{source}", state, info.id, info.name);
+                if let Some(problem) = &info.error {
+                    println!("      {problem}");
+                }
+            }
+            for theme in folder.themes() {
+                println!("theme {:<24} {}", theme.id, theme.name);
+            }
+            Ok(0)
+        }
+        WebCommand::Install {
+            source,
+            name,
+            enable,
+            force,
+        } => {
+            let source = web_install::Source::parse(&source)?;
+            println!("fetching {}", source.label());
+            let bundle = web_install::fetch(&source, name.as_deref())?;
+            let installed = web_install::install(&folder, &bundle, &source.label(), enable, force)?;
+            for id in &installed.mods {
+                println!(
+                    "installed mods/{id} ({})",
+                    if enable { "on" } else { "off" }
+                );
+            }
+            for id in &installed.themes {
+                println!("installed themes/{id}.json");
+            }
+            if !enable && !installed.mods.is_empty() {
+                println!(
+                    "\nmods run with the page's link and are not sandboxed; read them first:\n  {}\nthen turn one on with `alc remote web enable <id>` or the switch in Settings",
+                    folder.root().join("mods").display()
+                );
+            }
+            Ok(0)
+        }
+        WebCommand::Enable(id) => {
+            ensure_mod(&folder, &id)?;
+            folder.set_enabled(&id, true)?;
+            println!("mods/{id} is on; open pages offer a reload");
+            Ok(0)
+        }
+        WebCommand::Disable(id) => {
+            ensure_mod(&folder, &id)?;
+            folder.set_enabled(&id, false)?;
+            println!("mods/{id} is off");
+            Ok(0)
+        }
+        WebCommand::Remove(id) => {
+            folder.remove_mod(&id)?;
+            println!("removed mods/{id}");
+            Ok(0)
+        }
+    }
+}
+
+fn ensure_mod(folder: &web::WebDir, id: &str) -> Result<()> {
+    let (settings, _) = folder.load_settings();
+    if !folder.mods(&settings).iter().any(|info| info.id == id) {
+        anyhow::bail!("there is no mods/{id}; `alc remote web list` shows what is installed");
+    }
+    Ok(())
 }
 
 /// What `alc doctor` should say about remote control.

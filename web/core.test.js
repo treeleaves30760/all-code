@@ -1114,3 +1114,11 @@ test('every new string exists in both languages', () => {
   const zh = Object.keys(core.STRINGS['zh-TW']).sort();
   assert.deepEqual(zh, en);
 });
+
+test('a framed grid is too small once shrunk or under 9px', () => {
+  assert.equal(core.framedTooSmall(13, 13, 1), false);
+  assert.equal(core.framedTooSmall(12, 13, 1), false);
+  assert.equal(core.framedTooSmall(8.5, 13, 1), true);
+  assert.equal(core.framedTooSmall(13, 13, 0.8), true);
+  assert.equal(core.tmuxCommand({ agent: 'codex' }), 'alc share --tmux codex');
+});

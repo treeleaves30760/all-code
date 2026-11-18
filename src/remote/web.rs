@@ -333,16 +333,58 @@ impl WebDir {
         let settings: WebSettings =
             serde_json::from_slice(body).context("settings are not valid JSON")?;
         let settings = settings.clamp();
+        // Measured after indentation (see write_settings): a body under the
+        // cap can pretty-print past it.
+        self.write_settings(&settings)?;
+        Ok(settings)
+    }
+
+    /// Turns a mod on or off in settings.json.
+    pub(crate) fn set_enabled(&self, id: &str, on: bool) -> Result<()> {
+        if !is_slug(id) {
+            bail!("`{id}` is not a mod id");
+        }
+        let (mut settings, error) = self.load_settings();
+        if let Some(error) = error {
+            bail!("{error}; fix settings.json first (alc remote web check)");
+        }
+        settings.disabled_mods.retain(|off| off != id);
+        if !on {
+            settings.disabled_mods.push(id.to_owned());
+        }
+        self.write_settings(&settings.clamp())
+    }
+
+    /// Deletes a mod's folder and forgets its switch and its saved state.
+    pub(crate) fn remove_mod(&self, id: &str) -> Result<()> {
+        if !is_slug(id) {
+            bail!("`{id}` is not a mod id");
+        }
+        let dir = self.root.join("mods").join(id);
+        let is_real_dir = fs::symlink_metadata(&dir)
+            .map(|meta| meta.file_type().is_dir())
+            .unwrap_or(false);
+        if !is_real_dir {
+            bail!("there is no mods/{id}");
+        }
+        fs::remove_dir_all(&dir).with_context(|| format!("could not remove mods/{id}"))?;
+        let (mut settings, error) = self.load_settings();
+        if error.is_none() {
+            settings.disabled_mods.retain(|off| off != id);
+            settings.mod_settings.remove(id);
+            self.write_settings(&settings)?;
+        }
+        Ok(())
+    }
+
+    fn write_settings(&self, settings: &WebSettings) -> Result<()> {
         fs::create_dir_all(&self.root)?;
-        let mut text = serde_json::to_string_pretty(&settings)?;
+        let mut text = serde_json::to_string_pretty(settings)?;
         text.push('\n');
-        // Measured after indentation: a body under the cap can pretty-print
-        // past it, and a file the reader then refuses is worse than a refusal.
         if text.len() as u64 > MAX_JSON {
             bail!("settings are larger than 64 KiB");
         }
-        atomic_write(&self.root.join("settings.json"), text.as_bytes(), false)?;
-        Ok(settings)
+        atomic_write(&self.root.join("settings.json"), text.as_bytes(), false)
     }
 
     pub(crate) fn snapshot(&self, operator: bool) -> Snapshot {

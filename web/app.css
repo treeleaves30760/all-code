@@ -3287,3 +3287,34 @@ body[data-density="compact"] .stat-value {
     font-size: 24px;
   }
 }
+
+/* ---- a plain session drawn small ---- */
+
+.size-note {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px var(--s3);
+  padding: var(--s2) max(var(--s3), env(safe-area-inset-right)) var(--s2)
+    max(var(--s3), env(safe-area-inset-left));
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.size-note-text {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.command.small {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.size-note .icon.small {
+  width: 28px;
+  height: 28px;
+}

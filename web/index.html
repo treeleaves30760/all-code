@@ -326,6 +326,20 @@
           </button>
         </div>
 
+        <!-- Shown when a plain session's grid had to be shrunk to fit here:
+             its size belongs to the terminal that started it, so the way to
+             fill this screen is to start it under --tmux. -->
+        <div id="sizeNote" class="size-note" hidden>
+          <span id="sizeNoteText" class="size-note-text"></span>
+          <button type="button" id="sizeNoteCommand" class="command small">
+            <svg class="glyph" aria-hidden="true"><use href="#i-copy" /></svg>
+            <span class="command-text"></span>
+          </button>
+          <button type="button" id="sizeNoteHide" class="icon small">
+            <svg class="glyph" aria-hidden="true"><use href="#i-close" /></svg>
+          </button>
+        </div>
+
         <div id="terminal"></div>
 
         <div id="keys" class="keys" role="group" aria-label="Terminal keys"></div>
