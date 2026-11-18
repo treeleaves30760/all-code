@@ -595,13 +595,19 @@ in the main `config.toml`.
 
 ## On the remote-control page
 
-The [remote-control page](./remote-control.md) retains Accounts and the
-compatibility ledger behind the usage button in its header: one meter per
-window, then the ledger. It refreshes once a minute while that pane is open.
-Native-history statistics, cost estimates, and the per-request TPS report are
-CLI-only; the hub does not scan native histories for this page.
+The [remote-control page](./remote-control.md#usage-on-the-page)'s **Usage**
+tab charts the same statistics over 7, 30 or 90 days: tiles for tokens, cost,
+output, cache hits and sessions; a stacked daily chart of tokens or cost; the
+hours you work; and models, agents and providers ranked. The hub builds it
+offline from `usage.jsonl` and the Claude Code and Codex histories on its own
+machine, in the browser's timezone, and keeps each answer for a minute.
+Accounts and the compatibility ledger follow, refreshing once a minute while
+the tab is open. The per-request TPS report is CLI-only.
+
+![The Usage tab](/img/remote/usage-light.png)
 
 A link that can watch but not type sees the numbers without the email, the
-account id or the credential path. The page is served by the hub, which reads
-no shell variable and never opens the Keychain — so on macOS the Claude row
-there points you back at `alc usage` in a terminal.
+account id or the credential path; the charts carry no profile names. The page
+is served by the hub, which reads no shell variable and never opens the
+Keychain — so on macOS the Claude row there points you back at `alc usage` in
+a terminal.

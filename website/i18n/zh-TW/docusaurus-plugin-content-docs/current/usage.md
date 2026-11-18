@@ -519,11 +519,15 @@ commit `33d908e0ae2c0a257eeb5d546df08527d348a670`，附上游 SHA-256 與 MIT �
 
 ## 在遠端控制頁面上
 
-[遠端控制頁面](./remote-control.md)標題列的用量按鈕後面，仍是 Accounts 與相容
-帳本：每個額度視窗一條量表，接著是那份帳本。面板開著的時候，每分鐘更新一次。
-原生歷史統計、成本估算與逐請求 TPS 報告只在 CLI 提供；hub 不會為這個頁面掃描
-原生歷史。
+[遠端控制頁面](./remote-control.md#頁面上的用量)的**用量**分頁，把同一份統計畫成
+7、30 或 90 天的圖表：token、成本、輸出、快取命中與 session 數的數字卡；一張 token
+或成本的堆疊每日圖表；你工作的時段；以及模型、agent、provider 的排名。hub 在它自己
+那台機器上，用 `usage.jsonl` 與 Claude Code、Codex 的歷史離線算出這些，依瀏覽器的
+時區計算，每個結果保留一分鐘。接著是 Accounts 與相容帳本，分頁開著的時候每分鐘更新
+一次。逐請求 TPS 報告只在 CLI 提供。
 
-只能看、不能輸入的連結看得到數字，但看不到 email、帳號 id 與憑證路徑。頁面是由 hub
-提供的，而 hub 不讀任何 shell 變數，也永遠不會去開鑰匙圈 —— 所以在 macOS 上，那裡的
-Claude 那一列會請你回到終端機執行 `alc usage`。
+![「用量」分頁](/img/remote/usage-light.png)
+
+只能看、不能輸入的連結看得到數字，但看不到 email、帳號 id 與憑證路徑；圖表也不帶
+profile 名稱。頁面是由 hub 提供的，而 hub 不讀任何 shell 變數，也永遠不會去開鑰匙圈
+—— 所以在 macOS 上，那裡的 Claude 那一列會請你回到終端機執行 `alc usage`。

@@ -1,0 +1,6 @@
+{
+  "name": "Quick prompts",
+  "description": "One-tap prompts on the key bar and in the command palette: continue, run the tests, summarise, compact.",
+  "version": "1.0.0",
+  "author": "alc"
+}

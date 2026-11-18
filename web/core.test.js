@@ -960,3 +960,165 @@ test('the file panel preference survives storage that throws', () => {
   core.saveFilesOpen(memory, false);
   assert.equal(core.loadFilesOpen(memory), false);
 });
+
+/* ------------------------------------------------------ settings, themes */
+
+test('web settings fill every field and clamp the terminal', () => {
+  const empty = core.normalizeWebSettings(null);
+  assert.equal(empty.theme, 'system');
+  assert.equal(empty.accent, null);
+  assert.equal(empty.density, 'comfortable');
+  assert.equal(empty.terminal.fontSize, null);
+  assert.equal(empty.terminal.scrollback, 5000);
+  assert.deepEqual(empty.disabledMods, []);
+
+  const odd = core.normalizeWebSettings({
+    accent: 'red',
+    density: 'tiny',
+    terminal: { fontSize: 99, lineHeight: 0.2, cursorStyle: 'beam', cursorBlink: false, scrollback: 3 },
+    disabledMods: ['a', 4],
+  });
+  assert.equal(odd.accent, null);
+  assert.equal(odd.density, 'comfortable');
+  assert.equal(odd.terminal.fontSize, 28);
+  assert.equal(odd.terminal.lineHeight, 1);
+  assert.equal(odd.terminal.cursorStyle, 'block');
+  assert.equal(odd.terminal.cursorBlink, false);
+  assert.equal(odd.terminal.scrollback, 500);
+  assert.deepEqual(odd.disabledMods, ['a']);
+});
+
+test('system follows the device; light and dark force a mode', () => {
+  const s = core.normalizeWebSettings({});
+  assert.equal(core.resolveTheme(s, [], true).mode, 'dark');
+  assert.equal(core.resolveTheme(s, [], false).mode, 'light');
+  assert.equal(core.resolveTheme({ ...s, theme: 'dark' }, [], false).mode, 'dark');
+  assert.equal(core.resolveTheme({ ...s, theme: 'paper' }, [], true).mode, 'light');
+});
+
+test('a custom theme is used unless it failed to load, and accent wins', () => {
+  const custom = [
+    { id: 'sea', name: 'Sea', mode: 'light', tokens: { '--bg': '#eef' }, terminal: { background: '#001' } },
+    { id: 'broken', name: 'Broken', mode: 'dark', tokens: {}, terminal: {}, error: 'bad json' },
+  ];
+  const base = core.normalizeWebSettings({ theme: 'sea', accent: '#facc15' });
+  const theme = core.resolveTheme(base, custom, true);
+  assert.equal(theme.id, 'sea');
+  assert.equal(theme.mode, 'light');
+  assert.equal(theme.tokens['--bg'], '#eef');
+  assert.equal(theme.tokens['--accent'], '#facc15');
+  assert.equal(theme.tokens['--accent-ink'], '#0b0c10');
+  assert.equal(theme.terminal.background, '#001');
+  assert.equal(core.resolveTheme({ ...base, theme: 'broken' }, custom, true).id, 'system');
+  assert.equal(core.resolveTheme({ ...base, theme: 'nowhere' }, custom, true).id, 'system');
+});
+
+test('ink is white on dark accents and dark on light ones', () => {
+  assert.equal(core.inkFor('#4f46e5'), '#ffffff');
+  assert.equal(core.inkFor('#fde047'), '#0b0c10');
+  assert.equal(core.inkFor('nope'), '#ffffff');
+});
+
+/* ----------------------------------------------------------- dashboard */
+
+test('days are filled across month ends, oldest first', () => {
+  assert.equal(core.shiftDate('2026-03-01', -1), '2026-02-28');
+  assert.equal(core.shiftDate('2024-12-31', 1), '2025-01-01');
+  const days = core.fillDays([{ date: '2026-11-17', output: 5, uncached: 1, usd: 0.5 }], 3, '2026-11-18');
+  assert.deepEqual(days.map((d) => d.date), ['2026-11-16', '2026-11-17', '2026-11-18']);
+  assert.equal(days[1].total, 6);
+  assert.equal(days[1].usd, 0.5);
+  assert.equal(days[0].total, 0);
+});
+
+test('today is computed in the requested zone', () => {
+  const instant = new Date('2026-11-18T20:00:00Z');
+  assert.equal(core.todayIn('Asia/Taipei', instant), '2026-11-19');
+  assert.equal(core.todayIn('UTC', instant), '2026-11-18');
+  assert.equal(core.todayIn('Not/AZone', instant), '2026-11-18');
+});
+
+test('scales land on round numbers and cover the maximum', () => {
+  assert.deepEqual(core.niceScale(0), { max: 1, ticks: [0, 1] });
+  const scale = core.niceScale(1234567, 4);
+  assert.equal(scale.max, 1500000);
+  assert.deepEqual(scale.ticks, [0, 500000, 1000000, 1500000]);
+  const small = core.niceScale(0.37, 4);
+  assert.ok(small.max >= 0.37);
+  assert.equal(small.ticks[0], 0);
+});
+
+test('money and token figures are compact', () => {
+  assert.equal(core.formatUsd(0), '$0');
+  assert.equal(core.formatUsd(0.004), '<$0.01');
+  assert.equal(core.formatUsd(12.345), '$12.35');
+  assert.equal(core.formatUsd(4321), '$4.3K');
+  assert.equal(core.compactTokens(2_500_000_000), '2.5B');
+  assert.equal(core.compactTokens(12_000), '12K');
+});
+
+test('cache share is a percent of input, or null with no input', () => {
+  assert.equal(core.cacheShare({ uncached: 10, cacheRead: 80, cacheWrite: 10 }), 80);
+  assert.equal(core.cacheShare({}), null);
+});
+
+test('share bars are relative to the largest entry', () => {
+  const bars = core.shareBars([{ tokens: 50 }, { tokens: 100 }, { tokens: 0 }]);
+  assert.deepEqual(bars.map((b) => b.share), [0.5, 1, 0]);
+  assert.deepEqual(core.shareBars([]), []);
+});
+
+/* ------------------------------------------------------------- palette */
+
+test('commands rank prefix matches first and keep order otherwise', () => {
+  const list = [
+    { title: 'Go to: Usage' },
+    { title: 'Theme: Ember' },
+    { title: 'Open session: theme-work' },
+    { title: 'Toggle file panel', hint: 'files' },
+  ];
+  assert.equal(core.rankCommands(list, '').length, 4);
+  assert.deepEqual(core.rankCommands(list, 'the').map((c) => c.title), ['Theme: Ember', 'Open session: theme-work']);
+  assert.deepEqual(core.rankCommands(list, 'files').map((c) => c.title), ['Toggle file panel']);
+  assert.deepEqual(core.rankCommands(list, 'zzz'), []);
+});
+
+/* ----------------------------------------------------------------- mods */
+
+test('a mod chip is text with an allowed tone, or nothing', () => {
+  assert.equal(core.normalizeChip(null), null);
+  assert.equal(core.normalizeChip(''), null);
+  assert.deepEqual(core.normalizeChip('2h'), { text: '2h', tone: '' });
+  assert.deepEqual(core.normalizeChip({ text: 'hot', tone: 'warn' }), { text: 'hot', tone: 'warn' });
+  assert.deepEqual(core.normalizeChip({ text: 'x', tone: 'neon' }), { text: 'x', tone: '' });
+  assert.equal(core.normalizeChip({ tone: 'ok' }), null);
+});
+
+test('changed scripts are the enabled ones whose hash moved, came or went', () => {
+  const before = [
+    { id: 'a', enabled: true, hasJs: true, scriptHash: '1' },
+    { id: 'b', enabled: true, hasJs: true, scriptHash: '2' },
+    { id: 'c', enabled: true, hasJs: false },
+  ];
+  const after = [
+    { id: 'a', enabled: true, hasJs: true, scriptHash: '1' },
+    { id: 'b', enabled: true, hasJs: true, scriptHash: '3' },
+    { id: 'd', enabled: true, hasJs: true, scriptHash: '4' },
+  ];
+  assert.deepEqual(core.changedScripts(before, after), ['b', 'd']);
+  assert.deepEqual(core.changedScripts(before, before), []);
+});
+
+test('every new string exists in both languages', () => {
+  const en = Object.keys(core.STRINGS.en).sort();
+  const zh = Object.keys(core.STRINGS['zh-TW']).sort();
+  assert.deepEqual(zh, en);
+});
+
+test('a framed grid is too small once shrunk or under 9px', () => {
+  assert.equal(core.framedTooSmall(13, 13, 1), false);
+  assert.equal(core.framedTooSmall(12, 13, 1), false);
+  assert.equal(core.framedTooSmall(8.5, 13, 1), true);
+  assert.equal(core.framedTooSmall(13, 13, 0.8), true);
+  assert.equal(core.tmuxCommand({ agent: 'codex' }), 'alc share --tmux codex');
+});

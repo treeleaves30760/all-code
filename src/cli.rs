@@ -10,7 +10,7 @@ use crate::config::{
     validate_profile_name,
 };
 use crate::model_catalog::{CodexSource, ModelCatalog, ModelInfo};
-use crate::remote::RemoteCommand;
+use crate::remote::{RemoteCommand, WebCommand};
 use crate::{antigravity, doctor, launch, ollama, openai_server, remote, tui, update, usage};
 
 #[derive(Debug, Parser)]
@@ -414,6 +414,43 @@ enum RemoteSubcommand {
         /// on or off.
         state: OnOff,
     },
+    /// The page's settings, themes and mods folder (prints it without a subcommand).
+    Web {
+        #[command(subcommand)]
+        command: Option<WebSubcommand>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum WebSubcommand {
+    /// Print the folder.
+    Path,
+    /// Report every problem in settings.json, themes/ and mods/.
+    Check,
+    /// List installed mods and themes, and whether each mod is on.
+    List,
+    /// Install mods and themes from GitHub or a folder; mods arrive off.
+    ///
+    /// SOURCE is `owner/repo`, `owner/repo@ref`, `owner/repo/sub/folder@ref`,
+    /// `https://github.com/owner/repo[/tree/<ref>/<folder>]`, or a local folder.
+    Install {
+        source: String,
+        /// The id for a single-mod source (default: the repo or folder name).
+        #[arg(long)]
+        name: Option<String>,
+        /// Turn the installed mods on straight away.
+        #[arg(long)]
+        enable: bool,
+        /// Replace mods and themes that are already installed.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Turn a mod on.
+    Enable { id: String },
+    /// Turn a mod off.
+    Disable { id: String },
+    /// Delete a mod and its saved state.
+    Remove { id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -1484,6 +1521,25 @@ fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {
         Some(RemoteSubcommand::AutoShare { state }) => RemoteCommand::AutoShare {
             on: state == OnOff::On,
         },
+        Some(RemoteSubcommand::Web { command }) => RemoteCommand::Web(match command {
+            None | Some(WebSubcommand::Path) => WebCommand::Path,
+            Some(WebSubcommand::Check) => WebCommand::Check,
+            Some(WebSubcommand::List) => WebCommand::List,
+            Some(WebSubcommand::Install {
+                source,
+                name,
+                enable,
+                force,
+            }) => WebCommand::Install {
+                source,
+                name,
+                enable,
+                force,
+            },
+            Some(WebSubcommand::Enable { id }) => WebCommand::Enable(id),
+            Some(WebSubcommand::Disable { id }) => WebCommand::Disable(id),
+            Some(WebSubcommand::Remove { id }) => WebCommand::Remove(id),
+        }),
         Some(RemoteSubcommand::Token(token)) => {
             if !token.rotate {
                 bail!("`alc remote token` needs --rotate; it never prints a token");

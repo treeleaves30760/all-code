@@ -28,7 +28,8 @@
     'view', 'terminal', 'keys',
     'perm', 'permLabel', 'permPick', 'permCycle', 'permNote', 'permFlags', 'permCommand',
     'composer', 'compose', 'send', 'toast',
-    'usage', 'usageToggle', 'accountsTitle', 'accounts', 'usageNote',
+    'usage', 'accountsTitle', 'nav', 'paletteToggle', 'toastText', 'toastAction',
+    'settings', 'page', 'sizeNote', 'sizeNoteText', 'sizeNoteCommand', 'sizeNoteHide', 'accounts', 'usageNote',
     'usageEmpty', 'usageEmptyTitle', 'usageEmptyHow', 'usageEmptyCommand',
     'ledgerTitle', 'ledger', 'ledgerProvider', 'ledgerAgent', 'ledgerLaunches',
     'ledgerTurns', 'ledgerInput', 'ledgerCached', 'ledgerCacheShare', 'ledgerOutput', 'ledgerNote',
@@ -52,8 +53,6 @@
   el.emptyTitle.textContent = T.empty;
   el.emptyHow.textContent = T.emptyHow;
   commandText(el.emptyCommand, T.emptyCommand);
-  el.usageToggle.setAttribute('aria-label', T.usage);
-  el.usageToggle.title = T.usage;
   el.accountsTitle.textContent = T.accounts;
   el.ledgerTitle.textContent = T.byAgent;
   el.usageEmptyTitle.textContent = T.usageEmpty;
@@ -84,14 +83,46 @@
   el.viewerEmptyText.textContent = T.filesPick;
 
   let toastTimer = 0;
-  function toast(message, level) {
-    el.toast.textContent = message;
+  /* `action` is `{label, run}`: a toast that offers one thing to do, such as
+   * reloading after a mod changed. It stays up longer, since it asks. */
+  function toast(message, level, action) {
+    el.toastText.textContent = message;
     el.toast.className = level || '';
     el.toast.hidden = false;
+    el.toastAction.hidden = !action;
+    el.toastAction.onclick = null;
+    if (action) {
+      el.toastAction.textContent = action.label;
+      el.toastAction.onclick = () => {
+        el.toast.hidden = true;
+        action.run();
+      };
+    }
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
       el.toast.hidden = true;
-    }, level === 'error' ? 8000 : 3200);
+    }, action ? 12000 : level === 'error' ? 8000 : 3200);
+  }
+
+  /* ------------------------------------------------------------- events */
+
+  /* What shell.js and mods listen to. Kept to a name and one argument: the
+   * page announces what happened, and anything that wants more asks. */
+  const listeners = new Map();
+  function on(name, fn) {
+    if (!listeners.has(name)) listeners.set(name, new Set());
+    listeners.get(name).add(fn);
+    return () => listeners.get(name).delete(fn);
+  }
+  function emit(name, value) {
+    for (const fn of [...(listeners.get(name) || [])]) {
+      try {
+        fn(value);
+      } catch (error) {
+        // A listener is usually a mod; its failure is its own, not the page's.
+        console.error(error);
+      }
+    }
   }
 
   /* -------------------------------------------------------------- state */
@@ -134,12 +165,25 @@
 
   /* ---------------------------------------------------------------- api */
 
-  async function api(path) {
+  async function api(path, options) {
     const key = token.value;
-    const response = await fetch(path, {
-      headers: key ? { Authorization: `Bearer ${key}` } : {},
-      cache: 'no-store',
-    });
+    const headers = key ? { Authorization: `Bearer ${key}` } : {};
+    const init = { headers, cache: 'no-store' };
+    if (options && options.body !== undefined) {
+      init.method = 'POST';
+      headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(options.body);
+    }
+    const response = await fetch(path, init);
+    if (options && options.text) {
+      if (!response.ok) throw new Error(`http ${response.status}`);
+      return response.text();
+    }
+    if (response.status === 403 && options && (options.body !== undefined || options.soft)) {
+      // A viewer saving, or a mod asking for a route this link may not use,
+      // is refused; that is not a dead token.
+      throw new Error('forbidden');
+    }
     if (response.status === 401 || response.status === 403) {
       // A token the server has stopped accepting is worse than none: it
       // would keep failing every poll for the life of the tab.
@@ -190,6 +234,7 @@
     rows.value = store.reconcile(cards, Date.now());
     scheduleExpiry();
     followSessionSize(cards);
+    emit('sessions', cards);
   }
 
   /* The accounts and the ledger, on their own clock.
@@ -206,8 +251,10 @@
       return;
     }
     try {
-      usage.value = core.normalizeUsage(await api('/api/usage'));
+      const report = await api('/api/usage');
+      usage.value = core.normalizeUsage(report);
       lastUsageError = '';
+      emit('usage', report);
     } catch (error) {
       const message = error.message === 'denied' ? T.denied : T.usageFailed;
       if (message !== lastUsageError) {
@@ -260,6 +307,8 @@
    * and a full replaceChildren() on every poll made the list flicker and
    * dropped focus. */
   const built = new Map();
+  /* Functions a mod registered to add chips to a session row. */
+  const chipDecorators = [];
 
   function renderRows(list) {
     const seen = new Set();
@@ -384,6 +433,14 @@
     const chips = [];
     if (card.tmux) chips.push('tmux');
     if (card.viewers > 0) chips.push(`${card.viewers} ${T.viewers}`);
+    for (const decorate of chipDecorators) {
+      try {
+        const chip = core.normalizeChip(decorate(card));
+        if (chip) chips.push(chip);
+      } catch (error) {
+        console.error(error);
+      }
+    }
     renderChips(node.chips, chips, card.unsandboxed);
     setText(node.cwd, core.elidePath(card.cwd));
     if (node.cwd.title !== card.cwd) node.cwd.title = card.cwd;
@@ -400,8 +457,10 @@
     wanted.forEach((label, index) => {
       const chip = host.children[index];
       const warn = unsandboxed && index === wanted.length - 1;
-      chip.className = warn ? 'chip warn' : 'chip';
-      setText(chip, label);
+      // A mod's chip is `{text, tone}`; the page's own are plain words.
+      const tone = typeof label === 'object' && label.tone ? ` ${label.tone}` : '';
+      chip.className = warn ? 'chip warn' : `chip${tone}`;
+      setText(chip, typeof label === 'object' ? label.text : label);
     });
   }
 
@@ -444,6 +503,7 @@
   wireCopy(el.emptyCommand);
   wireCopy(el.usageEmptyCommand);
   wireCopy(el.permCommand);
+  wireCopy(el.sizeNoteCommand);
 
   /* --------------------------------------------------------- permission */
 
@@ -744,18 +804,48 @@
     brightWhite: '#ffffff',
   };
 
+  const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK TC", monospace';
+
+  /* What settings.json says about the terminal, and the theme's colours.
+   * shell.js sets both; null means the page's own defaults. */
+  let terminalSettings = null;
+  let terminalColours = {};
+
+  function terminalOptions() {
+    const t = terminalSettings || {};
+    const autoSize = window.matchMedia('(min-width: 900px)').matches ? 13 : 12;
+    return {
+      fontSize: t.fontSize || autoSize,
+      fontFamily: t.fontFamily ? `${t.fontFamily}, ${MONO}` : MONO,
+      lineHeight: t.lineHeight || 1,
+      cursorStyle: t.cursorStyle || 'block',
+      cursorBlink: t.cursorBlink !== false,
+      scrollback: t.scrollback || 5000,
+      theme: { ...DARK, ...terminalColours },
+    };
+  }
+
+  /* Applied to a terminal that is already open, then refitted: a font change
+   * changes how many cells fit. */
+  function setTerminalLook(settings, colours) {
+    terminalSettings = settings;
+    terminalColours = colours || {};
+    if (!term) return;
+    const options = terminalOptions();
+    baseFontSize = options.fontSize;
+    for (const [key, value] of Object.entries(options)) term.options[key] = value;
+    scheduleRelayout();
+  }
+
   function ensureTerminal() {
     if (term) return;
-    baseFontSize = window.matchMedia('(min-width: 900px)').matches ? 13 : 12;
+    const options = terminalOptions();
+    baseFontSize = options.fontSize;
     term = new window.Terminal({
       allowProposedApi: true,
-      cursorBlink: true,
       convertEol: false,
-      fontSize: baseFontSize,
-      fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK TC", monospace',
-      scrollback: 5000,
-      theme: DARK,
       drawBoldTextInBrightColors: false,
+      ...options,
     });
     fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);
@@ -816,6 +906,7 @@
   /* The page's window is the size, so the agent is told what fits in it. */
   function driveSize() {
     if (!fit) return;
+    if (!el.sizeNote.hidden) el.sizeNote.hidden = true;
     // The framed mode leaves a font size and a transform behind, and there
     // is one terminal for every session on the page: attaching to a plain
     // session and then to a `--tmux` one would otherwise fit this window
@@ -897,7 +988,32 @@
     // transformed instead, which costs xterm's hit-testing the same factor
     // and is the lesser of the two. In the ordinary case it is 1.
     term.element.style.transform = placed.scale < 1 ? `scale(${placed.scale})` : '';
+    showSizeNote(card, core.framedTooSmall(placed.fontSize, baseFontSize, placed.scale));
   }
+
+  /* Sessions whose size note was dismissed, for this visit. */
+  const sizeNoteHidden = new Set();
+
+  function showSizeNote(card, small) {
+    const show = !!card && small && !sizeNoteHidden.has(card.id);
+    if (show) {
+      setText(el.sizeNoteText, core.fill(T.sizeFramed, { c: card.cols, r: card.rows }));
+      commandText(el.sizeNoteCommand, core.tmuxCommand(card));
+    }
+    if (el.sizeNote.hidden === !show) return;
+    el.sizeNote.hidden = !show;
+    // The note takes height from the terminal's box; fit again around it.
+    scheduleRelayout();
+  }
+
+  el.sizeNoteHide.setAttribute('aria-label', T.sizeHide);
+  el.sizeNoteHide.title = T.sizeHide;
+  el.sizeNoteHide.addEventListener('click', () => {
+    const card = attached.value;
+    if (card) sizeNoteHidden.add(card.id);
+    el.sizeNote.hidden = true;
+    scheduleRelayout();
+  });
 
   /* One character's box, in CSS pixels.
    *
@@ -1092,9 +1208,6 @@
     document.body.dataset.pane = 'view';
     coverRail();
     el.back.hidden = false;
-    // The header is full while a session is open, and back means the session
-    // here rather than the accounts.
-    el.usageToggle.hidden = true;
     clearInterval(usageTimer);
     usageTimer = 0;
 
@@ -1113,6 +1226,8 @@
       if (!document.body.classList.contains('viewer')) term.focus();
     });
     renderRows(rows.value);
+    emit('attach', card);
+    emit('page', 'session');
   }
 
   function teardown() {
@@ -1152,10 +1267,10 @@
     el.back.hidden = true;
     el.grade.hidden = true;
     el.perm.hidden = true;
+    el.sizeNote.hidden = true;
     // A ticket is minted for one change on one session. Leaving it here meant
     // the next session attached to could spend it.
     pendingTicket = null;
-    el.usageToggle.hidden = false;
     document.body.classList.remove('viewer');
     resetFiles();
     renderFilesSwitch();
@@ -1163,6 +1278,8 @@
     setConnection('idle');
     refresh();
     renderRows(rows.value);
+    emit('detach');
+    emit('page', 'sessions');
   }
 
   /* ---------------------------------------------------------- file panel */
@@ -1568,31 +1685,30 @@
     renderUsage(model || { accounts: [], rows: [], hubEnv: false }),
   );
 
-  function showUsage() {
-    document.body.dataset.pane = 'usage';
-    el.back.hidden = false;
-    el.usageToggle.hidden = true;
-    refreshUsage();
+  /* Every top-level place is one value of body[data-pane]: `list`,
+   * `usage`, `settings`, or `page` (a mod's tab). A session open in `view`
+   * is left first - its socket is closed rather than kept running behind a
+   * pane that hides it, because a hidden terminal measures as zero and
+   * would tell a `--tmux` session to shrink to nothing. */
+  function showPane(pane, pageId) {
+    if (attached.value) detach();
     clearInterval(usageTimer);
-    usageTimer = setInterval(refreshUsage, 60000);
+    usageTimer = 0;
+    document.body.dataset.pane = pane;
+    el.back.hidden = true;
+    if (pane === 'usage') {
+      refreshUsage();
+      usageTimer = setInterval(refreshUsage, 60000);
+    }
+    if (pane === 'list') refresh();
+    emit('page', pane === 'list' ? 'sessions' : pane === 'page' ? pageId : pane);
   }
 
   function leaveUsage() {
-    clearInterval(usageTimer);
-    usageTimer = 0;
-    document.body.dataset.pane = 'list';
-    el.back.hidden = true;
-    el.usageToggle.hidden = false;
-    refresh();
+    showPane('list');
   }
 
-  el.usageToggle.addEventListener('click', showUsage);
-
-  /* One back button, two places to go back from. */
-  el.back.addEventListener('click', () => {
-    if (document.body.dataset.pane === 'usage') leaveUsage();
-    else detach();
-  });
+  el.back.addEventListener('click', () => detach());
 
   /* ------------------------------------------------------- mobile input */
 
@@ -1621,9 +1737,12 @@
     for (const button of el.keys.children) button.classList.remove('held');
   }
 
+  /* Keys a mod added, after the page's own. */
+  const extraKeys = [];
+
   function buildKeys() {
     if (el.keys.childElementCount) return;
-    for (const key of KEYS) {
+    for (const key of [...KEYS, ...extraKeys]) {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = key.label;
@@ -1634,11 +1753,29 @@
           button.classList.toggle('held', ctrlHeld);
           return;
         }
-        send({ t: 'input', data: key.data });
+        if (key.run) {
+          try {
+            key.run();
+          } catch (error) {
+            console.error(error);
+          }
+        } else {
+          send({ t: 'input', data: key.data });
+        }
         term.focus();
       });
+      if (key.mod) button.classList.add('mod-key');
+      button.disabled = document.body.classList.contains('viewer');
       el.keys.append(button);
     }
+  }
+
+  function rebuildKeys() {
+    // The held Ctrl button is about to be replaced; a Ctrl still armed with
+    // no button showing it would turn the next key into a control code.
+    releaseCtrl();
+    el.keys.replaceChildren();
+    if (term) buildKeys();
   }
 
   /* Sticky Ctrl folds the next printable character to its control code.
@@ -1820,4 +1957,44 @@
     if (document.body.dataset.pane === 'usage') refreshUsage();
     else refresh();
   });
+
+  /* ------------------------------------------------------------- shell */
+
+  /* What dashboard.js, shell.js and - through shell.js's `alc` - mods may
+   * reach. Everything else in this file stays private to it. */
+  window.AlcShell = {
+    core,
+    T,
+    LOCALE,
+    el,
+    api,
+    toast,
+    on,
+    emit,
+    token,
+    operator,
+    rows,
+    attached,
+    usage,
+    connection,
+    refresh,
+    refreshUsage,
+    showPane,
+    attach,
+    detach,
+    send,
+    setTerminalLook,
+    scheduleRelayout,
+    chipDecorators,
+    extraKeys,
+    rebuildKeys,
+    rerenderRows: () => renderRows(rows.value),
+    toggleFiles: () => {
+      if (!el.filesToggle.hidden) el.filesToggle.click();
+    },
+    toggleRail: () => {
+      if (document.body.dataset.pane === 'view') el.railToggle.click();
+    },
+    lastCards: () => lastCards,
+  };
 })();

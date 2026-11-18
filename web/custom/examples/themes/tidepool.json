@@ -1,0 +1,28 @@
+{
+  "name": "Tidepool",
+  "mode": "dark",
+  "tokens": {
+    "--bg": "#081214",
+    "--surface": "#0d1b1e",
+    "--raised": "#132629",
+    "--line": "#1a3034",
+    "--line-strong": "#27464b",
+    "--text": "#e2f3f0",
+    "--muted": "#8fb0ab",
+    "--accent": "#2dd4bf",
+    "--accent-ink": "#04201c",
+    "--accent-soft": "rgb(45 212 191 / 12%)",
+    "--accent-line": "rgb(45 212 191 / 45%)",
+    "--chart-1": "#2dd4bf",
+    "--chart-2": "#0e7490",
+    "--chart-3": "#a3e635",
+    "--chart-4": "#f0abfc"
+  },
+  "terminal": {
+    "background": "#061012",
+    "foreground": "#d6f1ec",
+    "cursor": "#2dd4bf",
+    "cursorAccent": "#061012",
+    "selectionBackground": "rgb(45 212 191 / 30%)"
+  }
+}

@@ -76,6 +76,60 @@
         <path d="M1.75 8S4 3.75 8 3.75 14.25 8 14.25 8 12 12.25 8 12.25 1.75 8 1.75 8z" />
         <circle cx="8" cy="8" r="1.9" />
       </symbol>
+      <symbol id="i-settings" viewBox="0 0 16 16">
+        <circle cx="8" cy="8" r="2.1" />
+        <path d="M8 1.75v1.6M8 12.65v1.6M14.25 8h-1.6M3.35 8h-1.6M12.42 3.58l-1.13 1.13M4.71 11.29l-1.13 1.13M12.42 12.42l-1.13-1.13M4.71 4.71 3.58 3.58" />
+      </symbol>
+      <symbol id="i-sessions" viewBox="0 0 16 16">
+        <rect x="2" y="2.75" width="12" height="10.5" rx="1.8" />
+        <path d="m4.75 6.25 1.75 1.5-1.75 1.5M8 9.75h3" />
+      </symbol>
+      <symbol id="i-command" viewBox="0 0 16 16">
+        <path d="M5.5 5.5h5v5h-5z" />
+        <path d="M5.5 5.5V4a1.5 1.5 0 1 0-1.5 1.5zM10.5 5.5V4A1.5 1.5 0 1 1 12 5.5zM5.5 10.5V12A1.5 1.5 0 1 1 4 10.5zM10.5 10.5V12a1.5 1.5 0 1 0 1.5-1.5z" />
+      </symbol>
+      <symbol id="i-puzzle" viewBox="0 0 16 16">
+        <path d="M3 5.25h2.4a1.6 1.6 0 1 1 3.2 0H11v2.4a1.6 1.6 0 1 1 0 3.2v2.4H8.6a1.6 1.6 0 1 0-3.2 0H3z" />
+      </symbol>
+      <symbol id="i-spark" viewBox="0 0 16 16">
+        <path d="M8 2v3M8 11v3M2 8h3M11 8h3M4.2 4.2l1.6 1.6M10.2 10.2l1.6 1.6M11.8 4.2l-1.6 1.6M5.8 10.2l-1.6 1.6" />
+      </symbol>
+      <symbol id="i-note" viewBox="0 0 16 16">
+        <path d="M3.5 2.25h9v11.5h-9z" />
+        <path d="M5.75 5.25h4.5M5.75 7.75h4.5M5.75 10.25h2.5" />
+      </symbol>
+      <symbol id="i-bolt" viewBox="0 0 16 16">
+        <path d="M9 1.75 3.75 9H8l-1 5.25L12.25 7H8z" />
+      </symbol>
+      <symbol id="i-grid" viewBox="0 0 16 16">
+        <rect x="2.25" y="2.25" width="4.75" height="4.75" rx="1" />
+        <rect x="9" y="2.25" width="4.75" height="4.75" rx="1" />
+        <rect x="2.25" y="9" width="4.75" height="4.75" rx="1" />
+        <rect x="9" y="9" width="4.75" height="4.75" rx="1" />
+      </symbol>
+      <symbol id="i-chart" viewBox="0 0 16 16">
+        <path d="M2.25 13.75h11.5" />
+        <path d="M4.25 11V8M7.25 11V4.5M10.25 11V6.5M13 11V9" />
+      </symbol>
+      <symbol id="i-clock" viewBox="0 0 16 16">
+        <circle cx="8" cy="8" r="5.75" />
+        <path d="M8 4.75V8l2.25 1.5" />
+      </symbol>
+      <symbol id="i-star" viewBox="0 0 16 16">
+        <path d="m8 2 1.8 3.8 4.2.5-3.1 2.9.8 4.1L8 11.3l-3.7 2 .8-4.1L2 6.3l4.2-.5z" />
+      </symbol>
+      <symbol id="i-terminal" viewBox="0 0 16 16">
+        <path d="m3.5 4.5 3 3.5-3 3.5M8.5 11.5h4" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 16 16">
+        <path d="m3.5 8.5 3 3 6-7" />
+      </symbol>
+      <symbol id="i-palette" viewBox="0 0 16 16">
+        <path d="M8 1.9a6.1 6.1 0 1 0 0 12.2c1 0 1.4-.6 1.4-1.3 0-.9-.8-1.2-.8-2 0-.7.6-1.2 1.3-1.2h1.6c1.6 0 2.6-1.1 2.6-2.6C14.1 4.4 11.4 1.9 8 1.9z" />
+        <circle cx="5" cy="7.5" r=".6" />
+        <circle cx="6.7" cy="4.9" r=".6" />
+        <circle cx="9.7" cy="4.9" r=".6" />
+      </symbol>
       <symbol id="i-ungated" viewBox="0 0 16 16">
         <path d="M8 1.9 13 4.1v3.7c0 3-2.1 5.4-5 6.3-2.9-.9-5-3.3-5-6.3V4.1z" />
         <path d="M5.4 10.6 10.6 5.4" />
@@ -99,6 +153,13 @@
         <span id="subtitle"></span>
       </div>
 
+      <!-- The page's places: sessions, usage, settings, and any tab a mod
+           adds. In the header on a wide screen, a bottom bar on a phone;
+           app.css moves it, shell.js fills it. -->
+      <nav id="nav" class="nav"></nav>
+
+      <span class="bar-spacer"></span>
+
       <!-- Connection state is a light, not a sentence. It is always on
            screen while attached, so it cannot be missed the way a toast
            that has already faded can. -->
@@ -114,10 +175,10 @@
         <svg class="glyph" aria-hidden="true"><use href="#i-files" /></svg>
       </button>
 
-      <!-- The one thing on this page that is not about a single session, so
-           it lives in the header rather than in the list. -->
-      <button id="usageToggle" class="icon" type="button">
-        <svg class="glyph" aria-hidden="true"><use href="#i-usage" /></svg>
+      <!-- Every action on the page, and every mod's, behind one search box. -->
+      <button id="paletteToggle" class="icon palette-toggle" type="button" aria-haspopup="dialog">
+        <svg class="glyph" aria-hidden="true"><use href="#i-search" /></svg>
+        <kbd class="kbd" aria-hidden="true"></kbd>
       </button>
     </header>
 
@@ -150,6 +211,46 @@
       <!-- What is left on each login, and where it went. Read-only: this
            page can spend a quota but never change one. -->
       <section id="usage" aria-label="Usage">
+        <div class="page-head">
+          <div>
+            <h1 id="usageHeading" class="page-title"></h1>
+            <p id="usageSub" class="page-sub"></p>
+          </div>
+          <div id="rangePick" class="segmented" role="radiogroup"></div>
+        </div>
+
+        <!-- The history: what was spent and when, drawn by dashboard.js
+             from /api/usage/history. -->
+        <div id="stats" class="stats"></div>
+        <div class="dash-grid">
+          <article class="panel chart-panel">
+            <header class="panel-head">
+              <h2 id="dailyTitle" class="panel-title"></h2>
+              <div id="metricPick" class="segmented small" role="radiogroup"></div>
+            </header>
+            <div id="legend" class="legend"></div>
+            <div id="daily" class="chart"></div>
+          </article>
+          <article class="panel">
+            <header class="panel-head">
+              <h2 id="hoursTitle" class="panel-title"></h2>
+            </header>
+            <div id="hours" class="hours"></div>
+            <p id="hoursNote" class="panel-note"></p>
+          </article>
+          <article class="panel">
+            <header class="panel-head"><h2 id="modelsTitle" class="panel-title"></h2></header>
+            <ol id="models" class="bars"></ol>
+          </article>
+          <article class="panel">
+            <header class="panel-head"><h2 id="agentsTitle" class="panel-title"></h2></header>
+            <ol id="agentBars" class="bars"></ol>
+            <header class="panel-head sub"><h2 id="providersTitle" class="panel-title"></h2></header>
+            <ol id="providerBars" class="bars"></ol>
+          </article>
+        </div>
+        <p id="historyNote" class="note history-note" hidden></p>
+
         <h2 id="accountsTitle" class="pane-title"></h2>
         <ul id="accounts"></ul>
         <p id="usageNote" class="note" hidden></p>
@@ -183,6 +284,25 @@
         <p id="ledgerNote" class="note"></p>
       </section>
 
+      <!-- The page's settings, saved to settings.json on the hub. -->
+      <section id="settings" aria-label="Settings">
+        <div class="page-head">
+          <div>
+            <h1 id="settingsHeading" class="page-title"></h1>
+            <p id="settingsSub" class="page-sub"></p>
+          </div>
+          <span id="saveState" class="save-state" aria-live="polite"></span>
+        </div>
+        <div class="settings-layout">
+          <nav id="settingsToc" class="settings-toc"></nav>
+          <div id="settingsBody" class="settings-body"></div>
+        </div>
+      </section>
+
+      <!-- A tab a mod added. Emptied and handed to the mod each time it is
+           opened. -->
+      <section id="page" aria-live="off"></section>
+
       <!-- Which pane is on screen is decided by body[data-pane] alone, so
            there is exactly one thing to get right. `hidden` is left for
            elements that are genuinely absent rather than laid out. -->
@@ -203,6 +323,20 @@
           <button type="button" id="permCommand" class="command" hidden>
             <svg class="glyph" aria-hidden="true"><use href="#i-copy" /></svg>
             <span class="command-text"></span>
+          </button>
+        </div>
+
+        <!-- Shown when a plain session's grid had to be shrunk to fit here:
+             its size belongs to the terminal that started it, so the way to
+             fill this screen is to start it under --tmux. -->
+        <div id="sizeNote" class="size-note" hidden>
+          <span id="sizeNoteText" class="size-note-text"></span>
+          <button type="button" id="sizeNoteCommand" class="command small">
+            <svg class="glyph" aria-hidden="true"><use href="#i-copy" /></svg>
+            <span class="command-text"></span>
+          </button>
+          <button type="button" id="sizeNoteHide" class="icon small">
+            <svg class="glyph" aria-hidden="true"><use href="#i-close" /></svg>
           </button>
         </div>
 
@@ -263,11 +397,28 @@
       </aside>
     </main>
 
-    <div id="toast" role="status" aria-live="polite" hidden></div>
+    <div id="palette" class="palette" role="dialog" aria-modal="true" hidden>
+      <div class="palette-box">
+        <label class="palette-search">
+          <svg class="glyph" aria-hidden="true"><use href="#i-search" /></svg>
+          <input id="paletteInput" type="text" autocomplete="off" spellcheck="false" role="combobox"
+            aria-controls="paletteList" aria-expanded="true" />
+          <kbd class="kbd">Esc</kbd>
+        </label>
+        <ul id="paletteList" class="palette-list" role="listbox"></ul>
+      </div>
+    </div>
+
+    <div id="toast" role="status" aria-live="polite" hidden>
+      <span id="toastText"></span>
+      <button id="toastAction" type="button" hidden></button>
+    </div>
 
     <script src="/assets/xterm.js"></script>
     <script src="/assets/addon-fit.js"></script>
     <script src="/assets/core.js"></script>
     <script src="/assets/app.js"></script>
+    <script src="/assets/dashboard.js"></script>
+    <script src="/assets/shell.js"></script>
   </body>
 </html>
