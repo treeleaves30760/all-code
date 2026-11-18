@@ -122,6 +122,14 @@ mod 會替頁面加東西：一個分頁、指令面板裡的指令、按鍵列�
 └── examples/          never loaded; copy from here
 ```
 
+[Mods 與主題](./mods.md)是完整的指南：怎麼寫一個 mod、API、把 mod 當成 GitHub
+repository 發佈，以及安裝別人寫的 mod：
+
+```sh
+alc remote web install someone/alc-mod-standup   # arrives off; read it, then:
+alc remote web enable standup
+```
+
 `alc remote web` 會印出這個資料夾。做出一個 mod 最快的方法，是請你正在跑的 agent
 來做 ——「設定」的「Mods」區塊有一段可以複製的提示，開頭是「Read …/AGENTS.md, then
 make me an alc page mod that」。或者複製一個範例：
@@ -358,6 +366,12 @@ agent 的尺寸：它把真正的字元格線在放得下的範圍內畫到最�
 每一個按鍵都屬於終端機 —— `ctrl-b` 就是 tmux 的 prefix。手機上什麼都沒變，它本來
 就一次只顯示一個窗格。
 
+當那個格線得縮小才放得下 —— 例如在手機上看 120 欄的終端機 —— 頁面會在終端機上方
+說明這件事，並提供能解決它的指令 `alc share --tmux <agent>` 讓你複製。按提示上的
+× 就能把它關掉。
+
+![手機上的一般 session，附上建議改用 --tmux 的提示](/img/remote/size-note.png)
+
 `--tmux` 是給「你真正要用的其實是頁面那一邊」準備的。它讓 agent 跑在 tmux
 裡，於是你的終端機和 hub 各自以獨立的 client 連上、各有各的尺寸 ——
 而這一次，決定 agent 尺寸的是頁面。
@@ -435,6 +449,9 @@ alc remote auto-share on
 alc remote allow-host <host>
 alc remote web               # the page's settings, themes and mods folder
 alc remote web check         # validate it
+alc remote web list          # mods (on/off) and themes
+alc remote web install <owner/repo|url|folder>   # mods arrive off
+alc remote web enable|disable|remove <id>
 
 alc --share --permission plan <agent>
 alc confirm <ticket>

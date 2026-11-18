@@ -981,9 +981,17 @@ alc.define('hello', (mod) => {
 ```
 
 ```sh
-alc remote web          # 印出資料夾位置
-alc remote web check    # 驗證設定、主題與 mods
+alc remote web                                  # 印出資料夾位置
+alc remote web check                            # 驗證設定、主題與 mods
+alc remote web install someone/alc-mod-standup  # 從 GitHub 安裝（或 @ref、網址、資料夾）
+alc remote web enable standup                   # 剛裝好的 mod 預設是關的
+alc remote web list                             # 裝了什麼、哪些開著哪些關著
 ```
+
+一個 repository 只要在根目錄放了 `mod.json` + `mod.js`／`mod.css`（單一 mod），或是
+`mods/<id>/…` 與 `themes/<id>.json`（一個合集），就是 mod 的來源。
+[Mods 與主題指南](https://treeleaves30760.github.io/all-code/zh-TW/mods)涵蓋了怎麼寫
+mod、API、發佈與安裝。
 
 檔案存檔後幾秒內頁面就會讀到 —— 主題與樣式表直接套用，腳本則要等頁面提示的重新
 載入之後。**Mods 沒有沙盒：** mod 是以頁面的連結身分執行的，所以開啟之前請先讀過。
@@ -997,6 +1005,10 @@ content-security policy），唯讀連結執行同樣的 mods，但無法透過�
 ![在手機上：session、用量與一個 session](../website/static/img/remote/phone.png)
 
 ### 尺寸歸誰決定
+
+一般的 session 會照它自己終端機的尺寸來畫；當畫面得縮小才放得下（例如在手機上看
+120 欄的格線），頁面會說明這件事，並提供 `alc share --tmux <agent>` 讓你複製，改由
+頁面來決定尺寸。
 
 不加 `--tmux` 的共享 session 是一個終端機、兩個觀看者，而一個終端機只有一種尺寸。
 那個尺寸屬於你啟動時所在的終端機 —— 它就在那裡，正用那個尺寸畫著畫面 —— 所以頁面
