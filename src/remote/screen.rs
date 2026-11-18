@@ -387,6 +387,67 @@ fn is_clipboard_read(payload: &[u8]) -> bool {
         == Some(b"?".as_slice())
 }
 
+/// Rewrites the colour parameters in `avt`'s dump into the semicolon form.
+///
+/// `avt::Vt::dump` writes an indexed or 24-bit colour with colons -
+/// `38:5:174`, `38:2:215:119:87`. The colon form is ITU T.416's, where a
+/// direct colour carries a colour-space id before its channels:
+/// `38:2:<space>:R:G:B`. xterm.js follows the standard, so it read the dump's
+/// red as the colour space, its green as red and its blue as green, and
+/// filled blue with zero. Every 24-bit colour in a snapshot lost its blue:
+/// a grey `153:153:153` came out `(153,153,0)`, and a page joining a Claude
+/// Code session late saw its whole screen tinted yellow until the agent
+/// redrew it. The semicolon form has one reading in every terminal.
+///
+/// Only an SGR's `38`/`48`/`58` colour groups are touched. Other
+/// sub-parameters, such as the `4:3` curly underline, keep their colons -
+/// the semicolon spelling of those means something else.
+pub(crate) fn semicolon_colours(dump: &str) -> String {
+    let bytes = dump.as_bytes();
+    let mut out = String::with_capacity(dump.len());
+    let mut copied = 0;
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        if bytes[index] != ESC || bytes[index + 1] != b'[' {
+            index += 1;
+            continue;
+        }
+        let start = index + 2;
+        let mut end = start;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_digit() || bytes[end] == b';' || bytes[end] == b':')
+        {
+            end += 1;
+        }
+        if end < bytes.len() && bytes[end] == b'm' && bytes[start..end].contains(&b':') {
+            out.push_str(&dump[copied..start]);
+            let params = &dump[start..end];
+            let groups: Vec<String> = params
+                .split(';')
+                .map(|group| {
+                    let mut parts = group.split(':');
+                    let head = parts.next().unwrap_or_default();
+                    let kind = parts.clone().next();
+                    let colour = matches!(head, "38" | "48" | "58");
+                    let plain = parts.clone().count();
+                    if colour
+                        && ((kind == Some("2") && plain == 4) || (kind == Some("5") && plain == 2))
+                    {
+                        group.replace(':', ";")
+                    } else {
+                        group.to_owned()
+                    }
+                })
+                .collect();
+            out.push_str(&groups.join(";"));
+            copied = end;
+        }
+        index = end.max(index + 2);
+    }
+    out.push_str(&dump[copied..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,5 +773,24 @@ mod string_payload_tests {
         let mut scanner = ModeScanner::new();
         scanner.feed(b"\x1b_Gf=100;payload\x07\x1b[?2004h");
         assert!(scanner.modes().bracketed_paste);
+    }
+
+    #[test]
+    fn a_dumped_colour_is_rewritten_with_semicolons() {
+        let dump = "\x1b[0m\x1b[38:2:153:153:153mgrey\x1b[48:5:16;1mx\x1b[4:3;38:5:174my";
+        assert_eq!(
+            semicolon_colours(dump),
+            "\x1b[0m\x1b[38;2;153;153;153mgrey\x1b[48;5;16;1mx\x1b[4:3;38;5;174my"
+        );
+    }
+
+    #[test]
+    fn a_dump_with_no_colon_colour_is_left_alone() {
+        let dump = "plain \x1b[1;31mred\x1b[0m \x1b[2J text";
+        assert_eq!(semicolon_colours(dump), dump);
+        // Already carrying a colour space: not the form avt writes, kept.
+        let spaced = "\x1b[38:2::1:2:3m";
+        assert_eq!(semicolon_colours(spaced), spaced);
+        assert_eq!(semicolon_colours("café \x1b["), "café \x1b[");
     }
 }

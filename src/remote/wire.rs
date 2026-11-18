@@ -71,6 +71,13 @@ pub(crate) enum ServerFrame {
         code: Option<i32>,
         signal: Option<String>,
     },
+    /// The session's grid changed size. Sent ahead of the output drawn for
+    /// it, so a page that frames the grid can resize before that output
+    /// arrives.
+    Size {
+        cols: u16,
+        rows: u16,
+    },
     Ping,
 }
 
