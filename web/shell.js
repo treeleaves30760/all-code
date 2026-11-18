@@ -1020,6 +1020,13 @@
       return;
     }
     const changed = next.revision !== web.revision;
+    if (next.grade === 'operator' || next.grade === 'viewer') {
+      const canType = next.grade === 'operator';
+      if (shell.operator.value !== canType) {
+        shell.operator.value = canType;
+        if (document.body.dataset.pane === 'settings') renderSettings();
+      }
+    }
     web = {
       // A save in flight wins over what the disk said a moment before it.
       settings: dirty || saving ? web.settings : core.normalizeWebSettings(next.settings),

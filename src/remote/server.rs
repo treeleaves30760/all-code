@@ -831,6 +831,10 @@ fn serve_http(
                 "themes": snapshot.themes,
                 "revision": snapshot.revision,
                 "dir": snapshot.dir,
+                // The page otherwise learns its grade only from a session's
+                // socket, and a settings page drawn before one is opened
+                // would offer a viewer controls the server will refuse.
+                "grade": if grade >= Some(Grade::Operator) { "operator" } else { "viewer" },
                 "hub": {
                     "version": env!("CARGO_PKG_VERSION"),
                     "ceiling": context.ceiling,
@@ -1570,6 +1574,8 @@ mod live_tests {
         assert!(operator.contains(&*web.to_string_lossy()), "{operator}");
         let viewer = get(Some(&harness.viewer), "/api/web");
         assert!(status(&viewer).contains("200"), "{viewer}");
+        assert!(viewer.contains("\"grade\":\"viewer\""), "{viewer}");
+        assert!(operator.contains("\"grade\":\"operator\""), "{operator}");
         assert!(!viewer.contains(&*web.to_string_lossy()), "{viewer}");
 
         let script = get(Some(&harness.viewer), "/api/web/mods/hello/mod.js");
