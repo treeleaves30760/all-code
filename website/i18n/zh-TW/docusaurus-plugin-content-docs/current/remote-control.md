@@ -34,6 +34,140 @@ alc session claude-7QK2M9XB4T (claude@all-code)
 遠端控制在 macOS、Linux 與 Windows 10／11 上都能用；在 Windows 上搭配 `--tmux`
 要有原生 Windows 版 tmux（安裝器會嘗試自動補裝），見[尺寸歸誰管](#尺寸歸誰管)。
 
+![開著一個 session 的遠端頁面：session 列、終端機、按鍵列與輸入框](/img/remote/session.png)
+
+## 頁面
+
+頁面有幾個分頁 ——「Session」「用量」「設定」，以及任何 [mod](#mods) 加上的分頁。
+寬螢幕時它們在標題列，手機上則變成底部列，打開的 session 會佔滿整個畫面。
+
+- **Session** 是清單，旁邊是打開的 session：終端機、按鍵列（Esc、Tab、⇧Tab、
+  黏著的 Ctrl、方向鍵）、寫長提示用的輸入框、[權限](#權限模式)列與唯讀的檔案面板。
+- **用量**是一張儀表板，列出這台機器上的 agent 花了多少 —— 見
+  [頁面上的用量](#頁面上的用量)。
+- **設定**是頁面與終端機的外觀，存在 hub 上 —— 見[設定與主題](#設定與主題)。
+
+在 Mac 上按 `⌘K`，或在終端機以外的任何地方按 `Ctrl+K`，會開啟「指令面板」：跳到
+某個 session 或分頁、切換主題或密度、開關檔案面板，或執行 mod 的指令。標題列的
+搜尋按鈕也能打開它。
+
+![指令面板](/img/remote/palette.png)
+
+![在手機上：session 清單、用量與一個打開的 session](/img/remote/phone.png)
+
+## 頁面上的用量
+
+![「用量」分頁：數字卡、每日圖表、時段與模型](/img/remote/usage.png)
+
+「用量」分頁畫的是 `alc usage` 印出的統計，範圍是最近 7、30 或 90 天，以你瀏覽器
+的時區計算：
+
+- token、估算成本、輸出、快取命中比例與 session 數的數字卡，前兩張附迷你走勢圖；
+- 一張堆疊的每日圖表，分成輸入、快取讀取、快取寫入與輸出 —— 或改看成本 ——
+  滑過或點一下就能看到那一天的數字；
+- 你一天中工作的時段，以及模型、agent、provider 的排名；
+- 再往下是每個登入的額度視窗與啟動帳本，和以前一樣。
+
+hub 讀的是 alc 自己的 `usage.jsonl`，加上它那台機器上 Claude Code 與 Codex 的歷史，
+用內建與快取的價格表離線計價，每個結果保留一分鐘。唯讀連結看得到什麼，見
+[用量](./usage.md#在遠端控制頁面上)。
+
+## 設定與主題
+
+![「設定」分頁：主題卡片、強調色與密度](/img/remote/settings.png)
+
+設定存在設定目錄的 `web/settings.json`，所以每台打開頁面的裝置看到的樣子都一樣。
+唯讀連結會以唯讀方式顯示它們。
+
+- **主題** ——「跟隨系統」（隨裝置）、「淺色」、「深色」、五個內建主題（Midnight、
+  Daylight、Fjord、Ember、Paper），或 `web/themes/` 裡的任何檔案。主題也會替終端機
+  換上配色。
+- **強調色**與**密度**（「舒適」或「緊湊」）。
+- **終端機** —— 字級（或依螢幕自動）、字型、行高、游標樣式與閃爍、捲動緩衝，
+  附即時預覽。
+
+![Fjord 主題](/img/remote/theme-fjord.png)
+
+主題檔把顏色 token 疊在淺色或深色的底上，也可以設定終端機的調色盤：
+
+```json
+{
+  "name": "Tidepool",
+  "mode": "dark",
+  "tokens": { "--bg": "#081214", "--surface": "#0d1b1e", "--accent": "#2dd4bf" },
+  "terminal": { "background": "#061012", "foreground": "#d6f1ec", "cursor": "#2dd4bf" }
+}
+```
+
+`web/AGENTS.md` 列出了每一個 token。值只能是顏色與長度 —— 不能有 `url()`、引號或
+分號 —— 其他的 alc 都會丟掉。
+
+## Mods
+
+![「設定」分頁裡的 Mods](/img/remote/mods.png)
+
+mod 會替頁面加東西：一個分頁、指令面板裡的指令、按鍵列上的按鈕、session 卡片上的
+小標籤，或樣式。這個想法來自 herdr-app：頁面的行為是 agent 寫得出來的純文字檔案，
+旁邊附一份寫給 agent 看的參考文件。
+
+```text
+<config dir>/web/
+├── AGENTS.md          the reference; alc rewrites it to match the running version
+├── settings.json
+├── themes/<id>.json
+├── mods/<id>/
+│   ├── mod.json       {"name", "description", "version", "author"}
+│   ├── mod.js         optional
+│   └── mod.css        optional
+└── examples/          never loaded; copy from here
+```
+
+`alc remote web` 會印出這個資料夾。做出一個 mod 最快的方法，是請你正在跑的 agent
+來做 ——「設定」的「Mods」區塊有一段可以複製的提示，開頭是「Read …/AGENTS.md, then
+make me an alc page mod that」。或者複製一個範例：
+
+```sh
+cp -R "$(alc remote web)/examples/mods/scratchpad" "$(alc remote web)/mods/"
+alc remote web check
+```
+
+| 範例 | 加上什麼 |
+| --- | --- |
+| `quick-prompts` | 按鍵列與指令面板上的 Continue、Run tests、Summarise 與 `/compact` |
+| `scratchpad` | 一個存在 hub 上的 **Notes** 分頁，附一個把筆記送到打開的 session 的按鈕 |
+| `session-age` | 在執行超過一小時的 session 上顯示時數小標籤 |
+| `themes/tidepool.json` | 一個藍綠色的深色主題 |
+
+mod 的腳本會用 `alc.define` 把自己包起來：
+
+```js
+alc.define('hello', (mod) => {
+  mod.addPage({
+    id: 'today',
+    title: 'Today',
+    icon: 'clock',
+    render(root) {
+      const running = alc.sessions().filter((card) => !card.exit).length;
+      root.append(alc.h('div', { class: 'panel' }, `${running} sessions running`));
+    },
+  });
+  mod.addKey({ label: 'Continue', run: () => alc.type('continue') && alc.key('\r') });
+  mod.addSessionChip((card) => (card.viewers > 1 ? { text: 'shared', tone: 'accent' } : null));
+});
+```
+
+![一個 mod 的分頁：scratchpad 範例](/img/remote/mod-page.png)
+
+`alc` 還給 mod 這些東西：`on(event)`，事件有 sessions、attach、detach、page、usage
+與 settings；`api('/api/…')`，呼叫頁面自己的 JSON 路由；`toast`、`type`、`key`、
+`open`、`settings`、`theme`；以及 `mod.save(state)`，把狀態存進 `settings.json`。
+完整參考見 `web/AGENTS.md`。
+
+頁面大約四秒內就會注意到存檔的檔案：設定、主題與樣式表直接套用，而腳本一改就會
+出現「重新載入」按鈕，因為腳本只能在 hub 送出頁面時算好的雜湊之下執行。在「設定」
+裡開關 mod 也是同樣的道理。丟出例外的 mod 會在「設定」裡標成「錯誤」並附上訊息，
+頁面其他部分照常運作。
+
 ## 從手機連上
 
 預設只綁 loopback。在你開口之前，什麼都不會對外。多個 runtime owner 時，
@@ -125,6 +259,10 @@ alc --no-share claude        # opt one launch out
 - **檔案面板只看得到 session 的資料夾。** 能打字的連結可以讀 agent 啟動時所在
   資料夾裡的檔案 —— 往上爬的路徑、指向外面的 symlink 都會被拒絕，`.git` 不會列出，
   檔案上限 512 KB，alc 放進去的 API key 在這裡一樣會被遮蔽。唯讀連結完全拿不到檔案。
+- **Mods 是受信任的程式碼。** mod 以頁面的連結身分在頁面中執行，不在沙盒裡 ——
+  開啟之前先讀過。頁面只執行每個已啟用 `mod.js` 的確切位元組：hub 送出頁面時會把
+  它們的雜湊寫進 content-security policy。唯讀連結執行同樣的 mods，但無法透過它們
+  存檔或打字，而且也會下載它們，所以永遠不要把秘密放進 mod。
 - **alc 永遠不回應剪貼簿讀取**，所以 agent 印出來的一個惡意檔案，沒辦法把你
   上次複製的東西拉進模型的 context。
 - **alc 不從工作中的 repository 讀任何設定**，所以一個 checked-in 的檔案
@@ -295,6 +433,8 @@ alc remote token --rotate
 alc remote url
 alc remote auto-share on
 alc remote allow-host <host>
+alc remote web               # the page's settings, themes and mods folder
+alc remote web check         # validate it
 
 alc --share --permission plan <agent>
 alc confirm <ticket>
@@ -318,3 +458,6 @@ alc confirm <ticket>
 | `max_permission` | `"auto-edit"` | 頁面自己能達到的最寬鬆模式。 |
 | `scrollback_bytes` | `1048576` | 重新連上的觀看者能往回補多少內容。 |
 | `max_connections` | `64` | 同時服務的連線數。 |
+
+頁面自己的外觀與 mods 不放在 `remote.toml`，而是在它旁邊的 `web/` 裡 —— 見
+[設定與主題](#設定與主題)與 [Mods](#mods)。

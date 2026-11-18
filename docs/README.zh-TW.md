@@ -521,7 +521,8 @@ alc --provider codex-work claude
 相容表讀取 `usage.jsonl`：啟動紀錄，加上協定轉譯橋接（Codex 登入或 Antigravity
 登入上的都算）與選擇啟用的直接 API 觀測產生的純中繼資料請求紀錄。`CACHED` 是
 `INPUT` 中從提示快取讀取的部分；`CACHE %` 是這部分 token 的整數比例。未觀測的流量顯示 `—`，不是零。遠端控制
-頁面保留 Accounts 與這份帳本；新增的原生歷史／成本與 TPS 報告只在 CLI 提供。
+頁面的「用量」分頁會顯示 Accounts、這份帳本，以及原生歷史統計的圖表（token、成本、
+時段、模型）；TPS 報告只在 CLI 提供。
 
 全域 `--provider`／provider 捷徑**只篩選 Accounts**。帳本不受篩選；要篩選有
 紀錄的統計，請用 `--filter-profile`。`alc usage --json` 保留既有的
@@ -931,6 +932,7 @@ alc remote status            # 開/關、綁定方式、上限、檔案位置
 alc remote auto-share on     # 每個 session 都共享，不必加 --share
 alc remote off               # 完全禁止共享
 alc remote token --rotate    # 讓選定 runtime 的連結失效
+alc remote web check         # 驗證頁面的設定、主題與 mods
 ```
 
 每個 runtime 世代各有一個背景 hub 擁有 session，所以它們活得比啟動它們的
@@ -940,6 +942,59 @@ alc remote token --rotate    # 讓選定 runtime 的連結失效
 `hub stop --all`（`-a`）停掉所有 owner。`hub stop --drain` 與 `--all` 也會結束 session；兩種停止都不是零中斷，也不是更新的必要步驟。
 `remote.toml` 的共享政策仍由各世代共用，也能在 `alc config` 的
 **Sharing & remote** 畫面設定。
+
+### 頁面：session、用量、設定、mods
+
+![開著一個 session 的遠端頁面](../website/static/img/remote/session.png)
+
+頁面有幾個分頁 ——「Session」「用量」「設定」，以及 mod 加上的任何分頁 ——
+寬螢幕時放在標題列，手機上則變成底部列。`⌘K`（在終端機以外按 `Ctrl+K`）會開啟
+「指令面板」，可以跳到某個 session、某個分頁、某個主題，或執行 mod 的指令。
+
+- **用量**畫的是和 `alc usage` 印出的同一份統計：7、30 或 90 天內的 token、估算
+  成本、輸出、快取命中與 session 數；一張堆疊的每日圖表（token 或成本）；一條一天
+  各時段的分布；以及模型、agent、provider 的排名。登入額度與啟動帳本放在下方。
+  hub 讀的是它那台機器上 alc 的帳本，以及 Claude Code 與 Codex 的歷史。
+- **設定**裡有主題（跟隨系統、淺色、深色、Midnight、Daylight、Fjord、Ember、
+  Paper，或你自己的）、強調色、密度，以及終端機的字型、字級、行高、游標與捲動
+  緩衝。它存在 hub 上，所以每台裝置看到的樣子都一樣；唯讀連結只能看、不能改。
+- **Mods** 可以加上分頁、指令面板的指令、按鍵列的按鈕、session 卡片上的小標籤與
+  樣式，精神上和 herdr-app 的 mods 相同。每個 mod 都是設定目錄 `web/` 底下的一個
+  資料夾、裡面是純文字檔案，旁邊有一份寫給 agent 讀的 `AGENTS.md` —— 所以「幫我做
+  一個會……的 mod」這件事，可以直接交給你正在跑的 agent。
+
+```text
+<config dir>/web/
+├── AGENTS.md          mod 與主題的參考文件（alc 會讓它保持最新）
+├── settings.json      「設定」分頁儲存的內容
+├── themes/<id>.json   頁面與終端機的顏色 token
+├── mods/<id>/         mod.json、mod.js、mod.css
+└── examples/          quick-prompts、scratchpad、session-age 與一個主題
+```
+
+```js
+// mods/hello/mod.js
+alc.define('hello', (mod) => {
+  mod.addKey({ label: 'Continue', run: () => alc.type('continue') && alc.key('\r') });
+  mod.addCommand({ id: 'wave', title: 'Say hello', run: () => alc.toast('Hello') });
+});
+```
+
+```sh
+alc remote web          # 印出資料夾位置
+alc remote web check    # 驗證設定、主題與 mods
+```
+
+檔案存檔後幾秒內頁面就會讀到 —— 主題與樣式表直接套用，腳本則要等頁面提示的重新
+載入之後。**Mods 沒有沙盒：** mod 是以頁面的連結身分執行的，所以開啟之前請先讀過。
+頁面只執行每個已啟用 `mod.js` 的確切位元組（hub 會把它們的雜湊放進
+content-security policy），唯讀連結執行同樣的 mods，但無法透過它們打字或存檔。
+
+| ![用量](../website/static/img/remote/usage.png) | ![設定](../website/static/img/remote/settings.png) |
+| --- | --- |
+| ![設定裡的 Mods](../website/static/img/remote/mods.png) | ![指令面板](../website/static/img/remote/palette.png) |
+
+![在手機上：session、用量與一個 session](../website/static/img/remote/phone.png)
 
 ### 尺寸歸誰決定
 
@@ -1068,6 +1123,9 @@ ticket 五分鐘後過期，而 `alc confirm` 在沒有控制終端機的情況�
   印出的其他任何東西，觀看者都看得到。
 - 頁面的檔案面板只讀 session 的資料夾，不會往上走，而且只給能打字的連結；唯讀連結
   會被拒絕。檔案上限 512 KB，並用和畫面相同的規則遮蔽。
+- `web/mods/` 裡的 mods 以頁面的連結身分在頁面中執行，沒有沙盒 —— 信任程度和你
+  PATH 上的腳本相同。只有已啟用的 `mod.js` 會依雜湊執行；唯讀連結既不能儲存設定，
+  也不能透過 mod 打字。永遠不要把秘密放進 mod：唯讀連結也會下載 mod 檔案。
 - `alc remote token --rotate` 會讓選定 runtime 的連結失效。
 - alc 不讀取工作目錄裡的任何設定，所以被 commit 進 repo 的檔案永遠無法開啟共享。
 
@@ -1084,6 +1142,8 @@ ticket 五分鐘後過期，而 `alc confirm` 在沒有控制終端機的情況�
 - `config.toml`：provider 中繼資料、模型、預設值、URL 與環境變數名稱。
 - `credentials.toml`：本機儲存的 API key。在 Unix 上 alc 會以 `0600` 權限
   寫入；在 Windows 則位於目前使用者的 AppData 底下。
+- `web/`：遠端頁面的 `settings.json`、`themes/` 與 `mods/`，附有一份 `AGENTS.md`
+  參考文件與 `examples/`；`alc remote web check` 會驗證它。
 - `remote.toml`：共享設定 —— 開或關、是否預設共享、綁定位址、port 與權限
   上限。`alc config show` 會把 sharing 與 share-by-default 兩個值以註解
   的形式印在輸出的最後。
