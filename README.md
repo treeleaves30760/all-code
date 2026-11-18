@@ -570,8 +570,9 @@ request records from the translation bridge (on the Codex login or the
 Antigravity one) and opt-in direct API observation. `CACHED` is the part of
 `INPUT` read from the prompt cache; `CACHE %` is that token share, rounded to a
 whole percent. Unobserved traffic
-shows `—`, not zero. The remote-control page keeps Accounts and this ledger;
-the new native-history/cost and TPS reports are CLI-only.
+shows `—`, not zero. The remote-control page's Usage tab shows Accounts, this
+ledger and charts of the native-history statistics (tokens, cost, hours,
+models); the TPS report is CLI-only.
 
 Global `--provider` / provider shortcuts filter **Accounts only**. The ledger
 remains unfiltered; use `--filter-profile` to filter recorded statistics.
@@ -1044,6 +1045,7 @@ alc remote status            # on/off, bind, ceiling, where the files are
 alc remote auto-share on     # share every session without --share
 alc remote off               # refuse to share sessions at all
 alc remote token --rotate    # invalidate links for the selected runtime
+alc remote web check         # validate the page's settings, themes and mods
 ```
 
 Sessions are owned by a background hub per runtime generation, which is why they
@@ -1054,6 +1056,65 @@ including legacy. Multiple running owners require an explicit global
 (`-a`) stops every owner. `hub stop --drain` and `--all` end the sessions too; neither stop is zero-downtime or part of updating.
 Sharing policy in `remote.toml` is still shared across generations, and lives
 in `alc config` on the **Sharing & remote** screen.
+
+### The page: sessions, usage, settings, mods
+
+![The remote page with a session open](website/static/img/remote/session.png)
+
+The page has tabs — **Sessions**, **Usage**, **Settings**, and any a mod adds —
+in the header on a wide screen and as a bottom bar on a phone. `⌘K` (`Ctrl+K`
+outside the terminal) opens a command palette for jumping to a session, a tab,
+a theme, or a mod's command.
+
+- **Usage** draws the same statistics `alc usage` prints: tokens, estimated
+  cost, output, cache hits and sessions over 7, 30 or 90 days; a stacked daily
+  chart (tokens or cost); an hour-of-day strip; and models, agents and
+  providers ranked. Account quotas and the launch ledger sit below. The hub
+  reads alc's ledger and the Claude Code and Codex histories on its machine.
+- **Settings** holds the theme (system, light, dark, Midnight, Daylight,
+  Fjord, Ember, Paper, or your own), accent colour, density, and the terminal's
+  font, size, line height, cursor and scrollback. It is saved on the hub, so
+  every device gets the same look; a view-only link sees it read-only.
+- **Mods** add tabs, palette commands, key-bar buttons, session chips and
+  styles, in the spirit of herdr-app's mods. Each one is a folder of plain
+  files under the config directory's `web/`, next to an `AGENTS.md` written for
+  an agent to read — so "make me a mod that …" is something you can ask the
+  agent you are already running.
+
+```text
+<config dir>/web/
+├── AGENTS.md          the mod and theme reference (alc keeps it current)
+├── settings.json      what the Settings tab saves
+├── themes/<id>.json   colour tokens for the page and the terminal
+├── mods/<id>/         mod.json, mod.js, mod.css
+└── examples/          quick-prompts, scratchpad, session-age, a theme
+```
+
+```js
+// mods/hello/mod.js
+alc.define('hello', (mod) => {
+  mod.addKey({ label: 'Continue', run: () => alc.type('continue') && alc.key('\r') });
+  mod.addCommand({ id: 'wave', title: 'Say hello', run: () => alc.toast('Hello') });
+});
+```
+
+```sh
+alc remote web          # print the folder
+alc remote web check    # validate settings, themes and mods
+```
+
+The page picks up a saved file within a few seconds — themes and stylesheets
+in place, scripts after a reload it offers. **Mods are not sandboxed:** a mod
+runs with the page's link, so read one before you turn it on. The page runs
+only the exact bytes of each enabled `mod.js` (the hub puts their hashes in the
+content-security policy), and a view-only link runs the same mods but cannot
+type or save through them.
+
+| ![Usage](website/static/img/remote/usage.png) | ![Settings](website/static/img/remote/settings.png) |
+| --- | --- |
+| ![Mods in Settings](website/static/img/remote/mods.png) | ![Command palette](website/static/img/remote/palette.png) |
+
+![On a phone: sessions, usage and a session](website/static/img/remote/phone.png)
 
 ### Who owns the size
 
@@ -1204,6 +1265,10 @@ so it is worth being plain about the model:
 - The page's file panel reads the session's folder and nothing above it, for a
   link that can type only; a view-only link is refused. Files are capped at
   512 KB and masked the same way the screen is.
+- Mods in `web/mods/` run in the page with its link, unsandboxed — the same
+  trust as a script on your PATH. Only enabled `mod.js` files run, by hash; a
+  view-only link can neither save settings nor type through a mod. Never put a
+  secret in a mod: view-only links download mod files too.
 - `alc remote token --rotate` invalidates links for the selected runtime.
 - alc reads no configuration from the working repository, so a checked-in file
   can never turn sharing on.
@@ -1222,6 +1287,8 @@ does today.
 - `config.toml`: provider metadata, models, defaults, URLs, and env-var names.
 - `credentials.toml`: locally saved API keys. On Unix, alc writes this file with
   mode `0600`; on Windows it lives under the current user's AppData.
+- `web/`: the remote page's `settings.json`, `themes/` and `mods/`, with an
+  `AGENTS.md` reference and `examples/`; `alc remote web check` validates it.
 - `remote.toml`: sharing — on/off, share-by-default, bind address, port, and the
   permission ceiling. `alc config show` prints the sharing and share-by-default
   values as comments at the end.

@@ -2319,7 +2319,7 @@ button.palette-toggle {
   grid-template-columns: repeat(24, minmax(0, 1fr));
   align-items: end;
   gap: 3px;
-  height: 120px;
+  height: 168px;
   padding-bottom: 16px;
 }
 

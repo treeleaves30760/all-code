@@ -35,6 +35,151 @@ Remote control works on Windows 10 and 11 as it does on macOS and Linux;
 `--tmux` there needs the native Windows port of tmux, covered in
 [Who owns the size](#who-owns-the-size).
 
+![The remote page with a session open: the session rail, the terminal, the key bar and the composer](/img/remote/session.png)
+
+## The page
+
+The page has tabs — **Sessions**, **Usage**, **Settings**, and any a
+[mod](#mods) adds. They sit in the header on a wide screen and become a bottom
+bar on a phone, where an open session takes the whole screen.
+
+- **Sessions** is the list, and beside it the open session: terminal, key bar
+  (Esc, Tab, ⇧Tab, sticky Ctrl, arrows), a composer for long prompts, the
+  [permission](#permission-modes) bar and the read-only file panel.
+- **Usage** is a dashboard of what the agents on this machine have spent — see
+  [Usage on the page](#usage-on-the-page).
+- **Settings** is the page's look and the terminal's, saved on the hub — see
+  [Settings and themes](#settings-and-themes).
+
+`⌘K` on a Mac, or `Ctrl+K` anywhere outside the terminal, opens a command
+palette: jump to a session or tab, switch theme or density, toggle the file
+panel, or run a mod's command. The search button in the header opens it too.
+
+![The command palette](/img/remote/palette.png)
+
+![On a phone: the session list, usage, and an open session](/img/remote/phone.png)
+
+## Usage on the page
+
+![The Usage tab: tiles, the daily chart, hours, and models](/img/remote/usage.png)
+
+The Usage tab draws the statistics `alc usage` prints, over the last 7, 30 or
+90 days in your browser's timezone:
+
+- tiles for tokens, estimated cost, output, cache-hit share and sessions, with
+  a sparkline for the first two;
+- a stacked daily chart of input, cache read, cache write and output — or cost
+  — with the figures for a day on hover or tap;
+- the hours of the day you work in, and models, agents and providers ranked;
+- below them, each login's quota windows and the launch ledger, as before.
+
+The hub reads alc's own `usage.jsonl` plus the Claude Code and Codex histories
+on its machine, prices them offline from the bundled and cached price maps,
+and keeps each answer for a minute. See [Usage](./usage.md#on-the-remote-control-page)
+for what a view-only link sees.
+
+## Settings and themes
+
+![The Settings tab: theme cards, accent and density](/img/remote/settings.png)
+
+Settings are saved to `web/settings.json` in the config directory, so every
+device that opens the page gets the same look. A view-only link shows them
+read-only.
+
+- **Theme** — System (follows the device), Light, Dark, five built-ins
+  (Midnight, Daylight, Fjord, Ember, Paper), or any file in `web/themes/`.
+  A theme also recolours the terminal.
+- **Accent** and **density** (comfortable or compact).
+- **Terminal** — font size (or automatic by screen), font, line height,
+  cursor style and blink, scrollback, with a live preview.
+
+![The Fjord theme](/img/remote/theme-fjord.png)
+
+A theme file lays colour tokens over the light or dark base and may set the
+terminal's palette:
+
+```json
+{
+  "name": "Tidepool",
+  "mode": "dark",
+  "tokens": { "--bg": "#081214", "--surface": "#0d1b1e", "--accent": "#2dd4bf" },
+  "terminal": { "background": "#061012", "foreground": "#d6f1ec", "cursor": "#2dd4bf" }
+}
+```
+
+`web/AGENTS.md` lists every token. Values are colours and lengths only — no
+`url()`, quotes or semicolons — and alc drops anything else.
+
+## Mods
+
+![Mods in the Settings tab](/img/remote/mods.png)
+
+A mod adds to the page: a tab, commands in the palette, buttons on the key bar,
+chips on session cards, or styles. The idea is herdr-app's: the page's
+behaviour is plain files an agent can write, next to a reference written for
+the agent.
+
+```text
+<config dir>/web/
+├── AGENTS.md          the reference; alc rewrites it to match the running version
+├── settings.json
+├── themes/<id>.json
+├── mods/<id>/
+│   ├── mod.json       {"name", "description", "version", "author"}
+│   ├── mod.js         optional
+│   └── mod.css        optional
+└── examples/          never loaded; copy from here
+```
+
+`alc remote web` prints the folder. The quickest way to a mod is to ask the
+agent you are already running — the Mods section of Settings has a prompt to
+copy that starts "Read …/AGENTS.md, then make me an alc page mod that". Or copy
+an example:
+
+```sh
+cp -R "$(alc remote web)/examples/mods/scratchpad" "$(alc remote web)/mods/"
+alc remote web check
+```
+
+| Example | What it adds |
+| --- | --- |
+| `quick-prompts` | Continue, Run tests, Summarise and `/compact` on the key bar and in the palette |
+| `scratchpad` | a **Notes** tab saved on the hub, with a button to send the notes to the open session |
+| `session-age` | an hours chip on sessions running for over an hour |
+| `themes/tidepool.json` | a teal dark theme |
+
+A mod's script wraps itself in `alc.define`:
+
+```js
+alc.define('hello', (mod) => {
+  mod.addPage({
+    id: 'today',
+    title: 'Today',
+    icon: 'clock',
+    render(root) {
+      const running = alc.sessions().filter((card) => !card.exit).length;
+      root.append(alc.h('div', { class: 'panel' }, `${running} sessions running`));
+    },
+  });
+  mod.addKey({ label: 'Continue', run: () => alc.type('continue') && alc.key('\r') });
+  mod.addSessionChip((card) => (card.viewers > 1 ? { text: 'shared', tone: 'accent' } : null));
+});
+```
+
+![A mod's tab: the scratchpad example](/img/remote/mod-page.png)
+
+`alc` also gives a mod `on(event)` for sessions, attach, detach, page, usage
+and settings; `api('/api/…')` for the page's own JSON routes; `toast`, `type`,
+`key`, `open`, `settings`, `theme`; and `mod.save(state)` to keep state in
+`settings.json`. `web/AGENTS.md` is the full reference.
+
+The page notices a saved file within about four seconds: settings, themes and
+stylesheets apply in place, and a changed script brings up a **Reload** button,
+because a script only runs under the hash the hub computed when it served the
+page. Turning a mod on or off in Settings works the same way. A mod that throws
+is marked **Error** in Settings with its message, and the rest of the page
+carries on.
+
 ## Reaching it from a phone
 
 The default binds to loopback. Nothing is exposed until you say so. With
@@ -130,6 +275,12 @@ A page that types into a coding agent is remote code execution on your machine.
   or symlinks that point out of it are refused, `.git` is not listed, files are
   capped at 512 KB, and the API keys alc injected are masked there too. A
   view-only link gets no files at all.
+- **Mods are trusted code.** A mod runs in the page with the page's link, not
+  in a sandbox — read one before you turn it on. The page runs only the exact
+  bytes of each enabled `mod.js`: the hub hashes them into the
+  content-security policy when it serves the page. A view-only link runs the
+  same mods but cannot save or type through them, and downloads them too, so
+  never put a secret in one.
 - **alc never answers a clipboard read**, so a hostile file an agent prints
   cannot pull what you last copied into the model's context.
 - **alc reads no configuration from the working repository**, so a checked-in
@@ -317,6 +468,8 @@ alc remote token --rotate
 alc remote url
 alc remote auto-share on
 alc remote allow-host <host>
+alc remote web               # the page's settings, themes and mods folder
+alc remote web check         # validate it
 
 alc --share --permission plan <agent>
 alc confirm <ticket>
@@ -340,3 +493,6 @@ It is a separate file because `config.toml` refuses keys it does not recognise.
 | `max_permission` | `"auto-edit"` | The loosest mode the page can reach alone. |
 | `scrollback_bytes` | `1048576` | How far back a reconnecting viewer is caught up. |
 | `max_connections` | `64` | Connections served at once. |
+
+The page's own look and mods live apart from `remote.toml`, in `web/` beside
+it — see [Settings and themes](#settings-and-themes) and [Mods](#mods).
