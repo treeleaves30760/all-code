@@ -141,7 +141,7 @@ pub(crate) enum Density {
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct TerminalSettings {
     /// None lets the page pick for the screen it is on.
-    pub font_size: Option<u8>,
+    pub font_size: Option<u16>,
     pub font_family: Option<String>,
     pub line_height: f32,
     pub cursor_style: CursorStyle,
@@ -325,23 +325,42 @@ impl WebDir {
         if body.len() as u64 > MAX_JSON {
             bail!("settings are larger than 64 KiB");
         }
+        // A file that does not parse is somebody's hand edit, and the page
+        // is holding defaults in its place: saving them would erase it.
+        if let (_, Some(error)) = self.load_settings() {
+            bail!("{error}; fix it (alc remote web check) before saving from the page");
+        }
         let settings: WebSettings =
             serde_json::from_slice(body).context("settings are not valid JSON")?;
         let settings = settings.clamp();
         fs::create_dir_all(&self.root)?;
         let mut text = serde_json::to_string_pretty(&settings)?;
         text.push('\n');
+        // Measured after indentation: a body under the cap can pretty-print
+        // past it, and a file the reader then refuses is worse than a refusal.
+        if text.len() as u64 > MAX_JSON {
+            bail!("settings are larger than 64 KiB");
+        }
         atomic_write(&self.root.join("settings.json"), text.as_bytes(), false)?;
         Ok(settings)
     }
 
     pub(crate) fn snapshot(&self, operator: bool) -> Snapshot {
+        // The revision first: a write landing mid-snapshot then yields an
+        // old revision with new contents, which the next poll corrects,
+        // rather than new revision with old contents, which it never would.
+        let revision = self.revision();
         let (settings, settings_error) = self.load_settings();
-        let mods = self.mods(&settings);
+        let mut mods = self.mods(&settings);
+        if settings_error.is_some() {
+            for info in &mut mods {
+                info.enabled = false;
+            }
+        }
         Snapshot {
             mods,
             themes: self.themes(),
-            revision: self.revision(),
+            revision,
             dir: if operator {
                 self.root.display().to_string()
             } else {
@@ -435,7 +454,13 @@ impl WebDir {
     /// The CSP source for every enabled mod's script, so the page may run
     /// exactly those bytes and nothing else inline.
     pub(crate) fn script_hashes(&self) -> Vec<String> {
-        let (settings, _) = self.load_settings();
+        // Fail closed: with settings.json unreadable, which mods are off is
+        // unknown, and running one the operator turned off is the worse
+        // mistake.
+        let (settings, error) = self.load_settings();
+        if error.is_some() {
+            return Vec::new();
+        }
         self.mods(&settings)
             .into_iter()
             .filter(|info| info.enabled && info.error.is_none())
@@ -605,6 +630,11 @@ pub(crate) fn csp_hash(text: &str) -> String {
 /// The page's content-security policy, with the given extra script sources.
 pub(crate) fn content_security_policy(script_hashes: &[String]) -> String {
     let mut script = String::from("'self'");
+    if !script_hashes.is_empty() {
+        // The first characters of a refused inline script reach the page's
+        // violation event, which is how it says which mod was blocked.
+        script.push_str(" 'report-sample'");
+    }
     for hash in script_hashes {
         script.push(' ');
         script.push_str(hash);
@@ -775,6 +805,11 @@ mod tests {
         assert_eq!(saved.disabled_mods, vec!["ok".to_owned()]);
         assert_eq!(saved.mod_settings.len(), 1);
         assert_eq!(web.load_settings().0, saved);
+        // Past u8, which a hand edit could write, still parses and clamps.
+        let big = web
+            .save_settings(br#"{"terminal":{"fontSize":300}}"#)
+            .unwrap();
+        assert_eq!(big.terminal.font_size, Some(28));
     }
 
     #[test]
@@ -784,6 +819,15 @@ mod tests {
         let (settings, error) = web.load_settings();
         assert_eq!(settings, WebSettings::default());
         assert!(error.unwrap().contains("settings.json"));
+        // Mods fail closed, and the page cannot overwrite the hand edit.
+        write(&web, "mods/alpha/mod.js", "x();");
+        assert!(web.script_hashes().is_empty());
+        assert!(web.snapshot(true).mods.iter().all(|info| !info.enabled));
+        assert!(web.save_settings(b"{}").is_err());
+        assert_eq!(
+            fs::read_to_string(web.root().join("settings.json")).unwrap(),
+            "{ nope"
+        );
     }
 
     #[test]
@@ -852,7 +896,8 @@ mod tests {
     #[test]
     fn the_policy_lists_each_hash() {
         let policy = content_security_policy(&[csp_hash("a")]);
-        assert!(policy.contains("script-src 'self' 'sha256-"));
+        assert!(policy.contains("script-src 'self' 'report-sample' 'sha256-"));
+        assert!(!content_security_policy(&[]).contains("report-sample"));
         assert!(policy.contains("frame-ancestors 'none'"));
     }
 

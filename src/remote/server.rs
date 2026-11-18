@@ -202,6 +202,27 @@ struct Serving {
     history: HistoryCache,
     /// The page's settings, themes and mods.
     web: WebDir,
+    /// The index's policy and the folder revision it was built at. `/` needs
+    /// no token, so hashing every mod on each request would let anyone who
+    /// can reach the port make the hub read them over and over.
+    policy: Mutex<Option<(String, String)>>,
+}
+
+impl Serving {
+    fn policy(&self) -> String {
+        let revision = self.web.revision();
+        if let Ok(cached) = self.policy.lock()
+            && let Some((at, policy)) = cached.as_ref()
+            && *at == revision
+        {
+            return policy.clone();
+        }
+        let policy = web::content_security_policy(&self.web.script_hashes());
+        if let Ok(mut cached) = self.policy.lock() {
+            *cached = Some((revision, policy.clone()));
+        }
+        policy
+    }
 }
 
 pub(crate) struct Server {
@@ -268,6 +289,7 @@ impl Server {
                 usage: UsageCache::new(config_dir),
                 history: HistoryCache::new(config_dir),
                 web,
+                policy: Mutex::new(None),
             }),
             connections: Arc::new(AtomicUsize::new(0)),
             max_connections: settings.max_connections,
@@ -733,7 +755,7 @@ fn serve_http(
         // page may run those exact bytes inline and nothing else. Read per
         // request: an edited mod is picked up by a reload, with no restart.
         if asset.path == "/" {
-            let policy = web::content_security_policy(&context.web.script_hashes());
+            let policy = context.policy();
             return respond_with_policy(
                 stream,
                 200,
@@ -795,10 +817,18 @@ fn serve_http(
         }
         "/api/usage/history" => {
             debug_assert!(grade.is_some());
-            let days = request
+            // The page offers three ranges; anything else is rounded to one
+            // of them, so a link cannot make the hub rebuild a history per
+            // integer it can think of.
+            let days = match request
                 .query_param("days")
                 .and_then(|days| days.parse::<u32>().ok())
-                .unwrap_or(30);
+                .unwrap_or(30)
+            {
+                0..=7 => 7,
+                8..=30 => 30,
+                _ => 90,
+            };
             let zone = request.query_param("tz").unwrap_or_default();
             match context.history.history(days, &zone) {
                 Ok(history) => respond(
@@ -854,8 +884,8 @@ fn serve_http(
                 Some((id, "mod.css")) => (id, ModFile::Style),
                 _ => return respond(stream, 404, "text/plain; charset=utf-8", None, b"not found"),
             };
-            let (settings, _) = context.web.load_settings();
-            if settings.disabled_mods.iter().any(|off| off == id) {
+            let (settings, error) = context.web.load_settings();
+            if error.is_some() || settings.disabled_mods.iter().any(|off| off == id) {
                 return respond(
                     stream,
                     404,

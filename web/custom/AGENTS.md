@@ -58,6 +58,10 @@ Every field is optional. The settings page writes this same file.
 - `modSettings`: each mod's own saved state, keyed by mod id. Use
   `mod.save()` rather than editing it by hand while the page is open.
 
+If `settings.json` does not parse, the page uses the defaults, **loads no
+mods**, and refuses to save over the file until it is fixed — so run
+`alc remote web check` after editing it by hand.
+
 ## themes/<id>.json
 
 ```json

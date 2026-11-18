@@ -133,12 +133,19 @@
 
   /* ------------------------------------------------------------- data */
 
+  let requestSeq = 0;
+
   async function load(force) {
     if (loading && !force) return;
     loading = true;
+    const mine = ++requestSeq;
     document.body.classList.toggle('history-loading', !history);
     try {
-      history = await api(`/api/usage/history?days=${days}&tz=${encodeURIComponent(zone)}`);
+      const answer = await api(`/api/usage/history?days=${days}&tz=${encodeURIComponent(zone)}`);
+      // A range picked while this was on its way has its own request; a
+      // late answer for the old range must not be drawn under the new label.
+      if (mine !== requestSeq) return;
+      history = answer;
       lastError = '';
     } catch (error) {
       if (error.message !== 'denied' && lastError !== T.historyFailed) {

@@ -179,8 +179,9 @@
       if (!response.ok) throw new Error(`http ${response.status}`);
       return response.text();
     }
-    if (response.status === 403 && options && options.body !== undefined) {
-      // A viewer saving is refused; that is not a dead token.
+    if (response.status === 403 && options && (options.body !== undefined || options.soft)) {
+      // A viewer saving, or a mod asking for a route this link may not use,
+      // is refused; that is not a dead token.
       throw new Error('forbidden');
     }
     if (response.status === 401 || response.status === 403) {
@@ -1742,6 +1743,9 @@
   }
 
   function rebuildKeys() {
+    // The held Ctrl button is about to be replaced; a Ctrl still armed with
+    // no button showing it would turn the next key into a control code.
+    releaseCtrl();
     el.keys.replaceChildren();
     if (term) buildKeys();
   }

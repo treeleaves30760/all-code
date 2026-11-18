@@ -145,6 +145,15 @@
   let saveTimer = 0;
   let saving = false;
   let dirty = false;
+  /* Bumped by every local change and every finished save, so a poll that
+   * was already in flight can tell its answer is older than what is here. */
+  let saveSeq = 0;
+  /* The promises of every change waiting on the next write; all of them
+   * settle with that write's outcome. */
+  let waiters = [];
+  /* Set by a change made mid-drag (a slider, the colour picker): the look
+   * follows at once, the controls are not redrawn under the pointer. */
+  let quietRender = false;
 
   function setSaveState(text, level) {
     const node = $('saveState');
@@ -153,42 +162,56 @@
   }
 
   /* Every change applies at once and is written a moment later, so dragging
-   * a slider is one save rather than thirty. */
-  function changeSettings(mutate, immediate) {
+   * a slider is one save rather than thirty. Resolves true once written. */
+  function changeSettings(mutate, immediate, quiet) {
     if (!shell.operator.value) return Promise.resolve(false);
+    // The page is holding defaults in place of a file it could not read;
+    // writing them would erase the hand edit. The server refuses too.
+    if (web.settingsError) {
+      toast(`${T.settingsFileError} ${web.settingsError}`, 'error');
+      return Promise.resolve(false);
+    }
     const next = structuredClone(web.settings);
     mutate(next);
     web.settings = core.normalizeWebSettings(next);
+    saveSeq += 1;
+    dirty = true;
+    quietRender = !!quiet;
     applyLook();
     shell.emit('settings', structuredClone(web.settings));
-    dirty = true;
     setSaveState(T.settingsSaving);
-    clearTimeout(saveTimer);
     return new Promise((resolve) => {
-      saveTimer = setTimeout(async () => resolve(await flush()), immediate ? 0 : 450);
+      waiters.push(resolve);
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(flush, immediate ? 0 : 450);
     });
   }
 
   async function flush() {
     if (saving) {
+      // The write in flight carries an older copy; this one follows it.
       clearTimeout(saveTimer);
       saveTimer = setTimeout(flush, 200);
-      return true;
+      return;
     }
+    const settle = waiters;
+    waiters = [];
     saving = true;
     dirty = false;
+    let ok = false;
     try {
       const saved = await api('/api/web/settings', { body: web.settings });
       if (!dirty) web.settings = core.normalizeWebSettings(saved);
       setSaveState(T.settingsSaved, 'ok');
-      return true;
+      ok = true;
     } catch {
       setSaveState(T.settingsFailed, 'error');
       toast(T.settingsFailed, 'error');
-      return false;
     } finally {
       saving = false;
+      saveSeq += 1;
     }
+    for (const resolve of settle) resolve(ok);
   }
 
   /* ---------------------------------------------------------------- nav */
@@ -565,7 +588,8 @@
           disabled: viewer,
           oninput: (event) => changeSettings((n) => {
             n.accent = event.target.value;
-          }),
+          }, false, true),
+          onchange: () => renderSettings(),
         })));
     return section('appearance', T.appearance, T.appearanceHow,
       field(T.theme, null, h('div', { class: 'theme-grid', role: 'radiogroup', 'aria-label': T.theme }, themeChoices().map((choice) => themeCard(choice, viewer))), true),
@@ -600,6 +624,12 @@
     h('div', {}, span('magenta', '❯'), ' ', span('yellow', 'alc'), ' share claude ', cursor));
   }
 
+  /* The preview follows a slider without the section being redrawn. */
+  function refreshPreview() {
+    const old = settingsBody.querySelector('.term-preview');
+    if (old) old.replaceWith(terminalPreview());
+  }
+
   function terminalSection(viewer) {
     const t = web.settings.terminal;
     const auto = !t.fontSize;
@@ -614,9 +644,14 @@
         'aria-label': T.fontSize,
         'data-key': 'font-size',
         disabled: viewer,
-        oninput: (event) => changeSettings((n) => {
-          n.terminal.fontSize = Number(event.target.value);
-        }),
+        oninput: (event) => {
+          event.target.nextElementSibling.textContent = `${event.target.value}px`;
+          changeSettings((n) => {
+            n.terminal.fontSize = Number(event.target.value);
+          }, false, true);
+          refreshPreview();
+        },
+        onchange: () => renderSettings(),
       }),
       h('output', { class: 'range-value' }, auto ? T.fontAuto : `${t.fontSize}px`),
       h('button', {
@@ -662,9 +697,14 @@
         'aria-label': T.lineHeight,
         'data-key': 'line-height',
         disabled: viewer,
-        oninput: (event) => changeSettings((n) => {
-          n.terminal.lineHeight = Number(event.target.value);
-        }),
+        oninput: (event) => {
+          event.target.nextElementSibling.textContent = Number(event.target.value).toFixed(2);
+          changeSettings((n) => {
+            n.terminal.lineHeight = Number(event.target.value);
+          }, false, true);
+          refreshPreview();
+        },
+        onchange: () => renderSettings(),
       }),
       h('output', { class: 'range-value' }, t.lineHeight.toFixed(2)));
     const blink = h('label', { class: 'switch' },
@@ -810,14 +850,12 @@
   // replacing the element under the pointer would end the drag.
   let renderTimer = 0;
   shell.on('settings', () => {
+    if (quietRender) {
+      quietRender = false;
+      return;
+    }
     clearTimeout(renderTimer);
-    renderTimer = setTimeout(() => {
-      const dragging = document.activeElement && document.activeElement.type === 'range';
-      if (!dragging) renderSettings();
-    }, 60);
-  });
-  document.addEventListener('pointerup', () => {
-    if (document.activeElement && document.activeElement.type === 'range') renderSettings();
+    renderTimer = setTimeout(renderSettings, 60);
   });
 
   /* ---------------------------------------------------------------- mods */
@@ -837,9 +875,20 @@
   window.addEventListener('error', (event) => {
     if (loadingMod) reportModError(loadingMod, event.error || event.message);
   });
+  /* The first characters of each mod's script, for attributing a refusal.
+   * The violation event arrives in a later task, after `loadingMod` has
+   * been cleared, carrying the start of the refused script as its sample. */
+  const scriptStarts = new Map();
   document.addEventListener('securitypolicyviolation', (event) => {
-    if (loadingMod && event.violatedDirective.startsWith('script-src')) {
-      reportModError(loadingMod, new Error('mod.js changed after this page loaded; reload'));
+    if (!String(event.violatedDirective || '').startsWith('script-src')) return;
+    const sample = String(event.sample || '');
+    if (!sample) return;
+    for (const [id, start] of scriptStarts) {
+      if (start.slice(0, sample.length) !== sample) continue;
+      reportModError(id, new Error('mod.js changed after this page loaded'));
+      toast(T.modsChanged, 'info', { label: T.reload, run: () => window.location.reload() });
+      if (document.body.dataset.pane === 'settings') renderSettings();
+      return;
     }
   });
 
@@ -891,6 +940,7 @@
       const script = document.createElement('script');
       script.dataset.mod = mod.id;
       script.textContent = text;
+      scriptStarts.set(mod.id, text.slice(0, 40));
       loadingMod = mod.id;
       try {
         document.head.append(script);
@@ -993,7 +1043,9 @@
     open,
     api: (path) => {
       if (typeof path !== 'string' || !path.startsWith('/api/')) return Promise.reject(new Error('alc.api takes an /api/ path'));
-      return api(path);
+      // Soft: a route this link may not use (a viewer asking for files)
+      // is the mod's problem, not a reason to forget the page's token.
+      return api(path, { soft: true });
     },
     toast: (text, level) => toast(String(text), ['warn', 'error'].includes(level) ? level : ''),
     type: (text) => !!shell.attached.value && shell.operator.value && shell.send({ t: 'paste', data: String(text) }),
@@ -1013,6 +1065,7 @@
 
   async function pull(first) {
     if (!shell.token.value) return;
+    const seqAtStart = saveSeq;
     let next;
     try {
       next = await api('/api/web');
@@ -1027,12 +1080,16 @@
         if (document.body.dataset.pane === 'settings') renderSettings();
       }
     }
+    // Anything changed here since this request left - a pending write, one
+    // in flight, or one that finished meanwhile - is newer than the answer.
+    const keepLocal = dirty || saving || seqAtStart !== saveSeq;
     web = {
-      // A save in flight wins over what the disk said a moment before it.
-      settings: dirty || saving ? web.settings : core.normalizeWebSettings(next.settings),
+      settings: keepLocal ? web.settings : core.normalizeWebSettings(next.settings),
       themes: Array.isArray(next.themes) ? next.themes : [],
       mods: Array.isArray(next.mods) ? next.mods : [],
-      revision: next.revision || '',
+      // Kept blank when the answer was set aside, so the next poll applies
+      // what the disk holds rather than skipping an unchanged revision.
+      revision: keepLocal ? '' : next.revision || '',
       dir: next.dir || '',
       hub: next.hub || {},
       settingsError: next.settingsError || null,
