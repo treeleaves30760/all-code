@@ -114,6 +114,22 @@
       output: 'Output',
       ledgerEmpty: 'No launches recorded yet.',
       directOnly: 'Tokens are counted only where alc carries the traffic; cache totals may also be unknown when an older hub produced the report.',
+      files: 'Files',
+      showFiles: 'Show files',
+      hideFiles: 'Hide files',
+      filesUp: 'Up one folder',
+      filesEmpty: 'This folder is empty.',
+      filesPick: 'Pick a file to read it here.',
+      filesBinary: 'Binary file — not shown.',
+      filesTruncated: 'Only the first {s} are shown.',
+      filesCut: 'Only the first 1,000 entries are listed.',
+      filesFailed: 'Could not open that.',
+      filesDenied: 'This link can watch but not open files.',
+      filesReload: 'Reload',
+      filesClose: 'Close file',
+      filesFilter: 'Filter',
+      sessionsCount: '{n} sessions',
+      noMatch: 'Nothing matches.',
     },
     'zh-TW': {
       empty: '目前沒有 session',
@@ -175,6 +191,22 @@
       output: '輸出',
       ledgerEmpty: '尚未記錄任何啟動。',
       directOnly: '只有經 alc 轉送流量的 session 才會計算 token；舊版 hub 產生的報告也可能沒有快取總數。',
+      files: '檔案',
+      showFiles: '顯示檔案',
+      hideFiles: '隱藏檔案',
+      filesUp: '上一層資料夾',
+      filesEmpty: '這個資料夾是空的。',
+      filesPick: '選一個檔案在這裡閱讀。',
+      filesBinary: '二進位檔案 —— 不顯示。',
+      filesTruncated: '只顯示前 {s}。',
+      filesCut: '只列出前 1,000 個項目。',
+      filesFailed: '無法開啟。',
+      filesDenied: '這個連結只能觀看，不能開啟檔案。',
+      filesReload: '重新載入',
+      filesClose: '關閉檔案',
+      filesFilter: '篩選',
+      sessionsCount: '{n} 個 session',
+      noMatch: '沒有符合的項目。',
     },
   };
 
@@ -272,6 +304,76 @@
       // Private mode, storage disabled, or none at all. The fold still holds
       // for this page load; only remembering it is lost.
     }
+  }
+
+  /* The file panel, remembered the same way the rail's fold is: per viewer,
+   * written only when pressed. */
+  const FILES_KEY = 'alc.files';
+
+  function loadFilesOpen(storage) {
+    try {
+      return storage.getItem(FILES_KEY) === 'open';
+    } catch {
+      return false;
+    }
+  }
+
+  function saveFilesOpen(storage, open) {
+    try {
+      if (open) storage.setItem(FILES_KEY, 'open');
+      else storage.removeItem(FILES_KEY);
+    } catch {
+      // Remembering is lost; the panel still opens for this page load.
+    }
+  }
+
+  /* A file size the way a person reads one. */
+  function formatBytes(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n < 0) return '';
+    if (n < 1024) return `${n} B`;
+    const units = ['KB', 'MB', 'GB'];
+    let value = n / 1024;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+  }
+
+  /* A panel path is relative to the session's folder and `/`-separated; the
+   * empty string is the folder itself. */
+  function joinPath(folder, name) {
+    const base = String(folder || '').replace(/\/+$/, '');
+    return base ? `${base}/${name}` : String(name);
+  }
+
+  function parentPath(path) {
+    const parts = String(path || '').split('/').filter(Boolean);
+    parts.pop();
+    return parts.join('/');
+  }
+
+  /* The breadcrumb: one crumb per folder, each knowing the path it opens. The
+   * first is the session's folder itself, named after its last segment. */
+  function crumbs(rootPath, path) {
+    const rootName = String(rootPath || '').split('/').filter(Boolean).pop() || '/';
+    const out = [{ label: rootName, path: '' }];
+    let walked = '';
+    for (const part of String(path || '').split('/').filter(Boolean)) {
+      walked = joinPath(walked, part);
+      out.push({ label: part, path: walked });
+    }
+    return out;
+  }
+
+  /* Rows whose text contains every word of the query, case-insensitively. */
+  function matchesQuery(haystack, query) {
+    const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return true;
+    const text = String(haystack || '').toLowerCase();
+    return words.every((word) => text.includes(word));
   }
 
   /* ------------------------------------------------------------ sessions */
@@ -772,6 +874,13 @@
     RAIL_KEY,
     loadRailFolded,
     saveRailFolded,
+    loadFilesOpen,
+    saveFilesOpen,
+    formatBytes,
+    joinPath,
+    parentPath,
+    crumbs,
+    matchesQuery,
     createSessionStore,
     describeSession,
     formatAge,

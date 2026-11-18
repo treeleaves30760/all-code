@@ -122,6 +122,9 @@ alc --no-share claude        # opt one launch out
 - **分享出去的 session 就是分享螢幕。** alc 會遮蔽它自己放進環境裡的 API
   key，每一個畫面都遮，包括你自己的終端機。除此之外 agent 印出來的東西，
   看的人都看得到。
+- **檔案面板只看得到 session 的資料夾。** 能打字的連結可以讀 agent 啟動時所在
+  資料夾裡的檔案 —— 往上爬的路徑、指向外面的 symlink 都會被拒絕，`.git` 不會列出，
+  檔案上限 512 KB，alc 放進去的 API key 在這裡一樣會被遮蔽。唯讀連結完全拿不到檔案。
 - **alc 永遠不回應剪貼簿讀取**，所以 agent 印出來的一個惡意檔案，沒辦法把你
   上次複製的東西拉進模型的 context。
 - **alc 不從工作中的 repository 讀任何設定**，所以一個 checked-in 的檔案

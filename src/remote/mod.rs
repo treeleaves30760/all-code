@@ -32,6 +32,7 @@ mod assets;
 mod caps;
 mod ctl;
 mod fanout;
+mod files;
 mod hub;
 mod id;
 mod local;

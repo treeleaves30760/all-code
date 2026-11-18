@@ -27,6 +27,7 @@ use tungstenite::Message;
 use crate::remote::assets;
 use crate::remote::caps::{CAPS, SafetyRung};
 use crate::remote::fanout::Frame;
+use crate::remote::files;
 use crate::remote::permission::{self, EscalationGate};
 use crate::remote::request::{Denied, Grade, HostPattern, Method, Request, read_request};
 use crate::remote::session::Session;
@@ -698,6 +699,56 @@ fn serve_http(
             };
             respond(stream, 200, "application/json; charset=utf-8", None, &body)
         }
+        // The file panel. Operator-only: a viewer link is something to hand
+        // to a person to watch, and the project's source tree is more than
+        // the screen they were handed.
+        path if path.starts_with("/api/sessions/")
+            && (path.ends_with("/files") || path.ends_with("/file")) =>
+        {
+            let (id, listing) = match path.trim_start_matches("/api/sessions/").rsplit_once('/') {
+                Some((id, "files")) => (id, true),
+                Some((id, _)) => (id, false),
+                None => {
+                    return respond(stream, 404, "text/plain; charset=utf-8", None, b"not found");
+                }
+            };
+            if grade < Some(Grade::Operator) {
+                return respond(
+                    stream,
+                    403,
+                    "text/plain; charset=utf-8",
+                    None,
+                    b"this link can watch but not open files",
+                );
+            }
+            let Some(session) = registry.get(id) else {
+                return respond(
+                    stream,
+                    404,
+                    "text/plain; charset=utf-8",
+                    None,
+                    b"no session",
+                );
+            };
+            let relative = request.query_param("path").unwrap_or_default();
+            let answer = if listing {
+                files::list(session.cwd(), &relative)
+                    .and_then(|body| Ok(serde_json::to_vec(&body)?))
+            } else {
+                files::read(session.cwd(), &relative, session.secrets())
+                    .and_then(|body| Ok(serde_json::to_vec(&body)?))
+            };
+            match answer {
+                Ok(body) => respond(stream, 200, "application/json; charset=utf-8", None, &body),
+                // The messages are alc's own fixed sentences (see `files`),
+                // never an OS error quoting a path outside the root.
+                Err(error) => {
+                    let body =
+                        serde_json::to_vec(&serde_json::json!({ "error": error.to_string() }))?;
+                    respond(stream, 404, "application/json; charset=utf-8", None, &body)
+                }
+            }
+        }
         path if path.starts_with("/api/sessions/") => {
             let id = path.trim_start_matches("/api/sessions/");
             match registry.get(id) {
@@ -1273,6 +1324,36 @@ mod live_tests {
                 !body.contains(home),
                 "a viewer was told a filesystem path: {body}"
             );
+        }
+        let _ = harness.session.kill();
+    }
+
+    #[test]
+    fn the_file_routes_answer_an_operator_and_refuse_a_viewer() {
+        let harness = harness();
+        let id = harness.session.id().to_owned();
+        let ask = |token: &str, route: &str| {
+            request(
+                harness.address,
+                &format!(
+                    "GET /api/sessions/{id}/{route} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
+                     Authorization: Bearer {token}\r\nConnection: close\r\n\r\n",
+                    harness.address.port()
+                ),
+            )
+        };
+
+        let listing = ask(&harness.operator, "files?path=");
+        assert!(status(&listing).contains("200"), "{listing}");
+        assert!(listing.contains("\"entries\""), "{listing}");
+
+        let escape = ask(&harness.operator, "file?path=..%2F..%2Fetc%2Fpasswd");
+        assert!(status(&escape).contains("404"), "{escape}");
+        assert!(!escape.contains("root:"), "{escape}");
+
+        for route in ["files?path=", "file?path=x"] {
+            let refused = ask(&harness.viewer, route);
+            assert!(status(&refused).contains("403"), "{refused}");
         }
         let _ = harness.session.kill();
     }

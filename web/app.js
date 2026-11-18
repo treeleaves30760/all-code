@@ -32,6 +32,10 @@
     'usageEmpty', 'usageEmptyTitle', 'usageEmptyHow', 'usageEmptyCommand',
     'ledgerTitle', 'ledger', 'ledgerProvider', 'ledgerAgent', 'ledgerLaunches',
     'ledgerTurns', 'ledgerInput', 'ledgerCached', 'ledgerCacheShare', 'ledgerOutput', 'ledgerNote',
+    'sessionsTitle', 'sessionsCount', 'filterBox', 'filter', 'noMatch',
+    'filesToggle', 'files', 'filesUp', 'crumbs', 'filesHide', 'tree', 'treeNote',
+    'viewer', 'viewerHead', 'viewerName', 'viewerSize', 'viewerReload', 'viewerClose',
+    'viewerNote', 'code', 'gutter', 'source', 'viewerEmpty', 'viewerEmptyText',
   ]) {
     el[id] = document.getElementById(id);
   }
@@ -64,6 +68,20 @@
   el.ledgerCached.textContent = T.cached;
   el.ledgerCacheShare.textContent = T.cacheShare;
   el.ledgerOutput.textContent = T.output;
+  el.sessionsTitle.textContent = T.sessionsRegion;
+  el.filter.placeholder = T.filesFilter;
+  el.filter.setAttribute('aria-label', T.filesFilter);
+  el.noMatch.textContent = T.noMatch;
+  el.files.setAttribute('aria-label', T.files);
+  el.filesUp.setAttribute('aria-label', T.filesUp);
+  el.filesUp.title = T.filesUp;
+  el.filesHide.setAttribute('aria-label', T.hideFiles);
+  el.filesHide.title = T.hideFiles;
+  el.viewerReload.setAttribute('aria-label', T.filesReload);
+  el.viewerReload.title = T.filesReload;
+  el.viewerClose.setAttribute('aria-label', T.filesClose);
+  el.viewerClose.title = T.filesClose;
+  el.viewerEmptyText.textContent = T.filesPick;
 
   let toastTimer = 0;
   function toast(message, level) {
@@ -246,8 +264,15 @@
   function renderRows(list) {
     const seen = new Set();
     let previous = null;
+    const query = el.filter.value;
+    const shown = list.filter((row) => core.matchesQuery(rowText(row.card), query));
 
-    for (const row of list) {
+    // The count and the filter are for a list long enough to need them.
+    setText(el.sessionsCount, list.length ? String(list.length) : '');
+    el.filterBox.hidden = list.length < 3 && !query;
+    el.noMatch.hidden = !(list.length && !shown.length);
+
+    for (const row of shown) {
       const id = row.card.id;
       seen.add(id);
       let node = built.get(id);
@@ -285,30 +310,55 @@
     el.empty.hidden = !denied && (!loaded || list.length > 0);
   }
 
+  /* What the filter searches: everything the row shows. */
+  function rowText(card) {
+    return [card.name, card.cwd, ...core.describeSession(card)].join(' ');
+  }
+
+  /* The agent's monogram, in a hue of its own so a list of five Claude Code
+   * sessions and one Codex reads at a glance. Derived from the name rather
+   * than kept in a table, so an agent alc adds later still gets one. */
+  function agentHue(agent) {
+    let hash = 0;
+    for (const char of String(agent || '')) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+    return hash % 360;
+  }
+
   function buildRow() {
     const li = document.createElement('li');
     const button = document.createElement('button');
     button.className = 'card';
     button.type = 'button';
 
-    const head = document.createElement('div');
-    head.className = 'row';
+    const avatar = document.createElement('span');
+    avatar.className = 'avatar';
+    avatar.setAttribute('aria-hidden', 'true');
     const dot = document.createElement('span');
     dot.className = 'dot';
+    avatar.append(document.createElement('span'), dot);
+
+    const main = document.createElement('span');
+    main.className = 'card-main';
+
+    const head = document.createElement('span');
+    head.className = 'row';
     const name = document.createElement('span');
     name.className = 'name';
     const age = document.createElement('span');
     age.className = 'age';
-    head.append(dot, name, age);
+    head.append(name, age);
 
-    const chips = document.createElement('div');
-    chips.className = 'chips';
-    const cwd = document.createElement('div');
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    const cwd = document.createElement('span');
     cwd.className = 'cwd';
+    const chips = document.createElement('span');
+    chips.className = 'chips';
 
-    button.append(head, chips, cwd);
+    main.append(head, meta, cwd, chips);
+    button.append(avatar, main);
     li.append(button);
-    return { li, button, dot, name, age, chips, cwd, id: null };
+    return { li, button, avatar, dot, name, age, meta, chips, cwd, id: null };
   }
 
   function updateRow(node, row) {
@@ -326,7 +376,13 @@
       ? core.formatExit(card.exit, T)
       : core.formatAge(card.started_at, Date.now()));
 
-    const chips = core.describeSession(card);
+    const described = core.describeSession(card);
+    setText(node.avatar.firstChild, String(card.agent || '?').slice(0, 2));
+    node.avatar.style.setProperty('--hue', agentHue(card.agent));
+    // The agent is the monogram; the line says what it is running on.
+    setText(node.meta, described.slice(1).filter((bit) => bit !== 'tmux').join(' · ') || card.agent);
+    const chips = [];
+    if (card.tmux) chips.push('tmux');
     if (card.viewers > 0) chips.push(`${card.viewers} ${T.viewers}`);
     renderChips(node.chips, chips, card.unsandboxed);
     setText(node.cwd, core.elidePath(card.cwd));
@@ -357,6 +413,7 @@
   }
 
   rows.subscribe(renderRows);
+  el.filter.addEventListener('input', () => renderRows(rows.value));
 
   /* A command button holds an icon as well as its command now, so the text
    * goes into its own span rather than over the whole button. The command is
@@ -654,31 +711,37 @@
   let generation = 0;
 
   /* The terminal stays dark in both page themes: it is the agent's own
-   * screen, and agents draw for a dark background. The ANSI ramp is tuned to
-   * hold 4.5:1 against it, and the cursor and selection take the page accent
-   * so the two read as one design. */
+   * screen, and agents draw for a dark background.
+   *
+   * Neutral on purpose. The ramp this replaced was tinted to match a warm
+   * page - a cream foreground, an amber cursor, a pinkish red - and an agent
+   * that draws mostly in the default colour and the basic eight came out
+   * looking as though it had been printed on yellowed paper. Every hue here
+   * holds 4.5:1 against the background, and the default foreground is a
+   * plain light grey, so what the agent asked for is what is shown. */
   const DARK = {
-    background: '#0b0c0f',
-    foreground: '#e6e4de',
-    cursor: '#e39a6d',
-    cursorAccent: '#0b0c0f',
-    selectionBackground: 'rgba(227,154,109,0.30)',
-    black: '#2a2c33',
-    red: '#f08a85',
-    green: '#7ccf9b',
-    yellow: '#e3b86a',
-    blue: '#7fb0f0',
-    magenta: '#c9a0ea',
-    cyan: '#6fcfd0',
-    white: '#d4d2cc',
-    brightBlack: '#7d7f89',
-    brightRed: '#ff9f9a',
-    brightGreen: '#97e0b2',
-    brightYellow: '#f2ca82',
-    brightBlue: '#9cc4fa',
-    brightMagenta: '#dcb9f6',
-    brightCyan: '#8fe0e0',
-    brightWhite: '#f4f3ef',
+    background: '#0c0d10',
+    foreground: '#e4e5e9',
+    cursor: '#e4e5e9',
+    cursorAccent: '#0c0d10',
+    selectionBackground: 'rgba(129,140,248,0.35)',
+    selectionInactiveBackground: 'rgba(129,140,248,0.22)',
+    black: '#3b3f48',
+    red: '#f87171',
+    green: '#4ade80',
+    yellow: '#facc15',
+    blue: '#60a5fa',
+    magenta: '#c084fc',
+    cyan: '#22d3ee',
+    white: '#d4d6dc',
+    brightBlack: '#7c818d',
+    brightRed: '#fca5a5',
+    brightGreen: '#86efac',
+    brightYellow: '#fde047',
+    brightBlue: '#93c5fd',
+    brightMagenta: '#d8b4fe',
+    brightCyan: '#67e8f9',
+    brightWhite: '#ffffff',
   };
 
   function ensureTerminal() {
@@ -689,9 +752,10 @@
       cursorBlink: true,
       convertEol: false,
       fontSize: baseFontSize,
-      fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace',
+      fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK TC", monospace',
       scrollback: 5000,
       theme: DARK,
+      drawBoldTextInBrightColors: false,
     });
     fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);
@@ -954,6 +1018,8 @@
         // would resume past them and lose that output for good. Leaving it
         // null asks for a snapshot instead, which is always safe.
         setGrade(frame.grade);
+        renderFilesSwitch();
+        if (filesOpen.value && filesAvailable() && !el.tree.childElementCount) loadFolder(folder);
         setText(el.subtitle, `${frame.session.name} · ${core.describeSession(frame.session).join(' · ')}`);
         renderPermission(frame.session);
         setConnection('live');
@@ -973,6 +1039,18 @@
         setTypingAllowed(false);
         toast(core.formatExit({ code: frame.code, signal: frame.signal }, T), 'warn');
         refresh();
+        break;
+      }
+      case 'size': {
+        // The grid moved. Applied now, ahead of the bytes drawn for it, which
+        // the server queued behind this frame; waiting for the next poll to
+        // notice wrote a redraw for the new width into a grid of the old
+        // one. A page that drives the size already knows it.
+        const card = attached.value;
+        if (!card || browserOwnsSize(card)) break;
+        if (card.cols === frame.cols && card.rows === frame.rows) break;
+        attached.value = { ...card, cols: frame.cols, rows: frame.rows };
+        relayout();
         break;
       }
       case 'ping':
@@ -1027,6 +1105,9 @@
     setConnection('connecting');
     connect(card, mine);
 
+    resetFiles();
+    renderFilesSwitch();
+
     requestAnimationFrame(() => {
       relayout();
       if (!document.body.classList.contains('viewer')) term.focus();
@@ -1076,10 +1157,281 @@
     pendingTicket = null;
     el.usageToggle.hidden = false;
     document.body.classList.remove('viewer');
+    resetFiles();
+    renderFilesSwitch();
     setText(el.subtitle, '');
     setConnection('idle');
     refresh();
     renderRows(rows.value);
+  }
+
+  /* ---------------------------------------------------------- file panel */
+
+  /* The session's folder, read-only, beside the terminal.
+   *
+   * A folder list over a reader. Picking a file swaps what the reader shows;
+   * picking a folder walks into it. The open file is reloaded while the panel
+   * is on screen, because the reason to look is usually that the agent just
+   * changed it, and a reader that went stale silently would be worse than
+   * none. Operator links only: the server refuses a viewer, and the switch is
+   * not drawn for one. */
+  const preferencesForFiles = storageArea('localStorage');
+  const filesOpen = core.signal(core.loadFilesOpen(preferencesForFiles));
+  let folder = '';
+  let openFile = null;
+  let fileText = null;
+  /* Bumped when the session changes, so nothing from the last one lands. */
+  let filesGeneration = 0;
+  /* Bumped per folder load, so only the latest walk draws the list. */
+  let folderGeneration = 0;
+  let fileTimer = 0;
+
+  /* Its own fetch rather than `api`: that one forgets the token on a 403,
+   * and a viewer link being refused files is not a dead link. */
+  async function filesApi(kind, path) {
+    const card = attached.value;
+    if (!card) throw new Error('detached');
+    const url = `/api/sessions/${encodeURIComponent(card.id)}/${kind}?path=${encodeURIComponent(path)}`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token.value || ''}` },
+      cache: 'no-store',
+    });
+    if (response.status === 403) throw new Error(T.filesDenied);
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      throw new Error(T.filesFailed);
+    }
+    if (!response.ok) throw new Error(body && body.error ? body.error : T.filesFailed);
+    return body;
+  }
+
+  function filesAvailable() {
+    return document.body.dataset.pane === 'view' && operator.value && !!attached.value;
+  }
+
+  function renderFilesSwitch() {
+    const available = filesAvailable();
+    el.filesToggle.hidden = !available;
+    const open = available && filesOpen.value;
+    document.body.dataset.files = open ? 'open' : 'closed';
+    el.files.inert = !open;
+    const label = open ? T.hideFiles : T.showFiles;
+    el.filesToggle.setAttribute('aria-expanded', String(open));
+    el.filesToggle.setAttribute('aria-label', label);
+    el.filesToggle.title = label;
+    el.filesToggle.classList.toggle('on', open);
+    // No relayout from here: the panel takes its width from #terminal's
+    // box, and the ResizeObserver on that box is what refits.
+  }
+
+  filesOpen.subscribe(() => {
+    renderFilesSwitch();
+    if (filesOpen.value && filesAvailable() && !el.tree.childElementCount) loadFolder(folder);
+    scheduleFileReload();
+  });
+  operator.subscribe(renderFilesSwitch);
+
+  el.filesToggle.addEventListener('mousedown', (event) => event.preventDefault());
+  el.filesToggle.addEventListener('click', () => {
+    filesOpen.value = !filesOpen.value;
+    core.saveFilesOpen(preferencesForFiles, filesOpen.value);
+  });
+  el.filesHide.addEventListener('click', () => {
+    filesOpen.value = false;
+    core.saveFilesOpen(preferencesForFiles, false);
+    el.filesToggle.focus();
+  });
+
+  function svgIcon(id) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'glyph');
+    svg.setAttribute('aria-hidden', 'true');
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute('href', `#${id}`);
+    svg.append(use);
+    return svg;
+  }
+
+  function treeNote(text) {
+    setText(el.treeNote, text || '');
+    el.treeNote.hidden = !text;
+  }
+
+  async function loadFolder(path) {
+    const session = filesGeneration;
+    const mine = ++folderGeneration;
+    const stale = () => mine !== folderGeneration || session !== filesGeneration;
+    let listing;
+    try {
+      listing = await filesApi('files', path);
+    } catch (error) {
+      if (stale()) return;
+      treeNote(error.message);
+      return;
+    }
+    if (stale()) return;
+    folder = listing.path;
+    renderCrumbs();
+    el.tree.replaceChildren();
+    for (const entry of listing.entries) el.tree.append(treeRow(entry));
+    treeNote(listing.entries.length ? (listing.truncated ? T.filesCut : '') : T.filesEmpty);
+    el.filesUp.disabled = !folder;
+    el.tree.scrollTop = 0;
+  }
+
+  function treeRow(entry) {
+    const li = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `entry ${entry.kind}`;
+    const path = core.joinPath(folder, entry.name);
+    button.dataset.path = path;
+    const icon = entry.kind === 'dir' ? 'i-folder' : entry.kind === 'link' ? 'i-link' : 'i-file';
+    const name = document.createElement('span');
+    name.className = 'entry-name';
+    name.textContent = entry.name;
+    const size = document.createElement('span');
+    size.className = 'entry-size';
+    size.textContent = entry.kind === 'file' ? core.formatBytes(entry.size) : '';
+    button.append(svgIcon(icon), name, size);
+    if (entry.kind === 'link') button.disabled = true;
+    if (openFile === path) button.setAttribute('aria-current', 'true');
+    button.addEventListener('click', () => {
+      if (entry.kind === 'dir') loadFolder(path);
+      else if (entry.kind === 'file') showFile(path);
+    });
+    li.append(button);
+    return li;
+  }
+
+  function renderCrumbs() {
+    const card = attached.value;
+    el.crumbs.replaceChildren();
+    const trail = core.crumbs(card ? card.cwd : '', folder);
+    trail.forEach((crumb, index) => {
+      if (index) {
+        const sep = document.createElement('span');
+        sep.className = 'crumb-sep';
+        sep.textContent = '/';
+        el.crumbs.append(sep);
+      }
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'crumb';
+      button.textContent = crumb.label;
+      if (index === trail.length - 1) button.setAttribute('aria-current', 'location');
+      button.addEventListener('click', () => loadFolder(crumb.path));
+      el.crumbs.append(button);
+    });
+    el.crumbs.scrollLeft = el.crumbs.scrollWidth;
+  }
+
+  el.filesUp.addEventListener('click', () => {
+    if (folder) loadFolder(core.parentPath(folder));
+  });
+
+  function markCurrent() {
+    for (const button of el.tree.querySelectorAll('.entry')) {
+      if (button.dataset.path === openFile) button.setAttribute('aria-current', 'true');
+      else button.removeAttribute('aria-current');
+    }
+  }
+
+  function viewerNote(text, level) {
+    setText(el.viewerNote, text || '');
+    el.viewerNote.hidden = !text;
+    el.viewerNote.className = `note viewer-note${level ? ` ${level}` : ''}`;
+  }
+
+  /* `quiet` is a background reload: it keeps the scroll position and says
+   * nothing when nothing changed. */
+  async function showFile(path, quiet) {
+    const mine = filesGeneration;
+    if (!quiet) {
+      openFile = path;
+      fileText = null;
+      markCurrent();
+    }
+    let view;
+    try {
+      view = await filesApi('file', path);
+    } catch (error) {
+      if (mine !== filesGeneration || openFile !== path) return;
+      if (!quiet) {
+        el.code.hidden = true;
+        el.viewerEmpty.hidden = true;
+        el.viewerHead.hidden = false;
+        setText(el.viewerName, path);
+        setText(el.viewerSize, '');
+        viewerNote(error.message, 'danger');
+      }
+      return;
+    }
+    if (mine !== filesGeneration || openFile !== path) return;
+    el.viewerEmpty.hidden = true;
+    el.viewerHead.hidden = false;
+    setText(el.viewerName, view.path);
+    el.viewerName.title = view.path;
+    setText(el.viewerSize, core.formatBytes(view.size));
+    if (view.binary) {
+      el.code.hidden = true;
+      fileText = null;
+      viewerNote(T.filesBinary);
+      return;
+    }
+    viewerNote(view.truncated ? T.filesTruncated.replace('{s}', core.formatBytes(512 * 1024)) : '', 'warn');
+    if (quiet && view.text === fileText) return;
+    const keep = quiet ? el.code.scrollTop : 0;
+    fileText = view.text;
+    const lines = view.text.split('\n');
+    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+    el.gutter.textContent = lines.map((_, index) => index + 1).join('\n');
+    el.source.textContent = lines.join('\n');
+    el.code.style.setProperty('--gutter', `${String(lines.length).length + 1}ch`);
+    el.code.hidden = false;
+    el.code.scrollTop = keep;
+    if (!quiet) el.code.scrollLeft = 0;
+  }
+
+  function closeFile() {
+    openFile = null;
+    fileText = null;
+    el.code.hidden = true;
+    el.viewerHead.hidden = true;
+    viewerNote('');
+    el.viewerEmpty.hidden = false;
+    el.gutter.textContent = '';
+    el.source.textContent = '';
+    markCurrent();
+  }
+
+  el.viewerClose.addEventListener('click', closeFile);
+  el.viewerReload.addEventListener('click', () => {
+    if (openFile) showFile(openFile, true);
+    loadFolder(folder);
+  });
+
+  /* Every four seconds while the panel is open and the tab is visible. */
+  function scheduleFileReload() {
+    clearInterval(fileTimer);
+    fileTimer = 0;
+    if (!filesOpen.value) return;
+    fileTimer = setInterval(() => {
+      if (document.hidden || !filesAvailable() || !filesOpen.value || !openFile) return;
+      showFile(openFile, true);
+    }, 4000);
+  }
+
+  /* A fresh session is a fresh folder. */
+  function resetFiles() {
+    filesGeneration += 1;
+    folder = '';
+    el.tree.replaceChildren();
+    el.crumbs.replaceChildren();
+    treeNote('');
+    closeFile();
   }
 
   /* ---------------------------------------------------------- usage pane */

@@ -125,6 +125,11 @@ A page that types into a coding agent is remote code execution on your machine.
 - **A shared session is screen sharing.** alc masks the API keys it put into
   the environment, in every view including your own terminal. Anything else the
   agent prints, a viewer sees.
+- **The file panel stays in the session's folder.** A link that can type can
+  read files under the folder the agent started in — paths that climb out of it
+  or symlinks that point out of it are refused, `.git` is not listed, files are
+  capped at 512 KB, and the API keys alc injected are masked there too. A
+  view-only link gets no files at all.
 - **alc never answers a clipboard read**, so a hostile file an agent prints
   cannot pull what you last copied into the model's context.
 - **alc reads no configuration from the working repository**, so a checked-in

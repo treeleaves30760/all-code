@@ -114,6 +114,14 @@ impl PtyHost {
         if !command.env.contains_key(OsStr::new("COLORTERM")) {
             builder.env("COLORTERM", "truecolor");
         }
+        // The pty is nobody's tmux pane, whatever the hub or the launching
+        // shell was started inside. Claude Code reads `TMUX` as "a
+        // multiplexer that may drop 24-bit colour" and falls back to the
+        // 256-colour palette, which shifts every colour it draws - its
+        // orange becomes a salmon pink and its greys turn warm - on a page
+        // that renders 24-bit colour perfectly well.
+        builder.env_remove("TMUX");
+        builder.env_remove("TMUX_PANE");
 
         let child = pair
             .slave

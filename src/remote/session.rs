@@ -29,7 +29,7 @@ use crate::remote::fanout::{Fanout, Frame, Subscription};
 use crate::remote::permission::{PermState, probe};
 use crate::remote::pty::{PtyCommand, PtyHost};
 use crate::remote::ring::SeqRing;
-use crate::remote::screen::ModeScanner;
+use crate::remote::screen::{ModeScanner, semicolon_colours};
 use crate::remote::scrub::SecretScrubber;
 use crate::remote::tmux::Tmux;
 use crate::remote::utf8::Utf8Chunker;
@@ -99,6 +99,9 @@ pub(crate) struct Session {
     ring: Mutex<SeqRing>,
     modes: Mutex<ModeScanner>,
     scrubber: Mutex<SecretScrubber>,
+    /// The values the scrubber masks, kept so a file the page opens is
+    /// masked by the same rule as the screen (`files::read`).
+    secrets: Vec<String>,
     fanout: Fanout,
 
     perm: Mutex<PermState>,
@@ -191,6 +194,7 @@ impl Session {
             ring: Mutex::new(SeqRing::new(scrollback_bytes)),
             modes: Mutex::new(ModeScanner::new()),
             scrubber: Mutex::new(SecretScrubber::new(&spec.secret_values)),
+            secrets: spec.secret_values.clone(),
             fanout: Fanout::new(),
             perm: Mutex::new(session.permission),
             size: Mutex::new((cols, rows)),
@@ -472,6 +476,16 @@ impl Session {
         drop(guards);
     }
 
+    /// The folder the agent was started in, which is the root of what the
+    /// page's file panel can open.
+    pub(crate) fn cwd(&self) -> &Path {
+        Path::new(&self.cwd)
+    }
+
+    pub(crate) fn secrets(&self) -> &[String] {
+        &self.secrets
+    }
+
     pub(crate) fn id(&self) -> &str {
         &self.id
     }
@@ -600,7 +614,7 @@ impl Session {
             .map(|modes| modes.prelude())
             .unwrap_or_default();
         let screen = self.vt.lock().map(|vt| vt.dump()).unwrap_or_default();
-        format!("{prelude}{screen}")
+        format!("{prelude}{}", semicolon_colours(&screen))
     }
 
     /// The binary frame that brings a viewer up to date: an exact delta when
@@ -703,6 +717,16 @@ impl Session {
     fn set_size(&self, cols: u16, rows: u16) -> Result<()> {
         let cols = cols.max(20);
         let rows = rows.max(4);
+        let unchanged = self.size.lock().is_ok_and(|size| *size == (cols, rows));
+        // Told to every viewer before the pty moves, so it is queued ahead of
+        // anything the agent draws for the new size. A page that learned the
+        // size from its five-second poll instead spent up to five seconds
+        // writing a redraw for the new width into a grid of the old one, and
+        // the wrapped lines that left behind never went away.
+        if !unchanged && let Ok(rendered) = serde_json::to_string(&ServerFrame::Size { cols, rows })
+        {
+            self.fanout.broadcast(Frame::Text(rendered));
+        }
         self.pty.resize(cols, rows)?;
         if let Ok(mut vt) = self.vt.lock() {
             vt.resize(usize::from(cols), usize::from(rows));
