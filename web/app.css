@@ -4320,8 +4320,14 @@ body.dragging-x .splitter::after {
   }
 }
 
+/* `#list > *` centres the list's children at full width; the splitter is
+ * the one child that must stay a 9px handle on the edge, or it lies over
+ * every card in the rail and eats their clicks. */
 #list > .splitter {
   right: -5px;
+  width: 9px;
+  max-width: none;
+  margin: 0;
 }
 
 body[data-rail-side="right"] #list > .splitter {
