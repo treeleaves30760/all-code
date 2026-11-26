@@ -89,6 +89,15 @@
       <symbol id="i-up" viewBox="0 0 16 16">
         <path d="M8 12.5v-9M4 7.5l4-4 4 4" />
       </symbol>
+      <symbol id="i-lock" viewBox="0 0 16 16">
+        <rect x="3.5" y="7" width="9" height="6.5" rx="1.5" />
+        <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+      </symbol>
+      <symbol id="i-help" viewBox="0 0 16 16">
+        <circle cx="8" cy="8" r="5.75" />
+        <path d="M6.4 6.3a1.7 1.7 0 0 1 3.2.8c0 1.1-1.6 1.4-1.6 2.4" />
+        <path d="M8 11.4v.1" />
+      </symbol>
       <symbol id="i-reload" viewBox="0 0 16 16">
         <path d="M13 8a5 5 0 1 1-1.5-3.55" />
         <path d="M13 2.75v2.5h-2.5" />
@@ -366,10 +375,17 @@
         <div id="perm" class="perm" hidden>
           <div class="perm-controls">
             <span id="permLabel" class="perm-label"></span>
+            <!-- The mode now. For an agent that can only be cycled it opens
+                 the cycle order, which a phone could not reach by hover. -->
+            <button type="button" id="permChip" class="perm-chip" aria-expanded="false" aria-controls="permOrder" hidden></button>
             <select id="permPick" aria-label="Permission mode"></select>
-            <button type="button" id="permCycle" hidden></button>
+            <button type="button" id="permCycle" class="perm-cycle" hidden>
+              <svg class="glyph" aria-hidden="true"><use href="#i-reload" /></svg>
+              <span id="permCycleText"></span>
+            </button>
             <span id="permFlags" class="perm-flags"></span>
           </div>
+          <p id="permOrder" class="perm-order" hidden></p>
           <p id="permNote" class="perm-note" hidden></p>
           <button type="button" id="permCommand" class="command" hidden>
             <svg class="glyph" aria-hidden="true"><use href="#i-copy" /></svg>

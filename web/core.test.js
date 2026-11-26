@@ -1262,3 +1262,24 @@ test('an explicit layout draws only what it places, and a saved one reproduces t
   assert.deepEqual(hidden.slots, {});
   assert.deepEqual(hidden.hidden, []);
 });
+
+test('every string the page uses exists, and every string is used', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const read = (name) => fs.readFileSync(path.join(__dirname, name), 'utf8');
+  const used = new Set();
+  for (const name of ['app.js', 'shell.js', 'studio.js', 'dashboard.js', 'layout.js']) {
+    for (const match of read(name).matchAll(/\bT\.([A-Za-z0-9_]+)/g)) used.add(match[1]);
+  }
+  // core.js reads its own strings through a `t` it was handed; `t` is other
+  // things there too, so those count as uses but are not checked as keys.
+  const inCore = new Set([...read('core.js').matchAll(/\bt\.([A-Za-z0-9_]+)/g)].map((match) => match[1]));
+  // Keys built at run time: T[`bg_${name}`], T[`slot_…`], T[`panel_…`], T[`range${days}`].
+  // And the connection light's word, T[state].
+  const dynamic = /^(bg_|slot_|panel_|range\d|live$|connecting$|reconnecting$|ended$)/;
+  const defined = Object.keys(core.STRINGS.en);
+  const missing = [...used].filter((key) => !defined.includes(key));
+  const unused = defined.filter((key) => !used.has(key) && !inCore.has(key) && !dynamic.test(key));
+  assert.deepEqual(missing, [], 'used but not defined');
+  assert.deepEqual(unused, [], 'defined but never used');
+});

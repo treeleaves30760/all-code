@@ -381,6 +381,20 @@
     });
   }
 
+  /* A mod installed from elsewhere runs with this page's access once it is
+   * on: say so at the moment it is switched on, naming where it came from.
+   * Official mods and ones written here (no source) are not asked about. */
+  async function confirmModOn(mod) {
+    const source = mod.source || '';
+    if (!source || source === 'alc (official)') return true;
+    const ok = await dialog({
+      title: core.fill(T.modEnableTitle, { m: mod.name || mod.id }),
+      body: h('p', {}, core.fill(T.modEnableBody, { s: source })),
+      actions: [{ label: T.modEnableConfirm }],
+    });
+    return !!ok;
+  }
+
   /* ------------------------------------------------------------ layouts */
 
   /* Applies a layout, installing an official one first. A layout that names
@@ -737,7 +751,7 @@
           }, false, true),
           onchange: () => renderSettings(),
         })));
-    return section('appearance', T.appearance, T.appearanceHow,
+    return section('appearance', T.appearance, null,
       field(T.theme, null, h('div', { class: 'theme-grid', role: 'radiogroup', 'aria-label': T.theme }, themeChoices().map((choice) => themeCard(choice, viewer))), true),
       field(T.accent, null, accentSwatches),
       field(T.density, null, segment([
@@ -885,7 +899,7 @@
       }, true),
     }, [1000, 5000, 10000, 25000, 50000, 100000].map((lines) => h('option', { value: lines, selected: t.scrollback === lines }, core.fill(T.scrollbackLines, { n: lines.toLocaleString(LOCALE) }))));
 
-    const fit = h('label', { class: 'switch' },
+    const fit = h('label', { class: 'switch', title: T.fitPlainHelp },
       h('input', {
         type: 'checkbox',
         role: 'switch',
@@ -899,9 +913,9 @@
       h('span', { class: 'switch-track', 'aria-hidden': 'true' }),
       h('span', { class: 'switch-text' }, T.fitPlain));
 
-    return section('terminal', T.terminal, T.terminalHow,
+    return section('terminal', T.terminal, null,
       h('div', { class: 'field wide' }, terminalPreview()),
-      field(T.fitPlainLabel, T.fitPlainHelp, fit),
+      field(T.fitPlainLabel, null, fit),
       field(covered(T.fontSize, 'fontSize'), null, size),
       field(covered(T.fontFamily, 'fontFamily'), null, family),
       field(covered(T.lineHeight, 'lineHeight'), null, line),
@@ -939,6 +953,10 @@
           disabled: viewer || !!mod.error,
           onchange: async (event) => {
             const on = event.target.checked;
+            if (on && !(await confirmModOn(mod))) {
+              event.target.checked = false;
+              return;
+            }
             const ok = await changeSettings((n) => {
               n.disabledMods = on ? n.disabledMods.filter((id) => id !== mod.id) : [...n.disabledMods, mod.id];
             }, true);
@@ -956,7 +974,7 @@
       : h('div', { class: 'mods-empty' }, icon('puzzle'), h('p', {}, T.modsNone));
     const folder = dir
       ? h('div', { class: 'field wide folder' },
-        h('div', { class: 'field-text' }, h('span', { class: 'field-label' }, T.modsFolder), h('span', { class: 'field-help' }, T.modsExamples)),
+        h('div', { class: 'field-text' }, h('span', { class: 'field-label' }, T.modsFolder)),
         h('button', { type: 'button', class: 'command', onclick: () => copy(dir) }, icon('copy'), h('span', { class: 'command-text' }, dir)))
       : null;
     const ask = shell.operator.value
@@ -965,9 +983,9 @@
         h('button', { type: 'button', class: 'command prompt', onclick: () => copy(prompt) }, icon('copy'), h('span', { class: 'command-text' }, `${prompt}…`)))
       : null;
     const studio = h('div', { class: 'field wide' },
-      h('div', { class: 'field-text' }, h('span', { class: 'field-label' }, T.navStudio), h('span', { class: 'field-help' }, T.studioPitch)),
-      h('button', { type: 'button', class: 'btn accent', 'data-key': 'open-studio', onclick: () => open('studio') }, icon('layers'), T.studioOpen));
-    return section('mods', T.mods, T.modsHow, studio, h('div', { class: 'field wide' }, list), folder, ask);
+      h('div', { class: 'field-text' }, h('span', { class: 'field-label' }, T.navStudio)),
+      h('button', { type: 'button', class: 'btn', 'data-key': 'open-studio', onclick: () => open('studio') }, icon('layers'), T.studioOpen));
+    return section('mods', T.mods, null, h('div', { class: 'field wide' }, list), studio, folder, ask);
   }
 
   function aboutSection() {
@@ -1000,7 +1018,8 @@
     const focusKey = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.key : null;
     const scroll = el.settings.scrollTop;
     const viewer = !shell.operator.value;
-    $('settingsSub').textContent = viewer ? T.settingsViewer : T.settingsSubtitle;
+    $('settingsSub').textContent = viewer ? T.settingsViewer : '';
+    $('settingsSub').hidden = !viewer;
     settingsToc.replaceChildren(...SECTIONS.map(([id, label, iconName]) => h('a', {
       href: `#set-${id}`,
       class: 'toc-link',
@@ -1359,6 +1378,7 @@
     copy,
     themeChoices,
     dialog,
+    confirmModOn,
     applyLayout,
     resetLayout,
     pull: () => pull(false),

@@ -97,9 +97,12 @@
     return h('button', { type: 'button', class: `btn small${extra && extra.accent ? ' accent' : ''}${extra && extra.danger ? ' danger' : ''}`, disabled: viewer() || (extra && extra.disabled), onclick, 'data-key': extra && extra.key }, extra && extra.icon ? icon(extra.icon) : null, label);
   }
 
-  function pill(text, tone) {
-    return h('span', { class: `pill ${tone || ''}` }, text);
+  function btnTip(label, tip, onclick, extra) {
+    const node = btn(label, onclick, extra);
+    if (tip) node.title = tip;
+    return node;
   }
+
 
   /* ------------------------------------------------------------ layouts */
 
@@ -169,7 +172,7 @@
       parts.push(svg('rect', { x: fx, y: 50, width: 40, height: 30, rx: 3, fill: t.surface, stroke: t.line }));
       parts.push(svg('rect', { x: fx, y: 50, width: 40, height: 6, rx: 3, fill: t.accent, opacity: 0.85 }));
     }
-    return svg('svg', { class: 'layout-thumb', viewBox: `0 0 ${W} ${H}`, 'aria-hidden': 'true', preserveAspectRatio: 'xMidYMid slice' }, parts);
+    return svg('svg', { class: 'layout-thumb', viewBox: `0 0 ${W} ${H}`, 'aria-hidden': 'true', preserveAspectRatio: 'xMinYMin slice' }, parts);
   }
 
   /* What the page is now, as a layout. */
@@ -246,7 +249,7 @@
   function layoutCard(entry) {
     const count = (entry.mods || []).length;
     const meta = [
-      entry.official ? pill(T.official, 'accent') : null,
+      entry.official ? h('span', { class: 'badge' }, T.official) : null,
       entry.legacy ? h('span', { class: 'muted', title: T.layoutLegacy }, 'packages/') : null,
       entry.id !== '' ? h('span', { class: 'layout-mods' }, core.fill(count === 1 ? T.layoutModsOne : T.layoutModsMany, { n: count })) : null,
     ];
@@ -555,7 +558,7 @@
   function layoutTab() {
     const widgets = Object.values(shell.registry.widgets);
     const library = card(
-      head(T.library, T.libraryHelp),
+      head(T.library, null),
       widgets.length
         ? h('ul', { class: 'library' }, widgets.map((widget) => {
           const slot = placedSlot(widget.key);
@@ -585,9 +588,7 @@
       if (!window.confirm(T.layoutResetConfirm)) return;
       changeLayout((current) => ({ ...current, slots: {}, hidden: [], explicit: false }), true);
     }, { danger: true });
-    const explicit = web().settings.layout.explicit;
     return [
-      h('p', { class: 'studio-lede' }, explicit ? T.layoutLedeExplicit : T.layoutLede),
       h('div', { class: 'studio-layout' },
         h('div', { class: 'studio-side' }, library, inspector()),
         h('div', { class: 'studio-screens' }, screens, h('div', { class: 'studio-actions end' }, reset))),
@@ -606,7 +607,7 @@
           h('div', { class: 'mod-head' },
             h('span', { class: 'mod-name' }, mod.name),
             mod.version ? h('span', { class: 'mod-version' }, `v${mod.version}`) : null,
-            official ? pill(T.official, 'accent') : null),
+            official ? h('span', { class: 'badge' }, T.official) : null),
           mod.description ? h('p', { class: 'mod-desc' }, mod.description) : null,
           h('code', { class: 'mod-id' }, `mods/${mod.id}`, mod.hasJs ? ' · mod.js' : '', mod.hasCss ? ' · mod.css' : ''),
           mod.error ? h('p', { class: 'mod-error' }, mod.error) : null),
@@ -621,6 +622,10 @@
               disabled: viewer() || !!mod.error,
               onchange: async (event) => {
                 const on = event.target.checked;
+                if (on && !(await shell.confirmModOn(mod))) {
+                  event.target.checked = false;
+                  return;
+                }
                 const ok = await shell.changeSettings((n) => {
                   n.disabledMods = on ? n.disabledMods.filter((id) => id !== mod.id) : [...n.disabledMods, mod.id];
                 }, true);
@@ -637,7 +642,7 @@
 
     const official = catalog.mods.map((entry) => h('li', { class: 'catalog-item' },
       h('div', { class: 'mod-main' },
-        h('div', { class: 'mod-head' }, h('span', { class: 'mod-name' }, entry.name), entry.installed ? pill(T.installed, 'ok') : null),
+        h('div', { class: 'mod-head' }, h('span', { class: 'mod-name' }, entry.name), entry.installed ? h('span', { class: 'badge ok' }, T.installed) : null),
         h('p', { class: 'mod-desc' }, entry.description)),
       entry.installed
         ? btn(T.reinstall, () => act(() => request('POST', '/api/web/catalog', { kind: 'mod', id: entry.id, force: true }), () => reloadToast()))
@@ -645,7 +650,7 @@
 
     const source = h('input', { class: 'text-input wide', placeholder: 'owner/repo, owner/repo@v1, https://github.com/owner/repo', 'aria-label': T.installSource, spellcheck: 'false', disabled: viewer() });
     const github = card(
-      head(T.installGithub, T.installGithubHelp),
+      head(T.installGithub, null),
       h('div', { class: 'studio-form' }, source,
         btn(T.install, () => {
           if (!source.value.trim()) return undefined;
@@ -662,9 +667,9 @@
       catalog.templates.map((entry) => h('option', { value: entry.id }, `${entry.name} — ${entry.description}`)));
     const created = h('div', { class: 'created' });
     const maker = card(
-      head(T.newMod, T.newModHelp),
+      head(T.newMod, null),
       h('div', { class: 'studio-form' }, newId, newName, template,
-        btn(T.newModCreate, () => {
+        btnTip(T.newModCreate, T.newModCli, () => {
           const id = newId.value.trim().toLowerCase();
           if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(id)) return toast(T.badId, 'warn');
           return act(() => request('POST', `/api/web/mods/${encodeURIComponent(id)}/create`, { template: template.value, name: newName.value.trim() }), (answer) => {
@@ -675,14 +680,12 @@
             reloadToast(T.newModReload);
           });
         }, { accent: true, icon: 'plus' })),
-      created,
-      h('p', { class: 'field-help' }, T.newModCli));
+      created);
 
     return [
-      h('p', { class: 'studio-lede' }, T.modsLede),
       h('div', { class: 'studio-grid two' },
         card(head(T.modsInstalled, null), installed.length ? h('ul', { class: 'mod-list' }, installed) : h('p', { class: 'note' }, T.modsNone)),
-        card(head(T.modsOfficial, T.modsOfficialHelp), h('ul', { class: 'catalog' }, official))),
+        card(head(T.modsOfficial, null), h('ul', { class: 'catalog' }, official))),
       h('div', { class: 'studio-grid two' }, maker, github),
     ];
   }
@@ -785,15 +788,14 @@
       },
     });
     return [
-      h('p', { class: 'studio-lede' }, T.bgLede),
       card(head(T.bgPresets, null),
         h('div', { class: 'bg-grid' }, swatch('none', '', T.bgNone, 'bg-thumb-none'),
           presetList.map((name) => swatch('preset', name, T[`bg_${name}`] || name, `bg-preset bg-${name}`)))),
-      card(head(T.bgImages, T.bgImagesHelp, h('button', { type: 'button', class: 'btn small accent', disabled: viewer(), onclick: () => upload.click() }, icon('plus'), T.bgUpload), upload),
+      card(head(T.bgImages, null, h('button', { type: 'button', class: 'btn small accent', title: T.bgImagesHelp, disabled: viewer(), onclick: () => upload.click() }, icon('plus'), T.bgUpload), upload),
         images.length ? h('div', { class: 'bg-grid' }, images) : h('p', { class: 'note' }, T.bgImagesNone)),
-      card(head(T.bgMods, T.bgModsHelp),
+      card(head(T.bgMods, null),
         modBackgrounds.length ? h('div', { class: 'bg-grid' }, modBackgrounds) : h('p', { class: 'note' }, T.bgModsNone)),
-      card(head(T.bgTuning, T.bgTuningHelp),
+      card(head(T.bgTuning, null),
         h('div', { class: 'studio-fields' },
           slider(T.bgDim, 'dim', 0, 95, '%'),
           slider(T.bgBlur, 'blur', 0, 40, 'px'),
@@ -850,17 +852,16 @@
   function panelsTab() {
     const layout = web().settings.layout;
     return [
-      h('p', { class: 'studio-lede' }, T.panelsLede),
       h('div', { class: 'studio-grid two' },
-        card(head(T.panelWidths, T.panelWidthsHelp),
+        card(head(T.panelWidths, null),
           h('div', { class: 'studio-fields' }, ['rail', 'files', 'left', 'right'].map(sizeSlider))),
-        card(head(T.panelSides, T.panelSidesHelp),
+        card(head(T.panelSides, null),
           h('div', { class: 'studio-fields' },
             sidePicker(T.panel_rail, 'railSide', layout.railSide),
             sidePicker(T.panel_files, 'filesSide', layout.filesSide),
             h('label', { class: 'studio-field' },
               h('span', { class: 'field-label' }, T.fitPlainLabel),
-              h('label', { class: 'switch' },
+              h('label', { class: 'switch', title: T.fitPlainHelp },
                 h('input', {
                   type: 'checkbox',
                   role: 'switch',
@@ -872,12 +873,10 @@
                   }, true),
                 }),
                 h('span', { class: 'switch-track', 'aria-hidden': 'true' }),
-                h('span', { class: 'switch-text' }, T.fitPlain)),
-              h('span', { class: 'field-help' }, T.fitPlainHelp)),
+                h('span', { class: 'switch-text' }, T.fitPlain))),
             h('div', { class: 'studio-field' },
               h('span', { class: 'field-label' }, T.windowsReset),
-              h('button', { type: 'button', class: 'btn small', onclick: () => shell.layout.resetWindows() }, T.windowsResetButton),
-              h('span', { class: 'field-help' }, T.windowsResetHelp))))),
+              h('button', { type: 'button', class: 'btn small', title: T.windowsResetHelp, onclick: () => shell.layout.resetWindows() }, T.windowsResetButton))))),
     ];
   }
 
@@ -899,7 +898,7 @@
     const parts = { layouts: layoutsTab, widgets: layoutTab, mods: modsTab, background: backgroundTab, panels: panelsTab }[tab] || layoutsTab;
     studio.replaceChildren(
       h('div', { class: 'page-head' },
-        h('div', {}, h('h1', { class: 'page-title' }, T.navStudio), h('p', { class: 'page-sub' }, T.studioSub))),
+        h('div', {}, h('h1', { class: 'page-title' }, T.navStudio))),
       tabs,
       banner || '',
       h('div', { class: 'studio-body', role: 'tabpanel' }, parts()));

@@ -491,6 +491,9 @@ pub(crate) struct ModInfo {
     /// What is wrong with it, in a sentence; a broken mod is listed, not
     /// hidden, so the settings page can say why it did not load.
     pub error: Option<String>,
+    /// Where it was installed from (`SOURCE`), so switching on one from
+    /// elsewhere can say so; none for a mod written here.
+    pub source: Option<String>,
 }
 
 /// One theme from `themes/`.
@@ -836,7 +839,9 @@ impl WebDir {
                 has_css: is_plain_file(&dir.join("mod.css")),
                 script_hash: None,
                 error: None,
+                source: None,
             };
+            info.source = Some(self.mod_source(&info.id)).filter(|source| !source.is_empty());
             match read_capped(&dir.join("mod.json"), MAX_JSON) {
                 Ok(Some(text)) => match serde_json::from_str::<Manifest>(&text) {
                     Ok(manifest) => {
@@ -1276,7 +1281,9 @@ impl WebDir {
 
     /// Where a mod was installed from, as its `SOURCE` file says.
     fn mod_source(&self, id: &str) -> String {
-        fs::read_to_string(self.root.join("mods").join(id).join("SOURCE"))
+        read_capped(&self.root.join("mods").join(id).join("SOURCE"), 4096)
+            .ok()
+            .flatten()
             .map(|text| truncate(text.trim(), 200))
             .unwrap_or_default()
     }

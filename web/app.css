@@ -255,6 +255,27 @@ body {
   color: var(--line-strong);
 }
 
+/* The session's name is what the header is for; the agent, provider, model
+ * and effort sit beside it small and mono, and give way first. */
+#subtitle .sub-name {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+#subtitle .sub-facts {
+  margin-left: var(--s2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+@media (max-width: 1100px) {
+  #subtitle .sub-facts {
+    display: none;
+  }
+}
+
 .pill {
   flex: 0 0 auto;
   font-size: 11px;
@@ -1477,6 +1498,62 @@ body.viewer .perm button {
   font-size: 13px;
 }
 
+/* The mode now, small and mono. For a cycle-only agent it is a button that
+ * opens the order the cycle goes in; it is never a sentence on the page. */
+.perm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--text);
+  font: 500 12px/1.2 var(--mono);
+}
+
+.perm-controls .perm-chip {
+  min-height: 28px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.perm-chip:not(:disabled)::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg) translateY(-2px);
+}
+
+.perm-chip[aria-expanded="true"]::after {
+  transform: rotate(-135deg) translateY(-1px);
+}
+
+.perm-chip:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.perm-cycle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.perm-cycle .glyph {
+  width: 14px;
+  height: 14px;
+}
+
+.perm-order {
+  margin: 0;
+  font: 12px/1.5 var(--mono);
+  color: var(--muted);
+}
+
 /* What the agent is, rather than what can be done to it. A chip stays on
  * screen for the whole session, where the note is whatever happened last. */
 .perm-flags {
@@ -2419,34 +2496,17 @@ button.palette-toggle {
   margin-top: var(--s6);
 }
 
-/* While the first history is on its way, the panels shimmer rather than
- * showing a confident row of zeros. */
+/* While the first history is on its way, the panels are a still fill rather
+ * than a confident row of zeros. Still, not shimmering: six panels animating
+ * while a request is out said nothing a static fill does not. */
 body.history-loading .stat,
 body.history-loading .dash-grid .panel {
-  background: linear-gradient(100deg, var(--surface) 30%, var(--raised) 50%, var(--surface) 70%);
-  background-size: 300% 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
+  background: var(--raised);
 }
 
 body.history-loading .stat > *,
 body.history-loading .dash-grid .panel > * {
   visibility: hidden;
-}
-
-@keyframes shimmer {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: 0 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  body.history-loading .stat,
-  body.history-loading .dash-grid .panel {
-    animation: none;
-  }
 }
 
 /* ---- settings ---- */
@@ -4885,5 +4945,72 @@ body[data-pane="view"] #list > .slot-list {
 
   .dialog .text-input {
     font-size: 16px;
+  }
+}
+
+
+/* ---- touch: one rule for every control ---- */
+
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .btn,
+  .btn.small,
+  .icon,
+  .perm-chip,
+  .studio-tab,
+  .segmented button {
+    min-height: 40px;
+  }
+
+  .icon {
+    min-width: 40px;
+  }
+}
+
+/* A quiet tag: lowercase, small, no fill. */
+.badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 0 6px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  color: var(--accent);
+}
+
+.badge.ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+/* A phone gets rows, not posters: the picture beside the words. */
+@media (max-width: 640px) {
+  .layout-card {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+  }
+
+  .layout-preview {
+    grid-row: 1 / 3;
+    aspect-ratio: auto;
+    min-height: 100%;
+    border-bottom: 0;
+    border-right: 1px solid var(--line);
+    border-radius: var(--r-md) 0 0 var(--r-md);
+  }
+
+  .layout-body {
+    padding: var(--s2) var(--s3) 0;
+  }
+
+  .layout-actions {
+    grid-column: 2;
+    padding: var(--s2) var(--s3) var(--s3);
   }
 }
