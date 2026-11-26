@@ -651,7 +651,7 @@
           h('div', { class: 'mod-line-head' },
             h('span', { class: 'mod-name', title: mod.name }, mod.name),
             official ? h('span', { class: 'badge' }, T.official) : null,
-            installed && mod.source && !official ? h('span', { class: 'mod-source', title: mod.source }, mod.source) : null),
+            installed && mod.source && !official ? h('span', { class: 'mod-source', title: mod.source }, core.shortSource(mod.source)) : null),
           mod.error
             ? h('p', { class: 'mod-error', title: mod.error }, mod.error)
             : h('p', { class: 'mod-line-desc', title: [mod.description, files ? `mods/${mod.id} · ${files}` : ''].filter(Boolean).join('\n') }, mod.description || '—')),

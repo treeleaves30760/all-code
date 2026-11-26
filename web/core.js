@@ -1598,6 +1598,16 @@
     dark: { '--bg': '#0b0c0f', '--surface': '#131418', '--raised': '#1b1d22', '--line': '#24262c', '--text': '#e8e9ed', '--muted': '#9a9fab', '--accent': '#818cf8' },
   };
 
+  /* Where a mod came from, short enough for a list row: a GitHub source
+   * as it is, a local folder by its last name only (the full path, which
+   * names the machine's user, stays for tooltips and the review dialog). */
+  function shortSource(source) {
+    const text = String(source || '').trim();
+    if (!/^(\/|~\/|[A-Za-z]:[\\/]|\\\\)/.test(text)) return text;
+    const parts = text.split(/[\\/]+/).filter(Boolean);
+    return parts.length ? `…/${parts[parts.length - 1]}` : text;
+  }
+
   /* What a layout's thumbnail draws: its theme's colours, which side the
    * rail is on, which docks hold widgets and what kind of background it
    * has. Pure, so the studio's SVG is only a picture of this. */
@@ -2039,6 +2049,7 @@
     terminalOverrides,
     layoutGallery,
     layoutThumb,
+    shortSource,
     resolveTheme,
     inkFor,
     shiftDate,

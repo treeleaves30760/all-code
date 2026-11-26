@@ -5057,13 +5057,17 @@ body[data-pane="view"] #list > .slot-list {
 }
 
 .mod-line .mod-name {
+  flex: 0 1 auto;
+  min-width: 4ch;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Gives way before the name does. */
 .mod-source {
+  flex: 0 100 auto;
   font: 11px/1.4 var(--mono);
   color: var(--muted);
   overflow: hidden;

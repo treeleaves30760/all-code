@@ -1030,6 +1030,17 @@ test('the layout gallery lists each layout once, installed first', () => {
   assert.deepEqual(cards[2].mods, []);
 });
 
+test('a mod source is shortened to fit a row', () => {
+  assert.equal(core.shortSource('treeleaves30760/alc-layouts'), 'treeleaves30760/alc-layouts');
+  assert.equal(core.shortSource('owner/repo/mods/x@v1'), 'owner/repo/mods/x@v1');
+  assert.equal(core.shortSource('/home/someone/src/alc-layouts'), '…/alc-layouts');
+  assert.equal(core.shortSource('/home/someone/src/alc-layouts/'), '…/alc-layouts');
+  assert.equal(core.shortSource('C:\\Users\\someone\\alc-layouts'), '…/alc-layouts');
+  assert.equal(core.shortSource('~/alc-layouts\n'), '…/alc-layouts');
+  assert.equal(core.shortSource(''), '');
+  assert.equal(core.shortSource(null), '');
+});
+
 test('a layout thumbnail follows its theme, rail and docks', () => {
   const thumb = core.layoutThumb({
     theme: 'paper',
