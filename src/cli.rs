@@ -461,29 +461,38 @@ enum WebSubcommand {
         #[arg(long)]
         name: Option<String>,
     },
-    /// List the official mods, packages, themes and templates alc ships.
+    /// List the official mods, layouts, themes and templates alc ships.
     Catalog,
-    /// Install an official mod, package or theme by id (mods arrive on).
+    /// Install an official mod, layout or theme by id (mods arrive on).
     Add {
         id: String,
         /// Replace an installed copy.
         #[arg(long)]
         force: bool,
     },
-    /// List packages, or apply one: its mods on, its layout, theme and background.
-    Package {
+    /// List layouts, or apply one: its mods, widgets, theme, background and terminal font.
+    #[command(alias = "package")]
+    Layout {
         #[command(subcommand)]
-        command: Option<PackageSubcommand>,
+        command: Option<LayoutSubcommand>,
     },
 }
 
 #[derive(Debug, Subcommand)]
-enum PackageSubcommand {
-    /// List the packages in packages/.
+enum LayoutSubcommand {
+    /// List the layouts in layouts/ (and a 2.8 packages/ folder).
     List,
-    /// Make a package the page's (installs official mods it needs).
-    Apply { id: String },
-    /// Delete packages/<id>.json.
+    /// Make a layout the page's (installs official mods it needs).
+    Apply {
+        id: String,
+        /// Also turn on the mods it names that were installed from elsewhere
+        /// and are off. Read them first: they run with the page's link.
+        #[arg(long)]
+        enable_mods: bool,
+    },
+    /// Go back to the default page: the layout's mods off, your own theme back.
+    Reset,
+    /// Delete layouts/<id>.json.
     Remove { id: String },
 }
 
@@ -1578,10 +1587,13 @@ fn run_remote(store: &Store, args: RemoteArgs) -> Result<u8> {
             }
             Some(WebSubcommand::Catalog) => WebCommand::Catalog,
             Some(WebSubcommand::Add { id, force }) => WebCommand::Add { id, force },
-            Some(WebSubcommand::Package { command }) => match command {
-                None | Some(PackageSubcommand::List) => WebCommand::Packages,
-                Some(PackageSubcommand::Apply { id }) => WebCommand::ApplyPackage(id),
-                Some(PackageSubcommand::Remove { id }) => WebCommand::RemovePackage(id),
+            Some(WebSubcommand::Layout { command }) => match command {
+                None | Some(LayoutSubcommand::List) => WebCommand::Layouts,
+                Some(LayoutSubcommand::Apply { id, enable_mods }) => {
+                    WebCommand::ApplyLayout { id, enable_mods }
+                }
+                Some(LayoutSubcommand::Reset) => WebCommand::ResetLayout,
+                Some(LayoutSubcommand::Remove { id }) => WebCommand::RemoveLayout(id),
             },
         }),
         Some(RemoteSubcommand::Token(token)) => {

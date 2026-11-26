@@ -585,7 +585,7 @@ fn serve_http(
     context: &Serving,
 ) -> Result<()> {
     let registry = &*context.registry;
-    // Everything that changes the page's folder: settings, packages, mods,
+    // Everything that changes the page's folder: settings, layouts, mods,
     // backgrounds. Operator-only, like every other route that changes
     // something: a viewer link sees the operator's page, it does not get to
     // restyle it.
@@ -864,7 +864,7 @@ fn serve_http(
                 "themes": snapshot.themes,
                 "revision": snapshot.revision,
                 "dir": snapshot.dir,
-                "packages": snapshot.packages,
+                "layouts": snapshot.layouts,
                 "backgrounds": snapshot.backgrounds,
                 "catalog": snapshot.catalog,
                 "slots": web::SLOTS,
@@ -1264,18 +1264,28 @@ fn web_write(request: &Request, web: &WebDir) -> Result<Option<serde_json::Value
     };
     Ok(Some(match (request.method, parts.as_slice()) {
         (Method::Post, ["settings"]) => json!(web.save_settings(&request.body)?),
-        (Method::Post, ["packages", id]) => json!(web.save_package(id, &request.body)?),
-        (Method::Post, ["packages", id, "apply"]) => json!(web.apply_package(id)?),
-        (Method::Delete, ["packages", id]) => {
-            web.remove_package(id)?;
+        // `packages/` is what a 2.8 page or script calls a layout.
+        (Method::Post, ["layouts" | "packages", id]) => json!(web.save_layout(id, &request.body)?),
+        (Method::Post, ["layouts" | "packages", id, "apply"]) => {
+            // An operator link only, like every write here: the one place a
+            // mod nobody has switched on can be, in a single request.
+            let enable_mods = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()
+                .and_then(|body| body.get("enableMods").and_then(|value| value.as_bool()))
+                == Some(true);
+            json!(web.apply_layout(id, enable_mods)?)
+        }
+        (Method::Delete, ["layouts" | "packages", id]) => {
+            web.remove_layout(id)?;
             json!({ "removed": id })
         }
+        (Method::Post, ["layout", "reset"]) => json!(web.reset_layout()?),
         (Method::Post, ["catalog"]) => {
             let body = body_json()?;
             let kind: web::CatalogKind = serde_json::from_value(
                 body.get("kind").cloned().unwrap_or(serde_json::Value::Null),
             )
-            .context("kind is mod, package or theme")?;
+            .context("kind is mod, layout or theme")?;
             let id = text(&body, "id").context("an id is needed")?;
             let force = body.get("force").and_then(|value| value.as_bool()) == Some(true);
             web.install_official(kind, &id, force)?;
@@ -1305,7 +1315,7 @@ fn web_write(request: &Request, web: &WebDir) -> Result<Option<serde_json::Value
             let bundle = web_install::fetch(&source, text(&body, "name").as_deref())?;
             let force = body.get("force").and_then(|value| value.as_bool()) == Some(true);
             let installed = web_install::install(web, &bundle, &source.label(), false, force)?;
-            json!({ "mods": installed.mods, "themes": installed.themes, "packages": installed.packages })
+            json!({ "mods": installed.mods, "themes": installed.themes, "layouts": installed.layouts })
         }
         (Method::Post, ["backgrounds", name]) => {
             web.save_background(name, &request.body)?;
@@ -1877,32 +1887,39 @@ mod live_tests {
             status(&send(
                 "POST",
                 &harness.operator,
-                "/api/web/packages/p",
+                "/api/web/layouts/p",
                 package
             ))
             .contains("200")
         );
-        let applied = send("POST", &harness.operator, "/api/web/packages/p/apply", "{}");
+        assert!(web.join("layouts/p.json").is_file());
+        let applied = send("POST", &harness.operator, "/api/web/layouts/p/apply", "{}");
         assert!(status(&applied).contains("200"), "{applied}");
-        assert!(applied.contains("\"package\":\"p\""), "{applied}");
+        assert!(applied.contains("\"activeLayout\":\"p\""), "{applied}");
+        // The 2.8 route still answers.
+        let again = send("POST", &harness.operator, "/api/web/packages/p/apply", "{}");
+        assert!(status(&again).contains("200"), "{again}");
+        assert!(
+            status(&send("POST", &harness.viewer, "/api/web/layout/reset", "")).contains("403")
+        );
+        let reset = send("POST", &harness.operator, "/api/web/layout/reset", "");
+        assert!(status(&reset).contains("200"), "{reset}");
+        assert!(reset.contains("\"activeLayout\":null"), "{reset}");
+        let snapshot = send("GET", &harness.viewer, "/api/web", "");
+        assert!(
+            snapshot.contains("\"legacy\":false,\"mods\":[\"clock\"],\"name\":\"P\""),
+            "{snapshot}"
+        );
         let bad = send(
             "POST",
             &harness.operator,
-            "/api/web/packages/..%2Fx",
+            "/api/web/layouts/..%2Fx",
             package,
         );
         assert!(status(&bad).contains("400"), "{bad}");
+        assert!(status(&send("DELETE", &harness.viewer, "/api/web/layouts/p", "")).contains("403"));
         assert!(
-            status(&send("DELETE", &harness.viewer, "/api/web/packages/p", "")).contains("403")
-        );
-        assert!(
-            status(&send(
-                "DELETE",
-                &harness.operator,
-                "/api/web/packages/p",
-                ""
-            ))
-            .contains("200")
+            status(&send("DELETE", &harness.operator, "/api/web/layouts/p", "")).contains("200")
         );
         assert!(status(&send("POST", &harness.operator, "/api/web/nothing", "{}")).contains("404"));
 

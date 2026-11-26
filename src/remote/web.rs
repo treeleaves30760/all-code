@@ -125,8 +125,64 @@ pub(crate) struct WebSettings {
     /// Where each mod widget is drawn, and how wide the panels are.
     pub layout: Layout,
     pub background: Background,
-    /// The package last applied, if any; informational.
-    pub package: Option<String>,
+    /// The layout last applied, if any. The page writes it to
+    /// `body[data-layout]`, which is what a layout's skin CSS is scoped to.
+    /// Read from the 2.8 `package` key too.
+    #[serde(alias = "package")]
+    pub active_layout: Option<String>,
+    /// Mods the active layout switched on that were off before it, so the
+    /// next layout (or Default) can switch exactly those off again. A mod
+    /// the person had on themselves is never listed, so never turned off.
+    pub layout_mods: Vec<String>,
+    /// The active layout's terminal settings, laid over `terminal`. Kept
+    /// apart so leaving the layout gives the person their own back.
+    pub layout_terminal: Option<TerminalOverride>,
+    /// The person's own theme, accent and density from before a layout
+    /// took them over; Default puts them back.
+    pub layout_restore: Option<LookRestore>,
+}
+
+/// What a layout may set about the terminal: a subset of
+/// [`TerminalSettings`], each field optional, clamped the same way.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct TerminalOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_family: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_height: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_style: Option<CursorStyle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_blink: Option<bool>,
+}
+
+impl TerminalOverride {
+    /// Clamped like the person's own settings; `None` when nothing is left.
+    fn clamp(mut self) -> Option<Self> {
+        self.font_size = self.font_size.map(|size| size.clamp(8, 28));
+        self.font_family = self
+            .font_family
+            .take()
+            .map(|family| family.trim().to_owned())
+            .filter(|family| !family.is_empty() && is_font_family(family));
+        self.line_height = self
+            .line_height
+            .filter(|height| height.is_finite())
+            .map(|height| height.clamp(1.0, 2.0));
+        (self != Self::default()).then_some(self)
+    }
+}
+
+/// The look a person had before a layout replaced it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LookRestore {
+    pub theme: String,
+    pub accent: Option<String>,
+    pub density: Density,
 }
 
 /// Where widgets go. A widget no slot names and `hidden` does not list is
@@ -320,7 +376,10 @@ impl Default for WebSettings {
             mod_settings: Map::new(),
             layout: Layout::default(),
             background: Background::default(),
-            package: None,
+            active_layout: None,
+            layout_mods: Vec::new(),
+            layout_terminal: None,
+            layout_restore: None,
         }
     }
 }
@@ -399,7 +458,17 @@ impl WebSettings {
         self.mod_settings.retain(|id, _| is_slug(id));
         self.layout = self.layout.clamp();
         self.background = self.background.clamp();
-        self.package = self.package.filter(|id| is_slug(id));
+        self.active_layout = self.active_layout.filter(|id| is_slug(id));
+        self.layout_mods.retain(|id| is_slug(id));
+        self.layout_mods.sort();
+        self.layout_mods.dedup();
+        self.layout_terminal = self.layout_terminal.and_then(TerminalOverride::clamp);
+        if let Some(restore) = &mut self.layout_restore {
+            if !is_theme_name(&restore.theme) {
+                restore.theme = "system".to_owned();
+            }
+            restore.accent = restore.accent.take().filter(|accent| is_hex_colour(accent));
+        }
         self
     }
 }
@@ -450,31 +519,35 @@ pub(crate) struct Snapshot {
     pub dir: String,
     /// The settings file did not parse; the defaults are in effect.
     pub settings_error: Option<String>,
-    pub packages: Vec<PackageInfo>,
+    pub layouts: Vec<LayoutInfo>,
     pub backgrounds: Vec<BackgroundImage>,
-    /// What alc ships: official mods, packages and themes, and templates.
+    /// What alc ships: official mods, layouts and themes, and templates.
     pub catalog: Catalog,
 }
 
-/// A package: a set of mods with where their widgets go, and the look
-/// around them. `packages/<id>.json`.
+/// A layout: a set of mods with where their widgets go, and the look
+/// around them - theme, background, density, the terminal's font. Lives in
+/// `layouts/<id>.json`; 2.8 called it a package and kept it in
+/// `packages/<id>.json`, which is still read.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
-pub(crate) struct Package {
+pub(crate) struct LayoutDef {
     pub name: String,
     pub description: String,
     pub version: Option<String>,
     pub author: Option<String>,
-    /// Mods the package needs turned on.
+    /// Mods the layout needs turned on.
     pub mods: Vec<String>,
     pub theme: Option<String>,
     pub accent: Option<String>,
     pub density: Option<Density>,
     pub background: Option<Background>,
     pub layout: Option<Layout>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<TerminalOverride>,
 }
 
-impl Package {
+impl LayoutDef {
     fn clamp(mut self, id: &str) -> Self {
         self.name = truncate(self.name.trim(), 60);
         if self.name.is_empty() {
@@ -490,18 +563,24 @@ impl Package {
         self.accent = self.accent.filter(|accent| is_hex_colour(accent));
         self.background = self.background.map(Background::clamp);
         self.layout = self.layout.map(Layout::clamp);
+        self.terminal = self.terminal.and_then(TerminalOverride::clamp);
         self
     }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct PackageInfo {
+pub(crate) struct LayoutInfo {
     pub id: String,
     #[serde(flatten)]
-    pub package: Package,
+    pub def: LayoutDef,
+    /// Read from the 2.8 `packages/` folder rather than `layouts/`.
+    pub legacy: bool,
     pub error: Option<String>,
 }
+
+/// The two folders a layout is read from, the one written first.
+const LAYOUT_DIRS: [&str; 2] = ["layouts", "packages"];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct BackgroundImage {
@@ -512,7 +591,7 @@ pub(crate) struct BackgroundImage {
 #[derive(Debug, Clone, Default, Serialize)]
 pub(crate) struct Catalog {
     pub mods: Vec<CatalogEntry>,
-    pub packages: Vec<CatalogEntry>,
+    pub layouts: Vec<CatalogEntry>,
     pub themes: Vec<CatalogEntry>,
     pub templates: Vec<CatalogEntry>,
 }
@@ -525,6 +604,10 @@ pub(crate) struct CatalogEntry {
     pub description: String,
     /// Whether something with this id is in the folder already.
     pub installed: bool,
+    /// For a layout: the whole file, so the page can draw its thumbnail
+    /// before it is installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<LayoutDef>,
 }
 
 /// Which kind of catalog entry to install.
@@ -532,24 +615,36 @@ pub(crate) struct CatalogEntry {
 #[serde(rename_all = "lowercase")]
 pub(crate) enum CatalogKind {
     Mod,
-    Package,
+    #[serde(alias = "package")]
+    Layout,
     Theme,
 }
 
-/// What applying a package did.
+/// A mod a layout names that came from elsewhere and has not been turned on.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct ReviewMod {
+    pub id: String,
+    /// Where it was installed from: the `SOURCE` file's line.
+    pub source: String,
+}
+
+/// What applying a layout did.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Applied {
+    /// False when nothing was changed: the layout names mods from elsewhere
+    /// (`review`) and the request did not say to turn them on.
+    pub applied: bool,
     pub settings: WebSettings,
     /// Official mods it needed that were installed for it.
     pub installed: Vec<String>,
     /// Mods it names that are neither installed nor official.
     pub missing: Vec<String>,
-    /// Mods it names that were installed from elsewhere and are off. They
-    /// stay off: a package is not a way to switch on code nobody has read.
-    pub review: Vec<String>,
-    /// Whether a script the page has not loaded was turned on, so it needs
-    /// a reload.
+    /// Mods it names that were installed from elsewhere and are off. Without
+    /// `enable_mods` the layout is not applied at all - half a skin is worse
+    /// than none - and with it these are what was switched on.
+    pub review: Vec<ReviewMod>,
+    /// Whether a script was turned on or off, so open pages need a reload.
     pub reload: bool,
 }
 
@@ -592,11 +687,17 @@ impl WebDir {
     /// an agent always reads the reference for the alc that is running.
     /// Nothing a person wrote - settings, themes, mods - is touched.
     pub(crate) fn scaffold(&self) -> Result<()> {
-        for dir in ["mods", "themes", "packages", "backgrounds"] {
+        for dir in ["mods", "themes", "layouts", "backgrounds"] {
             fs::create_dir_all(self.root.join(dir))
                 .with_context(|| format!("failed to create {}", self.root.join(dir).display()))?;
         }
         write_if_changed(&self.root.join("AGENTS.md"), AGENTS_MD)?;
+        // 2.8 shipped its examples as `examples/packages/`; they are
+        // `examples/layouts/` now, and `examples/` is alc's to tidy.
+        let stale = self.root.join("examples").join("packages");
+        if fs::symlink_metadata(&stale).is_ok_and(|meta| meta.is_dir()) {
+            fs::remove_dir_all(&stale).ok();
+        }
         for (relative, contents) in CUSTOM_FILES {
             let path = self.root.join(relative);
             if let Some(parent) = path.parent() {
@@ -713,7 +814,7 @@ impl WebDir {
             },
             settings,
             settings_error,
-            packages: self.packages(),
+            layouts: self.layouts(),
             backgrounds: self.backgrounds(),
             catalog: self.catalog(),
         }
@@ -891,7 +992,7 @@ impl WebDir {
                 visit(&self.root.join("mods").join(&id).join(file));
             }
         }
-        for dir in ["themes", "packages", "backgrounds"] {
+        for dir in ["themes", "layouts", "packages", "backgrounds"] {
             if let Ok(entries) = fs::read_dir(self.root.join(dir)) {
                 let mut paths: Vec<PathBuf> =
                     entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
@@ -908,138 +1009,276 @@ impl WebDir {
             .collect()
     }
 
-    /// Every package in `packages/`, sorted by id.
-    pub(crate) fn packages(&self) -> Vec<PackageInfo> {
-        json_ids(&self.root.join("packages"))
-            .into_iter()
-            .map(|id| match self.load_package(&id) {
-                Ok(package) => PackageInfo {
-                    id,
-                    package,
-                    error: None,
-                },
-                Err(error) => PackageInfo {
-                    package: Package {
-                        name: id.clone(),
-                        ..Package::default()
+    /// Every layout in `layouts/` and the 2.8 `packages/`, one entry per
+    /// id (`layouts/` wins), sorted by id.
+    pub(crate) fn layouts(&self) -> Vec<LayoutInfo> {
+        let mut ids: Vec<String> = LAYOUT_DIRS
+            .iter()
+            .flat_map(|dir| json_ids(&self.root.join(dir)))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids.truncate(MAX_ENTRIES);
+        ids.into_iter()
+            .map(|id| {
+                let legacy = self
+                    .layout_path(&id)
+                    .is_some_and(|(dir, _)| dir == "packages");
+                match self.load_layout(&id) {
+                    Ok(def) => LayoutInfo {
+                        id,
+                        def,
+                        legacy,
+                        error: None,
                     },
-                    id,
-                    error: Some(error.to_string()),
-                },
+                    Err(error) => LayoutInfo {
+                        def: LayoutDef {
+                            name: id.clone(),
+                            ..LayoutDef::default()
+                        },
+                        id,
+                        legacy,
+                        error: Some(format!("{error:#}")),
+                    },
+                }
             })
             .collect()
     }
 
-    pub(crate) fn load_package(&self, id: &str) -> Result<Package> {
-        if !is_slug(id) {
-            bail!("`{id}` is not a package id");
-        }
-        let path = self.root.join("packages").join(format!("{id}.json"));
-        let Some(text) = read_capped(&path, MAX_JSON)? else {
-            bail!("there is no packages/{id}.json");
-        };
-        let package: Package =
-            serde_json::from_str(&text).with_context(|| format!("packages/{id}.json"))?;
-        Ok(package.clamp(id))
+    /// Which folder holds layout `id`, and the file.
+    fn layout_path(&self, id: &str) -> Option<(&'static str, PathBuf)> {
+        LAYOUT_DIRS.iter().find_map(|dir| {
+            let path = self.root.join(dir).join(format!("{id}.json"));
+            is_plain_file(&path).then_some((*dir, path))
+        })
     }
 
-    /// Writes a package the page (or a person) put together.
-    pub(crate) fn save_package(&self, id: &str, body: &[u8]) -> Result<Package> {
+    pub(crate) fn load_layout(&self, id: &str) -> Result<LayoutDef> {
         if !is_slug(id) {
-            bail!("`{id}` is not a package id ([a-z0-9_-], up to 48)");
+            bail!("`{id}` is not a layout id");
+        }
+        let Some((dir, path)) = self.layout_path(id) else {
+            bail!("there is no layouts/{id}.json");
+        };
+        let Some(text) = read_capped(&path, MAX_JSON)? else {
+            bail!("there is no {dir}/{id}.json");
+        };
+        let def: LayoutDef =
+            serde_json::from_str(&text).with_context(|| format!("{dir}/{id}.json"))?;
+        Ok(def.clamp(id))
+    }
+
+    /// Writes a layout the page (or a person) put together. Always to
+    /// `layouts/`, where it then wins over a `packages/` file of that id.
+    pub(crate) fn save_layout(&self, id: &str, body: &[u8]) -> Result<LayoutDef> {
+        if !is_slug(id) {
+            bail!("`{id}` is not a layout id ([a-z0-9_-], up to 48)");
         }
         if body.len() as u64 > MAX_JSON {
-            bail!("a package is at most 64 KiB");
+            bail!("a layout is at most 64 KiB");
         }
-        let package: Package = serde_json::from_slice(body).context("not a package")?;
-        let package = package.clamp(id);
-        let mut text = serde_json::to_string_pretty(&package)?;
+        let def: LayoutDef = serde_json::from_slice(body).context("not a layout")?;
+        let def = def.clamp(id);
+        let mut text = serde_json::to_string_pretty(&def)?;
         text.push('\n');
-        fs::create_dir_all(self.root.join("packages"))?;
+        fs::create_dir_all(self.root.join("layouts"))?;
         atomic_write(
-            &self.root.join("packages").join(format!("{id}.json")),
+            &self.root.join("layouts").join(format!("{id}.json")),
             text.as_bytes(),
             false,
         )?;
-        Ok(package)
+        Ok(def)
     }
 
-    pub(crate) fn remove_package(&self, id: &str) -> Result<()> {
+    /// Deletes layout `id` from whichever folders hold it. Removing the
+    /// active one first goes back to Default, so its mods do not linger.
+    pub(crate) fn remove_layout(&self, id: &str) -> Result<()> {
         if !is_slug(id) {
-            bail!("`{id}` is not a package id");
+            bail!("`{id}` is not a layout id");
         }
-        let path = self.root.join("packages").join(format!("{id}.json"));
-        if !is_plain_file(&path) {
-            bail!("there is no packages/{id}.json");
+        let paths: Vec<PathBuf> = LAYOUT_DIRS
+            .iter()
+            .map(|dir| self.root.join(dir).join(format!("{id}.json")))
+            .filter(|path| is_plain_file(path))
+            .collect();
+        if paths.is_empty() {
+            bail!("there is no layouts/{id}.json");
         }
-        fs::remove_file(&path).with_context(|| format!("could not remove packages/{id}.json"))?;
-        let (mut settings, error) = self.load_settings();
-        if error.is_none() && settings.package.as_deref() == Some(id) {
-            settings.package = None;
-            self.write_settings(&settings)?;
+        let (settings, error) = self.load_settings();
+        if error.is_none() && settings.active_layout.as_deref() == Some(id) {
+            self.reset_layout()?;
+        }
+        for path in paths {
+            fs::remove_file(&path)
+                .with_context(|| format!("could not remove {}", path.display()))?;
         }
         Ok(())
     }
 
-    /// Makes a package the page's: turns its mods on (installing official
-    /// ones it names that are missing), and takes its layout, background,
-    /// theme, accent and density. Mods it does not name are left as they
-    /// are, so a package adds to a page rather than wiping it.
-    pub(crate) fn apply_package(&self, id: &str) -> Result<Applied> {
-        let package = self.load_package(id)?;
+    /// Makes a layout the page's.
+    ///
+    /// 1. Mods the previous layout switched on that this one does not name
+    ///    go off again.
+    /// 2. Its mods go on (official ones it needs are installed); the ones
+    ///    that were off are remembered in `layoutMods`.
+    /// 3. It takes the theme, accent, density, widget layout, background and
+    ///    terminal font, and becomes `activeLayout`.
+    ///
+    /// A mod it names that came from elsewhere and is off is code nobody has
+    /// switched on yet. Unless `enable_mods` says the person read it, the
+    /// layout is not applied at all and `review` lists them: half a skin -
+    /// the theme without the CSS that makes it readable - is worse than none.
+    pub(crate) fn apply_layout(&self, id: &str, enable_mods: bool) -> Result<Applied> {
+        let def = self.load_layout(id)?;
         let (mut settings, error) = self.load_settings();
         if let Some(error) = error {
             bail!("{error}; fix settings.json first (alc remote web check)");
         }
         let mut applied = Applied::default();
-        let before: Vec<String> = self
-            .mods(&settings)
+        let mut to_install = Vec::new();
+        for mod_id in &def.mods {
+            if self.root.join("mods").join(mod_id).is_dir() {
+                let off = settings.disabled_mods.iter().any(|off| off == mod_id);
+                if off && !self.is_trusted_mod(mod_id) {
+                    applied.review.push(ReviewMod {
+                        id: mod_id.clone(),
+                        source: self.mod_source(mod_id),
+                    });
+                }
+            } else if self.catalog_has(CatalogKind::Mod, mod_id) {
+                to_install.push(mod_id.clone());
+            } else {
+                applied.missing.push(mod_id.clone());
+            }
+        }
+        if !applied.review.is_empty() && !enable_mods {
+            applied.settings = settings;
+            return Ok(applied);
+        }
+        let before = self.running_scripts(&settings);
+        // What the previous layout switched on and this one does not want.
+        let mut layout_mods: Vec<String> = Vec::new();
+        for mod_id in std::mem::take(&mut settings.layout_mods) {
+            if def.mods.contains(&mod_id) {
+                layout_mods.push(mod_id);
+            } else if self.root.join("mods").join(&mod_id).is_dir()
+                && !settings.disabled_mods.contains(&mod_id)
+            {
+                settings.disabled_mods.push(mod_id);
+            }
+        }
+        for mod_id in &to_install {
+            self.install_official(CatalogKind::Mod, mod_id, false)?;
+            applied.installed.push(mod_id.clone());
+            settings.disabled_mods.retain(|off| off != mod_id);
+            layout_mods.push(mod_id.clone());
+        }
+        for mod_id in &def.mods {
+            if applied.missing.contains(mod_id) {
+                continue;
+            }
+            if settings.disabled_mods.iter().any(|off| off == mod_id) {
+                settings.disabled_mods.retain(|off| off != mod_id);
+                layout_mods.push(mod_id.clone());
+            }
+        }
+        settings.layout_mods = layout_mods;
+        // The person's own look, kept once, from before any layout.
+        if settings.active_layout.is_none() || settings.layout_restore.is_none() {
+            settings.layout_restore = Some(LookRestore {
+                theme: settings.theme.clone(),
+                accent: settings.accent.clone(),
+                density: settings.density,
+            });
+        }
+        let restore = settings.layout_restore.clone();
+        match &def.theme {
+            Some(theme) => {
+                if !self.is_known_theme(theme) && self.catalog_has(CatalogKind::Theme, theme) {
+                    self.install_official(CatalogKind::Theme, theme, false)?;
+                }
+                settings.theme = theme.clone();
+            }
+            None => {
+                if let Some(restore) = &restore {
+                    settings.theme = restore.theme.clone();
+                }
+            }
+        }
+        settings.accent = match (&def.accent, &def.theme) {
+            (Some(accent), _) => Some(accent.clone()),
+            // A theme of its own brings its own accent.
+            (None, Some(_)) => None,
+            (None, None) => restore.as_ref().and_then(|restore| restore.accent.clone()),
+        };
+        settings.density = def
+            .density
+            .or(restore.as_ref().map(|restore| restore.density))
+            .unwrap_or(settings.density);
+        settings.layout = def.layout.clone().unwrap_or_default();
+        settings.layout.explicit = true;
+        settings.background = def.background.clone().unwrap_or_default();
+        settings.layout_terminal = def.terminal.clone();
+        settings.active_layout = Some(id.to_owned());
+        let settings = settings.clamp();
+        self.write_settings(&settings)?;
+        // Off counts as much as on: a script that stopped being wanted is
+        // still running in every open page until it reloads.
+        applied.reload = self.running_scripts(&settings) != before;
+        applied.applied = true;
+        applied.settings = settings;
+        Ok(applied)
+    }
+
+    /// Default: no layout. Switches off what layouts switched on, gives the
+    /// person their own theme, accent and density back, and puts the
+    /// widgets, background and terminal back to alc's own.
+    pub(crate) fn reset_layout(&self) -> Result<Applied> {
+        let (mut settings, error) = self.load_settings();
+        if let Some(error) = error {
+            bail!("{error}; fix settings.json first (alc remote web check)");
+        }
+        let before = self.running_scripts(&settings);
+        for mod_id in std::mem::take(&mut settings.layout_mods) {
+            if self.root.join("mods").join(&mod_id).is_dir()
+                && !settings.disabled_mods.contains(&mod_id)
+            {
+                settings.disabled_mods.push(mod_id);
+            }
+        }
+        if let Some(restore) = settings.layout_restore.take() {
+            settings.theme = restore.theme;
+            settings.accent = restore.accent;
+            settings.density = restore.density;
+        }
+        settings.active_layout = None;
+        settings.layout_terminal = None;
+        settings.layout = Layout::default();
+        settings.background = Background::default();
+        let settings = settings.clamp();
+        self.write_settings(&settings)?;
+        Ok(Applied {
+            applied: true,
+            reload: self.running_scripts(&settings) != before,
+            settings,
+            ..Applied::default()
+        })
+    }
+
+    /// The ids of enabled mods with a script.
+    fn running_scripts(&self, settings: &WebSettings) -> Vec<String> {
+        self.mods(settings)
             .into_iter()
             .filter(|info| info.enabled && info.has_js)
             .map(|info| info.id)
-            .collect();
-        for mod_id in &package.mods {
-            let present = self.root.join("mods").join(mod_id).is_dir();
-            if !present {
-                if self.catalog_has(CatalogKind::Mod, mod_id) {
-                    self.install_official(CatalogKind::Mod, mod_id, false)?;
-                    applied.installed.push(mod_id.clone());
-                } else {
-                    applied.missing.push(mod_id.clone());
-                    continue;
-                }
-            }
-            let off = settings.disabled_mods.iter().any(|off| off == mod_id);
-            if off && !self.is_trusted_mod(mod_id) {
-                applied.review.push(mod_id.clone());
-                continue;
-            }
-            settings.disabled_mods.retain(|off| off != mod_id);
-        }
-        if let Some(theme) = &package.theme {
-            if !self.is_known_theme(theme) && self.catalog_has(CatalogKind::Theme, theme) {
-                self.install_official(CatalogKind::Theme, theme, false)?;
-            }
-            settings.theme = theme.clone();
-        }
-        if let Some(accent) = &package.accent {
-            settings.accent = Some(accent.clone());
-        }
-        if let Some(density) = package.density {
-            settings.density = density;
-        }
-        settings.layout = package.layout.clone().unwrap_or_default();
-        settings.layout.explicit = true;
-        settings.background = package.background.clone().unwrap_or_default();
-        settings.package = Some(id.to_owned());
-        let settings = settings.clamp();
-        self.write_settings(&settings)?;
-        applied.reload = self
-            .mods(&settings)
-            .into_iter()
-            .any(|info| info.enabled && info.has_js && !before.contains(&info.id));
-        applied.settings = settings;
-        Ok(applied)
+            .collect()
+    }
+
+    /// Where a mod was installed from, as its `SOURCE` file says.
+    fn mod_source(&self, id: &str) -> String {
+        fs::read_to_string(self.root.join("mods").join(id).join("SOURCE"))
+            .map(|text| truncate(text.trim(), 200))
+            .unwrap_or_default()
     }
 
     /// A mod alc shipped, or one written here (no SOURCE file): nothing a
@@ -1060,7 +1299,7 @@ impl WebDir {
                 .is_file()
     }
 
-    /// The official mods, packages and themes alc ships, and the templates
+    /// The official mods, layouts and themes alc ships, and the templates
     /// a new mod starts from.
     pub(crate) fn catalog(&self) -> Catalog {
         let mut catalog = Catalog::default();
@@ -1074,6 +1313,7 @@ impl WebDir {
                         name: manifest.name.unwrap_or_else(|| (*id).to_owned()),
                         description: manifest.description.unwrap_or_default(),
                         installed: self.root.join("mods").join(id).is_dir(),
+                        layout: None,
                     });
                 }
                 ["examples", "templates", id, "mod.json"] => {
@@ -1083,20 +1323,19 @@ impl WebDir {
                         name: manifest.name.unwrap_or_else(|| (*id).to_owned()),
                         description: manifest.description.unwrap_or_default(),
                         installed: false,
+                        layout: None,
                     });
                 }
-                ["examples", "packages", file] => {
+                ["examples", "layouts", file] => {
                     if let Some(id) = file.strip_suffix(".json") {
-                        let package: Package = serde_json::from_str(text).unwrap_or_default();
-                        catalog.packages.push(CatalogEntry {
+                        let def: LayoutDef = serde_json::from_str(text).unwrap_or_default();
+                        let def = def.clamp(id);
+                        catalog.layouts.push(CatalogEntry {
                             id: id.to_owned(),
-                            name: package.name,
-                            description: package.description,
-                            installed: self
-                                .root
-                                .join("packages")
-                                .join(format!("{id}.json"))
-                                .is_file(),
+                            name: def.name.clone(),
+                            description: def.description.clone(),
+                            installed: self.layout_path(id).is_some(),
+                            layout: Some(def),
                         });
                     }
                 }
@@ -1112,6 +1351,7 @@ impl WebDir {
                                 .join("themes")
                                 .join(format!("{id}.json"))
                                 .is_file(),
+                            layout: None,
                         });
                     }
                 }
@@ -1125,13 +1365,13 @@ impl WebDir {
         let catalog = self.catalog();
         let list = match kind {
             CatalogKind::Mod => &catalog.mods,
-            CatalogKind::Package => &catalog.packages,
+            CatalogKind::Layout => &catalog.layouts,
             CatalogKind::Theme => &catalog.themes,
         };
         list.iter().any(|entry| entry.id == id)
     }
 
-    /// Copies an official mod, package or theme into the folder. A mod
+    /// Copies an official mod, layout or theme into the folder. A mod
     /// arrives on - it is alc's own code, the same trust as the page - and
     /// replaces an installed copy only with `force`.
     pub(crate) fn install_official(&self, kind: CatalogKind, id: &str, force: bool) -> Result<()> {
@@ -1143,9 +1383,9 @@ impl WebDir {
                 format!("examples/mods/{id}/"),
                 self.root.join("mods").join(id),
             ),
-            CatalogKind::Package => (
-                format!("examples/packages/{id}.json"),
-                self.root.join("packages").join(format!("{id}.json")),
+            CatalogKind::Layout => (
+                format!("examples/layouts/{id}.json"),
+                self.root.join("layouts").join(format!("{id}.json")),
             ),
             CatalogKind::Theme => (
                 format!("examples/themes/{id}.json"),
@@ -1178,7 +1418,7 @@ impl WebDir {
                     self.set_enabled(id, true)?;
                 }
             }
-            CatalogKind::Package | CatalogKind::Theme => {
+            CatalogKind::Layout | CatalogKind::Theme => {
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent)?;
                 }
@@ -1311,10 +1551,19 @@ impl WebDir {
                 problems.push(format!("themes/{error}"));
             }
         }
-        for package in self.packages() {
-            if let Some(error) = package.error {
-                problems.push(format!("packages/{}.json: {error}", package.id));
+        let layouts = self.layouts();
+        for info in &layouts {
+            if let Some(error) = &info.error {
+                let dir = if info.legacy { "packages" } else { "layouts" };
+                problems.push(format!("{dir}/{}.json: {error}", info.id));
             }
+        }
+        if let Some(active) = &settings.active_layout
+            && !layouts.iter().any(|info| &info.id == active)
+        {
+            problems.push(format!(
+                "settings.json: activeLayout `{active}` is in neither layouts/ nor packages/"
+            ));
         }
         if settings.background.kind == BackgroundKind::Image
             && !self
@@ -1379,7 +1628,7 @@ pub(crate) fn content_security_policy(script_hashes: &[String]) -> String {
     }
     format!(
         "default-src 'self'; script-src {script}; style-src 'self' 'unsafe-inline'; \
-         img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; \
+         img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; \
          base-uri 'none'; form-action 'none'"
     )
 }
@@ -1688,6 +1937,7 @@ mod tests {
 
     #[test]
     fn the_policy_lists_each_hash() {
+        assert!(content_security_policy(&[]).contains("font-src 'self' data:;"));
         let policy = content_security_policy(&[csp_hash("a")]);
         assert!(policy.contains("script-src 'self' 'report-sample' 'sha256-"));
         assert!(!content_security_policy(&[]).contains("report-sample"));
@@ -1735,7 +1985,7 @@ mod tests {
         assert_eq!(saved.background.kind, BackgroundKind::None);
         assert_eq!(saved.background.dim, 95);
         assert_eq!(saved.background.terminal, 30);
-        assert_eq!(saved.package, None);
+        assert_eq!(saved.active_layout, None);
         let good = web
             .save_settings(br#"{"background":{"kind":"preset","value":"aurora"}}"#)
             .unwrap();
@@ -1743,36 +1993,36 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_lists_official_mods_packages_and_templates() {
+    fn the_catalog_lists_official_mods_layouts_and_templates() {
         let (_temp, web) = dir();
         let catalog = web.catalog();
         for id in ["clock", "quick-prompts", "ambient", "session-overview"] {
             assert!(catalog.mods.iter().any(|entry| entry.id == id), "{id}");
         }
-        assert!(catalog.packages.iter().any(|entry| entry.id == "cockpit"));
+        assert!(catalog.layouts.iter().any(|entry| entry.id == "cockpit"));
         assert!(catalog.templates.iter().any(|entry| entry.id == "widget"));
         assert!(catalog.mods.iter().all(|entry| !entry.installed));
-        // Every official package names only official mods, so applying one
+        // Every official layout names only official mods, so applying one
         // never leaves a hole.
-        for package in &catalog.packages {
+        for layout in &catalog.layouts {
             let text = CUSTOM_FILES
                 .iter()
-                .find(|(path, _)| *path == format!("examples/packages/{}.json", package.id))
+                .find(|(path, _)| *path == format!("examples/layouts/{}.json", layout.id))
                 .unwrap()
                 .1;
-            let parsed: Package = serde_json::from_str(text).unwrap();
+            let parsed: LayoutDef = serde_json::from_str(text).unwrap();
             for id in &parsed.mods {
                 assert!(
                     catalog.mods.iter().any(|entry| &entry.id == id),
                     "{} needs {id}",
-                    package.id
+                    layout.id
                 );
             }
         }
     }
 
     #[test]
-    fn installing_an_official_mod_turns_it_on_and_applying_a_package_installs_its_mods() {
+    fn installing_an_official_mod_turns_it_on_and_applying_a_layout_installs_its_mods() {
         let (_temp, web) = dir();
         write(&web, "settings.json", r#"{"disabledMods":["clock"]}"#);
         web.install_official(CatalogKind::Mod, "clock", false)
@@ -1793,42 +2043,157 @@ mod tests {
                 .is_err()
         );
 
-        web.install_official(CatalogKind::Package, "cockpit", false)
+        web.install_official(CatalogKind::Layout, "cockpit", false)
             .unwrap();
-        let applied = web.apply_package("cockpit").unwrap();
+        assert!(web.root().join("layouts/cockpit.json").is_file());
+        let applied = web.apply_layout("cockpit", false).unwrap();
+        assert!(applied.applied);
         assert!(applied.missing.is_empty(), "{:?}", applied.missing);
         assert!(applied.installed.contains(&"session-overview".to_owned()));
         assert!(applied.reload);
         let (settings, _) = web.load_settings();
-        assert_eq!(settings.package.as_deref(), Some("cockpit"));
+        assert_eq!(settings.active_layout.as_deref(), Some("cockpit"));
         assert!(settings.layout.slots.contains_key("list.top"));
         assert!(settings.layout.explicit);
         assert!(web.root().join("mods/session-overview/mod.js").is_file());
+        // clock was on before (the person's own), so it is not the layout's.
+        assert!(!settings.layout_mods.contains(&"clock".to_owned()));
+        assert!(
+            settings
+                .layout_mods
+                .contains(&"session-overview".to_owned())
+        );
     }
 
     #[test]
-    fn a_package_round_trips_and_reports_mods_it_cannot_find() {
+    fn a_layout_round_trips_and_reports_mods_it_cannot_find() {
         let (_temp, web) = dir();
         let saved = web
-            .save_package(
+            .save_layout(
                 "mine",
                 br#"{"name":"Mine","mods":["ghost","../x"],"theme":"fjord",
-                    "layout":{"slots":{"bar":[{"widget":"ghost/w"}]}}}"#,
+                    "layout":{"slots":{"bar":[{"widget":"ghost/w"}]}},
+                    "terminal":{"fontSize":99,"fontFamily":"x;}","cursorStyle":"bar"}}"#,
             )
             .unwrap();
         assert_eq!(saved.mods, vec!["ghost".to_owned()]);
-        assert_eq!(web.packages().len(), 1);
-        let applied = web.apply_package("mine").unwrap();
+        let terminal = saved.terminal.clone().unwrap();
+        assert_eq!(terminal.font_size, Some(28));
+        assert_eq!(terminal.font_family, None);
+        assert_eq!(terminal.cursor_style, Some(CursorStyle::Bar));
+        assert!(web.root().join("layouts/mine.json").is_file());
+        assert_eq!(web.layouts().len(), 1);
+        let applied = web.apply_layout("mine", false).unwrap();
         assert_eq!(applied.missing, vec!["ghost".to_owned()]);
         assert_eq!(applied.settings.theme, "fjord");
-        assert!(web.save_package("../x", b"{}").is_err());
-        web.remove_package("mine").unwrap();
-        assert!(web.packages().is_empty());
-        assert_eq!(web.load_settings().0.package, None);
+        assert_eq!(applied.settings.layout_terminal, saved.terminal);
+        assert!(web.save_layout("../x", b"{}").is_err());
+        web.remove_layout("mine").unwrap();
+        assert!(web.layouts().is_empty());
+        let (settings, _) = web.load_settings();
+        assert_eq!(settings.active_layout, None);
+        assert_eq!(settings.layout_terminal, None);
+        assert_eq!(
+            settings.theme, "system",
+            "removing the active one goes back to Default"
+        );
     }
 
     #[test]
-    fn a_package_does_not_switch_on_a_mod_installed_from_elsewhere() {
+    fn layouts_and_packages_live_side_by_side() {
+        let (_temp, web) = dir();
+        write(&web, "packages/old.json", r#"{"name":"Old"}"#);
+        write(&web, "packages/both.json", r#"{"name":"From packages"}"#);
+        write(&web, "layouts/both.json", r#"{"name":"From layouts"}"#);
+        write(&web, "layouts/new.json", r#"{"name":"New"}"#);
+        let layouts = web.layouts();
+        let ids: Vec<&str> = layouts.iter().map(|info| info.id.as_str()).collect();
+        assert_eq!(ids, ["both", "new", "old"]);
+        assert_eq!(layouts[0].def.name, "From layouts", "layouts/ wins");
+        assert!(!layouts[0].legacy);
+        assert!(layouts[2].legacy);
+        assert!(web.apply_layout("old", false).unwrap().applied);
+        // Saving writes layouts/, never packages/.
+        web.save_layout("old", br#"{"name":"Old, saved"}"#).unwrap();
+        assert!(web.root().join("layouts/old.json").is_file());
+        assert_eq!(web.load_layout("old").unwrap().name, "Old, saved");
+        // Removing takes whichever files exist.
+        web.remove_layout("both").unwrap();
+        assert!(!web.root().join("layouts/both.json").exists());
+        assert!(!web.root().join("packages/both.json").exists());
+        assert!(web.remove_layout("both").is_err());
+    }
+
+    #[test]
+    fn a_2_8_settings_file_reads_its_package_as_the_active_layout() {
+        let (_temp, web) = dir();
+        write(&web, "packages/cockpit.json", r#"{"name":"Cockpit"}"#);
+        write(
+            &web,
+            "settings.json",
+            r#"{"theme":"fjord","package":"cockpit"}"#,
+        );
+        let (settings, error) = web.load_settings();
+        assert_eq!(error, None);
+        assert_eq!(settings.active_layout.as_deref(), Some("cockpit"));
+        assert!(web.check().is_empty(), "{:?}", web.check());
+        // Written back under the new name.
+        web.save_settings(&serde_json::to_vec(&settings).unwrap())
+            .unwrap();
+        let text = fs::read_to_string(web.root().join("settings.json")).unwrap();
+        assert!(text.contains("\"activeLayout\": \"cockpit\""), "{text}");
+        assert!(!text.contains("\"package\""), "{text}");
+    }
+
+    #[test]
+    fn switching_layouts_turns_off_only_what_the_last_one_turned_on() {
+        let (_temp, web) = dir();
+        for id in ["a", "b", "shared", "mine"] {
+            write(&web, &format!("mods/{id}/mod.css"), "body{}");
+        }
+        // `mine` is on because the person turned it on.
+        write(
+            &web,
+            "settings.json",
+            r##"{"theme":"ember","accent":"#112233","disabledMods":["a","b","shared"]}"##,
+        );
+        web.save_layout(
+            "one",
+            br#"{"mods":["a","shared","mine"],"theme":"fjord","density":"compact"}"#,
+        )
+        .unwrap();
+        web.save_layout(
+            "two",
+            br#"{"mods":["b","shared"],"theme":"paper","terminal":{"fontSize":15}}"#,
+        )
+        .unwrap();
+
+        let one = web.apply_layout("one", false).unwrap().settings;
+        assert_eq!(one.layout_mods, ["a", "shared"]);
+        assert_eq!(one.disabled_mods, ["b"]);
+        assert_eq!(one.accent, None, "the layout's theme brings its accent");
+        assert_eq!(one.density, Density::Compact);
+
+        let two = web.apply_layout("two", false).unwrap().settings;
+        assert_eq!(two.layout_mods, ["b", "shared"]);
+        assert_eq!(two.disabled_mods, ["a"], "a goes off, mine stays on");
+        assert_eq!(two.layout_terminal.unwrap().font_size, Some(15));
+        assert_eq!(two.density, Density::Comfortable, "back to the person's");
+
+        let home = web.reset_layout().unwrap().settings;
+        assert_eq!(home.active_layout, None);
+        assert!(home.layout_mods.is_empty());
+        assert_eq!(home.layout_terminal, None);
+        assert_eq!(home.disabled_mods, ["a", "b", "shared"]);
+        assert_eq!(home.theme, "ember");
+        assert_eq!(home.accent.as_deref(), Some("#112233"));
+        assert_eq!(home.layout, Layout::default());
+        assert_eq!(home.background, Background::default());
+        assert_eq!(home.layout_restore, None);
+    }
+
+    #[test]
+    fn a_layout_with_unread_mods_is_applied_whole_or_not_at_all() {
         let (_temp, web) = dir();
         write(&web, "mods/third/mod.js", "x();");
         write(&web, "mods/third/SOURCE", "someone/repo\n");
@@ -1838,11 +2203,29 @@ mod tests {
             "settings.json",
             r#"{"disabledMods":["mine","third"]}"#,
         );
-        web.save_package("p", br#"{"mods":["mine","third"]}"#)
+        web.save_layout("p", br#"{"mods":["mine","third"],"theme":"fjord"}"#)
             .unwrap();
-        let applied = web.apply_package("p").unwrap();
-        assert_eq!(applied.review, vec!["third".to_owned()]);
-        assert_eq!(applied.settings.disabled_mods, vec!["third".to_owned()]);
+        let before = fs::read_to_string(web.root().join("settings.json")).unwrap();
+        let refused = web.apply_layout("p", false).unwrap();
+        assert!(!refused.applied);
+        assert_eq!(
+            refused.review,
+            vec![ReviewMod {
+                id: "third".to_owned(),
+                source: "someone/repo".to_owned()
+            }]
+        );
+        assert_eq!(
+            fs::read_to_string(web.root().join("settings.json")).unwrap(),
+            before,
+            "nothing was changed, not even the mod written here"
+        );
+        let applied = web.apply_layout("p", true).unwrap();
+        assert!(applied.applied);
+        assert!(applied.settings.disabled_mods.is_empty());
+        assert_eq!(applied.settings.layout_mods, ["mine", "third"]);
+        assert_eq!(applied.settings.theme, "fjord");
+        assert!(applied.reload);
     }
 
     #[test]

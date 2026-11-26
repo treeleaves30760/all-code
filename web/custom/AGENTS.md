@@ -11,18 +11,24 @@ web/
 ├── settings.json        theme, terminal, which mods are off, layout, background
 ├── themes/<id>.json     colour tokens for the page and the terminal
 ├── mods/<id>/           mod.json, mod.js, mod.css
-├── packages/<id>.json   a set of mods with a layout, background and theme
+├── layouts/<id>.json    a whole look: mods, widget places, theme, background, terminal font
 ├── backgrounds/<name>   png, jpg, webp or gif images for the background
-└── examples/            official mods, packages, themes and new-mod templates
+└── examples/            official mods, layouts, themes and new-mod templates
     ├── mods/<id>/         copy, or `alc remote web add <id>`
-    ├── packages/<id>.json
+    ├── layouts/<id>.json
     ├── themes/<id>.json
     └── templates/<kind>/  widget, page, window, background, style, blank
 ```
 
 The page has a **Studio** tab that edits all of this: apply and save
-packages, drag widgets into slots, install mods (official or from GitHub),
+layouts, drag widgets into slots, install mods (official or from GitHub),
 start a new mod from a template, pick a background, and size the panels.
+
+A **layout** arranges the whole page and its **mods** draw what is inside it:
+a skin mod restyles the page, other mods add widgets, windows and
+backgrounds. alc 2.8 called a layout a *package* and kept it in
+`packages/<id>.json`; that folder is still read (a `layouts/` file of the same
+id wins), and saves always go to `layouts/`.
 
 Validate after every change:
 
@@ -67,7 +73,9 @@ Every field is optional. The settings page writes this same file.
     "railSide": "left"
   },
   "background": { "kind": "preset", "value": "aurora", "dim": 35, "blur": 0, "terminal": 100 },
-  "package": "cockpit"
+  "activeLayout": "cockpit",
+  "layoutMods": ["session-overview"],
+  "layoutTerminal": { "fontSize": 14 }
 }
 ```
 
@@ -91,7 +99,7 @@ Every field is optional. The settings page writes this same file.
 - `layout.hidden`: widgets taken out. A widget neither placed nor hidden is
   drawn in the slot its mod suggests (`defaultSlot`), unless
   `layout.explicit` is true - then only placed widgets are drawn. Applying a
-  package sets `explicit`.
+  layout sets `explicit`.
 - `layout.sizes`: panel widths in px - `rail` 220–640, `files` 260–1200,
   `left`/`right` docks 180–900. `filesSide`, `railSide`: `left` | `right`.
 - `background.kind`: `none`, `preset` (`aurora`, `dusk`, `mesh`, `grid`,
@@ -99,7 +107,11 @@ Every field is optional. The settings page writes this same file.
   `backgrounds/`) or `mod` (`mod/id` from `mod.addBackground`). `dim` 0–95
   (% of the page colour over it), `blur` 0–40 px, `terminal` 30–100 (%
   terminal opacity).
-- `package`: the package last applied (informational).
+- `activeLayout`: the layout in use, or `null` for Default. The page writes
+  it to `body[data-layout]`. Read from the 2.8 `package` key too.
+- `layoutMods`, `layoutTerminal`, `layoutRestore`: alc's own bookkeeping for
+  the active layout (the mods it switched on, its terminal settings, your
+  look from before it). Leave them to `layout apply`/`reset`.
 
 If `settings.json` does not parse, the page uses the defaults, **loads no
 mods**, and refuses to save over the file until it is fixed — so run
@@ -134,7 +146,7 @@ Page tokens:
 | `--term-bg`, `--letterbox` | around the terminal |
 | `--chart-1` … `--chart-4` | usage chart series (uncached, cache read, cache write, output) |
 | `--r-sm`, `--r-md`, `--r-lg` | corner radii |
-| `--font`, `--mono` | not settable from a theme (no quotes allowed); use a mod's CSS |
+| `--font`, `--mono` | not settable from a theme (no quotes allowed); use a skin mod's CSS, and a layout's `terminal.fontFamily` for the terminal |
 
 Terminal keys are xterm.js theme names: `background`, `foreground`, `cursor`,
 `cursorAccent`, `selectionBackground`, `black`, `red`, `green`, `yellow`,
@@ -203,7 +215,7 @@ alc.define('my-mod', (mod) => {
 | `mod.addSessionChip(fn)` | `fn(card)` returns a string, `{text, tone}` (`ok`, `warn`, `danger`, `accent`) or `null`; shown on each session row |
 | `mod.addStyle(css)` | injects CSS (also how `mod.css` arrives) |
 | `mod.onCleanup(fn)` | runs before the mod is reloaded |
-| `mod.addWidget({id, title, render, ...})` | a widget the studio or a package places in a slot (below) |
+| `mod.addWidget({id, title, render, ...})` | a widget the studio or a layout places in a slot (below) |
 | `mod.addWindow({id, title, render, width, height, open})` | a floating window; returns `{open, close, toggle}` |
 | `mod.addBackground({id, name, render})` | a background the studio can pick |
 | `mod.local.get(name, fallback)` / `mod.local.set(name, value)` | storage on this device only (never throws) |
@@ -326,8 +338,9 @@ seconds), `exit` (null while running), `viewers`, `cols`, `rows`, `tmux`,
 
 ### Style hooks for mod.css
 
-The page is plain HTML. Stable hooks: `body[data-pane]` (`list`, `view`,
-`usage`, `settings`, `studio`, `page`), `body[data-theme-mode]` (`light`/`dark`),
+The page is plain HTML. Stable hooks: `body[data-layout]` (the active
+layout's id; absent for Default), `body[data-pane]` (`list`, `view`,
+`usage`, `settings`, `studio`, `page`), `html[data-theme-mode]` (`light`/`dark`),
 `#bar` (header), `#nav` (tabs), `#sessions .card`, `#terminal`, `#keys`,
 `#composer`, `#usage`, `#settings`, `#page` (mod pages), `.panel`, `.btn`,
 `.chip`, and for this release's parts `body[data-pane="studio"]`, `#studio`,
@@ -336,7 +349,7 @@ The page is plain HTML. Stable hooks: `body[data-pane]` (`list`, `view`,
 `.win`, `.win-head`, `.win-body`, `#backdrop`, `body[data-backdrop]`.
 Prefer tokens over hard-coded colours so a mod works in every theme.
 
-## packages/<id>.json
+## layouts/<id>.json
 
 ```json
 {
@@ -344,29 +357,61 @@ Prefer tokens over hard-coded colours so a mod works in every theme.
   "description": "…",
   "version": "1.0.0",
   "author": "you",
-  "mods": ["clock", "session-notes"],
+  "mods": ["cockpit-skin", "clock", "session-notes"],
   "theme": "midnight",
   "accent": "#4f46e5",
   "density": "compact",
   "background": { "kind": "preset", "value": "aurora", "dim": 40 },
-  "layout": { "slots": { "bar": [{ "widget": "clock/clock" }] } }
+  "layout": { "slots": { "bar": [{ "widget": "clock/clock" }] } },
+  "terminal": { "fontFamily": "\"Iosevka\", monospace", "fontSize": 14, "lineHeight": 1.1, "cursorStyle": "bar", "cursorBlink": false }
 }
 ```
 
-Applying a package (Studio → Packages, or `alc remote web package apply
-<id>`) turns its mods on - installing official ones it names that are
-missing - and takes its layout (as `explicit`), background, theme, accent
-and density. Mods it does not name are left as they are. Every field but
-`name` is optional. The studio's "Save this page as a package" writes the
-page as it is now, and its export is the same JSON.
+Every field but `name` is optional; `terminal` takes any of those five keys,
+clamped like `settings.json`'s.
+
+Applying a layout (Studio → Layouts, the palette's `Layout: …`, or
+`alc remote web layout apply <id>`):
+
+1. switches off the mods the previous layout switched on that this one does
+   not name (a mod you had on yourself is never switched off);
+2. switches its mods on, installing official ones that are missing;
+3. takes its theme, accent, density, widget places (as `explicit`),
+   background and terminal settings, and sets `activeLayout`.
+
+A mod it names that was installed from elsewhere and is still off has not
+been read yet. Then the layout is **not applied at all** - the page asks once,
+listing each mod and where it came from, and the CLI needs
+`--enable-mods`. **Default** (the first card in Studio → Layouts, the
+palette's `Layout: Default`, `alc remote web layout reset`) switches the
+layout's mods off and gives back your own theme, widgets, background and
+terminal.
+
+### Skins
+
+A layout changes the whole look through a **skin mod** (`<layout>-skin`) whose
+CSS is written entirely under `body[data-layout="<layout-id>"]`, so a skin
+left switched on does nothing under another layout:
+
+```css
+body[data-layout="retro98"] #bar { background: var(--surface); }
+body[data-layout="retro98"] .btn { border-radius: 0; }
+```
+
+Use the hooks above and the tokens; keep the operator/viewer pill, the
+permission control, the size note and `:focus-visible` visible, and text at
+4.5:1 against what it sits on. Web fonts may be embedded in `mod.css` as
+`@font-face { src: url(data:font/woff2;base64,…) }` (the policy allows
+`font-src data:`); keep a system stack behind them. The terminal measures its
+cells again when a font finishes loading.
 
 ## Installing and sharing
 
 ```sh
 alc remote web list                          # what is installed, on or off
-alc remote web catalog                       # official mods, packages, themes, templates
-alc remote web add <id>                      # install an official mod (on), package or theme
-alc remote web package [list|apply <id>|remove <id>]
+alc remote web catalog                       # official mods, layouts, themes, templates
+alc remote web add <id>                      # install an official mod (on), layout or theme
+alc remote web layout [list | apply <id> [--enable-mods] | reset | remove <id>]
 alc remote web new <id> --template widget    # widget, page, window, background, style, blank
 alc remote web install owner/repo[@ref]      # also owner/repo/folder@ref, a github.com URL, or a local folder
 alc remote web enable <id>                   # installed mods arrive off
@@ -375,15 +420,22 @@ alc remote web disable <id> | remove <id>
 
 A repository is a source when it has `mod.json` + `mod.js`/`mod.css` at its
 root (one mod, named after the repository without an `alc-mod-` prefix) or
-`mods/<id>/…`, `themes/<id>.json` and `packages/<id>.json` (a collection). Only `mod.json`, `mod.js`,
+`mods/<id>/…`, `themes/<id>.json` and `layouts/<id>.json` (a collection; a
+2.8 `packages/<id>.json` is installed as a layout too). Only `mod.json`, `mod.js`,
 `mod.css` and `README.md` are copied from a mod. Each installed mod records its
 source in `mods/<id>/SOURCE`. To publish a mod, push that layout to a public
 GitHub repository with a README and the `alc-mod` topic.
+`treeleaves30760/alc-layouts` is a collection of ten layouts to read and copy:
+
+```sh
+alc remote web install treeleaves30760/alc-layouts   # everything arrives off
+alc remote web layout apply retro98 --enable-mods    # after reading its mods
+```
 
 ## Rules
 
 1. Start from `alc remote web new`, or copy from `examples/` into `mods/`,
-   `themes/` or `packages/`; do not edit `examples/` (alc rewrites it).
+   `themes/` or `layouts/`; do not edit `examples/` (alc rewrites it).
 2. Keep every mod inside `alc.define`, and one mod per folder.
 3. Run `alc remote web check` after each change and fix what it reports.
 4. Never put a secret in a mod: viewer links download mod files too.

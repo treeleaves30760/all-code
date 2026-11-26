@@ -124,9 +124,13 @@ pub enum WebCommand {
         id: String,
         force: bool,
     },
-    Packages,
-    ApplyPackage(String),
-    RemovePackage(String),
+    Layouts,
+    ApplyLayout {
+        id: String,
+        enable_mods: bool,
+    },
+    ResetLayout,
+    RemoveLayout(String),
 }
 
 /// Runs the agent under a pty, mirrors it to this terminal and to a loopback
@@ -1077,16 +1081,21 @@ fn run_web(store: &Store, command: WebCommand) -> Result<u8> {
             for id in &installed.themes {
                 println!("installed themes/{id}.json");
             }
-            for id in &installed.packages {
-                println!(
-                    "installed packages/{id}.json (apply it with `alc remote web package apply {id}`)"
-                );
+            for id in &installed.layouts {
+                println!("installed layouts/{id}.json");
             }
             if !enable && !installed.mods.is_empty() {
                 println!(
-                    "\nmods run with the page's link and are not sandboxed; read them first:\n  {}\nthen turn one on with `alc remote web enable <id>` or the switch in Settings",
+                    "\nmods run with the page's link and are not sandboxed; read them first:\n  {}\nthen turn one on with `alc remote web enable <id>` or the switch in Studio",
                     folder.root().join("mods").display()
                 );
+                if let Some(id) = installed.layouts.first() {
+                    println!(
+                        "or apply a layout with its mods in one go: `alc remote web layout apply {id} --enable-mods`"
+                    );
+                }
+            } else if let Some(id) = installed.layouts.first() {
+                println!("apply one with `alc remote web layout apply {id}`");
             }
             Ok(0)
         }
@@ -1129,8 +1138,8 @@ fn run_web(store: &Store, command: WebCommand) -> Result<u8> {
                     entry.description
                 );
             }
-            println!("packages (alc remote web add <id>, then package apply <id>):");
-            for entry in &catalog.packages {
+            println!("layouts (alc remote web add <id>, then layout apply <id>):");
+            for entry in &catalog.layouts {
                 println!(
                     "  {:<18} {:<10} {}",
                     entry.id,
@@ -1157,8 +1166,8 @@ fn run_web(store: &Store, command: WebCommand) -> Result<u8> {
             let catalog = folder.catalog();
             let kind = if catalog.mods.iter().any(|entry| entry.id == id) {
                 web::CatalogKind::Mod
-            } else if catalog.packages.iter().any(|entry| entry.id == id) {
-                web::CatalogKind::Package
+            } else if catalog.layouts.iter().any(|entry| entry.id == id) {
+                web::CatalogKind::Layout
             } else if catalog.themes.iter().any(|entry| entry.id == id) {
                 web::CatalogKind::Theme
             } else {
@@ -1171,33 +1180,34 @@ fn run_web(store: &Store, command: WebCommand) -> Result<u8> {
                 web::CatalogKind::Mod => {
                     println!("installed mods/{id} (on); open pages offer a reload")
                 }
-                web::CatalogKind::Package => println!(
-                    "installed packages/{id}.json; apply it with `alc remote web package apply {id}`"
+                web::CatalogKind::Layout => println!(
+                    "installed layouts/{id}.json; apply it with `alc remote web layout apply {id}`"
                 ),
                 web::CatalogKind::Theme => println!("installed themes/{id}.json"),
             }
             Ok(0)
         }
-        WebCommand::Packages => {
-            let packages = folder.packages();
+        WebCommand::Layouts => {
+            let layouts = folder.layouts();
             let (settings, _) = folder.load_settings();
-            if packages.is_empty() {
+            if layouts.is_empty() {
                 println!(
-                    "no packages in {}; `alc remote web catalog` lists official ones",
-                    folder.root().join("packages").display()
+                    "no layouts in {}; `alc remote web catalog` lists official ones",
+                    folder.root().join("layouts").display()
                 );
             }
-            for info in &packages {
-                let active = if settings.package.as_deref() == Some(info.id.as_str()) {
+            for info in &layouts {
+                let active = if settings.active_layout.as_deref() == Some(info.id.as_str()) {
                     "*"
                 } else {
                     " "
                 };
                 println!(
-                    "{active} {:<20} {}  [{}]",
+                    "{active} {:<20} {}  [{}]{}",
                     info.id,
-                    info.package.name,
-                    info.package.mods.join(", ")
+                    info.def.name,
+                    info.def.mods.join(", "),
+                    if info.legacy { "  (packages/)" } else { "" }
                 );
                 if let Some(error) = &info.error {
                     println!("    problem: {error}");
@@ -1205,21 +1215,32 @@ fn run_web(store: &Store, command: WebCommand) -> Result<u8> {
             }
             Ok(0)
         }
-        WebCommand::ApplyPackage(id) => {
-            let applied = folder.apply_package(&id)?;
+        WebCommand::ApplyLayout { id, enable_mods } => {
+            let applied = folder.apply_layout(&id, enable_mods)?;
+            if !applied.applied {
+                println!(
+                    "not applied: layout {id} needs mods that were installed from elsewhere and are off:"
+                );
+                for item in &applied.review {
+                    println!("  mods/{}  from {}", item.id, item.source);
+                }
+                println!(
+                    "they run with the page's link and are not sandboxed; read them in\n  {}\nthen run `alc remote web layout apply {id} --enable-mods`",
+                    folder.root().join("mods").display()
+                );
+                return Ok(1);
+            }
             for mod_id in &applied.installed {
                 println!("installed official mods/{mod_id}");
             }
-            for mod_id in &applied.missing {
-                println!("problem: the package needs mods/{mod_id}, which is not installed");
+            for item in &applied.review {
+                println!("turned on mods/{} (from {})", item.id, item.source);
             }
-            for mod_id in &applied.review {
-                println!(
-                    "left off: mods/{mod_id} came from elsewhere; read it, then `alc remote web enable {mod_id}`"
-                );
+            for mod_id in &applied.missing {
+                println!("problem: the layout needs mods/{mod_id}, which is not installed");
             }
             println!(
-                "applied package {id}; open pages pick it up{}",
+                "applied layout {id}; open pages pick it up{}",
                 if applied.reload {
                     " and offer a reload"
                 } else {
@@ -1228,9 +1249,14 @@ fn run_web(store: &Store, command: WebCommand) -> Result<u8> {
             );
             Ok(0)
         }
-        WebCommand::RemovePackage(id) => {
-            folder.remove_package(&id)?;
-            println!("removed packages/{id}.json");
+        WebCommand::ResetLayout => {
+            folder.reset_layout()?;
+            println!("back to the default layout; open pages pick it up");
+            Ok(0)
+        }
+        WebCommand::RemoveLayout(id) => {
+            folder.remove_layout(&id)?;
+            println!("removed layout {id}");
             Ok(0)
         }
     }
