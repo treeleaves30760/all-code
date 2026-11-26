@@ -1374,7 +1374,7 @@ body.viewer .keys {
 }
 
 body.viewer .perm select,
-body.viewer .perm button {
+body.viewer .perm button:not(.perm-chip) {
   display: none;
 }
 

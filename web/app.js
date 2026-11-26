@@ -634,6 +634,16 @@
     el.permFlags.replaceChildren();
     if (view.ungated) el.permFlags.append(flag('i-ungated', T.unsandboxed));
 
+    // A viewer sees the mode and nothing to press: the same chip, still.
+    if (!operator.value) {
+      el.permPick.hidden = true;
+      el.permChip.hidden = false;
+      el.permChip.disabled = true;
+      el.permChip.title = '';
+      note('');
+      return;
+    }
+
     if (view.control === 'dead') {
       // No control at all: the mode as a chip, and why it cannot move.
       el.permPick.hidden = true;
