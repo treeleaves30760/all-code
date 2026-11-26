@@ -398,6 +398,22 @@ body[data-layout="retro98"] #bar { background: var(--surface); }
 body[data-layout="retro98"] .btn { border-radius: 0; }
 ```
 
+Hooks a skin may rely on, beyond the ones above (kept stable across alc
+releases):
+
+| Area | Hooks |
+|---|---|
+| Header | `#bar`, `#title`, `#subtitle` (`.sub-name`, `.sub-facts`), `.nav`, `.nav-tab[aria-current="page"]`, `#barSlot`, `#link` (`.status-dot`), `#grade` (`.pill.operator`), `#paletteToggle`, `#filesToggle`, `#fitToggle`, `#winTray` |
+| Session list | `#list`, `.list-head`, `.filter`, `#sessions .card[aria-current]` (`.avatar`, `.dot`, `.name`, `.meta`, `.cwd`, `.age`, `.chips`), `.empty` |
+| Coding view | `#view`, `.perm`, `.perm-label`, `.perm-chip`, `.perm-order`, `.perm-note`, `.perm-flag`, `#sizeNote`, `#stage`, `#center`, `#terminal`, `.dock`, `.keys button` (`.held`), `#composer`, `#compose`, `#send`, `#files` |
+| Pages | `#usage`, `#settings`, `#studio`, `#page`, `.page-head`, `.page-title`, `.page-sub`, `.panel`, `.stat`, `.settings-panel`, `.section-title`, `.settings-toc`, `.toc-link`, `.studio-tabs`, `.studio-tab[aria-selected]`, `.layout-card` (`.active`, `.layout-preview`), `.mod-line`, `.theme-card` |
+| Overlays | `.win`, `.win-head`, `.win-title`, `.win-close`, `.win-body`, `.dialog`, `.dialog-title`, `.palette-box`, `.palette-item[aria-selected]`, `.menu-list`, `.menu-item`, `#toast` |
+| Controls | `.btn` (`.accent`, `.danger`, `.small`), `.pill`, `.badge`, `.chip`, `.segmented button[aria-checked]`, `.switch-track`, `.text-input` |
+
+`body` is a flex column (`#bar`, then `main`), so `order` moves the header
+below the page. A skin can also restyle every button at once with a
+low-specificity selector such as `body[data-layout="x"] :where(button)`.
+
 Use the hooks above and the tokens; keep the operator/viewer pill, the
 permission control, the size note and `:focus-visible` visible, and text at
 4.5:1 against what it sits on. Web fonts may be embedded in `mod.css` as

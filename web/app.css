@@ -4637,7 +4637,7 @@ body.dragging .win-body {
 }
 
 /* Beside a terminal the list is a narrow rail for getting around; the
- * strips a package put above and below the sessions belong to the full
+ * strips a layout put above and below the sessions belong to the full
  * list. */
 body[data-pane="view"] #list > .slot-list {
   display: none;
