@@ -695,12 +695,7 @@ impl WebDir {
                 .with_context(|| format!("failed to create {}", self.root.join(dir).display()))?;
         }
         write_if_changed(&self.root.join("AGENTS.md"), AGENTS_MD)?;
-        // 2.8 shipped its examples as `examples/packages/`; they are
-        // `examples/layouts/` now, and `examples/` is alc's to tidy.
-        let stale = self.root.join("examples").join("packages");
-        if fs::symlink_metadata(&stale).is_ok_and(|meta| meta.is_dir()) {
-            fs::remove_dir_all(&stale).ok();
-        }
+        self.tidy_old_examples();
         for (relative, contents) in CUSTOM_FILES {
             let path = self.root.join(relative);
             if let Some(parent) = path.parent() {
@@ -709,6 +704,35 @@ impl WebDir {
             write_if_changed(&path, contents)?;
         }
         Ok(())
+    }
+
+    /// 2.8 shipped its official layouts as `examples/packages/`; they are
+    /// `examples/layouts/` now. Only the five files 2.8 wrote are removed,
+    /// and the folder only once it is empty - anything a person put there
+    /// stays - and nothing is done through a symlinked `examples/`.
+    fn tidy_old_examples(&self) {
+        const SHIPPED_2_8: [&str; 5] = [
+            "cockpit.json",
+            "deep-focus.json",
+            "night-shift.json",
+            "retro.json",
+            "workbench.json",
+        ];
+        let examples = self.root.join("examples");
+        let real_dir =
+            |path: &Path| fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir());
+        let stale = examples.join("packages");
+        if !real_dir(&examples) || !real_dir(&stale) {
+            return;
+        }
+        for name in SHIPPED_2_8 {
+            let file = stale.join(name);
+            if fs::symlink_metadata(&file).is_ok_and(|meta| meta.file_type().is_file()) {
+                fs::remove_file(&file).ok();
+            }
+        }
+        // Fails, and so keeps the folder, unless it is empty.
+        fs::remove_dir(&stale).ok();
     }
 
     pub(crate) fn load_settings(&self) -> (WebSettings, Option<String>) {
@@ -2104,6 +2128,38 @@ mod tests {
             settings.theme, "system",
             "removing the active one goes back to Default"
         );
+    }
+
+    #[test]
+    fn scaffold_tidies_only_the_examples_2_8_wrote() {
+        let (_temp, web) = dir();
+        write(&web, "examples/packages/cockpit.json", "{}");
+        write(&web, "examples/packages/retro.json", "{}");
+        web.scaffold().unwrap();
+        assert!(!web.root().join("examples/packages").exists());
+
+        write(&web, "examples/packages/cockpit.json", "{}");
+        write(&web, "examples/packages/mine.json", "{}");
+        web.scaffold().unwrap();
+        assert!(!web.root().join("examples/packages/cockpit.json").exists());
+        assert!(
+            web.root().join("examples/packages/mine.json").is_file(),
+            "a file alc did not write stays, and so does its folder"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scaffold_does_not_tidy_through_a_symlinked_examples() {
+        let temp = tempfile::tempdir().unwrap();
+        let elsewhere = temp.path().join("elsewhere");
+        fs::create_dir_all(elsewhere.join("packages")).unwrap();
+        fs::write(elsewhere.join("packages/cockpit.json"), "{}").unwrap();
+        fs::create_dir_all(temp.path().join("web")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, temp.path().join("web/examples")).unwrap();
+        let web = WebDir::new(temp.path());
+        web.tidy_old_examples();
+        assert!(elsewhere.join("packages/cockpit.json").is_file());
     }
 
     #[test]

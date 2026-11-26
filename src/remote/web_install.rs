@@ -506,6 +506,15 @@ pub(crate) fn install(
                     .exists(),
                 "layouts/{id}.json already exists; pass --force to replace it"
             );
+            // A 2.8 packages/<id>.json would be shadowed by the new file
+            // without a word, which is a replacement too.
+            ensure!(
+                !web.root()
+                    .join("packages")
+                    .join(format!("{id}.json"))
+                    .exists(),
+                "packages/{id}.json (from alc 2.8) has the same id and would be hidden; pass --force to install over it"
+            );
         }
         for id in &mods {
             ensure!(
@@ -745,6 +754,32 @@ mod tests {
         assert!(!web.apply_layout("new", false).unwrap().applied);
         assert!(web.apply_layout("new", true).unwrap().applied);
         assert!(install(&web, &bundle, "me/repo", false, false).is_err());
+    }
+
+    #[test]
+    fn a_layout_does_not_silently_shadow_a_2_8_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let web = WebDir::new(temp.path());
+        fs::create_dir_all(web.root().join("packages")).unwrap();
+        fs::write(
+            web.root().join("packages/cockpit.json"),
+            r#"{"name":"Mine"}"#,
+        )
+        .unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "layouts/cockpit.json".to_owned(),
+            br#"{"name":"Theirs"}"#.to_vec(),
+        );
+        let bundle = bundle(files, "x").unwrap();
+        let refused = install(&web, &bundle, "me/repo", false, false).unwrap_err();
+        assert!(
+            refused.to_string().contains("packages/cockpit.json"),
+            "{refused}"
+        );
+        assert_eq!(web.load_layout("cockpit").unwrap().name, "Mine");
+        install(&web, &bundle, "me/repo", false, true).unwrap();
+        assert_eq!(web.load_layout("cockpit").unwrap().name, "Theirs");
     }
 
     #[test]

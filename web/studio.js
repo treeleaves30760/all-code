@@ -599,54 +599,69 @@
 
   function modsTab() {
     const { mods, catalog } = web();
-    const installed = mods.map((mod) => {
-      const official = catalog.mods.some((entry) => entry.id === mod.id);
-      return h('li', { class: `mod-row ${mod.error ? 'error' : mod.enabled ? 'on' : 'off'}` },
-        h('span', { class: 'mod-icon' }, icon('puzzle')),
-        h('div', { class: 'mod-main' },
-          h('div', { class: 'mod-head' },
-            h('span', { class: 'mod-name' }, mod.name),
-            mod.version ? h('span', { class: 'mod-version' }, `v${mod.version}`) : null,
-            official ? h('span', { class: 'badge' }, T.official) : null),
-          mod.description ? h('p', { class: 'mod-desc' }, mod.description) : null,
-          h('code', { class: 'mod-id' }, `mods/${mod.id}`, mod.hasJs ? ' · mod.js' : '', mod.hasCss ? ' · mod.css' : ''),
-          mod.error ? h('p', { class: 'mod-error' }, mod.error) : null),
-        h('div', { class: 'studio-actions' },
-          h('label', { class: 'switch' },
-            h('input', {
-              type: 'checkbox',
-              role: 'switch',
-              checked: mod.enabled,
-              'aria-label': mod.name,
-              'data-key': `studio-mod-${mod.id}`,
-              disabled: viewer() || !!mod.error,
-              onchange: async (event) => {
-                const on = event.target.checked;
-                if (on && !(await shell.confirmModOn(mod))) {
-                  event.target.checked = false;
-                  return;
-                }
-                const ok = await shell.changeSettings((n) => {
-                  n.disabledMods = on ? n.disabledMods.filter((id) => id !== mod.id) : [...n.disabledMods, mod.id];
-                }, true);
-                if (ok) reloadToast();
-              },
-            }),
-            h('span', { class: 'switch-track', 'aria-hidden': 'true' })),
-          btn(T.remove, () => {
-            if (window.confirm(core.fill(T.modRemoveConfirm, { m: mod.name }))) {
-              act(() => request('DELETE', `/api/web/mods/${encodeURIComponent(mod.id)}`), () => reloadToast());
-            }
-          }, { danger: true })));
-    });
-
-    const official = catalog.mods.map((entry) => h('li', { class: 'catalog-item' },
-      h('div', { class: 'mod-main' },
-        h('div', { class: 'mod-head' }, h('span', { class: 'mod-name' }, entry.name), entry.installed ? h('span', { class: 'badge ok' }, T.installed) : null),
-        h('p', { class: 'mod-desc' }, entry.description)),
-      entry.installed
-        ? btn(T.reinstall, () => act(() => request('POST', '/api/web/catalog', { kind: 'mod', id: entry.id, force: true }), () => reloadToast()))
-        : btn(T.install, () => act(() => request('POST', '/api/web/catalog', { kind: 'mod', id: entry.id }), () => reloadToast()), { accent: true, key: `install-mod-${entry.id}` })));
+    const officialIds = new Set(catalog.mods.map((entry) => entry.id));
+    /* One row per mod: installed ones first with their switch, then the
+     * official ones not installed yet with Install. Reinstall and Remove
+     * wait in the row's ⋯ menu. */
+    const row = (mod, installed) => {
+      const official = officialIds.has(mod.id);
+      const state = !installed ? 'off' : mod.error ? 'error' : mod.enabled ? 'on' : 'off';
+      const control = !installed
+        ? btn(T.install, () => act(() => request('POST', '/api/web/catalog', { kind: 'mod', id: mod.id }), () => reloadToast()), { accent: true, key: `install-mod-${mod.id}` })
+        : h('label', { class: 'switch', title: mod.enabled ? T.modOn : T.modOff },
+          h('input', {
+            type: 'checkbox',
+            role: 'switch',
+            checked: mod.enabled,
+            'aria-label': mod.name,
+            'data-key': `studio-mod-${mod.id}`,
+            disabled: viewer() || !!mod.error,
+            onchange: async (event) => {
+              const on = event.target.checked;
+              if (on && !(await shell.confirmModOn(mod))) {
+                event.target.checked = false;
+                return;
+              }
+              const ok = await shell.changeSettings((n) => {
+                n.disabledMods = on ? n.disabledMods.filter((id) => id !== mod.id) : [...n.disabledMods, mod.id];
+              }, true);
+              if (ok) reloadToast();
+            },
+          }),
+          h('span', { class: 'switch-track', 'aria-hidden': 'true' }));
+      const menu = installed ? overflow(T.more, [
+        official ? { label: T.reinstall, disabled: viewer(), run: () => act(() => request('POST', '/api/web/catalog', { kind: 'mod', id: mod.id, force: true }), () => reloadToast()) } : null,
+        {
+          label: T.remove,
+          danger: true,
+          disabled: viewer(),
+          run: async () => {
+            const ok = await shell.dialog({
+              title: core.fill(T.modRemoveTitle, { m: mod.name }),
+              body: h('p', {}, T.modRemoveBody),
+              actions: [{ label: T.remove, danger: true }],
+            });
+            if (ok) act(() => request('DELETE', `/api/web/mods/${encodeURIComponent(mod.id)}`), () => reloadToast());
+          },
+        },
+      ]) : null;
+      const files = installed ? [mod.hasJs ? 'mod.js' : '', mod.hasCss ? 'mod.css' : ''].filter(Boolean).join(' · ') : '';
+      return h('li', { class: `mod-line ${state}`, 'data-mod': mod.id },
+        h('div', { class: 'mod-line-main' },
+          h('div', { class: 'mod-line-head' },
+            h('span', { class: 'mod-name', title: mod.name }, mod.name),
+            official ? h('span', { class: 'badge' }, T.official) : null,
+            installed && mod.source && !official ? h('span', { class: 'mod-source', title: mod.source }, mod.source) : null),
+          mod.error
+            ? h('p', { class: 'mod-error', title: mod.error }, mod.error)
+            : h('p', { class: 'mod-line-desc', title: [mod.description, files ? `mods/${mod.id} · ${files}` : ''].filter(Boolean).join('\n') }, mod.description || '—')),
+        h('div', { class: 'mod-line-actions' }, control, menu));
+    };
+    const installedIds = new Set(mods.map((mod) => mod.id));
+    const rows = [
+      ...mods.map((mod) => row(mod, true)),
+      ...catalog.mods.filter((entry) => !installedIds.has(entry.id)).map((entry) => row(entry, false)),
+    ];
 
     const source = h('input', { class: 'text-input wide', placeholder: 'owner/repo, owner/repo@v1, https://github.com/owner/repo', 'aria-label': T.installSource, spellcheck: 'false', disabled: viewer() });
     const github = card(
@@ -683,9 +698,7 @@
       created);
 
     return [
-      h('div', { class: 'studio-grid two' },
-        card(head(T.modsInstalled, null), installed.length ? h('ul', { class: 'mod-list' }, installed) : h('p', { class: 'note' }, T.modsNone)),
-        card(head(T.modsOfficial, null), h('ul', { class: 'catalog' }, official))),
+      card(rows.length ? h('ul', { class: 'mod-lines' }, rows) : h('p', { class: 'note' }, T.modsNone)),
       h('div', { class: 'studio-grid two' }, maker, github),
     ];
   }
