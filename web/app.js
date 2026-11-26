@@ -409,7 +409,7 @@
     const chips = document.createElement('span');
     chips.className = 'chips';
 
-    // Widgets a package put on every card. Inside the button, so what is
+    // Widgets a layout put on every card. Inside the button, so what is
     // drawn here is something to read, not something to press.
     const slot = document.createElement('span');
     slot.className = 'card-slot';
@@ -831,7 +831,7 @@
   let terminalSettings = null;
   let terminalColours = {};
   /* How opaque the terminal is over a background, 0.3-1. Below 1 the
-   * terminal's own background is drawn translucent so a package's
+   * terminal's own background is drawn translucent so a layout's
    * background shows through it. */
   let terminalOpacity = 1;
 
@@ -873,6 +873,17 @@
     const options = terminalOptions();
     baseFontSize = options.fontSize;
     for (const [key, value] of Object.entries(options)) term.options[key] = value;
+    scheduleRelayout();
+  }
+
+  /* xterm measures a cell when its font option changes, not when the font
+   * behind an unchanged name finishes loading; nudging the option makes it
+   * measure again with the real glyphs. */
+  function remeasureTerminal() {
+    if (!term) return;
+    const family = term.options.fontFamily;
+    term.options.fontFamily = 'monospace';
+    term.options.fontFamily = family;
     scheduleRelayout();
   }
 
@@ -2105,6 +2116,7 @@
     detach,
     send,
     setTerminalLook,
+    remeasureTerminal,
     scheduleRelayout,
     chipDecorators,
     extraKeys,

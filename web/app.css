@@ -4582,3 +4582,308 @@ body.dragging .win-body {
 body[data-pane="view"] #list > .slot-list {
   display: none;
 }
+
+
+/* ---- layouts: one gallery ---- */
+
+.studio-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
+.layout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--s4);
+}
+
+.layout-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: visible;
+}
+
+.layout-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.layout-preview {
+  aspect-ratio: 16 / 10;
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  overflow: hidden;
+  background: var(--raised);
+}
+
+.layout-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.layout-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--s3) var(--s3) 0;
+  min-width: 0;
+}
+
+.layout-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.layout-title {
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.layout-mods {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.layout-desc {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-card .mod-error {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: var(--s3);
+  margin-top: auto;
+}
+
+.layout-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.layout-active .glyph {
+  width: 12px;
+  height: 12px;
+}
+
+.layout-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  vertical-align: 1px;
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* An overflow menu on a <details>: opens by tap, click or keyboard. */
+.menu {
+  position: relative;
+  margin-left: auto;
+}
+
+.menu > summary {
+  list-style: none;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu > summary:hover,
+.menu[open] > summary {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.menu > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.menu-list {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 12;
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+
+.menu-item {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text);
+  border-radius: 6px;
+}
+
+.menu-item:hover:not(:disabled),
+.menu-item:focus-visible {
+  background: var(--raised);
+}
+
+.menu-item.danger {
+  color: var(--danger);
+}
+
+/* A modal question: a native <dialog>, so focus stays inside and Esc
+ * closes it. Full screen on a phone. */
+.dialog {
+  width: min(460px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  padding: var(--s5);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 35%);
+}
+
+.dialog.wide {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.dialog::backdrop {
+  background: rgb(8 9 12 / 45%);
+}
+
+.dialog-title {
+  margin: 0 0 var(--s3);
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  font-size: 14px;
+}
+
+.dialog-body p {
+  margin: 0;
+}
+
+.dialog-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dialog-list code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.dialog-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.dialog-fields .text-input {
+  flex: 0 0 auto;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  margin-top: var(--s5);
+}
+
+.small {
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .dialog,
+  .dialog.wide {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+    border: 0;
+    padding: max(var(--s5), env(safe-area-inset-top)) var(--s4) max(var(--s5), env(safe-area-inset-bottom));
+    flex-direction: column;
+  }
+
+  .dialog[open] {
+    display: flex;
+  }
+
+  .dialog-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+  }
+
+  .layout-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (pointer: coarse) {
+  .menu > summary {
+    width: 40px;
+    height: 40px;
+  }
+
+  .menu-item {
+    padding: 12px;
+    font-size: 15px;
+  }
+
+  .dialog .text-input {
+    font-size: 16px;
+  }
+}

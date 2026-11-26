@@ -1213,41 +1213,53 @@
   /* The studio, widgets, windows, backgrounds, panels and fitting. */
   Object.assign(STRINGS.en, {
     navStudio: 'Studio',
+    studioLayouts: 'Layouts',
+    studioWidgets: 'Widgets',
+    layoutDefault: 'Default',
+    layoutDefaultDesc: 'alc as it ships: your own theme, no layout mods.',
+    layoutActive: 'Active',
+    layoutApply: 'Apply',
+    layoutApplied: 'Applied {l}.',
+    layoutDefaultApplied: 'Back to the default layout.',
+    layoutMissing: 'Applied, but these mods are not installed: {m}',
+    layoutModsOne: '{n} mod',
+    layoutModsMany: '{n} mods',
+    layoutCount: '{n} layouts',
+    layoutLegacy: 'Read from the packages/ folder alc 2.8 used.',
+    layoutDownload: 'Download JSON',
+    layoutCopy: 'Copy JSON',
+    layoutRemoveTitle: 'Remove {l}?',
+    layoutRemoveBody: 'Its file is deleted. Its mods stay installed.',
+    layoutRemoveActive: 'It is the active layout, so the page goes back to Default first. Its mods stay installed.',
+    layoutReviewTitle: 'Turn on mods for {l}?',
+    layoutReviewBody: 'This layout needs mods that were installed from elsewhere and are off. Once on, they run in this page with its access to your sessions, and they are not sandboxed.',
+    layoutReviewFrom: 'from {s}',
+    layoutReviewWhere: 'Read them in {d}.',
+    layoutReviewConfirm: 'Turn on and apply',
+    layoutNew: 'New layout',
+    layoutFromPage: 'This page',
+    layoutFromJson: 'JSON',
+    layoutFromGithub: 'GitHub',
+    layoutCreate: 'Create',
+    layoutId: 'Id',
+    layoutName: 'Name',
+    layoutDesc: 'Description',
+    layoutJson: 'Layout JSON',
+    layoutSaved: 'Saved layouts/{l}.json',
+    layoutChip: 'layout',
+    layoutCovers: 'The {l} layout draws the terminal with its own value. Yours is kept and comes back when you leave it.',
+    installSourceTip: 'owner/repo, owner/repo@v1 or a github.com URL.',
+    paletteGroupLayouts: 'Layouts',
+    paletteLayout: 'Layout',
+    more: 'More',
+    cancel: 'Cancel',
     studioSub: 'Packages, widgets, backgrounds and panels — how the session list and the coding view are put together.',
     studioViewer: 'This link can look but not change anything here. This is the operator’s page.',
     studioPitch: 'Arrange widgets, apply packages, pick a background and size the panels.',
     studioOpen: 'Open the studio',
-    studioPackages: 'Packages',
-    studioLayout: 'Layout',
     studioMods: 'Mods',
     studioBackground: 'Background',
     studioPanels: 'Panels',
-    packagesLede: 'A package is a set of mods together with where their widgets go, a background and a theme. Applying one turns its mods on and takes its layout; mods it does not name stay as they are.',
-    packagesYours: 'Installed packages',
-    packagesNone: 'No packages yet. Install an official one below, or save this page as one.',
-    packagesOfficial: 'Official packages',
-    packageActive: 'Active',
-    packageApply: 'Apply',
-    packageReapply: 'Apply again',
-    packageApplied: 'Package applied.',
-    packageReload: 'Package applied. Reload to run its mods.',
-    packageMissing: 'This package needs mods that are not installed: {m}',
-    packageReview: 'Left off until you have read them (installed from elsewhere): {m}. Turn them on in Mods.',
-    packageExport: 'Download',
-    packageCopy: 'Copy JSON',
-    packageRemoveConfirm: 'Remove the package “{p}”? Its mods stay installed.',
-    packageSave: 'Save this page as a package',
-    packageSaveHelp: 'Takes the mods that are on, the layout, background, theme and density as they are now.',
-    packageId: 'Package id',
-    packageName: 'Name',
-    packageNameHint: 'Name',
-    packageDesc: 'Description',
-    packageDescHint: 'What it is for (optional)',
-    packageSaveButton: 'Save package',
-    packageSaved: 'Saved packages/{p}.json',
-    packageImport: 'Import a package',
-    packageImportHelp: 'Paste a package’s JSON or pick its file. Its mods must be installed (official ones are installed when it is applied).',
-    packageImportButton: 'Import',
     chooseFile: 'Choose file…',
     badId: 'An id is lowercase letters, digits, - and _, up to 48.',
     badJson: 'That is not valid JSON.',
@@ -1367,41 +1379,53 @@
 
   Object.assign(STRINGS['zh-TW'], {
     navStudio: '工作室',
+    studioLayouts: '版面',
+    studioWidgets: '小工具',
+    layoutDefault: '預設',
+    layoutDefaultDesc: 'alc 原本的樣子：你自己的主題，不開任何版面 mod。',
+    layoutActive: '使用中',
+    layoutApply: '套用',
+    layoutApplied: '已套用「{l}」。',
+    layoutDefaultApplied: '已回到預設版面。',
+    layoutMissing: '已套用，但這些 mod 尚未安裝：{m}',
+    layoutModsOne: '{n} 個 mod',
+    layoutModsMany: '{n} 個 mod',
+    layoutCount: '{n} 個版面',
+    layoutLegacy: '從 alc 2.8 使用的 packages/ 資料夾讀取。',
+    layoutDownload: '下載 JSON',
+    layoutCopy: '複製 JSON',
+    layoutRemoveTitle: '要移除「{l}」嗎？',
+    layoutRemoveBody: '會刪除它的檔案，它的 mod 會保留。',
+    layoutRemoveActive: '這是使用中的版面，所以會先回到預設。它的 mod 會保留。',
+    layoutReviewTitle: '要為「{l}」開啟 mod 嗎？',
+    layoutReviewBody: '這個版面需要從其他來源安裝、目前關閉的 mod。開啟後，它們會在這個頁面裡執行，擁有這個頁面對你所有 session 的權限，而且沒有沙箱。',
+    layoutReviewFrom: '來自 {s}',
+    layoutReviewWhere: '請先在 {d} 讀過。',
+    layoutReviewConfirm: '開啟並套用',
+    layoutNew: '新增版面',
+    layoutFromPage: '目前頁面',
+    layoutFromJson: 'JSON',
+    layoutFromGithub: 'GitHub',
+    layoutCreate: '建立',
+    layoutId: 'id',
+    layoutName: '名稱',
+    layoutDesc: '說明',
+    layoutJson: '版面 JSON',
+    layoutSaved: '已儲存 layouts/{l}.json',
+    layoutChip: '版面',
+    layoutCovers: '「{l}」版面用它自己的值畫終端機。你的設定會保留，離開版面後就會恢復。',
+    installSourceTip: 'owner/repo、owner/repo@v1 或 github.com 網址。',
+    paletteGroupLayouts: '版面',
+    paletteLayout: '版面',
+    more: '更多',
+    cancel: '取消',
     studioSub: '套件、小工具、背景與面板——決定 session 清單與編碼畫面的樣子。',
     studioViewer: '這個連結只能看，不能修改。這是操作者的頁面。',
     studioPitch: '排列小工具、套用套件、挑選背景、調整面板。',
     studioOpen: '開啟工作室',
-    studioPackages: '套件',
-    studioLayout: '版面',
     studioMods: 'Mods',
     studioBackground: '背景',
     studioPanels: '面板',
-    packagesLede: '套件是一組 mods，加上它們的小工具放在哪裡、背景與主題。套用時會開啟它的 mods 並採用它的版面；沒有列出的 mods 維持原狀。',
-    packagesYours: '已安裝的套件',
-    packagesNone: '還沒有套件。安裝下方的官方套件，或把目前的頁面存成套件。',
-    packagesOfficial: '官方套件',
-    packageActive: '使用中',
-    packageApply: '套用',
-    packageReapply: '再次套用',
-    packageApplied: '已套用套件。',
-    packageReload: '已套用套件。重新載入以執行它的 mods。',
-    packageMissing: '這個套件需要尚未安裝的 mods：{m}',
-    packageReview: '這些 mods 來自其他來源，在你讀過之前維持關閉：{m}。請在 Mods 中開啟。',
-    packageExport: '下載',
-    packageCopy: '複製 JSON',
-    packageRemoveConfirm: '移除套件「{p}」？它的 mods 會保留。',
-    packageSave: '把目前的頁面存成套件',
-    packageSaveHelp: '記下目前開啟的 mods、版面、背景、主題與密度。',
-    packageId: '套件 id',
-    packageName: '名稱',
-    packageNameHint: '名稱',
-    packageDesc: '說明',
-    packageDescHint: '用途（選填）',
-    packageSaveButton: '儲存套件',
-    packageSaved: '已儲存 packages/{p}.json',
-    packageImport: '匯入套件',
-    packageImportHelp: '貼上套件的 JSON 或選擇檔案。它的 mods 必須已安裝（套用時會自動安裝官方 mods）。',
-    packageImportButton: '匯入',
     chooseFile: '選擇檔案…',
     badId: 'id 只能用小寫字母、數字、- 與 _，最多 48 字元。',
     badJson: '這不是有效的 JSON。',
@@ -1544,7 +1568,100 @@
       modSettings: input.modSettings && typeof input.modSettings === 'object' ? input.modSettings : {},
       layout: normalizeLayout(input.layout),
       background: normalizeBackground(input.background),
-      package: typeof input.package === 'string' && SLUG.test(input.package) ? input.package : null,
+      // `package` is what 2.8 called the active layout.
+      activeLayout: [input.activeLayout, input.package].find((id) => typeof id === 'string' && SLUG.test(id)) || null,
+      layoutMods: Array.isArray(input.layoutMods) ? input.layoutMods.filter((id) => typeof id === 'string' && SLUG.test(id)) : [],
+      layoutTerminal: normalizeTerminalOverride(input.layoutTerminal),
+      // The person's own look from before a layout; the hub's to use, the
+      // page only carries it so a settings save does not drop it.
+      layoutRestore: input.layoutRestore && typeof input.layoutRestore === 'object' ? input.layoutRestore : null,
+    };
+  }
+
+  /* A layout's terminal settings: only the fields it sets, clamped like the
+   * person's own, or null when it sets none. */
+  function normalizeTerminalOverride(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const out = {};
+    const size = Number(raw.fontSize);
+    if (raw.fontSize != null && Number.isFinite(size) && size > 0) out.fontSize = Math.min(28, Math.max(8, Math.round(size)));
+    if (typeof raw.fontFamily === 'string' && raw.fontFamily.trim()) out.fontFamily = raw.fontFamily.trim();
+    const line = Number(raw.lineHeight);
+    if (raw.lineHeight != null && Number.isFinite(line)) out.lineHeight = Math.min(2, Math.max(1, line));
+    if (['block', 'bar', 'underline'].includes(raw.cursorStyle)) out.cursorStyle = raw.cursorStyle;
+    if (typeof raw.cursorBlink === 'boolean') out.cursorBlink = raw.cursorBlink;
+    return Object.keys(out).length ? out : null;
+  }
+
+  /* What the terminal is drawn with: the person's settings with the active
+   * layout's laid over them. Leaving the layout gives theirs back. */
+  function effectiveTerminal(settings) {
+    const own = (settings && settings.terminal) || {};
+    const layer = (settings && settings.layoutTerminal) || {};
+    return { ...own, ...layer };
+  }
+
+  /* Which of the person's terminal settings a layout is covering, so the
+   * settings page can say so beside each one. */
+  function terminalOverrides(settings) {
+    return Object.keys((settings && settings.layoutTerminal) || {});
+  }
+
+  /* One gallery of layouts: the installed ones, then the official ones not
+   * installed yet, each once. `active` marks the one in use. */
+  function layoutGallery(installed, catalog, active) {
+    const seen = new Set();
+    const cards = [];
+    for (const info of installed || []) {
+      if (!info || !SLUG.test(String(info.id)) || seen.has(info.id)) continue;
+      seen.add(info.id);
+      const official = (catalog || []).some((entry) => entry.id === info.id);
+      cards.push({ ...info, installed: true, official, active: info.id === active });
+    }
+    for (const entry of catalog || []) {
+      if (!entry || seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      const { layout: def, ...rest } = entry;
+      cards.push({ ...(def || {}), ...rest, mods: (def && def.mods) || [], installed: false, official: true, active: false });
+    }
+    return cards;
+  }
+
+  const BASE_TOKENS = {
+    light: { '--bg': '#f6f7f9', '--surface': '#ffffff', '--raised': '#f0f1f4', '--line': '#e4e6eb', '--text': '#15171c', '--muted': '#5a606c', '--accent': '#4f46e5' },
+    dark: { '--bg': '#0b0c0f', '--surface': '#131418', '--raised': '#1b1d22', '--line': '#24262c', '--text': '#e8e9ed', '--muted': '#9a9fab', '--accent': '#818cf8' },
+  };
+
+  /* What a layout's thumbnail draws: its theme's colours, which side the
+   * rail is on, which docks hold widgets and what kind of background it
+   * has. Pure, so the studio's SVG is only a picture of this. */
+  function layoutThumb(info, customThemes, systemDark) {
+    const def = info || {};
+    const settings = { theme: def.theme || 'system', accent: def.accent || null };
+    const theme = resolveTheme(settings, customThemes, !!systemDark);
+    const colour = (key) => {
+      const value = theme.tokens[key] || BASE_TOKENS[theme.mode][key];
+      // Thumbnails draw plain colours; a token that is an expression falls
+      // back to the base palette.
+      return /^#[0-9a-f]{3,8}$/i.test(String(value)) ? value : BASE_TOKENS[theme.mode][key];
+    };
+    const layout = normalizeLayout(def.layout);
+    const has = (slot) => !!(layout.slots[slot] && layout.slots[slot].length);
+    const background = normalizeBackground(def.background);
+    return {
+      mode: theme.mode,
+      bg: colour('--bg'),
+      surface: colour('--surface'),
+      raised: colour('--raised'),
+      line: colour('--line'),
+      text: colour('--text'),
+      muted: colour('--muted'),
+      accent: colour('--accent'),
+      terminal: /^#[0-9a-f]{6}$/i.test(String(theme.terminal.background || '')) ? theme.terminal.background : theme.mode === 'light' ? '#1d1f24' : '#0c0d10',
+      railSide: layout.railSide,
+      docks: { bar: has('bar'), top: has('view.top'), bottom: has('view.bottom'), left: has('view.left'), right: has('view.right'), float: has('float'), list: has('list.top') || has('list.bottom') },
+      background: background.kind,
+      dense: def.density === 'compact',
     };
   }
 
@@ -1681,7 +1798,7 @@
   }
 
   /* The layout as drawn, written out: every slot's widgets including the
-   * ones drawn by default, marked explicit. What a package saves, so it
+   * ones drawn by default, marked explicit. What a layout saves, so it
    * reproduces the page exactly wherever it is applied. */
   function materializeLayout(layout, widgets) {
     const out = normalizeLayout(JSON.parse(JSON.stringify(layout)));
@@ -1951,6 +2068,11 @@
     THEMES,
     ACCENTS,
     normalizeWebSettings,
+    normalizeTerminalOverride,
+    effectiveTerminal,
+    terminalOverrides,
+    layoutGallery,
+    layoutThumb,
     resolveTheme,
     inkFor,
     shiftDate,

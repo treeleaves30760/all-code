@@ -129,6 +129,11 @@
       <symbol id="i-bolt" viewBox="0 0 16 16">
         <path d="M9 1.75 3.75 9H8l-1 5.25L12.25 7H8z" />
       </symbol>
+      <symbol id="i-more" viewBox="0 0 16 16">
+        <circle cx="3.5" cy="8" r="1.1" />
+        <circle cx="8" cy="8" r="1.1" />
+        <circle cx="12.5" cy="8" r="1.1" />
+      </symbol>
       <symbol id="i-grid" viewBox="0 0 16 16">
         <rect x="2.25" y="2.25" width="4.75" height="4.75" rx="1" />
         <rect x="9" y="2.25" width="4.75" height="4.75" rx="1" />
@@ -188,7 +193,7 @@
 
       <span class="bar-spacer"></span>
 
-      <!-- Widgets a mod or package put in the header. -->
+      <!-- Widgets a mod or layout put in the header. -->
       <div id="barSlot" class="slot slot-bar"></div>
 
       <!-- Floating windows that are closed, to open again. -->
@@ -341,7 +346,7 @@
         </div>
       </section>
 
-      <!-- The studio: packages, mods, where each widget goes, the
+      <!-- The studio: layouts, widgets, mods, the
            background and the panels. studio.js draws it. -->
       <section id="studio" aria-label="Studio"></section>
 
@@ -387,7 +392,7 @@
           </button>
         </div>
 
-        <!-- The terminal between two docks a package can fill with widgets,
+        <!-- The terminal between two docks a layout can fill with widgets,
              with a strip above and below it for more. -->
         <div id="stage">
           <aside id="dockLeft" class="dock" data-side="left"></aside>

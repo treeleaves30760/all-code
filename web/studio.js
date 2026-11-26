@@ -26,18 +26,21 @@
   const { request, changeLayout } = shell.layout;
 
   const TABS = [
-    ['packages', () => T.studioPackages, 'layers'],
-    ['layout', () => T.studioLayout, 'grid'],
+    ['layouts', () => T.studioLayouts, 'layers'],
+    ['widgets', () => T.studioWidgets, 'grid'],
     ['mods', () => T.studioMods, 'puzzle'],
     ['background', () => T.studioBackground, 'image'],
     ['panels', () => T.studioPanels, 'files'],
   ];
 
+  // 2.8 called the first two tabs `packages` and `layout`.
+  const RENAMED = { packages: 'layouts', layout: 'widgets' };
   let tab = (() => {
     try {
-      return window.localStorage.getItem('alc.studio.tab') || 'packages';
+      const saved = window.localStorage.getItem('alc.studio.tab') || 'layouts';
+      return RENAMED[saved] || saved;
     } catch {
-      return 'packages';
+      return 'layouts';
     }
   })();
   /* The widget whose options are open in the layout tab. */
@@ -98,13 +101,82 @@
     return h('span', { class: `pill ${tone || ''}` }, text);
   }
 
-  /* ----------------------------------------------------------- packages */
+  /* ------------------------------------------------------------ layouts */
 
-  /* What the page is now, as a package. */
-  function currentAsPackage(name, description) {
+  const SVG = 'http://www.w3.org/2000/svg';
+  function svg(tag, attrs, ...children) {
+    const node = document.createElementNS(SVG, tag);
+    for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, String(value));
+    for (const child of children.flat()) if (child) node.append(child);
+    return node;
+  }
+
+  /* A picture of the page a layout makes, from core.layoutThumb: its
+   * colours, which side the rail is on, which docks hold widgets. */
+  function thumbnail(info) {
+    const t = core.layoutThumb(info, web().themes, window.matchMedia('(prefers-color-scheme: dark)').matches);
+    const W = 160;
+    const H = 100;
+    const rail = 44;
+    const railX = t.railSide === 'right' ? W - rail : 0;
+    const viewX = t.railSide === 'right' ? 0 : rail;
+    const viewW = W - rail;
+    let top = 12;
+    let bottom = H;
+    const parts = [svg('rect', { width: W, height: H, fill: t.bg })];
+    if (t.background !== 'none') {
+      parts.push(svg('circle', { cx: W * 0.78, cy: H * 0.2, r: 46, fill: t.accent, opacity: 0.22 }));
+      parts.push(svg('circle', { cx: W * 0.18, cy: H * 0.95, r: 38, fill: t.accent, opacity: 0.14 }));
+    }
+    parts.push(svg('rect', { width: W, height: 12, fill: t.surface }));
+    parts.push(svg('line', { x1: 0, y1: 12, x2: W, y2: 12, stroke: t.line }));
+    parts.push(svg('rect', { x: 5, y: 4, width: 4, height: 4, rx: 1, fill: t.accent }));
+    parts.push(svg('rect', { x: 13, y: 5, width: 18, height: 2, rx: 1, fill: t.muted }));
+    if (t.docks.bar) parts.push(svg('rect', { x: W - 34, y: 3.5, width: 22, height: 5, rx: 2.5, fill: t.raised, stroke: t.line }));
+    parts.push(svg('rect', { x: railX, y: 12, width: rail, height: H - 12, fill: t.surface, opacity: t.background !== 'none' ? 0.9 : 1 }));
+    parts.push(svg('line', { x1: t.railSide === 'right' ? railX : rail, y1: 12, x2: t.railSide === 'right' ? railX : rail, y2: H, stroke: t.line }));
+    for (let row = 0; row < 4; row += 1) {
+      const y = 18 + row * (t.dense ? 12 : 15);
+      if (row === 1) parts.push(svg('rect', { x: railX + 3, y: y - 3, width: rail - 6, height: 11, rx: 2, fill: t.accent, opacity: 0.16 }));
+      parts.push(svg('rect', { x: railX + 6, y, width: rail - 18, height: 2.4, rx: 1, fill: t.text, opacity: 0.8 }));
+      parts.push(svg('rect', { x: railX + 6, y: y + 4, width: rail - 24, height: 1.8, rx: 1, fill: t.muted, opacity: 0.7 }));
+    }
+    if (t.docks.top) {
+      parts.push(svg('rect', { x: viewX + 4, y: 15, width: viewW - 8, height: 6, rx: 1.5, fill: t.raised, stroke: t.line }));
+      top = 23;
+    }
+    if (t.docks.bottom) {
+      parts.push(svg('rect', { x: viewX + 4, y: H - 10, width: viewW - 8, height: 6, rx: 1.5, fill: t.raised, stroke: t.line }));
+      bottom = H - 12;
+    }
+    let termX = viewX + 4;
+    let termW = viewW - 8;
+    for (const side of ['left', 'right']) {
+      if (!t.docks[side]) continue;
+      const x = side === 'left' ? termX : termX + termW - 22;
+      parts.push(svg('rect', { x, y: top + 3, width: 22, height: bottom - top - 7, rx: 2, fill: t.surface, stroke: t.line }));
+      parts.push(svg('rect', { x: x + 3, y: top + 7, width: 12, height: 2, rx: 1, fill: t.muted }));
+      if (side === 'left') termX += 25;
+      termW -= 25;
+    }
+    parts.push(svg('rect', { x: termX, y: top + 3, width: termW, height: bottom - top - 7, rx: 2, fill: t.terminal }));
+    const lines = [[0.55, '#7ee2a8'], [0.8, '#d7dae0'], [0.4, '#d7dae0'], [0.65, t.accent]];
+    lines.forEach(([share, colour], index) => {
+      parts.push(svg('rect', { x: termX + 4, y: top + 8 + index * 6, width: Math.max(8, (termW - 8) * share), height: 2, rx: 1, fill: colour, opacity: 0.85 }));
+    });
+    if (t.docks.float) {
+      const fx = viewX + viewW - 46;
+      parts.push(svg('rect', { x: fx, y: 50, width: 40, height: 30, rx: 3, fill: t.surface, stroke: t.line }));
+      parts.push(svg('rect', { x: fx, y: 50, width: 40, height: 6, rx: 3, fill: t.accent, opacity: 0.85 }));
+    }
+    return svg('svg', { class: 'layout-thumb', viewBox: `0 0 ${W} ${H}`, 'aria-hidden': 'true', preserveAspectRatio: 'xMidYMid slice' }, parts);
+  }
+
+  /* What the page is now, as a layout. */
+  function currentAsLayout(name, description) {
     const settings = web().settings;
     const mods = web().mods.filter((mod) => mod.enabled && !mod.error).map((mod) => mod.id);
-    return {
+    const out = {
       name,
       description,
       version: '1.0.0',
@@ -116,10 +188,12 @@
       background: settings.background,
       layout: core.materializeLayout(settings.layout, widgetsMap()),
     };
+    if (settings.layoutTerminal) out.terminal = settings.layoutTerminal;
+    return out;
   }
 
   function exportText(info) {
-    const { id, error, ...rest } = info;
+    const { id, error, legacy, installed, official, active, ...rest } = info;
     return JSON.stringify(rest, null, 2);
   }
 
@@ -132,75 +206,96 @@
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
-  function apply(id) {
-    return act(() => request('POST', `/api/web/packages/${encodeURIComponent(id)}/apply`, {}), (applied) => {
-      if (applied.missing && applied.missing.length) toast(core.fill(T.packageMissing, { m: applied.missing.join(', ') }), 'warn');
-      else if (applied.review && applied.review.length) toast(core.fill(T.packageReview, { m: applied.review.join(', ') }), 'warn');
-      else if (applied.reload) reloadToast(T.packageReload);
-      else toast(T.packageApplied);
-    });
+  /* An overflow menu: a <details>, so it opens by tap, click or keyboard. */
+  function overflow(label, items) {
+    const list = items.filter(Boolean);
+    if (!list.length) return null;
+    const menu = h('details', { class: 'menu' },
+      h('summary', { class: 'icon menu-toggle', title: label, 'aria-label': label }, icon('more')),
+      h('div', { class: 'menu-list', role: 'menu' }, list.map((item) => h('button', {
+        type: 'button',
+        role: 'menuitem',
+        class: `menu-item${item.danger ? ' danger' : ''}`,
+        disabled: item.disabled,
+        onclick: () => {
+          menu.open = false;
+          item.run();
+        },
+      }, item.label))));
+    return menu;
+  }
+  document.addEventListener('click', (event) => {
+    for (const open of document.querySelectorAll('details.menu[open]')) {
+      if (!open.contains(event.target)) open.open = false;
+    }
+  });
+
+  async function apply(entry) {
+    if (busy) return;
+    busy = true;
+    studio.classList.add('busy');
+    try {
+      await shell.applyLayout(entry);
+    } finally {
+      busy = false;
+      studio.classList.remove('busy');
+      render();
+    }
   }
 
-  function packagesTab() {
-    const { packages, catalog, settings } = web();
-    const active = settings.package;
-    const installed = packages.map((info) => card(
-      h('div', { class: 'studio-row' },
-        h('span', { class: 'studio-glyph' }, icon('layers')),
-        h('div', { class: 'studio-main' },
-          h('div', { class: 'studio-title' }, info.name || info.id,
-            info.version ? h('span', { class: 'muted' }, ` v${info.version}`) : null,
-            active === info.id ? pill(T.packageActive, 'ok') : null,
-            info.error ? pill(T.modError, 'danger') : null),
-          info.description ? h('p', { class: 'studio-desc' }, info.description) : null,
-          h('div', { class: 'chips' }, (info.mods || []).map((id) => h('span', { class: 'chip' }, id)),
-            info.background && info.background.kind !== 'none' ? h('span', { class: 'chip accent' }, `${T.studioBackground}: ${info.background.value}`) : null,
-            info.theme ? h('span', { class: 'chip' }, `${T.theme}: ${info.theme}`) : null),
-          info.error ? h('p', { class: 'mod-error' }, info.error) : null)),
-      h('div', { class: 'studio-actions' },
-        btn(active === info.id ? T.packageReapply : T.packageApply, () => apply(info.id), { accent: active !== info.id, key: `apply-${info.id}`, disabled: !!info.error }),
-        h('button', { type: 'button', class: 'btn small', onclick: () => download(`${info.id}.json`, exportText(info)) }, T.packageExport),
-        h('button', { type: 'button', class: 'btn small', onclick: () => shell.copy(exportText(info)) }, T.packageCopy),
-        btn(T.remove, () => {
-          if (window.confirm(core.fill(T.packageRemoveConfirm, { p: info.name || info.id }))) {
-            act(() => request('DELETE', `/api/web/packages/${encodeURIComponent(info.id)}`));
-          }
-        }, { danger: true }))));
+  function layoutCard(entry) {
+    const count = (entry.mods || []).length;
+    const meta = [
+      entry.official ? pill(T.official, 'accent') : null,
+      entry.legacy ? h('span', { class: 'muted', title: T.layoutLegacy }, 'packages/') : null,
+      entry.id !== '' ? h('span', { class: 'layout-mods' }, core.fill(count === 1 ? T.layoutModsOne : T.layoutModsMany, { n: count })) : null,
+    ];
+    const action = entry.active
+      ? h('span', { class: 'pill ok layout-active' }, icon('check'), T.layoutActive)
+      : btn(T.layoutApply, () => (entry.default ? (async () => {
+        busy = true;
+        try {
+          await shell.resetLayout();
+        } finally {
+          busy = false;
+          render();
+        }
+      })() : apply(entry)), { accent: true, key: `apply-${entry.id || 'default'}`, disabled: !!entry.error });
+    const menu = entry.default ? null : overflow(T.more, [
+      entry.installed ? { label: T.layoutDownload, run: () => download(`${entry.id}.json`, exportText(entry)) } : null,
+      entry.installed ? { label: T.layoutCopy, run: () => shell.copy(exportText(entry)) } : null,
+      entry.installed && entry.official ? { label: T.reinstall, disabled: viewer(), run: () => act(() => request('POST', '/api/web/catalog', { kind: 'layout', id: entry.id, force: true })) } : null,
+      entry.installed ? {
+        label: T.remove,
+        danger: true,
+        disabled: viewer(),
+        run: async () => {
+          const ok = await shell.dialog({
+            title: core.fill(T.layoutRemoveTitle, { l: entry.name || entry.id }),
+            body: h('p', {}, entry.active ? T.layoutRemoveActive : T.layoutRemoveBody),
+            actions: [{ label: T.remove, danger: true }],
+          });
+          if (ok) act(() => request('DELETE', `/api/web/layouts/${encodeURIComponent(entry.id)}`));
+        },
+      } : null,
+    ]);
+    return h('article', { class: `layout-card${entry.active ? ' active' : ''}${entry.error ? ' broken' : ''}`, 'data-layout-id': entry.id || 'default' },
+      h('div', { class: 'layout-preview' }, thumbnail(entry)),
+      h('div', { class: 'layout-body' },
+        h('div', { class: 'layout-name' }, h('span', { class: 'layout-title', title: entry.name || entry.id }, entry.name || entry.id), ...meta),
+        entry.error
+          ? h('p', { class: 'mod-error', title: entry.error }, entry.error)
+          : h('p', { class: 'layout-desc', title: entry.description || '' }, entry.description || '—')),
+      h('div', { class: 'layout-actions' }, action, menu));
+  }
 
-    const official = catalog.packages.map((entry) => card(
-      h('div', { class: 'studio-row' },
-        h('span', { class: 'studio-glyph accent' }, icon('star')),
-        h('div', { class: 'studio-main' },
-          h('div', { class: 'studio-title' }, entry.name, pill(T.official, 'accent'), entry.installed ? pill(T.installed, 'ok') : null),
-          h('p', { class: 'studio-desc' }, entry.description))),
-      h('div', { class: 'studio-actions' },
-        entry.installed
-          ? btn(T.packageApply, () => apply(entry.id), { accent: true })
-          : btn(T.installApply, () => act(async () => {
-            await request('POST', '/api/web/catalog', { kind: 'package', id: entry.id });
-            return request('POST', `/api/web/packages/${encodeURIComponent(entry.id)}/apply`, {});
-          }, (applied) => {
-            if (applied && applied.reload) reloadToast(T.packageReload);
-            else toast(T.packageApplied);
-          }), { accent: true, key: `install-${entry.id}` }),
-        entry.installed ? btn(T.reinstall, () => act(() => request('POST', '/api/web/catalog', { kind: 'package', id: entry.id, force: true }))) : null)));
-
-    // Save the page as it is now.
-    const idInput = h('input', { class: 'text-input', placeholder: 'my-setup', 'aria-label': T.packageId, spellcheck: 'false', disabled: viewer() });
-    const nameInput = h('input', { class: 'text-input', placeholder: T.packageNameHint, 'aria-label': T.packageName, disabled: viewer() });
-    const descInput = h('input', { class: 'text-input wide', placeholder: T.packageDescHint, 'aria-label': T.packageDesc, disabled: viewer() });
-    const save = card(
-      head(T.packageSave, T.packageSaveHelp),
-      h('div', { class: 'studio-form' }, idInput, nameInput, descInput,
-        btn(T.packageSaveButton, () => {
-          const id = idInput.value.trim().toLowerCase();
-          if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(id)) return toast(T.badId, 'warn');
-          const body = currentAsPackage(nameInput.value.trim() || id, descInput.value.trim());
-          return act(() => request('POST', `/api/web/packages/${encodeURIComponent(id)}`, body), () => toast(core.fill(T.packageSaved, { p: id })));
-        }, { accent: true, icon: 'plus' })));
-
-    const importId = h('input', { class: 'text-input', placeholder: 'imported', 'aria-label': T.packageId, spellcheck: 'false', disabled: viewer() });
-    const importText = h('textarea', { class: 'text-input code-input', rows: '4', placeholder: '{ "name": "…", "mods": [ … ], "layout": { … } }', 'aria-label': T.packageImport, spellcheck: 'false', disabled: viewer() });
+  async function newLayout() {
+    const mode = { value: 'save' };
+    const idInput = h('input', { class: 'text-input', name: 'id', placeholder: 'my-layout', 'aria-label': T.layoutId, spellcheck: 'false', autocapitalize: 'off' });
+    const nameInput = h('input', { class: 'text-input', name: 'name', placeholder: T.layoutName, 'aria-label': T.layoutName });
+    const descInput = h('input', { class: 'text-input', name: 'desc', placeholder: T.layoutDesc, 'aria-label': T.layoutDesc });
+    const jsonInput = h('textarea', { class: 'text-input code-input', rows: '6', placeholder: '{ "name": "…", "mods": [ … ] }', 'aria-label': T.layoutJson, spellcheck: 'false' });
+    const sourceInput = h('input', { class: 'text-input', placeholder: 'owner/repo', 'aria-label': T.installSource, spellcheck: 'false', autocapitalize: 'off', title: T.installSourceTip });
     const file = h('input', {
       type: 'file',
       accept: 'application/json,.json',
@@ -208,34 +303,87 @@
       onchange: async (event) => {
         const picked = event.target.files && event.target.files[0];
         if (!picked) return;
-        importText.value = await picked.text();
-        if (!importId.value) importId.value = picked.name.replace(/\.json$/i, '').toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+        jsonInput.value = await picked.text();
+        if (!idInput.value) idInput.value = picked.name.replace(/\.json$/i, '').toLowerCase().replace(/[^a-z0-9_-]/g, '-');
       },
     });
-    const importer = card(
-      head(T.packageImport, T.packageImportHelp),
-      h('div', { class: 'studio-form' }, importId,
-        h('button', { type: 'button', class: 'btn small', disabled: viewer(), onclick: () => file.click() }, T.chooseFile), file,
-        importText,
-        btn(T.packageImportButton, () => {
-          const id = importId.value.trim().toLowerCase();
-          if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(id)) return toast(T.badId, 'warn');
-          let parsed;
-          try {
-            parsed = JSON.parse(importText.value);
-          } catch {
-            return toast(T.badJson, 'warn');
+    const panes = {
+      save: h('div', { class: 'dialog-fields' }, idInput, nameInput, descInput),
+      import: h('div', { class: 'dialog-fields' }, jsonInput, h('button', { type: 'button', class: 'btn small', onclick: () => file.click() }, T.chooseFile), file),
+      github: h('div', { class: 'dialog-fields' }, sourceInput, h('p', { class: 'muted small' }, T.installWarning)),
+    };
+    const holder = h('div', {});
+    const tabs = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': T.layoutNew });
+    const choices = [['save', T.layoutFromPage], ['import', T.layoutFromJson], ['github', T.layoutFromGithub]];
+    const draw = () => {
+      tabs.replaceChildren(...choices.map(([value, label]) => h('button', {
+        type: 'button',
+        role: 'radio',
+        'aria-checked': String(mode.value === value),
+        onclick: () => {
+          mode.value = value;
+          draw();
+        },
+      }, label)));
+      holder.replaceChildren(mode.value === 'github' ? panes.github : h('div', { class: 'dialog-fields' }, idInput, mode.value === 'save' ? [nameInput, descInput] : panes.import));
+    };
+    draw();
+    const answer = await shell.dialog({
+      title: T.layoutNew,
+      wide: true,
+      body: [tabs, holder],
+      actions: [{
+        label: T.layoutCreate,
+        check: () => {
+          if (mode.value === 'github') return !!sourceInput.value.trim();
+          const id = idInput.value.trim().toLowerCase();
+          if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(id)) {
+            toast(T.badId, 'warn');
+            idInput.focus();
+            return false;
           }
-          return act(() => request('POST', `/api/web/packages/${encodeURIComponent(id)}`, parsed), () => toast(core.fill(T.packageSaved, { p: id })));
-        }, { accent: true })));
+          if (mode.value === 'import') {
+            try {
+              JSON.parse(jsonInput.value);
+            } catch {
+              toast(T.badJson, 'warn');
+              return false;
+            }
+          }
+          return true;
+        },
+        value: () => ({ mode: mode.value, id: idInput.value.trim().toLowerCase(), name: nameInput.value.trim(), desc: descInput.value.trim(), json: jsonInput.value, source: sourceInput.value.trim() }),
+      }],
+    });
+    if (!answer) return;
+    if (answer.mode === 'github') {
+      act(() => request('POST', '/api/web/install', { source: answer.source }), (done) => {
+        const what = [...(done.layouts || []), ...(done.mods || []), ...(done.themes || [])].join(', ');
+        toast(core.fill(T.installedFrom, { w: what || '—' }));
+      });
+      return;
+    }
+    const body = answer.mode === 'save' ? currentAsLayout(answer.name || answer.id, answer.desc) : JSON.parse(answer.json);
+    act(() => request('POST', `/api/web/layouts/${encodeURIComponent(answer.id)}`, body), () => toast(core.fill(T.layoutSaved, { l: answer.id })));
+  }
 
+  function layoutsTab() {
+    const { layouts, catalog, settings } = web();
+    const cards = core.layoutGallery(layouts, catalog.layouts, settings.activeLayout);
+    const home = {
+      id: '',
+      default: true,
+      name: T.layoutDefault,
+      description: T.layoutDefaultDesc,
+      theme: settings.layoutRestore && settings.layoutRestore.theme ? settings.layoutRestore.theme : settings.activeLayout ? 'system' : settings.theme,
+      mods: [],
+      active: !settings.activeLayout,
+    };
     return [
-      h('p', { class: 'studio-lede' }, T.packagesLede),
-      h('h3', { class: 'studio-sub' }, T.packagesYours),
-      installed.length ? h('div', { class: 'studio-grid' }, installed) : h('p', { class: 'note' }, T.packagesNone),
-      h('h3', { class: 'studio-sub' }, T.packagesOfficial),
-      h('div', { class: 'studio-grid' }, official),
-      h('div', { class: 'studio-grid two' }, save, importer),
+      h('div', { class: 'studio-toolbar' },
+        h('span', { class: 'muted' }, core.fill(T.layoutCount, { n: cards.length })),
+        btn(T.layoutNew, newLayout, { icon: 'plus', key: 'layout-new' })),
+      h('div', { class: 'layout-grid' }, layoutCard(home), cards.map(layoutCard)),
     ];
   }
 
@@ -502,7 +650,7 @@
         btn(T.install, () => {
           if (!source.value.trim()) return undefined;
           return act(() => request('POST', '/api/web/install', { source: source.value.trim() }), (answer) => {
-            const what = [...(answer.mods || []), ...(answer.packages || []), ...(answer.themes || [])].join(', ');
+            const what = [...(answer.layouts || []), ...(answer.mods || []), ...(answer.themes || [])].join(', ');
             toast(core.fill(T.installedFrom, { w: what || '—' }));
           });
         }, { accent: true })),
@@ -748,7 +896,7 @@
       onclick: () => setTab(id),
     }, icon(iconName), label())));
     const banner = viewer() ? h('p', { class: 'note settings-error' }, T.studioViewer) : null;
-    const parts = { packages: packagesTab, layout: layoutTab, mods: modsTab, background: backgroundTab, panels: panelsTab }[tab] || packagesTab;
+    const parts = { layouts: layoutsTab, widgets: layoutTab, mods: modsTab, background: backgroundTab, panels: panelsTab }[tab] || layoutsTab;
     studio.replaceChildren(
       h('div', { class: 'page-head' },
         h('div', {}, h('h1', { class: 'page-title' }, T.navStudio), h('p', { class: 'page-sub' }, T.studioSub))),
