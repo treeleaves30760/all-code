@@ -176,13 +176,24 @@ impl TerminalOverride {
     }
 }
 
-/// The look a person had before a layout replaced it.
+/// The look a person had before a layout replaced it. Every field has a
+/// default, so a hand-edited half of one cannot stop settings.json parsing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub(crate) struct LookRestore {
     pub theme: String,
     pub accent: Option<String>,
     pub density: Density,
+}
+
+impl Default for LookRestore {
+    fn default() -> Self {
+        Self {
+            theme: "system".to_owned(),
+            accent: None,
+            density: Density::Comfortable,
+        }
+    }
 }
 
 /// Where widgets go. A widget no slot names and `hidden` does not list is
@@ -492,8 +503,12 @@ pub(crate) struct ModInfo {
     /// hidden, so the settings page can say why it did not load.
     pub error: Option<String>,
     /// Where it was installed from (`SOURCE`), so switching on one from
-    /// elsewhere can say so; none for a mod written here.
+    /// elsewhere can say so; none for a mod written here. A viewer gets
+    /// the short form only (see `snapshot`).
     pub source: Option<String>,
+    /// Installed by alc itself (`SOURCE` is `alc (official)`), which is
+    /// what earns the Official badge - never the id alone.
+    pub official: bool,
 }
 
 /// One theme from `themes/`.
@@ -580,6 +595,9 @@ pub(crate) struct LayoutInfo {
     /// Read from the 2.8 `packages/` folder rather than `layouts/`.
     pub legacy: bool,
     pub error: Option<String>,
+    /// The file is byte for byte the one alc ships under this id; a repo's
+    /// `cockpit.json` is not official because of its name.
+    pub official: bool,
 }
 
 /// The two folders a layout is read from, the one written first.
@@ -758,11 +776,21 @@ impl WebDir {
         }
         // A file that does not parse is somebody's hand edit, and the page
         // is holding defaults in its place: saving them would erase it.
-        if let (_, Some(error)) = self.load_settings() {
+        let (current, error) = self.load_settings();
+        if let Some(error) = error {
             bail!("{error}; fix it (alc remote web check) before saving from the page");
         }
-        let settings: WebSettings =
+        let mut settings: WebSettings =
             serde_json::from_slice(body).context("settings are not valid JSON")?;
+        // Which mods run and which layout is on are the server's to change,
+        // through their own routes: a page saving from a copy taken before
+        // an install, an apply or a Default would otherwise undo it - and a
+        // mod "arrives off" only by being listed here.
+        settings.disabled_mods = current.disabled_mods;
+        settings.active_layout = current.active_layout;
+        settings.layout_mods = current.layout_mods;
+        settings.layout_terminal = current.layout_terminal;
+        settings.layout_restore = current.layout_restore;
         let settings = settings.clamp();
         // Measured after indentation (see write_settings): a body under the
         // cap can pretty-print past it.
@@ -770,15 +798,28 @@ impl WebDir {
         Ok(settings)
     }
 
-    /// Turns a mod on or off in settings.json.
+    /// Whether `mods/<id>` is an installed mod folder.
+    pub(crate) fn has_mod(&self, id: &str) -> bool {
+        is_slug(id)
+            && fs::symlink_metadata(self.root.join("mods").join(id))
+                .is_ok_and(|meta| meta.file_type().is_dir())
+    }
+
+    /// Turns an installed mod on or off in settings.json. A mod switched by
+    /// hand is the person's from then on: the next layout switch or Default
+    /// leaves it as they set it.
     pub(crate) fn set_enabled(&self, id: &str, on: bool) -> Result<()> {
         if !is_slug(id) {
             bail!("`{id}` is not a mod id");
+        }
+        if !self.has_mod(id) {
+            bail!("there is no mods/{id}");
         }
         let (mut settings, error) = self.load_settings();
         if let Some(error) = error {
             bail!("{error}; fix settings.json first (alc remote web check)");
         }
+        settings.layout_mods.retain(|mine| mine != id);
         settings.disabled_mods.retain(|off| off != id);
         if !on {
             settings.disabled_mods.push(id.to_owned());
@@ -809,12 +850,8 @@ impl WebDir {
     }
 
     fn write_settings(&self, settings: &WebSettings) -> Result<()> {
+        let text = settings_text(settings)?;
         fs::create_dir_all(&self.root)?;
-        let mut text = serde_json::to_string_pretty(settings)?;
-        text.push('\n');
-        if text.len() as u64 > MAX_JSON {
-            bail!("settings are larger than 64 KiB");
-        }
         atomic_write(&self.root.join("settings.json"), text.as_bytes(), false)
     }
 
@@ -828,6 +865,13 @@ impl WebDir {
         if settings_error.is_some() {
             for info in &mut mods {
                 info.enabled = false;
+            }
+        }
+        // A folder install records an absolute path, which names the hub's
+        // user; a viewer gets its last folder only.
+        if !operator {
+            for info in &mut mods {
+                info.source = info.source.as_deref().map(short_source);
             }
         }
         Snapshot {
@@ -864,8 +908,10 @@ impl WebDir {
                 script_hash: None,
                 error: None,
                 source: None,
+                official: false,
             };
             info.source = Some(self.mod_source(&info.id)).filter(|source| !source.is_empty());
+            info.official = info.source.as_deref() == Some(OFFICIAL_SOURCE);
             match read_capped(&dir.join("mod.json"), MAX_JSON) {
                 Ok(Some(text)) => match serde_json::from_str::<Manifest>(&text) {
                     Ok(manifest) => {
@@ -1053,12 +1099,14 @@ impl WebDir {
                 let legacy = self
                     .layout_path(&id)
                     .is_some_and(|(dir, _)| dir == "packages");
+                let official = !legacy && self.is_official_layout(&id);
                 match self.load_layout(&id) {
                     Ok(def) => LayoutInfo {
                         id,
                         def,
                         legacy,
                         error: None,
+                        official,
                     },
                     Err(error) => LayoutInfo {
                         def: LayoutDef {
@@ -1068,6 +1116,7 @@ impl WebDir {
                         id,
                         legacy,
                         error: Some(format!("{error:#}")),
+                        official: false,
                     },
                 }
             })
@@ -1196,9 +1245,8 @@ impl WebDir {
                 settings.disabled_mods.push(mod_id);
             }
         }
+        // Installed only once the settings are known to fit (below).
         for mod_id in &to_install {
-            self.install_official(CatalogKind::Mod, mod_id, false)?;
-            applied.installed.push(mod_id.clone());
             settings.disabled_mods.retain(|off| off != mod_id);
             layout_mods.push(mod_id.clone());
         }
@@ -1221,10 +1269,11 @@ impl WebDir {
             });
         }
         let restore = settings.layout_restore.clone();
+        let mut theme_to_install = None;
         match &def.theme {
             Some(theme) => {
                 if !self.is_known_theme(theme) && self.catalog_has(CatalogKind::Theme, theme) {
-                    self.install_official(CatalogKind::Theme, theme, false)?;
+                    theme_to_install = Some(theme.clone());
                 }
                 settings.theme = theme.clone();
             }
@@ -1250,7 +1299,34 @@ impl WebDir {
         settings.layout_terminal = def.terminal.clone();
         settings.active_layout = Some(id.to_owned());
         let settings = settings.clamp();
-        self.write_settings(&settings)?;
+        // All or nothing: settings that will not fit are refused before a
+        // single file is installed, and if the write still fails, what this
+        // apply installed goes again - an official mod left behind would be
+        // on (it is in no `disabledMods`) and in no `layoutMods` either.
+        settings_text(&settings)?;
+        let mut installed_paths = Vec::new();
+        let outcome = (|| -> Result<()> {
+            for mod_id in &to_install {
+                self.install_official(CatalogKind::Mod, mod_id, false)?;
+                installed_paths.push(self.root.join("mods").join(mod_id));
+                applied.installed.push(mod_id.clone());
+            }
+            if let Some(theme) = &theme_to_install {
+                self.install_official(CatalogKind::Theme, theme, false)?;
+                installed_paths.push(self.root.join("themes").join(format!("{theme}.json")));
+            }
+            self.write_settings(&settings)
+        })();
+        if let Err(error) = outcome {
+            for path in installed_paths {
+                if path.is_dir() {
+                    fs::remove_dir_all(&path).ok();
+                } else {
+                    fs::remove_file(&path).ok();
+                }
+            }
+            return Err(error);
+        }
         // Off counts as much as on: a script that stopped being wanted is
         // still running in every open page until it reloads.
         applied.reload = self.running_scripts(&settings) != before;
@@ -1314,9 +1390,24 @@ impl WebDir {
 
     /// A mod alc shipped, or one written here (no SOURCE file): nothing a
     /// person has not had the chance to read before it runs.
+    /// Whether `layouts/<id>.json` is the file alc ships under that id.
+    fn is_official_layout(&self, id: &str) -> bool {
+        let shipped = format!("examples/layouts/{id}.json");
+        let Some((_, text)) = CUSTOM_FILES.iter().find(|(path, _)| *path == shipped) else {
+            return false;
+        };
+        read_capped(
+            &self.root.join("layouts").join(format!("{id}.json")),
+            MAX_JSON,
+        )
+        .ok()
+        .flatten()
+        .is_some_and(|on_disk| on_disk == *text)
+    }
+
     fn is_trusted_mod(&self, id: &str) -> bool {
         match fs::read_to_string(self.root.join("mods").join(id).join("SOURCE")) {
-            Ok(source) => source.trim() == "alc (official)",
+            Ok(source) => source.trim() == OFFICIAL_SOURCE,
             Err(_) => true,
         }
     }
@@ -1443,7 +1534,7 @@ impl WebDir {
                     let name = &path[prefix.len()..];
                     atomic_write(&target.join(name), text.as_bytes(), false)?;
                 }
-                fs::write(target.join("SOURCE"), "alc (official)\n")?;
+                fs::write(target.join("SOURCE"), format!("{OFFICIAL_SOURCE}\n"))?;
                 let (settings, error) = self.load_settings();
                 if error.is_none() && settings.disabled_mods.iter().any(|off| off == id) {
                     self.set_enabled(id, true)?;
@@ -1596,6 +1687,22 @@ impl WebDir {
                 "settings.json: activeLayout `{active}` is in neither layouts/ nor packages/"
             ));
         }
+        // A mod the active layout names that is not installed: its look is
+        // half there, and nothing else would say why.
+        if let Some(info) = settings
+            .active_layout
+            .as_ref()
+            .and_then(|active| layouts.iter().find(|info| &info.id == active))
+        {
+            for mod_id in &info.def.mods {
+                if !self.has_mod(mod_id) {
+                    problems.push(format!(
+                        "settings.json: the active layout `{}` names mod `{mod_id}`, which is not installed",
+                        info.id
+                    ));
+                }
+            }
+        }
         if settings.background.kind == BackgroundKind::Image
             && !self
                 .root
@@ -1730,11 +1837,56 @@ fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
+/// Display text from a file anyone may have written, as it may be shown:
+/// at most `max` characters, a line break or tab as a space, and no other
+/// control character (C0, DEL, C1) or bidi override, so a name printed by
+/// the CLI cannot carry a terminal escape sequence.
 fn truncate(value: &str, max: usize) -> String {
-    value.chars().take(max).collect()
+    value
+        .chars()
+        .filter_map(|c| match c {
+            '\n' | '\r' | '\t' => Some(' '),
+            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => None,
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .take(max)
+        .collect()
 }
 
 /// A mod, theme or terminal-colour id: lowercase-led, `[a-z0-9_-]`, short.
+/// What alc writes to `mods/<id>/SOURCE` for a mod it installs itself.
+const OFFICIAL_SOURCE: &str = "alc (official)";
+
+/// A source short enough for anyone to see: a GitHub source as it is, a
+/// local folder by its last name only (the path names the hub's user).
+fn short_source(source: &str) -> String {
+    let text = source.trim();
+    let absolute = text.starts_with('/')
+        || text.starts_with("~/")
+        || text.starts_with("\\\\")
+        || (text.len() > 2
+            && text.as_bytes()[1] == b':'
+            && matches!(text.as_bytes()[2], b'\\' | b'/'));
+    if !absolute {
+        return text.to_owned();
+    }
+    match text.split(['/', '\\']).rfind(|part| !part.is_empty()) {
+        Some(last) => format!("…/{last}"),
+        None => text.to_owned(),
+    }
+}
+
+/// settings.json as it is written, refused when it would not be read back.
+fn settings_text(settings: &WebSettings) -> Result<String> {
+    let mut text = serde_json::to_string_pretty(settings)?;
+    text.push('\n');
+    if text.len() as u64 > MAX_JSON {
+        bail!("settings are larger than 64 KiB");
+    }
+    Ok(text)
+}
+
 pub(crate) fn is_slug(value: &str) -> bool {
     let mut chars = value.chars();
     matches!(chars.next(), Some(first) if first.is_ascii_alphanumeric())
@@ -1875,9 +2027,20 @@ mod tests {
         assert_eq!(saved.terminal.scrollback, 500);
         assert_eq!(saved.terminal.font_family, None);
         assert_eq!(saved.terminal.line_height, 2.0);
-        assert_eq!(saved.disabled_mods, vec!["ok".to_owned()]);
+        assert!(
+            saved.disabled_mods.is_empty(),
+            "a save does not switch mods"
+        );
         assert_eq!(saved.mod_settings.len(), 1);
         assert_eq!(web.load_settings().0, saved);
+        // A hand edit's list is clamped on load all the same.
+        write(
+            &web,
+            "settings.json",
+            r#"{"disabledMods":["ok","../no","ok"]}"#,
+        );
+        assert_eq!(web.load_settings().0.disabled_mods, vec!["ok".to_owned()]);
+        write(&web, "settings.json", "{}");
         // Past u8, which a hand edit could write, still parses and clamps.
         let big = web
             .save_settings(br#"{"terminal":{"fontSize":300}}"#)
@@ -2206,6 +2369,227 @@ mod tests {
         let text = fs::read_to_string(web.root().join("settings.json")).unwrap();
         assert!(text.contains("\"activeLayout\": \"cockpit\""), "{text}");
         assert!(!text.contains("\"package\""), "{text}");
+    }
+
+    #[test]
+    fn a_page_save_cannot_switch_mods_or_layouts() {
+        // A page holding a copy from before an install, an apply or a
+        // Default must not undo it by saving something else.
+        let (_temp, web) = dir();
+        for id in ["fresh", "skin"] {
+            write(&web, &format!("mods/{id}/mod.css"), "body{}");
+        }
+        write(
+            &web,
+            "settings.json",
+            r#"{"disabledMods":["fresh"],"activeLayout":"one","layoutMods":["skin"],
+                "layoutTerminal":{"lineHeight":1.2},
+                "layoutRestore":{"theme":"ember","accent":null,"density":"compact"}}"#,
+        );
+        let saved = web
+            .save_settings(
+                br#"{"theme":"paper","disabledMods":[],"activeLayout":null,"layoutMods":[],
+                     "layoutTerminal":{"fontSize":20},"layoutRestore":null}"#,
+            )
+            .unwrap();
+        let (on_disk, _) = web.load_settings();
+        for settings in [&saved, &on_disk] {
+            assert_eq!(settings.theme, "paper", "the page's own fields are saved");
+            assert_eq!(settings.disabled_mods, ["fresh"], "fresh stays off");
+            assert_eq!(settings.active_layout.as_deref(), Some("one"));
+            assert_eq!(settings.layout_mods, ["skin"]);
+            let terminal = settings.layout_terminal.clone().unwrap();
+            assert_eq!(
+                (terminal.font_size, terminal.line_height),
+                (None, Some(1.2))
+            );
+            assert_eq!(settings.layout_restore.as_ref().unwrap().theme, "ember");
+        }
+    }
+
+    #[test]
+    fn a_mod_switched_by_hand_is_the_persons() {
+        let (_temp, web) = dir();
+        for id in ["a", "b"] {
+            write(&web, &format!("mods/{id}/mod.css"), "body{}");
+        }
+        write(&web, "settings.json", r#"{"disabledMods":["a","b"]}"#);
+        web.save_layout("one", br#"{"mods":["a"]}"#).unwrap();
+        web.save_layout("two", br#"{"mods":["b"]}"#).unwrap();
+        assert_eq!(
+            web.apply_layout("one", false).unwrap().settings.layout_mods,
+            ["a"]
+        );
+        // Switched off and on again by hand: now the person's choice.
+        web.set_enabled("a", false).unwrap();
+        web.set_enabled("a", true).unwrap();
+        assert!(web.load_settings().0.layout_mods.is_empty());
+        let two = web.apply_layout("two", false).unwrap().settings;
+        assert!(!two.disabled_mods.contains(&"a".to_owned()), "a stays on");
+        assert_eq!(two.layout_mods, ["b"]);
+    }
+
+    #[test]
+    fn only_an_installed_mod_can_be_switched() {
+        let (_temp, web) = dir();
+        assert!(web.set_enabled("ghost", true).is_err());
+        assert!(web.set_enabled("ghost", false).is_err());
+        assert!(!web.root().join("settings.json").exists());
+    }
+
+    #[test]
+    fn an_apply_whose_settings_would_be_too_large_changes_nothing() {
+        // A layout just under the 64 KiB cap as a file, which settings.json
+        // (the same widget options plus everything else) then exceeds: the
+        // apply must fail before it installs anything.
+        let (_temp, web) = dir();
+        write(&web, "settings.json", r#"{"theme":"ember"}"#);
+        let value = "x".repeat(48);
+        let layout_with = |count: usize| {
+            let options: Vec<String> = (0..count)
+                .map(|i| format!("\"k{i:04}\":\"{value}\""))
+                .collect();
+            format!(
+                r#"{{"mods":["clock"],"theme":"fjord","layout":{{"slots":{{"bar":[{{"widget":"clock/clock","options":{{{}}}}}]}}}}}}"#,
+                options.join(",")
+            )
+        };
+        let mut count = 1200;
+        loop {
+            if web
+                .save_layout("big", layout_with(count).as_bytes())
+                .is_err()
+            {
+                count -= 10;
+                continue;
+            }
+            let size = fs::metadata(web.root().join("layouts/big.json"))
+                .unwrap()
+                .len();
+            if size < MAX_JSON - 200 {
+                assert!(size > MAX_JSON - 1200, "{size}");
+                break;
+            }
+            count -= 1;
+        }
+        let before = fs::read(web.root().join("settings.json")).unwrap();
+        let error = web.apply_layout("big", true).unwrap_err().to_string();
+        assert!(error.contains("settings"), "{error}");
+        assert!(
+            !web.root().join("mods/clock").exists(),
+            "no mod folder left"
+        );
+        assert!(!web.root().join("themes/fjord.json").exists());
+        assert_eq!(fs::read(web.root().join("settings.json")).unwrap(), before);
+    }
+
+    #[test]
+    fn official_is_what_alc_wrote_not_the_id() {
+        let (_temp, web) = dir();
+        // A repo shipping alc's ids: not official.
+        write(&web, "mods/clock/mod.css", "body{}");
+        write(&web, "mods/clock/SOURCE", "someone/repo\n");
+        write(
+            &web,
+            "layouts/cockpit.json",
+            r#"{"name":"Cockpit","mods":[]}"#,
+        );
+        let mods = web.mods(&WebSettings::default());
+        assert!(!mods[0].official);
+        assert!(!web.layouts()[0].official);
+        // What alc installs itself: official.
+        web.install_official(CatalogKind::Mod, "clock", true)
+            .unwrap();
+        web.install_official(CatalogKind::Layout, "cockpit", true)
+            .unwrap();
+        assert!(web.mods(&WebSettings::default())[0].official);
+        assert!(web.layouts()[0].official);
+    }
+
+    #[test]
+    fn a_viewer_learns_no_local_path() {
+        let (_temp, web) = dir();
+        write(&web, "mods/hello/mod.css", "body{}");
+        write(&web, "mods/hello/SOURCE", "/home/someone/src/my-mods\n");
+        let operator = web.snapshot(true);
+        assert_eq!(
+            operator.mods[0].source.as_deref(),
+            Some("/home/someone/src/my-mods")
+        );
+        let viewer = web.snapshot(false);
+        assert_eq!(viewer.mods[0].source.as_deref(), Some("…/my-mods"));
+        write(&web, "mods/hello/SOURCE", "owner/repo@v1\n");
+        assert_eq!(
+            web.snapshot(false).mods[0].source.as_deref(),
+            Some("owner/repo@v1")
+        );
+    }
+
+    #[test]
+    fn names_from_a_repo_carry_no_control_characters() {
+        // Printed by `alc remote web layout list` and `list`: an escape
+        // sequence there could write the clipboard or rewrite lines.
+        let (_temp, web) = dir();
+        web.save_layout(
+            "evil",
+            br#"{"name":"\u001b]52;c;aGk=\u0007Evil\u009b2J","description":"a\nb\u202ec",
+                "author":"\u001b[31mme","version":"1\u0008.0"}"#,
+        )
+        .unwrap();
+        let def = &web.layouts()[0].def;
+        assert_eq!(def.name, "]52;c;aGk=Evil2J");
+        assert_eq!(def.description, "a bc");
+        assert_eq!(def.author.as_deref(), Some("[31mme"));
+        assert_eq!(def.version.as_deref(), Some("1.0"));
+        write(
+            &web,
+            "mods/m/mod.json",
+            r#"{"name":"\u001b[2KMod","description":"\u0007d"}"#,
+        );
+        write(&web, "mods/m/mod.css", "body{}");
+        write(&web, "mods/m/SOURCE", "\u{1b}]0;x\u{7}owner/repo\n");
+        let info = &web.mods(&WebSettings::default())[0];
+        assert_eq!(
+            (info.name.as_str(), info.description.as_str()),
+            ("[2KMod", "d")
+        );
+        assert_eq!(info.source.as_deref(), Some("]0;xowner/repo"));
+        write(
+            &web,
+            "themes/t.json",
+            r#"{"name":"\u001b[1mT","mode":"dark","tokens":{}}"#,
+        );
+        assert_eq!(web.themes()[0].name, "[1mT");
+    }
+
+    #[test]
+    fn a_partial_layout_restore_still_parses() {
+        let (_temp, web) = dir();
+        write(
+            &web,
+            "settings.json",
+            r#"{"theme":"paper","layoutRestore":{"theme":"ember"}}"#,
+        );
+        let (settings, error) = web.load_settings();
+        assert_eq!(error, None);
+        assert_eq!(settings.theme, "paper");
+        let restore = settings.layout_restore.unwrap();
+        assert_eq!((restore.theme.as_str(), restore.accent), ("ember", None));
+        assert_eq!(restore.density, Density::Comfortable);
+    }
+
+    #[test]
+    fn check_reports_an_active_layouts_missing_mod() {
+        let (_temp, web) = dir();
+        write(&web, "mods/here/mod.css", "body{}");
+        web.save_layout("look", br#"{"mods":["here","gone"]}"#)
+            .unwrap();
+        write(&web, "settings.json", r#"{"activeLayout":"look"}"#);
+        let problems = web.check();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("`gone`"), "{problems:?}");
+        write(&web, "mods/gone/mod.css", "body{}");
+        assert!(web.check().is_empty(), "{:?}", web.check());
     }
 
     #[test]

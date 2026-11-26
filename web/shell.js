@@ -239,6 +239,33 @@
     for (const resolve of settle) resolve(ok);
   }
 
+  /* Writes a change still waiting on its timer now, and waits for a write
+   * in flight. Run before anything the server changes on its own (a
+   * layout, Default, a mod's switch), so a look changed a moment earlier
+   * lands before it rather than after. */
+  async function settleSaves() {
+    clearTimeout(saveTimer);
+    for (;;) {
+      while (saving) await new Promise((resolve) => setTimeout(resolve, 40));
+      if (!dirty && !waiters.length) return;
+      await flush();
+    }
+  }
+
+  /* A mod is switched by its own route; settings saves cannot do it. */
+  async function setModEnabled(id, on) {
+    if (!shell.operator.value) return false;
+    try {
+      await settleSaves();
+      await shell.layout.request('POST', `/api/web/mods/${encodeURIComponent(id)}/${on ? 'enable' : 'disable'}`, {});
+      await pull(false);
+      return true;
+    } catch (error) {
+      toast(error.message || String(error), 'error');
+      return false;
+    }
+  }
+
   /* ---------------------------------------------------------------- nav */
 
   const BASE_PAGES = [
@@ -405,6 +432,7 @@
     const id = entry.id;
     const name = entry.name || id;
     try {
+      await settleSaves();
       if (!entry.installed) await shell.layout.request('POST', '/api/web/catalog', { kind: 'layout', id });
       let applied = await shell.layout.request('POST', `/api/web/layouts/${encodeURIComponent(id)}/apply`, {});
       if (!applied.applied && applied.review && applied.review.length) {
@@ -440,6 +468,7 @@
 
   async function resetLayout() {
     try {
+      await settleSaves();
       const applied = await shell.layout.request('POST', '/api/web/layout/reset', {});
       await pull(false);
       if (applied && applied.reload) window.location.reload();
@@ -957,9 +986,8 @@
               event.target.checked = false;
               return;
             }
-            const ok = await changeSettings((n) => {
-              n.disabledMods = on ? n.disabledMods.filter((id) => id !== mod.id) : [...n.disabledMods, mod.id];
-            }, true);
+            const ok = await setModEnabled(mod.id, on);
+            if (!ok) event.target.checked = !on;
             if (ok) toast(T.modsChanged, 'info', { label: T.reload, run: () => window.location.reload() });
           },
         }),
@@ -1379,6 +1407,7 @@
     themeChoices,
     dialog,
     confirmModOn,
+    setModEnabled,
     applyLayout,
     resetLayout,
     pull: () => pull(false),

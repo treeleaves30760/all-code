@@ -1581,8 +1581,9 @@
     for (const info of installed || []) {
       if (!info || !SLUG.test(String(info.id)) || seen.has(info.id)) continue;
       seen.add(info.id);
-      const official = (catalog || []).some((entry) => entry.id === info.id);
-      cards.push({ ...info, installed: true, official, active: info.id === active });
+      // Official is what alc installed (the server compares the file with the
+      // one it ships), never a matching id: a repo can ship cockpit.json.
+      cards.push({ ...info, installed: true, official: info.official === true, active: info.id === active });
     }
     for (const entry of catalog || []) {
       if (!entry || seen.has(entry.id)) continue;

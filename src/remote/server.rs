@@ -1297,6 +1297,17 @@ fn web_write(request: &Request, web: &WebDir) -> Result<Option<serde_json::Value
             web.create_mod(id, &template, text(&body, "name").as_deref())?;
             json!({ "created": id, "dir": web.root().join("mods").join(id).display().to_string() })
         }
+        // Switching a mod is a route of its own, never a field of a
+        // settings save (see `save_settings`). An id that is not installed
+        // is a 404, not a quiet success.
+        (Method::Post, ["mods", id, verb @ ("enable" | "disable")]) => {
+            if !web.has_mod(id) {
+                return Ok(None);
+            }
+            let on = *verb == "enable";
+            web.set_enabled(id, on)?;
+            json!({ "id": id, "enabled": on })
+        }
         (Method::Delete, ["mods", id]) => {
             web.remove_mod(id)?;
             json!({ "removed": id })
@@ -1739,6 +1750,17 @@ mod live_tests {
             r#"{"theme":"fjord","disabledMods":["hello"]}"#,
         );
         assert!(status(&saved).contains("200"), "{saved}");
+        // A save does not switch mods; the mod's own route does.
+        assert!(saved.contains("\"disabledMods\":[]"), "{saved}");
+        let off = request(
+            harness.address,
+            &format!(
+                "POST /api/web/mods/hello/disable HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                 Authorization: Bearer {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                harness.operator
+            ),
+        );
+        assert!(status(&off).contains("200"), "{off}");
         assert!(status(&post(&harness.operator, "not json")).contains("400"));
 
         // Turned off, the script is neither hashed nor served.
@@ -1939,6 +1961,66 @@ mod live_tests {
             &format!("{{\"source\":{:?}}}", web.display().to_string()),
         );
         assert!(status(&folder).contains("400"), "{folder}");
+    }
+
+    #[test]
+    fn a_mod_is_switched_by_its_own_route() {
+        let harness = harness();
+        let port = harness.address.port();
+        let send = |method: &str, token: &str, path: &str, body: &str| {
+            request(
+                harness.address,
+                &format!(
+                    "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                     Authorization: Bearer {token}\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                ),
+            )
+        };
+        let web = harness._config.path().join("web");
+        std::fs::create_dir_all(web.join("mods/hello")).unwrap();
+        std::fs::write(web.join("mods/hello/mod.css"), "body{}").unwrap();
+        std::fs::write(web.join("settings.json"), r#"{"disabledMods":["hello"]}"#).unwrap();
+
+        let refused = send("POST", &harness.viewer, "/api/web/mods/hello/enable", "{}");
+        assert!(status(&refused).contains("403"), "{refused}");
+        let unknown = send(
+            "POST",
+            &harness.operator,
+            "/api/web/mods/ghost/enable",
+            "{}",
+        );
+        assert!(status(&unknown).contains("404"), "{unknown}");
+        let on = send(
+            "POST",
+            &harness.operator,
+            "/api/web/mods/hello/enable",
+            "{}",
+        );
+        assert!(status(&on).contains("200"), "{on}");
+        let settings = std::fs::read_to_string(web.join("settings.json")).unwrap();
+        assert!(!settings.contains("\"hello\""), "{settings}");
+        let off = send(
+            "POST",
+            &harness.operator,
+            "/api/web/mods/hello/disable",
+            "{}",
+        );
+        assert!(status(&off).contains("200"), "{off}");
+        let settings = std::fs::read_to_string(web.join("settings.json")).unwrap();
+        assert!(settings.contains("\"hello\""), "{settings}");
+        // A whole-settings save cannot switch it back on.
+        let save = send(
+            "POST",
+            &harness.operator,
+            "/api/web/settings",
+            r#"{"disabledMods":[]}"#,
+        );
+        assert!(status(&save).contains("200"), "{save}");
+        let settings = std::fs::read_to_string(web.join("settings.json")).unwrap();
+        assert!(settings.contains("\"hello\""), "{settings}");
+        let _ = harness.session.kill();
     }
 
     #[test]

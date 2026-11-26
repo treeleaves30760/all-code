@@ -1019,11 +1019,14 @@ test('a layout\'s terminal settings lie over the person\'s own', () => {
 });
 
 test('the layout gallery lists each layout once, installed first', () => {
-  const installed = [{ id: 'cockpit', name: 'Mine', mods: ['clock'] }, { id: 'retro98', name: 'Retro 98', mods: [] }];
+  const installed = [{ id: 'cockpit', name: 'Mine', mods: ['clock'], official: false }, { id: 'retro98', name: 'Retro 98', mods: [] }];
   const catalog = [{ id: 'cockpit', name: 'Cockpit' }, { id: 'workbench', name: 'Workbench' }];
   const cards = core.layoutGallery(installed, catalog, 'retro98');
   assert.deepEqual(cards.map((card) => card.id), ['cockpit', 'retro98', 'workbench']);
-  assert.equal(cards[0].official, true);
+  assert.equal(cards[0].official, false, 'a cockpit.json from a repo is not alc\'s because of its id');
+  assert.equal(core.layoutGallery([{ id: 'cockpit', official: true }], catalog, null)[0].official, true);
+  assert.equal(cards[1].official, false);
+  assert.equal(cards[2].official, true, 'not installed yet: it comes from the catalog');
   assert.equal(cards[0].name, 'Mine', 'the installed copy wins');
   assert.equal(cards[1].active, true);
   assert.equal(cards[2].installed, false);

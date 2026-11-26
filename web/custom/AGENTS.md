@@ -86,7 +86,10 @@ Every field is optional. The settings page writes this same file.
 - `terminal.fontSize` 8–28 (omit to let the page pick by screen size);
   `lineHeight` 1.0–2.0; `cursorStyle` `block` | `bar` | `underline`;
   `scrollback` 500–100000.
-- `disabledMods`: mods present in `mods/` that are not loaded.
+- `disabledMods`: mods present in `mods/` that are not loaded. Switch them with
+  `alc remote web enable|disable <id>` or the page's switches; a settings
+  save from the page cannot change this list (nor the four layout fields
+  below), so a page holding an old copy never turns a mod back on.
 - `modSettings`: each mod's own saved state, keyed by mod id. Use
   `mod.save()` rather than editing it by hand while the page is open.
 - `terminal.fitPlain`: `true` fits sessions started without `--tmux` to the
@@ -111,7 +114,8 @@ Every field is optional. The settings page writes this same file.
   it to `body[data-layout]`. Read from the 2.8 `package` key too.
 - `layoutMods`, `layoutTerminal`, `layoutRestore`: alc's own bookkeeping for
   the active layout (the mods it switched on, its terminal settings, your
-  look from before it). Leave them to `layout apply`/`reset`.
+  look from before it). Leave them to `layout apply`/`reset`. Switching a
+  mod by hand takes it out of `layoutMods`: it is yours from then on.
 
 If `settings.json` does not parse, the page uses the defaults, **loads no
 mods**, and refuses to save over the file until it is fixed — so run

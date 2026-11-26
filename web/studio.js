@@ -599,12 +599,12 @@
 
   function modsTab() {
     const { mods, catalog } = web();
-    const officialIds = new Set(catalog.mods.map((entry) => entry.id));
     /* One row per mod: installed ones first with their switch, then the
      * official ones not installed yet with Install. Reinstall and Remove
      * wait in the row's ⋯ menu. */
     const row = (mod, installed) => {
-      const official = officialIds.has(mod.id);
+      // Installed: official only if alc wrote it (SOURCE), whatever its id.
+      const official = installed ? mod.official === true : true;
       const state = !installed ? 'off' : mod.error ? 'error' : mod.enabled ? 'on' : 'off';
       const control = !installed
         ? btn(T.install, () => act(() => request('POST', '/api/web/catalog', { kind: 'mod', id: mod.id }), () => reloadToast()), { accent: true, key: `install-mod-${mod.id}` })
@@ -622,9 +622,8 @@
                 event.target.checked = false;
                 return;
               }
-              const ok = await shell.changeSettings((n) => {
-                n.disabledMods = on ? n.disabledMods.filter((id) => id !== mod.id) : [...n.disabledMods, mod.id];
-              }, true);
+              const ok = await shell.setModEnabled(mod.id, on);
+              if (!ok) event.target.checked = !on;
               if (ok) reloadToast();
             },
           }),
