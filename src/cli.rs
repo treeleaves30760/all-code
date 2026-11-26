@@ -425,11 +425,11 @@ enum RemoteSubcommand {
 enum WebSubcommand {
     /// Print the folder.
     Path,
-    /// Report every problem in settings.json, themes/ and mods/.
+    /// Report every problem in settings.json, themes/, layouts/ and mods/.
     Check,
     /// List installed mods and themes, and whether each mod is on.
     List,
-    /// Install mods and themes from GitHub or a folder; mods arrive off.
+    /// Install mods, themes and layouts from GitHub or a folder; mods arrive off.
     ///
     /// SOURCE is `owner/repo`, `owner/repo@ref`, `owner/repo/sub/folder@ref`,
     /// `https://github.com/owner/repo[/tree/<ref>/<folder>]`, or a local folder.
@@ -441,7 +441,7 @@ enum WebSubcommand {
         /// Turn the installed mods on straight away.
         #[arg(long)]
         enable: bool,
-        /// Replace mods and themes that are already installed.
+        /// Replace mods, themes and layouts that are already installed.
         #[arg(long)]
         force: bool,
     },

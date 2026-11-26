@@ -2,9 +2,9 @@
  *
  * Five tabs over the same web/ folder the settings page edits:
  *
- * - Packages: apply, export, import and save sets of mods with their
- *   layout, theme and background.
- * - Layout: put each widget the loaded mods offer in a slot of the session
+ * - Layouts: apply, export, import and save whole looks - mods, widget
+ *   places, theme, background and terminal font - or go back to Default.
+ * - Widgets: put each widget the loaded mods offer in a slot of the session
  *   list or the coding view, or in a floating window, and set its options.
  * - Mods: switch, install (official, or from GitHub), remove, and start a
  *   new one from a template.
