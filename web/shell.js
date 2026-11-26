@@ -711,7 +711,7 @@
       onclick: () => changeSettings((s) => {
         s.theme = choice.id;
       }, true),
-    }, mock, h('span', { class: 'theme-name' }, choice.name, choice.custom ? h('span', { class: 'theme-tag' }, T.themeCustom) : null),
+    }, mock, h('span', { class: 'theme-name', title: choice.custom ? `${choice.name} · ${T.themeCustom}` : choice.name }, h('span', { class: 'theme-label' }, choice.name), choice.custom ? h('span', { class: 'theme-tag' }, T.themeCustom) : null),
     selected ? h('span', { class: 'theme-check' }, icon('check')) : null);
   }
 

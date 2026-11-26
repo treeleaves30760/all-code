@@ -2791,7 +2791,16 @@ select,
   font-weight: 600;
 }
 
+.theme-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .theme-tag {
+  flex: none;
+  white-space: nowrap;
   font-size: 11px;
   font-weight: 500;
   color: var(--muted);
