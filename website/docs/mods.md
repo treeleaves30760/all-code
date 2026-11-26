@@ -3,7 +3,7 @@ id: mods
 title: Mods and themes
 sidebar_label: Mods and themes
 sidebar_position: 6
-description: Customise alc's remote-control page with themes, mods, widgets and packages - arrange it in the in-page Studio, write your own mod from a template, publish it as a GitHub repository, and install other people's with one command.
+description: Customise alc's remote-control page with layouts, themes, mods and widgets - switch the whole look in the in-page Studio, write your own mod from a template, publish layouts and mods as a GitHub repository, and install other people's with one command.
 keywords:
   - alc mods
   - alc themes
@@ -11,7 +11,7 @@ keywords:
   - herdr mods
   - install mod from github
   - alc studio
-  - mod packages
+  - alc layouts
   - page widgets
 ---
 
@@ -22,14 +22,16 @@ on the machine running the hub: **themes** recolour it, **mods** add to it — a
 tab, commands in the palette, buttons on the key bar, chips on session cards,
 or styles — and **widgets** that you place wherever you want them in the session
 list and the coding view, **floating windows**, and **backgrounds**. A
-**package** bundles mods with their layout, background and theme. The idea
-comes from herdr-app: the page's behaviour is files an agent can write, next to
-a reference written for that agent.
+**layout** arranges the whole page - theme, widget places, background, the
+terminal's font - and the mods it names draw what is inside it, so applying
+one can turn the page into something else entirely. The idea comes from
+herdr-app: the page's behaviour is files an agent can write, next to a
+reference written for that agent.
 
 Everything here can be done from the page's **Studio** tab, by hand in the
 folder, or by asking your agent.
 
-![The Studio's packages](/img/remote/studio-packages.png)
+![Studio → Layouts](/img/remote/studio-layouts.png)
 
 ## The Studio
 
@@ -37,16 +39,18 @@ The **Studio** tab is the page's built-in mods creator. Its five tabs all write
 to the same folder on the hub, so a change made on a laptop is there on the
 phone:
 
-- **Packages** — apply one of the official packages (Cockpit, Night shift,
-  Deep focus, Retro terminal, Workbench) or your own; save the page as it is
-  now as a package; import one from JSON or a file; download or copy one to
-  share.
-- **Layout** — a library of every widget the enabled mods offer, and
+- **Layouts** — one gallery of your layouts and the official ones (Cockpit,
+  Night shift, Deep focus, Retro terminal, Workbench), each with a thumbnail
+  drawn from its theme and docks. **Apply** takes one; **Default** (always the
+  first card) goes back to alc's own look. **New layout** saves the page as it
+  is now, imports JSON, or installs a repository from GitHub; the **⋯** menu
+  downloads, copies or removes one.
+- **Widgets** — a library of every widget the enabled mods offer, and
   miniatures of the session list and the coding view. Drag a widget into a
   slot (or pick it and choose **Where**), reorder it, hide it, and set its
   options in the inspector.
-- **Mods** — switch mods on and off, install official ones, install from
-  GitHub, remove, and start a **new mod** from a template.
+- **Mods** — one list: installed mods with their switch, then official ones
+  to install; install from GitHub, and start a **new mod** from a template.
 - **Background** — a built-in gradient or pattern, an image you upload, or an
   animated one a mod draws; with dim, blur and terminal opacity.
 - **Panels** — the widths of the session list, the file panel and the two
@@ -69,8 +73,8 @@ A view-only link sees the Studio but cannot change anything in it.
 | `float` | a floating window of its own |
 
 A widget nobody has placed is drawn where its mod suggests until you move or
-hide it, so turning a mod on shows its widget straight away. A package's layout
-is *explicit* instead: only what it places is drawn. **Reset layout** goes back
+hide it, so turning a mod on shows its widget straight away. A layout's widget
+places are *explicit* instead: only what it places is drawn. **Reset layout** goes back
 to the suggestions.
 
 ### Panels, and fitting a plain session
@@ -98,7 +102,7 @@ open are kept per device; a closed window waits in the header's window tray
 (and in the palette). On a phone windows start closed and open as a sheet
 above the keys.
 
-## Official mods and packages
+## Official mods and layouts
 
 alc ships these in `examples/`. Install one from the Studio, or
 `alc remote web add <id>` — official mods arrive turned on.
@@ -117,7 +121,7 @@ alc ships these in `examples/`. Install one from the Studio, or
 | `scratchpad` | a Notes tab and a notes widget |
 | `session-age` | an hours chip, and an age bar on each card |
 
-| Package | What it is |
+| Layout | What it is |
 | --- | --- |
 | `cockpit` | tiles over the list, quota and a session note in the right dock, the command deck under the terminal, the clock, age bars |
 | `night-shift` | a starfield behind a translucent terminal, the Midnight theme, the focus timer and the clock |
@@ -127,12 +131,18 @@ alc ships these in `examples/`. Install one from the Studio, or
 
 ```sh
 alc remote web catalog                 # everything official, and what is installed
-alc remote web add cockpit             # an official package (or mod, or theme)
-alc remote web package apply cockpit   # installs the official mods it needs, too
-alc remote web package                 # list packages; * marks the applied one
+alc remote web add cockpit             # an official layout (or mod, or theme)
+alc remote web layout apply cockpit    # installs the official mods it needs, too
+alc remote web layout                  # list layouts; * marks the active one
+alc remote web layout reset            # back to Default
 ```
 
-![The Cockpit package](/img/remote/cockpit.png)
+![The Cockpit layout](/img/remote/cockpit.png)
+
+Ten more, each a whole look with its own mods - a 90s desktop with a
+bug-hunting puzzle, a phosphor mainframe, a newspaper, an aquarium - are in
+[treeleaves30760/alc-layouts](https://github.com/treeleaves30760/alc-layouts)
+([below](#layouts)).
 
 ## Where the files live
 
@@ -150,9 +160,9 @@ web/
 │   ├── mod.js         optional: runs once when the page loads
 │   ├── mod.css        optional: added after the page's own stylesheet
 │   └── README.md      optional: shown to people, not loaded
-├── packages/<id>.json a set of mods with a layout, background and theme
+├── layouts/<id>.json  a whole look: mods, widget places, theme, background, terminal font
 ├── backgrounds/       images for the background (png, jpg, webp, gif)
-└── examples/          the official mods, packages and themes, and new-mod templates; never loaded
+└── examples/          the official mods, layouts and themes, and new-mod templates; never loaded
 ```
 
 An id is `[a-z0-9_-]`, starts with a letter or digit, and is at most 48
@@ -253,7 +263,7 @@ alc.define('today', (mod) => {
 
 ### A widget
 
-A widget is something the Studio or a package places. The mod says where it
+A widget is something the Studio or a layout places. The mod says where it
 *may* go and where it goes until someone places it; options appear in the
 Studio's inspector.
 
@@ -350,7 +360,8 @@ alc.define('counter', (mod) => {
 | `alc.layout()`, `alc.widgets()`, `alc.openWindow(key)`, `alc.notify(title, body)` | the layout, the widgets, open a window, a notification |
 
 `AGENTS.md` in the folder is the full reference, including the card fields and
-the CSS hooks (`body[data-pane]`, `#nav`, `#keys`, `.panel`, `.chip` …).
+the CSS hooks (`body[data-layout]`, `body[data-pane]`, `#nav`, `#keys`,
+`.panel`, `.chip` …).
 
 ## Themes
 
@@ -376,15 +387,15 @@ terminal's palette. Save it as `themes/<id>.json` and pick it in Settings:
 Values may be colours, `rgb()`, `color-mix()` and lengths — no `url()`,
 quotes or semicolons; alc drops anything else. `AGENTS.md` lists every token.
 
-## Packages
+## Layouts
 
-A package is `packages/<id>.json`:
+A layout is `layouts/<id>.json`:
 
 ```json
 {
   "name": "My setup",
   "description": "Notes on the right, the clock up top, a quiet background.",
-  "mods": ["clock", "session-notes"],
+  "mods": ["my-setup-skin", "clock", "session-notes"],
   "theme": "fjord",
   "density": "compact",
   "background": { "kind": "preset", "value": "aurora", "dim": 50, "blur": 0, "terminal": 92 },
@@ -395,15 +406,57 @@ A package is `packages/<id>.json`:
     },
     "sizes": { "right": 300 },
     "filesSide": "left"
-  }
+  },
+  "terminal": { "fontFamily": "\"Iosevka\", monospace", "lineHeight": 1.1, "cursorStyle": "bar" }
 }
 ```
 
-Applying it turns its mods on (installing any official ones that are missing),
-and takes its layout, background, theme, accent and density. Mods it does not
-name keep their switches. The easiest way to make one is to arrange the page,
-then **Save this page as a package** in the Studio; **Download** gives you the
-file to share, and a repository's `packages/` folder installs with the rest.
+Applying one:
+
+1. switches **off** the mods the previous layout switched on that this one
+   does not name - a mod you turned on yourself is never switched off;
+2. switches its mods **on**, installing official ones that are missing;
+3. takes its theme, accent, density, widget places, background and terminal
+   settings (font family and size, line height, cursor). The terminal
+   settings lie over your own: Settings marks each one a layout covers with a
+   `layout` chip, and yours come back when you leave it.
+
+**Default** - the first card in Studio → Layouts, `Layout: Default` in the
+palette, or `alc remote web layout reset` - switches the layout's mods off and
+gives back your own theme, accent and density, alc's own widget places and no
+background. However far a skin takes the page, that card is the way home.
+
+### A layout's skin
+
+The page writes the active layout's id to `body[data-layout]`. A layout
+changes the whole look through a skin mod whose CSS is written entirely under
+that attribute, so it draws nothing under another layout even if it is left
+switched on:
+
+```css
+body[data-layout="my-setup"] #bar { background: var(--surface); }
+body[data-layout="my-setup"] .btn { border-radius: 0; }
+```
+
+`AGENTS.md` lists the hooks a skin may rely on. A skin may embed a web font as
+a `data:` URL (the page allows `font-src data:`), and the terminal measures its
+cells again when a font finishes loading.
+
+### Mods from elsewhere
+
+A layout that names a mod installed from GitHub or a folder, and still off, is
+not applied by halves. The Studio asks once, naming each such mod and where it
+came from, and **Turn on and apply** switches them on and applies the layout;
+the CLI needs `--enable-mods`. A mod alc shipped, or one written on this
+machine, is not asked about.
+
+The easiest way to make a layout is to arrange the page, then **New layout →
+This page** in the Studio; **Download JSON** in the card's ⋯ menu gives you the
+file to share, and a repository's `layouts/` folder installs with the rest.
+alc 2.8 called layouts *packages* and kept them in `packages/<id>.json`: that
+folder is still read (a `layouts/` file of the same id wins), the 2.8
+`package` setting is read as the active layout, and `alc remote web package`
+still works.
 
 ## Share your mods on GitHub
 
@@ -422,14 +475,15 @@ my-alc-mods/                  a collection: each folder keeps its id
 │   └── focus-timer/mod.json, mod.js, mod.css
 ├── themes/
 │   └── harbour.json
-└── packages/
+└── layouts/
     └── standup-desk.json
 ```
 
 - A single-mod repository is installed under its name with an `alc-mod-`,
   `alc-page-mod-` or `alc-` prefix removed; `--name` picks another.
 - Only `mod.json`, `mod.js`, `mod.css` and `README.md` are taken from a mod,
-  and only `themes/*.json` and `packages/*.json` besides; everything else in the repository is
+  and only `themes/*.json` and `layouts/*.json` (or a 2.8 `packages/*.json`)
+  besides; everything else in the repository is
   ignored, so it can hold tests, screenshots or a build.
 - Put a screenshot and a sentence on what the mod does in the README, and
   tag the repository with the `alc-mod` topic so people can find it.
@@ -453,12 +507,19 @@ installed themes/harbour.json
 
 mods run with the page's link and are not sandboxed; read them first:
   /home/you/.config/alc/web/mods
-then turn one on with `alc remote web enable <id>` or the switch in Settings
+then turn one on with `alc remote web enable <id>` or the switch in Studio
 ```
 
 **Installed mods start off.** Read `mod.js`, then turn the ones you trust on
-with `alc remote web enable <id>` or the switch in **Settings → Mods**.
-A theme is just colours and is ready to pick.
+with `alc remote web enable <id>` or the switch in **Studio → Mods** (it asks
+once, naming where the mod came from). A theme is just colours and is ready to
+pick. A layout waits for its mods: apply it with `--enable-mods` once you have
+read them.
+
+```sh
+alc remote web install treeleaves30760/alc-layouts    # ten layouts; mods arrive off
+alc remote web layout apply retro98 --enable-mods     # read them, then switch the look
+```
 
 | Command | What it does |
 | --- | --- |
@@ -467,12 +528,17 @@ A theme is just colours and is ready to pick.
 | `alc remote web install <source> --force` | update: replace what is installed; the mod goes off again unless `--enable` |
 | `alc remote web install <source> --enable` | install and turn on in one step, for your own repositories |
 | `alc remote web remove <id>` | delete the mod and its saved state |
+| `alc remote web layout apply <id> [--enable-mods]` | apply a layout; `--enable-mods` also turns on the mods it names from elsewhere |
+| `alc remote web layout reset` | back to Default |
 | `alc remote web check` | report every problem in the folder |
 
 Each installed mod records where it came from in `mods/<id>/SOURCE`, which
 `list` prints. Downloads come from `codeload.github.com` over HTTPS, capped at
-8 MB per repository and 256 KB per file; nothing outside `web/mods/<id>/` and
-`web/themes/` is written.
+8 MB per repository and 256 KB per file; besides `web/mods/<id>/`,
+`web/themes/` and `web/layouts/`, an install only writes `settings.json`, to
+record which of the new mods are on. An install that would replace a
+mod, theme or layout - or hide a 2.8 `packages/<id>.json` behind a layout of
+the same id - is refused unless you pass `--force`.
 
 ## Safety
 
