@@ -1388,8 +1388,6 @@ impl WebDir {
             .unwrap_or_default()
     }
 
-    /// A mod alc shipped, or one written here (no SOURCE file): nothing a
-    /// person has not had the chance to read before it runs.
     /// Whether `layouts/<id>.json` is the file alc ships under that id.
     fn is_official_layout(&self, id: &str) -> bool {
         let shipped = format!("examples/layouts/{id}.json");
@@ -1405,6 +1403,8 @@ impl WebDir {
         .is_some_and(|on_disk| on_disk == *text)
     }
 
+    /// A mod alc shipped, or one written here (no SOURCE file): nothing a
+    /// person has not had the chance to read before it runs.
     fn is_trusted_mod(&self, id: &str) -> bool {
         match fs::read_to_string(self.root.join("mods").join(id).join("SOURCE")) {
             Ok(source) => source.trim() == OFFICIAL_SOURCE,
