@@ -1224,12 +1224,13 @@ body[data-pane="page"] #view {
  * for the same reason body[data-pane] is the only thing that says which pane
  * is on screen.
  *
- * With `--tmux` the browser owns the size, so this box is a measurement: the
- * fit addon reads it and the agent is told the answer. Without it the size is
- * the local terminal's, so this box is a frame - the grid is drawn at its
- * real cols x rows, as large as the font size can make it, and whatever the
- * ratio leaves over is left black rather than filled by a screen the agent
- * is not drawing for. */
+ * While this page holds the session's size ("Fit to this page", which a
+ * `--tmux` page does as it opens) this box is a measurement: the fit addon
+ * reads it and the agent is told the answer. Otherwise the size is a
+ * terminal's or another page's, so this box is a frame - the grid is drawn
+ * at its real cols x rows, as large as the font size can make it, and
+ * whatever the ratio leaves over is left black rather than filled by a
+ * screen the agent is not drawing for. */
 
 #terminal {
   flex: 1 1 0%;
@@ -3364,7 +3365,7 @@ body[data-density="compact"] .stat-value {
   }
 }
 
-/* ---- a plain session drawn small ---- */
+/* ---- a session drawn small, its size held elsewhere ---- */
 
 .size-note {
   flex: 0 0 auto;

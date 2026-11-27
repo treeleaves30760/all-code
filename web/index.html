@@ -393,9 +393,10 @@
           </button>
         </div>
 
-        <!-- Shown when a plain session's grid had to be shrunk to fit here:
-             its size belongs to the terminal that started it, so the way to
-             fill this screen is to start it under --tmux. -->
+        <!-- Shown when a session's grid had to be shrunk to fit here: its
+             size is held by a terminal or another page, so the way to fill
+             this screen is to take it ("Fit to this page") - or, for a
+             read-only link on a plain session, to start it under --tmux. -->
         <div id="sizeNote" class="size-note" hidden>
           <span id="sizeNoteText" class="size-note-text"></span>
           <button type="button" id="sizeNoteFit" class="btn small accent"></button>

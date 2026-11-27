@@ -1197,6 +1197,45 @@ test('a framed grid is too small once shrunk or under 9px', () => {
   assert.equal(core.tmuxCommand({ agent: 'codex' }), 'alc share --tmux codex');
 });
 
+test('a --tmux page holds the size by default, a plain one when asked', () => {
+  const plain = { id: 'p', tmux: null };
+  const tmux = { id: 't', tmux: { session: 'alc' } };
+  // The default per mode.
+  assert.equal(core.wantsFit(tmux, {}), true);
+  assert.equal(core.wantsFit(plain, {}), false);
+  assert.equal(core.wantsFit(plain, { plainDefault: true }), true);
+  assert.equal(core.wantsFit(tmux, { plainDefault: false }), true);
+  // A choice made on this page wins over either default.
+  assert.equal(core.wantsFit(tmux, { choice: false }), false);
+  assert.equal(core.wantsFit(plain, { choice: true }), true);
+  assert.equal(core.wantsFit(plain, { choice: false, plainDefault: true }), false);
+  // A terminal or another page took it: not taken again until asked.
+  assert.equal(core.wantsFit(tmux, { yielded: true }), false);
+  assert.equal(core.wantsFit(plain, { yielded: true, choice: true }), false);
+  // Nothing to hold for a session that ended, or none at all.
+  assert.equal(core.wantsFit({ ...tmux, exit: { code: 0 } }, {}), false);
+  assert.equal(core.wantsFit(null, {}), false);
+  assert.equal(core.wantsFit(tmux), true);
+});
+
+test('the size note names who holds the size and offers what helps', () => {
+  const plain = { id: 'p', tmux: null, fitted: false };
+  const tmux = { id: 't', tmux: { session: 'alc' }, fitted: false };
+  // A plain session's terminal holds it: an operator can fit it, a viewer
+  // is pointed at --tmux.
+  assert.deepEqual(core.sizeNote(plain, true), { text: 'sizeFramedFit', fit: true, command: true });
+  assert.deepEqual(core.sizeNote(plain, false), { text: 'sizeFramed', fit: false, command: true });
+  // A --tmux session never offers the command that would start one.
+  assert.deepEqual(core.sizeNote(tmux, true), { text: 'sizeFramedFit', fit: true, command: false });
+  assert.deepEqual(core.sizeNote(tmux, false), { text: 'sizeFramedFit', fit: false, command: false });
+  // Another page holds it.
+  assert.equal(core.sizeNote({ ...tmux, fitted: true }, true).text, 'sizeFramedPage');
+  assert.equal(core.sizeNote({ ...plain, fitted: true }, false).text, 'sizeFramedPage');
+  for (const key of ['sizeFramed', 'sizeFramedFit', 'sizeFramedPage']) {
+    assert.ok(core.STRINGS.en[key] && core.STRINGS['zh-TW'][key], key);
+  }
+});
+
 /* ------------------------------------------------------------- layout */
 
 test('a widget the layout does not name is drawn in the slot its mod suggests', () => {

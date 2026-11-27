@@ -267,21 +267,20 @@
     }
   }
 
-  /* A plain session's size is the local terminal's, and it changes whenever
-   * that terminal does. Nothing tells the page over the socket - the
-   * server's control frames are notices, exits and keepalives, none of which
-   * carries a size - so this poll is what notices, and the grid is redrawn
-   * at the new shape. Five seconds late is a redraw, not a wrong one: what
-   * is on screen in between is the agent's real output, drawn at the ratio
-   * it had a moment ago.
+  /* A session this page does not hold the size of changes size whenever
+   * whoever does hold it - a terminal, another page - acts. The `size`
+   * frame says so at once; this poll is the backstop for a frame missed
+   * across a reconnect, and the grid is redrawn at the new shape. Five
+   * seconds late is a redraw, not a wrong one: what is on screen in between
+   * is the agent's real output, drawn at the ratio it had a moment ago.
    *
    * The condition is who is driving, not which mode the session is in. A
-   * page that owns the size must not read it back off the card: it would be
-   * fitting to a number it produced itself, and any disagreement - a clamp
-   * the server applied, another browser on the same session - would return
-   * every five seconds as a fresh resize. But a read-only link on a `--tmux`
-   * session drives nothing and needs this exactly as much as a plain session
-   * does, because the operator's window is moving the grid underneath it. */
+   * page that holds the size must not read it back off the card: it would
+   * be fitting to a number it produced itself, and any disagreement - a
+   * clamp the server applied - would return every five seconds as a fresh
+   * resize. Every other page - a read-only link, or an operator a terminal
+   * or another page took the size from - drives nothing and needs this,
+   * because somebody else is moving the grid underneath it. */
   function followSessionSize(cards) {
     const card = attached.value;
     if (!card || browserOwnsSize(card)) return;
@@ -977,30 +976,30 @@
 
   /* Whether this page is the side that decides how large the session is.
    *
-   * Only with `--tmux`, where the agent runs under a multiplexer and the
-   * hub's mirror carries this window's size into it while the user's own
-   * terminal abstains. `--tmux` is asked for by somebody who is about to go
-   * and use the page, so the page drives.
-   *
-   * Without it there is one pty and its size belongs to the terminal that
-   * launched it, which is still sitting there drawing at that size. A
-   * read-only link never decides anything either way - the server drops its
-   * resize frames, so acting as though it had one would only render the
-   * screen at a shape the agent is not using. */
+   * When it holds the size: "Fit to this page", which a `--tmux` page does
+   * as it opens and a plain one when asked (`core.wantsFit`). Otherwise the
+   * size is a terminal's, or another page's, and this page draws the real
+   * grid framed rather than sending sizes that would take it back on every
+   * resize. A read-only link never decides anything either way - the server
+   * drops its resize frames, so acting as though it had one would only
+   * render the screen at a shape the agent is not using. */
   function browserOwnsSize(card) {
     if (!card || !operator.value) return false;
-    return !!card.tmux || wantsFit(card);
+    return wantsFit(card);
   }
 
-  /* "Fit to this page" for a plain session: the page asks the hub for the
-   * pty's size, and holds it until the local terminal is resized (which
-   * takes it straight back), the page lets go, or the page disconnects.
-   * Remembered per session for this visit; the settings switch is the
-   * default for every plain session. */
+  /* "Fit to this page": the page asks the hub for the session's size, and
+   * holds it until a terminal on the session is resized or attached (which
+   * takes it straight back), another page takes it, or the page lets go.
+   * A plain page disconnecting also hands it back; a `--tmux` one leaves
+   * the window as it was. Remembered per session for this visit; for a
+   * plain session the settings switch is the default, and a `--tmux`
+   * session is fitted unless this page gave the size back. */
   let fitPlainDefault = false;
   const fitChoice = new Map();
-  /* Sessions whose terminal took the size back while this page held it: not
-   * taken again until asked, or the two would fight on every resize. */
+  /* Sessions whose size a terminal or another page took while this page
+   * held it: not taken again until asked, or the two would fight on every
+   * resize. */
   const fitYielded = new Set();
   /* This connection's id, from its hello, and whether the hub last said
    * this page holds the open session's size. */
@@ -1008,12 +1007,16 @@
   let holdingSize = false;
 
   function wantsFit(card) {
-    if (!card || card.tmux || card.exit || fitYielded.has(card.id)) return false;
-    return fitChoice.has(card.id) ? fitChoice.get(card.id) : fitPlainDefault;
+    if (!card) return false;
+    return core.wantsFit(card, {
+      choice: fitChoice.get(card.id),
+      yielded: fitYielded.has(card.id),
+      plainDefault: fitPlainDefault,
+    });
   }
 
   function setFit(card, on) {
-    if (!card || card.tmux) return;
+    if (!card) return;
     fitChoice.set(card.id, !!on);
     fitYielded.delete(card.id);
     if (!on) send({ t: 'release' });
@@ -1023,7 +1026,7 @@
 
   function renderFitToggle() {
     const card = attached.value;
-    const show = document.body.dataset.pane === 'view' && !!card && !card.tmux && !card.exit && operator.value;
+    const show = document.body.dataset.pane === 'view' && !!card && !card.exit && operator.value;
     el.fitToggle.hidden = !show;
     if (!show) return;
     const on = wantsFit(card);
@@ -1089,8 +1092,10 @@
       // parent). The next resize or attach will fit it.
       return;
     }
-    const card = attached.value;
-    send({ t: 'resize', cols: term.cols, rows: term.rows, take: !!card && !card.tmux });
+    // Always a take: this page drives only while it means to hold the size
+    // (`browserOwnsSize`), and a frame without one is ignored by the hub
+    // unless this page already holds it.
+    send({ t: 'resize', cols: term.cols, rows: term.rows, take: true });
   }
 
   /* The session's own grid, drawn as large as the frame allows.
@@ -1157,8 +1162,13 @@
   function showSizeNote(card, small) {
     const show = !!card && small && !sizeNoteHidden.has(card.id);
     if (show) {
-      el.sizeNoteFit.hidden = !operator.value;
-      setText(el.sizeNoteText, core.fill(operator.value ? T.sizeFramedFit : T.sizeFramed, { c: card.cols, r: card.rows }));
+      const note = core.sizeNote(card, operator.value);
+      el.sizeNoteFit.hidden = !note.fit;
+      el.sizeNoteCommand.hidden = !note.command;
+      // Spelled out rather than `T[note.text]`, so every string read here
+      // is one a search for it finds.
+      const text = { sizeFramed: T.sizeFramed, sizeFramedFit: T.sizeFramedFit, sizeFramedPage: T.sizeFramedPage }[note.text];
+      setText(el.sizeNoteText, core.fill(text, { c: card.cols, r: card.rows }));
       commandText(el.sizeNoteCommand, core.tmuxCommand(card));
     }
     if (el.sizeNote.hidden === !show) return;
@@ -1233,17 +1243,17 @@
 
     ws.addEventListener('open', () => {
       if (mine !== generation) return ws.close();
-      // A size is stated only by the side that owns one. The server resizes
-      // the session from this frame before it answers, so sending this
-      // window's columns for a session the local terminal sizes is exactly
-      // how a shared `alc claude` ended up at a phone's width - on every
+      // A size is stated only by a page that means to hold it. The server
+      // resizes the session from this frame before it answers, so sending
+      // this window's columns for a session a terminal holds is exactly how
+      // a shared `alc claude` ended up at a phone's width - on every
       // reconnect, too. Omitted, both fields default to zero and the server
       // skips the resize.
       const frame = { t: 'auth', token: token.value || '', since: lastSeq };
       if (browserOwnsSize(card)) {
         frame.cols = term ? term.cols : 80;
         frame.rows = term ? term.rows : 24;
-        frame.take = !card.tmux;
+        frame.take = true;
       }
       send(frame);
     });
@@ -1331,10 +1341,11 @@
         if (!card) break;
         const fitted = !!frame.fitted;
         const mine = myViewer !== null && frame.holder === myViewer;
-        // This page held a plain session's size and now does not: its
-        // terminal was resized, or another page took it. Either way this
-        // page stops asking, or the two would take turns for ever.
-        if (!card.tmux && holdingSize && !mine && wantsFit(card)) {
+        // This page held the session's size and now does not: a terminal
+        // was resized or attached, or another page took it. Either way this
+        // page stops asking, or the two would take turns for ever - and
+        // draws the grid framed until the person takes it back.
+        if (holdingSize && !mine && wantsFit(card)) {
           fitYielded.add(card.id);
           toast(fitted ? T.fitTakenPage : T.fitTaken, 'info', { label: T.fitTake, run: () => setFit(attached.value, true) });
         }
