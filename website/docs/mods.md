@@ -83,14 +83,14 @@ Drag the inner edge of the session list, the file panel or a dock to resize it;
 double-click the edge to reset it, or use the arrow keys on it. The terminal
 refits to whatever is left.
 
-A session started with `--tmux` already takes the page's size. A plain one is
-drawn at its own terminal's size, which is why opening the file panel used to
-shrink it into a letterbox. **Fit to this page** (the button beside the file
-panel's, the size note, the palette, or *Plain sessions* in the Studio's Panels
-tab for every session) lets the page resize it instead, so the terminal fills
-the space the panels leave. The terminal that launched it takes the size back
-the moment it is resized, and the hub hands it back when the page lets go or
-closes.
+A session started with `--tmux` takes the page's size as the page opens it. A
+plain one is drawn at its own terminal's size, which is why opening the file
+panel used to shrink it into a letterbox. **Fit to this page** (the button beside
+the file panel's, the size note, the palette, or *Plain sessions* in the Studio's
+Panels tab for every session) lets the page resize it instead, so the terminal
+fills the space the panels leave. Either way a terminal on the session takes the
+size back the moment it is resized, and **Give the size back** returns it; a
+plain session's size also goes back when the page closes.
 
 ![A plain session fitted beside the file panel](/img/remote/fit.png)
 

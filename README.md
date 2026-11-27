@@ -150,7 +150,8 @@ the keys a phone keyboard does not have (Esc, Tab, Shift+Tab, Ctrl, arrows), and
 a composer that sends a whole prompt as one block instead of fighting a mobile
 keyboard inside a raw terminal. On a wide screen with a session open, a button
 beside Back folds the session list away so the terminal gets the full width — a
-`--tmux` session gets the extra columns, a plain one is drawn larger — and that
+session fitted to the page (a `--tmux` one is, by default) gets the extra
+columns, any other is drawn larger — and that
 browser remembers the choice. The button at the right end of the header opens a
 read-only file panel on the session's folder: walk its folders, and pick a file
 to read it beside the terminal; picking another swaps it, and the open file
@@ -1092,9 +1093,10 @@ a theme, or a mod's command.
   (a 90s desktop, a phosphor mainframe, a newspaper, an aquarium …), or save
   your own; **Default** is always one click away. The session list, file
   panel and docks can be dragged wider and moved to either side.
-- **Fit to this page** lets the page resize a plain (non `--tmux`) session, so
-  opening the file panel or a dock refits the terminal instead of shrinking
-  it; the launching terminal takes the size back when it is resized.
+- **Fit to this page** lets the page resize the session — a `--tmux` one is
+  fitted as the page opens it — so opening the file panel or a dock refits the
+  terminal instead of shrinking it; a terminal on the session takes the size
+  back when it is resized, and **Give the size back** returns it.
 
 ```text
 <config dir>/web/
@@ -1150,16 +1152,18 @@ type or save through them.
 
 ### Who owns the size
 
-A plain session is drawn at its own terminal's size; when that has to shrink to
-fit (a 120-column grid on a phone), the page says so and offers
-`alc share --tmux <agent>` to copy, which makes the page own the size instead.
+Whoever acted on the size last holds it — the page or your terminal — whether or
+not the session runs under `--tmux`. A page that does not hold it draws the
+agent's real grid as large as it fits, centred, with black where the ratio does
+not match; when that has to shrink (a 120-column grid on a phone), the page says
+so and offers **Fit to this page**.
 
 A shared session without `--tmux` is one terminal with two viewers, and a
-terminal has one size. That size belongs to the terminal you launched from, which
-is still sitting there drawing at it — so the page does not touch it. It draws
-the agent's real grid instead, as large as it fits, centred, with black where the
-ratio does not match. Resize your terminal and the page follows within a few
-seconds.
+terminal has one size. It starts as the size of the terminal you launched from,
+which is still sitting there drawing at it — so the page leaves it alone until you
+press **Fit to this page** (or turn on *Plain sessions* in Settings for every
+plain session). Your terminal takes it back the moment it is resized, and the page
+hands it back when you press **Give the size back** or close the page.
 
 `--tmux` is for when the page is the side you are actually going to use:
 
@@ -1167,11 +1171,16 @@ seconds.
 alc --share --tmux --codex claude    # or -t
 ```
 
-Your terminal and the hub each attach as their own tmux client, so nothing has to
-agree on a size. The trade is that it runs the opposite way round — the page sets
-the size, and a narrower or shorter terminal shows the top-left corner of the
-screen (pan with `ctrl-b :refresh-client -L/-R/-U/-D`). With no browser attached
-the size stays where it launched. tmux owns the keyboard too, so detaching is
+Your terminal and the hub each attach as their own tmux client, and the default
+runs the other way round: the page takes the size as it opens, and meanwhile a
+narrower or shorter terminal shows the top-left corner of the screen (pan with
+`ctrl-b :refresh-client -L/-R/-U/-D`). Resize your terminal — or `alc attach`
+one — and it takes the size back: the agent redraws at your terminal's size, and
+the page shows that grid framed, with **Fit to this page** to take it again.
+Closing the page, or a phone going to sleep, leaves the size where it is; with no
+browser attached it stays where it launched. Two pages on one session take turns
+the same way — the last one to take the size holds it, and the other says so and
+shows it framed. tmux owns the keyboard too, so detaching is
 `ctrl-b` then `d`, and in exchange you get tmux's scrollback and a session that
 survives an ssh drop.
 
