@@ -1019,6 +1019,10 @@
     if (!card) return;
     fitChoice.set(card.id, !!on);
     fitYielded.delete(card.id);
+    // The toast that said the size was taken offers this same action; once
+    // it has been done from the header or the size note, a toast still
+    // offering it for twelve seconds is describing a state that is over.
+    if (!el.toast.hidden && !el.toastAction.hidden && el.toastAction.textContent === T.fitTake) el.toast.hidden = true;
     if (!on) send({ t: 'release' });
     renderFitToggle();
     relayout();

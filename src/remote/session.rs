@@ -886,6 +886,19 @@ impl Session {
         host.tmux.stop(&host.binary)
     }
 
+    /// Stops a `--tmux` session's server now, without waiting for the
+    /// watcher to get to it.
+    ///
+    /// Only for a hub that is shutting down: the watcher is the one that
+    /// normally does this, after reading how the agent died, and it will not
+    /// outlive the process. Stopping a server that has already gone is an
+    /// error nobody needs to hear about.
+    pub(crate) fn end_tmux(&self) {
+        if let Some(host) = self.tmux.as_ref() {
+            let _ = host.tmux.stop(&host.binary);
+        }
+    }
+
     pub(crate) fn has_exited(&self) -> bool {
         self.exit.lock().map(|slot| slot.is_some()).unwrap_or(false)
     }

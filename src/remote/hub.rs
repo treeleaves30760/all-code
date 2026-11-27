@@ -75,6 +75,11 @@ const VIEWER_TICK: Duration = Duration::from_millis(250);
 /// gives up on it.
 const ENVELOPE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a draining hub waits for its agents to end before it stops
+/// their tmux servers itself. Well inside the ten seconds `alc hub stop`
+/// waits for its answer.
+const DRAIN_GRACE: Duration = Duration::from_secs(3);
+
 pub(crate) struct Hub {
     config_dir: PathBuf,
     registry: Arc<Registry>,
@@ -337,10 +342,31 @@ impl Hub {
                     );
                     return;
                 }
-                for card in self.registry.cards() {
-                    if let Some(session) = self.registry.get(&card.id) {
-                        let _ = session.kill();
-                    }
+                let sessions: Vec<_> = self
+                    .registry
+                    .cards()
+                    .iter()
+                    .filter_map(|card| self.registry.get(&card.id))
+                    .collect();
+                for session in &sessions {
+                    let _ = session.kill();
+                }
+                // `kill` only asks, and for a `--tmux` session it is the
+                // session's watcher that stops the tmux server once the pane
+                // has died. This process is about to exit and take that
+                // watcher with it, so without this every drained `--tmux`
+                // session left its server behind for good: a dead pane held
+                // by `remain-on-exit`, with nothing left to end it. The
+                // agents get a moment to go the polite way first, then the
+                // servers are stopped here whether or not they did.
+                let deadline = Instant::now() + DRAIN_GRACE;
+                while Instant::now() < deadline
+                    && sessions.iter().any(|session| !session.has_exited())
+                {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                for session in &sessions {
+                    session.end_tmux();
                 }
                 let _ = reply(&peer, &CtlReply::Ok);
                 self.stop.store(true, Ordering::Relaxed);
