@@ -243,12 +243,13 @@ pub fn share(
                 found.label()
             );
             // The one thing about `--tmux` a user has to be told, because
-            // it is the opposite of what a terminal usually promises: the
-            // page owns the size. A terminal smaller than it is not broken,
-            // it is showing a corner.
+            // it is not what a terminal usually promises: an open page sets
+            // the size until this terminal acts on it again. A terminal
+            // showing a corner of the page's size is not broken, and the way
+            // back is one resize away.
             println!(
-                "  size  the page sets it; a smaller terminal shows the top-left corner \
-                 (ctrl-b :refresh-client -L/-R/-U/-D to pan)"
+                "  size  an open page sets it until you resize this terminal, which takes it back; \
+                 the page's \"Fit to this page\" takes it again"
             );
         }
         None => println!("  keys  ctrl-\\ then d detaches; the session keeps running"),
@@ -261,7 +262,20 @@ pub fn share(
         &session_id,
         cols,
         rows,
+        Arrival::Launch,
     )
+}
+
+/// How a terminal came to be attaching, which decides whether attaching
+/// states its size to a `--tmux` session (see `attach_tmux`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Arrival {
+    /// The terminal that just launched the session, which was created at
+    /// this terminal's size already.
+    Launch,
+    /// `alc attach`: somebody deliberately putting a terminal on a session
+    /// that may have been at a page's size for hours.
+    Reattach,
 }
 
 /// Puts this terminal on a session the hub owns.
@@ -270,32 +284,28 @@ pub fn share(
 /// detaches - detaching is a success, and reporting the agent's last status
 /// for it would be a lie about a session that is still running.
 ///
-/// For a plain session this terminal owns the size: the pty is one grid, it
-/// was opened at this terminal's size, and `watch_resize` below keeps it
-/// there. The page draws that grid scaled to fit its window rather than
-/// resizing it, so the two no longer take turns.
+/// For a plain session this terminal holds the size unless a page takes
+/// it: the pty is one grid, it is put at this terminal's size as the relay
+/// opens, and `watch_resize` below takes it back from a page whenever this
+/// terminal is resized. A page that is not holding it draws that grid scaled
+/// to fit its window rather than resizing it, so the two never take turns
+/// without somebody having just acted.
 pub(crate) fn attach(
     run_dir: &Path,
     ctl_secret: &str,
     session_id: &str,
     cols: u16,
     rows: u16,
+    arrival: Arrival,
 ) -> Result<u8> {
     // A tmux session is not relayed. The whole point of `--tmux` is that
-    // this terminal becomes a second, independent tmux client holding its
-    // own size, so it runs one rather than reading the mirror's bytes.
-    //
-    // This branch is load-bearing beyond that: the relay path starts
-    // `watch_resize`, which reports this terminal's size to the session.
-    // `Session::resize_from_terminal` refuses it for a tmux session, so a
-    // card that arrived without its `tmux` field could not put this
-    // terminal in charge of the page's window - but it would put this
-    // terminal on the mirror's byte stream, which is not what `--tmux`
-    // promised either.
+    // this terminal becomes a second, independent tmux client, so it runs
+    // one rather than reading the mirror's bytes - which also keeps it off
+    // the scrubbed stream it would otherwise be one more reader of.
     if let Some(card) = card_for(run_dir, ctl_secret, session_id)
         && let Some(host) = card.tmux
     {
-        return attach_tmux(run_dir, ctl_secret, session_id, &host);
+        return attach_tmux(run_dir, ctl_secret, session_id, &host, arrival);
     }
 
     let stream = hub::attach_stream_at(run_dir, ctl_secret, session_id, cols, rows)?;
@@ -372,12 +382,23 @@ pub(crate) fn attach(
 /// right.
 ///
 /// Nothing about the mirror changes: the hub still holds its own client, and
-/// the page still shows what the agent draws. What changes is that the two
-/// clients hold their own sizes, which is the whole reason `--tmux` exists -
-/// and that this terminal holds its own without setting the window's. The
-/// page drives the window (`tmux::attach_argv`), so this terminal renders
-/// whatever of it fits: padded out when it is larger, and clipped to the
-/// top-left corner when it is smaller, which is what the line below is for.
+/// the page still shows what the agent draws. This terminal keeps out of
+/// tmux's own size vote (`ignore-size`, see `tmux::Tmux::terminal_argv`) -
+/// and takes part in alc's instead: its size is reported to the hub, which
+/// resizes the *mirror* to it (`Session::resize_from_terminal`). The mirror
+/// stays the only voter and exactly the window's size, which is what the
+/// scrubber and the permission probe need, and this terminal then fits the
+/// window because the window is its size. Until it acts, a page may hold the
+/// size, and this terminal renders whatever of it fits: padded out when it
+/// is larger, clipped to the top-left corner when it is smaller.
+///
+/// It acts when it is resized, and when `alc attach` puts it on the session
+/// (`Arrival::Reattach`). The terminal that has just launched the session
+/// does not state its size on arrival: the session was created at that very
+/// size a moment ago, so stating it could change nothing - except that a
+/// page that opened in between, and took the size as a `--tmux` page does,
+/// would have it snatched straight back, and the first thing the user saw
+/// would be the two of them fighting.
 ///
 /// The exit code still comes from the card afterwards, for the same reason
 /// the relay path reads it there - tmux's own client exits 0 whether the
@@ -387,14 +408,15 @@ fn attach_tmux(
     ctl_secret: &str,
     session_id: &str,
     host: &tmux::Tmux,
+    arrival: Arrival,
 ) -> Result<u8> {
     // Resolved again rather than carried from `share`: `alc attach` reaches
     // here without having been through it, and a terminal that cannot run
     // tmux should hear that here rather than fail obscurely one line later.
     let found = tmux::find()?;
     let mut command = std::process::Command::new(&found.binary);
-    // No vote in the window's size: the page owns it, and this terminal
-    // renders whatever of it fits. See `tmux::Tmux::terminal_argv`.
+    // No vote in tmux's own sizing: the hub resizes the mirror to this
+    // terminal instead, below. See `tmux::Tmux::terminal_argv`.
     command.args(host.terminal_argv());
     // A shell already inside tmux exports the address of ITS server, and a
     // client that inherits it refuses to attach - "sessions should be nested
@@ -410,15 +432,42 @@ fn attach_tmux(
     // Printed before the terminal is handed to tmux, which is the last
     // moment anything alc writes will be read.
     println!(
-        "the page sets this session's size; a smaller terminal shows the top-left corner of it \
-         (ctrl-b :refresh-client -L/-R/-U/-D to pan, -c to follow the cursor)"
+        "an open page can set this session's size; resizing this terminal takes it back \
+         (until then a smaller terminal shows the top-left corner: \
+         ctrl-b :refresh-client -L/-R/-U/-D to pan, -c to follow the cursor)"
     );
+    // The resize lands on the mirror over the control socket, so it is a
+    // request like the relay's, captured with this session's own runtime.
+    let state_size = {
+        let run_dir = run_dir.to_owned();
+        let ctl_secret = ctl_secret.to_owned();
+        let id = session_id.to_owned();
+        move |cols: u16, rows: u16| {
+            let _ = ctl::request_at(
+                &run_dir,
+                &ctl_secret,
+                &ctl::CtlRequest::Resize {
+                    id: id.clone(),
+                    cols,
+                    rows,
+                },
+            );
+        }
+    };
+    if arrival == Arrival::Reattach {
+        let (cols, rows) = local::size();
+        state_size(cols, rows);
+    }
+    let finished = Arc::new(AtomicBool::new(false));
+    local::watch_resize(Arc::clone(&finished), state_size);
     command.env_remove("TMUX");
     command.env_remove("TMUX_PANE");
 
     let status = command
         .status()
-        .with_context(|| format!("failed to run {}", found.binary.display()))?;
+        .with_context(|| format!("failed to run {}", found.binary.display()));
+    finished.store(true, Ordering::Release);
+    let status = status?;
 
     // The client's own status cannot answer this on its own. A clean detach
     // exits 0, but so does nothing else: when the agent ends, alc stops the
@@ -776,7 +825,14 @@ pub fn run_hub(store: &Store, command: HubCommand) -> Result<u8> {
             let owners = owners(store)?;
             let (owner, id) = resolve_owned(&owners, &id)?;
             let (cols, rows) = local::size();
-            attach(&owner.run_dir, &owner.ctl, &id, cols, rows)
+            attach(
+                &owner.run_dir,
+                &owner.ctl,
+                &id,
+                cols,
+                rows,
+                Arrival::Reattach,
+            )
         }
         HubCommand::Kill { id } => {
             let owners = owners(store)?;

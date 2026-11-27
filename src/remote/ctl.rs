@@ -63,8 +63,11 @@ pub(crate) enum CtlRequest {
         cols: u16,
         rows: u16,
     },
-    /// Out of band, because the relay itself carries only terminal bytes and
-    /// a size change is not one.
+    /// A local terminal's size, which takes the session's size from a page
+    /// holding it (`Session::resize_from_terminal`). Out of band, because the
+    /// relay itself carries only terminal bytes and a size change is not
+    /// one - and because a `--tmux` terminal has no relay at all: it is its
+    /// own tmux client, and this is how it still reaches the mirror.
     Resize {
         id: String,
         cols: u16,
