@@ -1117,11 +1117,11 @@ fn serve_websocket(stream: TcpStream, request: &Request, context: &Serving) {
         return;
     };
 
-    // A page states a size only for a session whose size it owns, so this
-    // is a `--tmux` session in practice; a plain session's grid belongs to
-    // the terminal that launched it and the page letterboxes it instead.
-    // Honoured here as well as on a `resize` frame because the browser's
-    // first geometry arrives on the auth frame, before this reply.
+    // A page states a size only when it means to hold it - a `--tmux`
+    // session as it opens, a plain one once "Fit to this page" is on - and
+    // says so with `take`; a page that is not holding the size frames the
+    // grid instead. Honoured here as well as on a `resize` frame because the
+    // browser's first geometry arrives on the auth frame, before this reply.
     let subscription = session.subscribe();
     let viewer = subscription.handle.id();
     if grade >= Grade::Operator && cols > 0 && rows > 0 {
@@ -1242,8 +1242,9 @@ fn serve_websocket(stream: TcpStream, request: &Request, context: &Serving) {
     }
 
     // A page that fitted a plain session to itself and then went away would
-    // otherwise leave the launching terminal drawing for the page's size.
-    let _ = session.release_viewer(Some(viewer));
+    // otherwise leave the launching terminal drawing for the page's size. A
+    // `--tmux` window stays where it is; see `Session::viewer_left`.
+    let _ = session.viewer_left(viewer);
     session.unsubscribe(viewer);
 }
 
@@ -1871,6 +1872,22 @@ mod live_tests {
         assert_eq!((card.cols, card.rows, card.fitted), (100, 30, false));
         session.release_viewer(Some(7)).unwrap();
         assert_eq!((session.card().cols, session.card().rows), (100, 30));
+        // Nor can that page move it again without asking: it lost the size.
+        session.resize_from_viewer(Some(7), 132, 40, false).unwrap();
+        assert_eq!((session.card().cols, session.card().rows), (100, 30));
+        // Retaken, the holder's own resizes move it without asking again,
+        // and another page's do not.
+        session.resize_from_viewer(Some(7), 132, 40, true).unwrap();
+        session.resize_from_viewer(Some(7), 120, 36, false).unwrap();
+        session.resize_from_viewer(Some(8), 90, 20, false).unwrap();
+        let card = session.card();
+        assert_eq!((card.cols, card.rows, card.fitted), (120, 36, true));
+        // A plain page going away hands the size back, as letting go does.
+        session.viewer_left(8).unwrap();
+        assert!(session.card().fitted);
+        session.viewer_left(7).unwrap();
+        let card = session.card();
+        assert_eq!((card.cols, card.rows, card.fitted), (100, 30, false));
     }
 
     #[test]

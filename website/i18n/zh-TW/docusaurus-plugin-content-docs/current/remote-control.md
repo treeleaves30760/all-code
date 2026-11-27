@@ -358,29 +358,32 @@ id 長得像 `claude-7QK2M9XB4T`；任何不會有歧義的前綴，或者只寫
 
 ## 尺寸歸誰管
 
-一個終端機只有一個尺寸，而那個尺寸屬於你啟動它的那個終端機。所以頁面不會去改
-agent 的尺寸：它把真正的字元格線在放得下的範圍內畫到最大、置中，比例對不上的
-地方留黑。你調整終端機大小，頁面幾秒內就跟上。
+session 的尺寸歸最後一個動它的那一邊 —— 頁面靠「符合這個頁面」，你的終端機靠調整
+大小。一般的 session 一開始是你啟動它的那個終端機的尺寸，所以在你要求之前，頁面不會
+去改 agent 的尺寸：它把真正的字元格線在放得下的範圍內畫到最大、置中，比例對不上的
+地方留黑，並跟著你調整終端機大小。
 
 在寬螢幕上（900px 以上）開著某個 session 時，返回按鈕旁的「隱藏 session 清單」
 按鈕能把 session 清單收起來，讓終端機用滿整個寬度，按「顯示 session 清單」就放
-回來。一般的 session 只是畫得更大；用了下面的 `--tmux`，尺寸歸頁面管，agent 會
-真的拿到多出來的欄數。這個選擇會記在那個瀏覽器裡。這個按鈕刻意沒有快捷鍵，因為
+回來。頁面拿著尺寸的 session —— 下面的 `--tmux` 預設就是 —— agent 會真的拿到多出來
+的欄數；其他的只是畫得更大。這個選擇會記在那個瀏覽器裡。這個按鈕刻意沒有快捷鍵，因為
 每一個按鍵都屬於終端機 —— `ctrl-b` 就是 tmux 的 prefix。手機上什麼都沒變，它本來
 就一次只顯示一個窗格。
 
 當那個格線得縮小才放得下 —— 例如在手機上看 120 欄的終端機，或檔案面板旁的窄空間
 —— 頁面會在終端機上方說明這件事，並提供兩個解法：**符合這個頁面**，讓這個頁面改變
 session 的大小（檔案面板按鈕旁的按鈕也一樣，而設定或工作室裡的*一般 session* 會把它
-設為預設），或複製指令 `alc share --tmux <agent>`。符合頁面的 session，只要它自己的
-終端機一調整大小、或頁面放手或關閉，就會回到原本終端機的大小。按提示上的 × 就能
+設為預設），或複製指令 `alc share --tmux <agent>`。符合頁面的 session，只要它的
+終端機一調整大小、或頁面放手（**交還大小**）或關閉，就會回到終端機的大小。按提示上的 × 就能
 把它關掉。
 
 ![手機上的一般 session，附上建議改用 --tmux 的提示](/img/remote/size-note.png)
 
 `--tmux` 是給「你真正要用的其實是頁面那一邊」準備的。它讓 agent 跑在 tmux
-裡，於是你的終端機和 hub 各自以獨立的 client 連上、各有各的尺寸 ——
-而這一次，決定 agent 尺寸的是頁面。
+裡，於是你的終端機和 hub 各自以獨立的 client 連上 —— 而這一次，頁面一打開就拿走
+agent 的尺寸。調整你終端機的大小，或用 `alc attach` 接上一個，它就把尺寸拿回去；
+頁面這時會把格線框起來顯示，並提供**符合這個頁面**再拿回來。關掉頁面，尺寸維持原樣。
+開著兩個頁面時，最後拿走尺寸的那個拿著它。
 
 ```sh
 alc --share --tmux --codex claude    # or -t
@@ -388,7 +391,7 @@ alc --share --tmux --codex claude    # or -t
 
 | | 不用 `--tmux` | 用 `--tmux` |
 | --- | --- | --- |
-| 尺寸 | 你終端機的；頁面負責縮放 | 頁面的；你的終端機顯示放得下的部分 |
+| 尺寸 | 你終端機的，直到頁面符合它 | 頁面的，直到你的終端機調整大小 |
 | Detach | `ctrl-\` 然後 `d` | `ctrl-b` 然後 `d` |
 | Scrollback | 頁面的 | 頁面的，本機再加上 tmux 的 copy mode |
 | 你終端機上看到的 | 經由 hub 鏡射，金鑰已遮蔽 | 一個完整的 tmux client，原樣呈現 |
@@ -442,7 +445,7 @@ macOS 與 Linux 上仍然會顯示那個訊號。
 
 ```sh
 alc --share <agent>          # mirror this session
-alc --share --tmux <agent>   # ...and let the page own the agent's size
+alc --share --tmux <agent>   # ...and let the page take the agent's size
 alc share <agent> -- <args>  # the unambiguous form
 alc share <agent> --name x   # name the card (after `--` it is the agent's own)
 alc --no-share <agent>       # never mirror, whatever the settings say

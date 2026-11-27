@@ -93,7 +93,8 @@ Every field is optional. The settings page writes this same file.
 - `modSettings`: each mod's own saved state, keyed by mod id. Use
   `mod.save()` rather than editing it by hand while the page is open.
 - `terminal.fitPlain`: `true` fits sessions started without `--tmux` to the
-  page that opens them (see "Fitting a plain session" below).
+  page that opens them, as `--tmux` ones always are (see "Who holds the
+  size" below).
 - `layout.slots`: slot name → widgets in order. Slots: `bar` (header),
   `list.top`, `list.bottom` (around the session list), `card` (inside every
   session card - display only, it is inside a button), `view.top`,
@@ -298,14 +299,17 @@ element behind everything; return a function that stops it. `ctx.active()`,
 `ctx.onCleanup(fn)`, `ctx.mode()` (`light`/`dark`) and `ctx.reducedMotion()`
 (draw one still frame when it is true). Pause work while `document.hidden`.
 
-### Fitting a plain session
+### Who holds the size
 
-A session started without `--tmux` is drawn at its own terminal's size. An
-operator page can take that size ("Fit to this page" in the header, the
-size note, the palette, or `terminal.fitPlain`): the terminal then refits to
-whatever room the file panel and docks leave. The launching terminal gets
-the size back as soon as it is resized, and the hub hands it back when the
-page lets go or disconnects.
+The last side to act on a session's size holds it. An operator page takes it
+with "Fit to this page" (the header, the size note, the palette, or
+`terminal.fitPlain` for every plain session); a `--tmux` session is taken by
+the page as it opens. While a page holds it the terminal refits to whatever
+room the file panel and docks leave. A terminal on the session takes it back
+as soon as it is resized or attached, another page takes it by fitting, and
+"Give the size back" returns it; a page that lost it draws the real grid
+framed. A plain session's page disconnecting also hands it back; a `--tmux`
+one leaves it where it is.
 
 `icon` is a built-in name (`spark`, `note`, `bolt`, `grid`, `chart`, `clock`,
 `star`, `terminal`, `files`, `settings`) or an SVG path `d` string on a 16×16

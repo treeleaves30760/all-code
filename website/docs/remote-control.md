@@ -388,16 +388,17 @@ will not start, run `alc hub start --foreground` and watch.
 
 ## Who owns the size
 
-A terminal has one size, and it belongs to the terminal you launched from. So
-the page does not resize the agent: it draws the real grid as large as it fits,
-centred, with black where the ratio does not match. Resize your terminal and
-the page follows within a few seconds.
+Whoever acted on a session's size last holds it — the page, by fitting it, or
+your terminal, by being resized. A plain session starts at the size of the
+terminal you launched from, so the page does not resize the agent until you ask:
+it draws the real grid as large as it fits, centred, with black where the ratio
+does not match, and follows your terminal as it is resized.
 
 On a screen 900px or wider with a session open, the **Hide sessions** button
 beside Back folds the session list away so the terminal gets the page's full
-width, and **Show sessions** brings it back. A plain session is drawn larger; a
-`--tmux` session (below) actually gets the extra columns, because the page owns
-its size. The browser remembers the choice. There is no keyboard shortcut for
+width, and **Show sessions** brings it back. A session the page holds the size
+of — a `--tmux` one (below) by default — actually gets the extra columns; any
+other is drawn larger. The browser remembers the choice. There is no keyboard shortcut for
 it on purpose: every key belongs to the terminal, and `ctrl-b` is tmux's
 prefix. A phone already shows one pane at a time, so nothing changes there.
 
@@ -406,15 +407,19 @@ narrow space beside the file panel — the page says so above the terminal and
 offers two ways out: **Fit to this page**, which lets this page resize the
 session (the button beside the file panel's does the same, and *Plain sessions*
 in Settings or the Studio makes it the default), or the command
-`alc share --tmux <agent>`, to copy. A fitted session goes back to its own
+`alc share --tmux <agent>`, to copy. A fitted session goes back to its
 terminal's size as soon as that terminal is resized, or when the page lets go
-or closes. Hide the note with its ×.
+(**Give the size back**) or closes. Hide the note with its ×.
 
 ![A plain session on a phone, with the note that offers --tmux](/img/remote/size-note.png)
 
 `--tmux` is for when the page is the side you will actually use. It runs the
 agent inside tmux, so your terminal and the hub each attach as their own
-client with their own size — and this time the page decides the agent's.
+client — and this time the page takes the agent's size as it opens. Resize your
+terminal, or `alc attach` one, and it takes the size back; the page then shows
+the grid framed and offers **Fit to this page** to take it again. Closing the
+page leaves the size where it is. With two pages open, the last to take the size
+holds it.
 
 ```sh
 alc --share --tmux --codex claude    # or -t
@@ -422,7 +427,7 @@ alc --share --tmux --codex claude    # or -t
 
 | | Without `--tmux` | With `--tmux` |
 | --- | --- | --- |
-| Size | Your terminal's; the page scales it | The page's; your terminal shows what fits |
+| Size | Your terminal's until the page fits it | The page's until your terminal is resized |
 | Detach | `ctrl-\` then `d` | `ctrl-b` then `d` |
 | Scrollback | The page's | The page's, plus tmux copy mode locally |
 | Your terminal's view | Mirrored through the hub, keys masked | A direct tmux client, raw |
@@ -482,7 +487,7 @@ an exit status, where macOS and Linux show the signal.
 
 ```sh
 alc --share <agent>          # mirror this session
-alc --share --tmux <agent>   # ...and let the page own the agent's size
+alc --share --tmux <agent>   # ...and let the page take the agent's size
 alc share <agent> -- <args>  # the unambiguous form
 alc share <agent> --name x   # name the card (after `--` it is the agent's own)
 alc --no-share <agent>       # never mirror, whatever the settings say

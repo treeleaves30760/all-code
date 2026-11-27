@@ -476,10 +476,10 @@
     if (card.provider_kind && card.provider_kind !== card.agent) bits.push(card.provider_kind);
     if (card.model) bits.push(card.model);
     if (card.effort) bits.push(card.effort);
-    // Worth a chip because it changes what this page can do: a tmux
-    // session's size is this window's, so resizing it resizes the agent -
-    // where a plain session's belongs to the terminal that launched it and
-    // this page only scales what it is given.
+    // Worth a chip because it changes what this page does: a tmux
+    // session's size is this window's from the moment it opens, so resizing
+    // it resizes the agent - where a plain session's belongs to the terminal
+    // that launched it until somebody asks this page to fit it.
     if (card.tmux) bits.push('tmux');
     return bits.filter(Boolean);
   }
@@ -780,12 +780,12 @@
 
   /* How to draw a grid whose size is not the page's to choose.
    *
-   * Only a `--tmux` session's size belongs to the browser. Without it there
-   * is one pty, its size is the terminal that launched it, and a page that
-   * resized the agent to fit its own window left that terminal drawing for a
-   * width it no longer had - which is the whole bug. So the page keeps the
-   * session's real cols x rows and changes the only thing that is its own:
-   * how big a character is.
+   * A page that does not hold the size - a plain session nobody asked to
+   * fit, or any session a terminal or another page took the size of - must
+   * not resize the agent to its own window: that left the terminal holding
+   * the size drawing for a width it no longer had, which is the whole bug.
+   * So the page keeps the session's real cols x rows and changes the only
+   * thing that is its own: how big a character is.
    *
    * The font size is the mechanism rather than a CSS transform, and the
    * difference matters twice. Text stays real text laid out at its final
@@ -1350,12 +1350,13 @@
     paletteGroupWindows: 'Windows',
     fitTake: 'Fit to this page',
     fitRelease: 'Give the size back',
-    fitTaken: 'The terminal that started this session was resized, so it has its size back.',
+    fitTaken: 'A terminal on this session was resized or attached, so it has the size back.',
     fitTakenPage: 'Another page took this session’s size, so this one shows it framed.',
     fitPlain: 'Fit plain sessions to this page',
     fitPlainLabel: 'Plain sessions',
-    fitPlainHelp: 'A session started without --tmux is drawn at its own terminal’s size. This lets the page resize it instead, until that terminal is resized again.',
+    fitPlainHelp: 'A session started without --tmux is drawn at its own terminal’s size. This lets the page resize it instead, until that terminal is resized again. A --tmux session is always fitted to the page that opens it.',
     sizeFramedFit: 'Drawn at {c}×{r}, its own terminal’s size.',
+    sizeFramedPage: 'Drawn at {c}×{r}, the size another page set.',
   });
 
   Object.assign(STRINGS['zh-TW'], {
@@ -1501,12 +1502,13 @@
     paletteGroupWindows: '視窗',
     fitTake: '符合這個頁面',
     fitRelease: '交還大小',
-    fitTaken: '啟動這個 session 的終端機調整了大小，所以大小已交還給它。',
+    fitTaken: '這個 session 上的終端機調整了大小或重新附著，所以大小已交還給它。',
     fitTakenPage: '另一個頁面取得了這個 session 的大小，所以這裡改以原尺寸顯示。',
     fitPlain: '讓一般 session 符合這個頁面',
     fitPlainLabel: '一般 session',
-    fitPlainHelp: '沒有用 --tmux 啟動的 session 會以它自己終端機的大小顯示。開啟後由頁面決定大小，直到那個終端機再次調整大小。',
+    fitPlainHelp: '沒有用 --tmux 啟動的 session 會以它自己終端機的大小顯示。開啟後由頁面決定大小，直到那個終端機再次調整大小。--tmux session 則一律先符合開啟它的頁面。',
     sizeFramedFit: '以 {c}×{r} 顯示，也就是它自己終端機的大小。',
+    sizeFramedPage: '以 {c}×{r} 顯示，也就是另一個頁面設定的大小。',
   });
 
   /* The settings the page draws from, with every field present. Whatever the
@@ -1854,7 +1856,42 @@
     return scale < 1 || fontSize < Math.min(9, baseFontSize - 2);
   }
 
-  /* The command that starts the same agent so this page owns its size. */
+  /* Whether this page should hold a session's size - "Fit to this page".
+   *
+   * One rule for both kinds of session, with a different default. The last
+   * side to act on the size holds it: this page by taking it, a terminal by
+   * being resized or attached. `--tmux` is asked for by somebody who is
+   * about to go and use the page, so a `--tmux` page takes the size as it
+   * opens; a plain session's size is its launching terminal's until the
+   * person asks (`plainDefault` is the settings switch that asks for every
+   * plain session). Either way an explicit choice made on this page wins,
+   * and a session whose size a terminal or another page took back from this
+   * one (`yielded`) is not taken again until asked - or the two would take
+   * turns on every resize. */
+  function wantsFit(card, { choice, yielded, plainDefault } = {}) {
+    if (!card || card.exit || yielded) return false;
+    if (typeof choice === 'boolean') return choice;
+    return card.tmux ? true : !!plainDefault;
+  }
+
+  /* What the note over a framed grid says, and which of its buttons show.
+   *
+   * `text` names the string: the size another page set, when one holds it;
+   * otherwise the terminal's. The `--tmux` command is offered only for a
+   * plain session - it is the way to start one whose size a page can have
+   * by default, which a `--tmux` session already is. "Fit to this page" is
+   * for an operator, since a read-only link never sets the size. */
+  function sizeNote(card, operator) {
+    const page = !!(card && card.fitted);
+    return {
+      text: page ? 'sizeFramedPage' : (operator || (card && card.tmux)) ? 'sizeFramedFit' : 'sizeFramed',
+      fit: !!operator,
+      command: !(card && card.tmux),
+    };
+  }
+
+  /* The command that starts the same agent so a page holds its size by
+   * default. */
   function tmuxCommand(card) {
     return `alc share --tmux ${(card && card.agent) || 'claude'}`;
   }
@@ -2065,6 +2102,8 @@
     normalizeChip,
     changedScripts,
     framedTooSmall,
+    wantsFit,
+    sizeNote,
     tmuxCommand,
     SLOTS,
     PANEL_SIZES,
