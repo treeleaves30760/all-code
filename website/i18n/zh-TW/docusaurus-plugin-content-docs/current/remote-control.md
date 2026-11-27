@@ -45,8 +45,8 @@ alc session claude-7QK2M9XB4T (claude@all-code)
   黏著的 Ctrl、方向鍵）、寫長提示用的輸入框、[權限](#權限模式)列與唯讀的檔案面板。
 - **用量**是一張儀表板，列出這台機器上的 agent 花了多少 —— 見
   [頁面上的用量](#頁面上的用量)。
-- **工作室**負責排列頁面：套件、每個 mod 的小工具放在哪裡、背景、浮動視窗與面板
-  寬度 —— 見 [Mods 與主題](./mods.md#工作室)。
+- **工作室**負責排列頁面：版面（一次換掉整個外觀，也能一鍵回到預設）、每個 mod
+  的小工具放在哪裡、背景、浮動視窗與面板寬度 —— 見 [Mods 與主題](./mods.md#工作室)。
 - **設定**是頁面與終端機的外觀，存在 hub 上 —— 見[設定與主題](#設定與主題)。
 
 在 Mac 上按 `⌘K`，或在終端機以外的任何地方按 `Ctrl+K`，會開啟「指令面板」：跳到
@@ -282,8 +282,9 @@ alc --no-share claude        # opt one launch out
 
 這九個 agent 對「權限模式是什麼」、「那些模式叫什麼名字」、「啟動之後還能不能
 改」，看法都不一樣。頁面畫出來的，是眼前這個 agent 真正做得到的事：可以直接
-指定模式的給下拉選單，只能循環切換的給一個循環按鈕，而根本沒有這個概念的
-agent，給的是一個停用的控制項，上面寫著原因。它會同時顯示 alc 的層級和 agent
+指定模式的給下拉選單；只能循環切換的，顯示目前模式的小標籤加一顆「循環」按鈕
+（點一下標籤會展開循環的順序）；啟動後就不能改、或根本沒有這個概念的 agent，
+只顯示模式標籤，旁邊註明原因。它會同時顯示 alc 的層級和 agent
 自己的說法，因為共用一個標籤只會誤導人 —— `auto` 在 Goose 是最寬鬆的設定，
 在 Claude Code 卻只是中間的一級。
 
@@ -455,10 +456,10 @@ alc remote allow-host <host>
 alc remote web               # the page's settings, themes and mods folder
 alc remote web check         # validate it
 alc remote web list          # mods (on/off) and themes
-alc remote web catalog       # official mods, packages, themes and templates
+alc remote web catalog       # official mods, layouts, themes and templates
 alc remote web add <id>      # install an official one
 alc remote web new <id> --template widget        # start a mod from a template
-alc remote web package [list|apply <id>|remove <id>]
+alc remote web layout [list | apply <id> [--enable-mods] | reset | remove <id>]
 alc remote web install <owner/repo|url|folder>   # mods arrive off
 alc remote web enable|disable|remove <id>
 

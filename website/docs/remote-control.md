@@ -48,8 +48,9 @@ bar on a phone, where an open session takes the whole screen.
   [permission](#permission-modes) bar and the read-only file panel.
 - **Usage** is a dashboard of what the agents on this machine have spent — see
   [Usage on the page](#usage-on-the-page).
-- **Studio** arranges the page: packages, where each mod's widgets go,
-  backgrounds, floating windows and panel widths — see
+- **Studio** arranges the page: layouts (a whole look at a time, and
+  Default to come back), where each mod's widgets go, backgrounds, floating
+  windows and panel widths — see
   [Mods and themes](./mods.md#the-studio).
 - **Settings** is the page's look and the terminal's, saved on the hub — see
   [Settings and themes](#settings-and-themes).
@@ -302,8 +303,10 @@ A page that types into a coding agent is remote code execution on your machine.
 The nine agents disagree about what a permission mode is, what the modes are
 called, and whether one can change after launch. The page renders what the
 agent in front of it can actually do: a dropdown where a mode can be set
-outright, a cycle button where it can only be cycled, and a disabled control
-carrying the reason where the agent has no such concept. It shows alc's rung
+outright, the current mode as a chip with a **Cycle** button where it can
+only be cycled (tap the chip for the order the cycle goes in), and a mode
+chip with no control where it is fixed at launch or the agent has no such
+concept, with the reason beside it. It shows alc's rung
 and the agent's own word for it, because a shared label misleads — `auto` is
 the most permissive setting Goose has and a mid-tier one for Claude Code.
 
@@ -493,10 +496,10 @@ alc remote allow-host <host>
 alc remote web               # the page's settings, themes and mods folder
 alc remote web check         # validate it
 alc remote web list          # mods (on/off) and themes
-alc remote web catalog       # official mods, packages, themes and templates
+alc remote web catalog       # official mods, layouts, themes and templates
 alc remote web add <id>      # install an official one
 alc remote web new <id> --template widget        # start a mod from a template
-alc remote web package [list|apply <id>|remove <id>]
+alc remote web layout [list | apply <id> [--enable-mods] | reset | remove <id>]
 alc remote web install <owner/repo|url|folder>   # mods arrive off
 alc remote web enable|disable|remove <id>
 

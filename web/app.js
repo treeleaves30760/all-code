@@ -26,7 +26,7 @@
     'back', 'railToggle', 'subtitle', 'grade', 'link', 'linkLabel',
     'list', 'sessions', 'empty', 'emptyTitle', 'emptyHow', 'emptyCommand',
     'view', 'terminal', 'keys',
-    'perm', 'permLabel', 'permPick', 'permCycle', 'permNote', 'permFlags', 'permCommand',
+    'perm', 'permLabel', 'permChip', 'permPick', 'permCycle', 'permCycleText', 'permOrder', 'permNote', 'permFlags', 'permCommand',
     'composer', 'compose', 'send', 'toast',
     'usage', 'accountsTitle', 'nav', 'paletteToggle', 'toastText', 'toastAction',
     'settings', 'page', 'sizeNote', 'sizeNoteText', 'sizeNoteCommand', 'sizeNoteHide', 'accounts', 'usageNote',
@@ -61,7 +61,7 @@
   el.usageEmptyTitle.textContent = T.usageEmpty;
   el.usageEmptyHow.textContent = T.usageEmptyHow;
   commandText(el.usageEmptyCommand, T.usageEmptyCommand);
-  el.usageNote.textContent = T.hubNote;
+  el.usageNote.textContent = '';
   el.ledgerProvider.textContent = T.provider;
   el.ledgerAgent.textContent = T.agent;
   el.ledgerLaunches.textContent = T.launches;
@@ -409,7 +409,7 @@
     const chips = document.createElement('span');
     chips.className = 'chips';
 
-    // Widgets a package put on every card. Inside the button, so what is
+    // Widgets a layout put on every card. Inside the button, so what is
     // drawn here is something to read, not something to press.
     const slot = document.createElement('span');
     slot.className = 'card-slot';
@@ -538,6 +538,24 @@
     }
   }
 
+  /* The open session's name, and the facts about it small beside it. */
+  function setSubtitle(card) {
+    if (!card) {
+      el.subtitle.replaceChildren();
+      el.subtitle.removeAttribute('title');
+      return;
+    }
+    const facts = core.describeSession(card).join(' · ');
+    const name = document.createElement('span');
+    name.className = 'sub-name';
+    name.textContent = card.name;
+    const meta = document.createElement('span');
+    meta.className = 'sub-facts';
+    meta.textContent = facts;
+    el.subtitle.replaceChildren(name, meta);
+    el.subtitle.title = `${card.name} · ${facts}`;
+  }
+
   function capsFor(agent) {
     return CAPS && CAPS.agents ? CAPS.agents.find((row) => row.agent === agent) : null;
   }
@@ -594,6 +612,9 @@
     el.perm.hidden = false;
     el.perm.classList.toggle('unsandboxed', view.ungated);
     el.permCycle.hidden = true;
+    el.permChip.hidden = true;
+    el.permOrder.hidden = true;
+    el.permChip.setAttribute('aria-expanded', 'false');
     el.permPick.hidden = false;
     el.permPick.disabled = false;
     el.permPick.replaceChildren();
@@ -602,7 +623,8 @@
     const shown = view.rung
       ? `${view.rung}${view.native ? ` · ${view.native}` : ''}${view.assumed ? ' ?' : ''}`
       : T.permUnknown;
-    setText(el.permLabel, `${T.permission}: ${shown}`);
+    setText(el.permLabel, T.permission);
+    setText(el.permChip, shown);
 
     /* An agent that gates nothing is the one fact here that is about safety
      * rather than about what a control can do, so it is a chip that stays put
@@ -612,26 +634,45 @@
     el.permFlags.replaceChildren();
     if (view.ungated) el.permFlags.append(flag('i-ungated', T.unsandboxed));
 
+    // A viewer sees the mode and nothing to press: the same chip, still.
+    if (!operator.value) {
+      el.permPick.hidden = true;
+      el.permChip.hidden = false;
+      el.permChip.disabled = true;
+      el.permChip.title = '';
+      note('');
+      return;
+    }
+
     if (view.control === 'dead') {
-      el.permPick.disabled = true;
-      const only = document.createElement('option');
-      only.textContent = '—';
-      el.permPick.append(only);
-      // Server-authored and shown verbatim: it is the only account of why the
-      // control is dead. A relaunch-only agent has no such account to give,
-      // and for it the dead control is the whole message.
-      if (view.deadKind === 'relaunch-only') note(T.permFixed, 'warn');
-      else note(view.reason ? `${T.permUnsupported} ${view.reason}` : '', 'danger');
+      // No control at all: the mode as a chip, and why it cannot move.
+      el.permPick.hidden = true;
+      el.permChip.hidden = false;
+      el.permChip.disabled = true;
+      if (view.deadKind === 'relaunch-only') {
+        const fixed = flag('i-lock', T.permFixedShort);
+        fixed.title = T.permFixed;
+        el.permFlags.append(fixed);
+        note('');
+      } else {
+        // Server-authored and shown verbatim: the only account of why.
+        note(view.reason ? `${T.permUnsupported} ${view.reason}` : '', 'danger');
+      }
       return;
     }
 
     if (view.control === 'cycle') {
+      // The mode as a chip and one button that moves it on. The order lives
+      // behind the chip: a tap opens it, since a phone cannot hover.
       el.permPick.hidden = true;
+      el.permChip.hidden = false;
+      el.permChip.disabled = !view.order;
+      el.permChip.title = view.order ? T.permOrderShow : '';
+      setText(el.permOrder, view.order ? core.fill(T.permOrder, { o: view.order }) : '');
       el.permCycle.hidden = false;
-      el.permCycle.textContent = T.permCycle;
-      // The order is the useful half and stays as text: a phone has nowhere
-      // to hover, so a title would put it out of reach of everyone using one.
-      note(`${T.permCycleNote} ${view.order}`, 'warn');
+      el.permCycle.title = T.permCycleTip;
+      setText(el.permCycleText, T.permCycle);
+      note('');
       return;
     }
 
@@ -646,8 +687,19 @@
       if (option.selected) node.selected = true;
       el.permPick.append(node);
     }
-    note(view.unverified ? T.permUnverified : '', 'warn');
+    if (view.unverified) {
+      const unverified = flag('i-help', T.permUnverifiedShort);
+      unverified.title = T.permUnverified;
+      el.permFlags.append(unverified);
+    }
+    note('');
   }
+
+  el.permChip.addEventListener('click', () => {
+    const open = el.permOrder.hidden;
+    el.permOrder.hidden = !open;
+    el.permChip.setAttribute('aria-expanded', String(open));
+  });
 
   async function setPermission(rung, ticket) {
     const card = attached.value;
@@ -831,7 +883,7 @@
   let terminalSettings = null;
   let terminalColours = {};
   /* How opaque the terminal is over a background, 0.3-1. Below 1 the
-   * terminal's own background is drawn translucent so a package's
+   * terminal's own background is drawn translucent so a layout's
    * background shows through it. */
   let terminalOpacity = 1;
 
@@ -873,6 +925,17 @@
     const options = terminalOptions();
     baseFontSize = options.fontSize;
     for (const [key, value] of Object.entries(options)) term.options[key] = value;
+    scheduleRelayout();
+  }
+
+  /* xterm measures a cell when its font option changes, not when the font
+   * behind an unchanged name finishes loading; nudging the option makes it
+   * measure again with the real glyphs. */
+  function remeasureTerminal() {
+    if (!term) return;
+    const family = term.options.fontFamily;
+    term.options.fontFamily = 'monospace';
+    term.options.fontFamily = family;
     scheduleRelayout();
   }
 
@@ -1238,7 +1301,7 @@
         renderFilesSwitch();
         renderFitToggle();
         if (filesOpen.value && filesAvailable() && !el.tree.childElementCount) loadFolder(folder);
-        setText(el.subtitle, `${frame.session.name} · ${core.describeSession(frame.session).join(' · ')}`);
+        setSubtitle(frame.session);
         renderPermission(frame.session);
         setConnection('live');
         attempt = 0;
@@ -1394,7 +1457,7 @@
     document.body.classList.remove('viewer');
     resetFiles();
     renderFilesSwitch();
-    setText(el.subtitle, '');
+    setSubtitle(null);
     setConnection('idle');
     refresh();
     renderRows(rows.value);
@@ -1771,7 +1834,10 @@
     }
 
     el.usageEmpty.hidden = model.accounts.length > 0;
-    el.usageNote.hidden = !model.hubEnv;
+    el.usageNote.hidden = true;
+    // Where the accounts came from matters only to someone asking.
+    if (model.hubEnv) el.accountsTitle.title = T.hubNote;
+    else el.accountsTitle.removeAttribute('title');
 
     const body = el.ledger.tBodies[0];
     const ledgerHeads = el.ledger.tHead.rows[0].cells;
@@ -1793,7 +1859,9 @@
      * no glyph can say "because alc did not carry this traffic" - but under a
      * table whose figures are all real it reads as a doubt about them. */
     const caveat = core.ledgerNeedsCaveat(model.rows) ? T.directOnly : '';
-    const ledgerNote = model.rows.length ? caveat : T.ledgerEmpty;
+    if (caveat) el.ledgerTitle.title = caveat;
+    else el.ledgerTitle.removeAttribute('title');
+    const ledgerNote = model.rows.length ? '' : T.ledgerEmpty;
     el.ledgerNote.textContent = ledgerNote;
     el.ledgerNote.hidden = !ledgerNote;
   }
@@ -2105,6 +2173,7 @@
     detach,
     send,
     setTerminalLook,
+    remeasureTerminal,
     scheduleRelayout,
     chipDecorators,
     extraKeys,

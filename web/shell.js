@@ -72,6 +72,7 @@
     folder: 'i-folder',
     reload: 'i-reload',
     close: 'i-close',
+    more: 'i-more',
   };
 
   /* A sprite icon by name, or a mod's own path on the same 16px grid. */
@@ -112,9 +113,9 @@
     dir: '',
     hub: {},
     settingsError: null,
-    packages: [],
+    layouts: [],
     backgrounds: [],
-    catalog: { mods: [], packages: [], themes: [], templates: [] },
+    catalog: { mods: [], layouts: [], themes: [], templates: [] },
     presets: core.BACKGROUND_PRESETS,
   };
   /* The mods as they were when this page loaded their scripts. */
@@ -137,8 +138,12 @@
     appliedTokens = Object.keys(theme.tokens);
     for (const [key, value] of Object.entries(theme.tokens)) root.style.setProperty(key, value);
     document.body.dataset.density = web.settings.density;
+    // The hook every layout's skin is scoped to: `body[data-layout="<id>"]`,
+    // so a skin mod left switched on draws nothing under another layout.
+    if (web.settings.activeLayout) document.body.dataset.layout = web.settings.activeLayout;
+    else delete document.body.dataset.layout;
     const backdrop = web.settings.background;
-    shell.setTerminalLook(web.settings.terminal, theme.terminal, backdrop.kind === 'none' ? 1 : backdrop.terminal / 100);
+    shell.setTerminalLook(core.effectiveTerminal(web.settings), theme.terminal, backdrop.kind === 'none' ? 1 : backdrop.terminal / 100);
     const colour = getComputedStyle(document.body).backgroundColor;
     let meta = document.querySelector('meta[name="theme-color"]');
     if (!meta) {
@@ -146,6 +151,13 @@
       document.head.append(meta);
     }
     meta.setAttribute('content', colour);
+  }
+
+  // A web font a layout's skin brings arrives after the terminal measured
+  // its cells with the fallback; measure again or the grid is drawn askew.
+  if (document.fonts) {
+    document.fonts.addEventListener('loadingdone', () => shell.remeasureTerminal && shell.remeasureTerminal());
+    document.fonts.ready.then(() => shell.remeasureTerminal && shell.remeasureTerminal());
   }
 
   systemDark.addEventListener('change', () => {
@@ -225,6 +237,33 @@
       saveSeq += 1;
     }
     for (const resolve of settle) resolve(ok);
+  }
+
+  /* Writes a change still waiting on its timer now, and waits for a write
+   * in flight. Run before anything the server changes on its own (a
+   * layout, Default, a mod's switch), so a look changed a moment earlier
+   * lands before it rather than after. */
+  async function settleSaves() {
+    clearTimeout(saveTimer);
+    for (;;) {
+      while (saving) await new Promise((resolve) => setTimeout(resolve, 40));
+      if (!dirty && !waiters.length) return;
+      await flush();
+    }
+  }
+
+  /* A mod is switched by its own route; settings saves cannot do it. */
+  async function setModEnabled(id, on) {
+    if (!shell.operator.value) return false;
+    try {
+      await settleSaves();
+      await shell.layout.request('POST', `/api/web/mods/${encodeURIComponent(id)}/${on ? 'enable' : 'disable'}`, {});
+      await pull(false);
+      return true;
+    } catch (error) {
+      toast(error.message || String(error), 'error');
+      return false;
+    }
   }
 
   /* ---------------------------------------------------------------- nav */
@@ -328,6 +367,119 @@
     ];
   }
 
+  /* ------------------------------------------------------------ dialogs */
+
+  /* A modal question with verbs for answers. Resolves with the value of the
+   * button pressed, or null for Esc, the backdrop or Cancel. A native
+   * <dialog>, so focus stays inside it and Esc closes it. */
+  function dialog({ title, body, actions, wide }) {
+    return new Promise((resolve) => {
+      const box = h('dialog', { class: `dialog${wide ? ' wide' : ''}`, 'aria-label': title });
+      let answer = null;
+      const done = (value) => {
+        answer = value;
+        box.close();
+      };
+      box.append(
+        h('h2', { class: 'dialog-title' }, title),
+        h('div', { class: 'dialog-body' }, body),
+        h('div', { class: 'dialog-actions' },
+          h('button', { type: 'button', class: 'btn', onclick: () => done(null) }, T.cancel),
+          (actions || []).map((action) => h('button', {
+            type: 'button',
+            class: `btn ${action.danger ? 'danger' : 'accent'}`,
+            onclick: () => {
+              const value = action.value === undefined ? true : action.value;
+              if (action.check && !action.check(box)) return;
+              done(typeof value === 'function' ? value(box) : value);
+            },
+          }, action.label))));
+      box.addEventListener('click', (event) => {
+        if (event.target === box) done(null);
+      });
+      box.addEventListener('close', () => {
+        box.remove();
+        resolve(answer);
+      });
+      document.body.append(box);
+      box.showModal();
+      const first = box.querySelector('input, textarea, select');
+      if (first) first.focus();
+    });
+  }
+
+  /* A mod installed from elsewhere runs with this page's access once it is
+   * on: say so at the moment it is switched on, naming where it came from.
+   * Official mods and ones written here (no source) are not asked about. */
+  async function confirmModOn(mod) {
+    const source = mod.source || '';
+    if (!source || source === 'alc (official)') return true;
+    const ok = await dialog({
+      title: core.fill(T.modEnableTitle, { m: mod.name || mod.id }),
+      body: h('p', {}, core.fill(T.modEnableBody, { s: source })),
+      actions: [{ label: T.modEnableConfirm }],
+    });
+    return !!ok;
+  }
+
+  /* ------------------------------------------------------------ layouts */
+
+  /* Applies a layout, installing an official one first. A layout that names
+   * mods from elsewhere that are off asks once, naming each and where it
+   * came from, then applies whole or not at all. A script turned on or off
+   * reloads the page: one left running would keep its keys and chips. */
+  async function applyLayout(entry) {
+    const id = entry.id;
+    const name = entry.name || id;
+    try {
+      await settleSaves();
+      if (!entry.installed) await shell.layout.request('POST', '/api/web/catalog', { kind: 'layout', id });
+      let applied = await shell.layout.request('POST', `/api/web/layouts/${encodeURIComponent(id)}/apply`, {});
+      if (!applied.applied && applied.review && applied.review.length) {
+        const ok = await dialog({
+          title: core.fill(T.layoutReviewTitle, { l: name }),
+          body: [
+            h('p', {}, T.layoutReviewBody),
+            h('ul', { class: 'dialog-list' }, applied.review.map((item) => h('li', {},
+              h('code', {}, `mods/${item.id}`), ' ', h('span', { class: 'muted' }, item.source ? core.fill(T.layoutReviewFrom, { s: item.source }) : '')))),
+            web.dir ? h('p', { class: 'muted small' }, core.fill(T.layoutReviewWhere, { d: `${web.dir}/mods` })) : null,
+          ],
+          actions: [{ label: T.layoutReviewConfirm }],
+        });
+        if (!ok) {
+          await pull(false);
+          return false;
+        }
+        applied = await shell.layout.request('POST', `/api/web/layouts/${encodeURIComponent(id)}/apply`, { enableMods: true });
+      }
+      await pull(false);
+      if (applied.missing && applied.missing.length) toast(core.fill(T.layoutMissing, { m: applied.missing.join(', ') }), 'warn');
+      if (applied.reload) {
+        window.location.reload();
+        return true;
+      }
+      if (!applied.missing || !applied.missing.length) toast(core.fill(T.layoutApplied, { l: name }));
+      return true;
+    } catch (error) {
+      toast(error.message || String(error), 'error');
+      return false;
+    }
+  }
+
+  async function resetLayout() {
+    try {
+      await settleSaves();
+      const applied = await shell.layout.request('POST', '/api/web/layout/reset', {});
+      await pull(false);
+      if (applied && applied.reload) window.location.reload();
+      else toast(T.layoutDefaultApplied);
+      return true;
+    } catch (error) {
+      toast(error.message || String(error), 'error');
+      return false;
+    }
+  }
+
   function commands() {
     const list = [];
     const go = (id, title, iconName) =>
@@ -361,6 +513,18 @@
     }
     for (const entry of shell.layoutCommands ? shell.layoutCommands() : []) list.push(entry);
     if (shell.operator.value) {
+      const active = web.settings.activeLayout;
+      list.push({ group: T.paletteGroupLayouts, title: `${T.paletteLayout}: ${T.layoutDefault}`, hint: active ? '' : '✓', icon: 'layers', run: resetLayout });
+      for (const info of web.layouts) {
+        if (info.error) continue;
+        list.push({
+          group: T.paletteGroupLayouts,
+          title: `${T.paletteLayout}: ${info.name || info.id}`,
+          hint: info.id === active ? '✓' : '',
+          icon: 'layers',
+          run: () => applyLayout({ ...info, installed: true }),
+        });
+      }
       for (const theme of themeChoices()) {
         list.push({
           group: T.paletteGroupTheme,
@@ -547,7 +711,7 @@
       onclick: () => changeSettings((s) => {
         s.theme = choice.id;
       }, true),
-    }, mock, h('span', { class: 'theme-name' }, choice.name, choice.custom ? h('span', { class: 'theme-tag' }, T.themeCustom) : null),
+    }, mock, h('span', { class: 'theme-name', title: choice.custom ? `${choice.name} · ${T.themeCustom}` : choice.name }, h('span', { class: 'theme-label' }, choice.name), choice.custom ? h('span', { class: 'theme-tag' }, T.themeCustom) : null),
     selected ? h('span', { class: 'theme-check' }, icon('check')) : null);
   }
 
@@ -616,7 +780,7 @@
           }, false, true),
           onchange: () => renderSettings(),
         })));
-    return section('appearance', T.appearance, T.appearanceHow,
+    return section('appearance', T.appearance, null,
       field(T.theme, null, h('div', { class: 'theme-grid', role: 'radiogroup', 'aria-label': T.theme }, themeChoices().map((choice) => themeCard(choice, viewer))), true),
       field(T.accent, null, accentSwatches),
       field(T.density, null, segment([
@@ -653,6 +817,16 @@
   function refreshPreview() {
     const old = settingsBody.querySelector('.term-preview');
     if (old) old.replaceWith(terminalPreview());
+  }
+
+  /* A field label with a `layout` chip when the active layout draws the
+   * terminal with its own value: what is edited here is still the person's,
+   * and comes back when the layout is left. */
+  function covered(label, ...keys) {
+    const over = core.terminalOverrides(web.settings);
+    if (!keys.some((key) => over.includes(key))) return label;
+    const layout = web.layouts.find((info) => info.id === web.settings.activeLayout);
+    return [label, ' ', h('span', { class: 'pill layout-chip', title: core.fill(T.layoutCovers, { l: layout ? layout.name : web.settings.activeLayout }) }, T.layoutChip)];
   }
 
   function terminalSection(viewer) {
@@ -754,7 +928,7 @@
       }, true),
     }, [1000, 5000, 10000, 25000, 50000, 100000].map((lines) => h('option', { value: lines, selected: t.scrollback === lines }, core.fill(T.scrollbackLines, { n: lines.toLocaleString(LOCALE) }))));
 
-    const fit = h('label', { class: 'switch' },
+    const fit = h('label', { class: 'switch', title: T.fitPlainHelp },
       h('input', {
         type: 'checkbox',
         role: 'switch',
@@ -768,13 +942,13 @@
       h('span', { class: 'switch-track', 'aria-hidden': 'true' }),
       h('span', { class: 'switch-text' }, T.fitPlain));
 
-    return section('terminal', T.terminal, T.terminalHow,
+    return section('terminal', T.terminal, null,
       h('div', { class: 'field wide' }, terminalPreview()),
-      field(T.fitPlainLabel, T.fitPlainHelp, fit),
-      field(T.fontSize, null, size),
-      field(T.fontFamily, null, family),
-      field(T.lineHeight, null, line),
-      field(T.cursorStyle, null, h('div', { class: 'inline-control' }, segment([
+      field(T.fitPlainLabel, null, fit),
+      field(covered(T.fontSize, 'fontSize'), null, size),
+      field(covered(T.fontFamily, 'fontFamily'), null, family),
+      field(covered(T.lineHeight, 'lineHeight'), null, line),
+      field(covered(T.cursorStyle, 'cursorStyle', 'cursorBlink'), null, h('div', { class: 'inline-control' }, segment([
         { value: 'block', label: T.cursorBlock },
         { value: 'bar', label: T.cursorBar },
         { value: 'underline', label: T.cursorUnderline },
@@ -808,9 +982,12 @@
           disabled: viewer || !!mod.error,
           onchange: async (event) => {
             const on = event.target.checked;
-            const ok = await changeSettings((n) => {
-              n.disabledMods = on ? n.disabledMods.filter((id) => id !== mod.id) : [...n.disabledMods, mod.id];
-            }, true);
+            if (on && !(await confirmModOn(mod))) {
+              event.target.checked = false;
+              return;
+            }
+            const ok = await setModEnabled(mod.id, on);
+            if (!ok) event.target.checked = !on;
             if (ok) toast(T.modsChanged, 'info', { label: T.reload, run: () => window.location.reload() });
           },
         }),
@@ -825,7 +1002,7 @@
       : h('div', { class: 'mods-empty' }, icon('puzzle'), h('p', {}, T.modsNone));
     const folder = dir
       ? h('div', { class: 'field wide folder' },
-        h('div', { class: 'field-text' }, h('span', { class: 'field-label' }, T.modsFolder), h('span', { class: 'field-help' }, T.modsExamples)),
+        h('div', { class: 'field-text' }, h('span', { class: 'field-label' }, T.modsFolder)),
         h('button', { type: 'button', class: 'command', onclick: () => copy(dir) }, icon('copy'), h('span', { class: 'command-text' }, dir)))
       : null;
     const ask = shell.operator.value
@@ -834,9 +1011,9 @@
         h('button', { type: 'button', class: 'command prompt', onclick: () => copy(prompt) }, icon('copy'), h('span', { class: 'command-text' }, `${prompt}…`)))
       : null;
     const studio = h('div', { class: 'field wide' },
-      h('div', { class: 'field-text' }, h('span', { class: 'field-label' }, T.navStudio), h('span', { class: 'field-help' }, T.studioPitch)),
-      h('button', { type: 'button', class: 'btn accent', 'data-key': 'open-studio', onclick: () => open('studio') }, icon('layers'), T.studioOpen));
-    return section('mods', T.mods, T.modsHow, studio, h('div', { class: 'field wide' }, list), folder, ask);
+      h('div', { class: 'field-text' }, h('span', { class: 'field-label' }, T.navStudio)),
+      h('button', { type: 'button', class: 'btn', 'data-key': 'open-studio', onclick: () => open('studio') }, icon('layers'), T.studioOpen));
+    return section('mods', T.mods, null, h('div', { class: 'field wide' }, list), studio, folder, ask);
   }
 
   function aboutSection() {
@@ -869,7 +1046,8 @@
     const focusKey = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.key : null;
     const scroll = el.settings.scrollTop;
     const viewer = !shell.operator.value;
-    $('settingsSub').textContent = viewer ? T.settingsViewer : T.settingsSubtitle;
+    $('settingsSub').textContent = viewer ? T.settingsViewer : '';
+    $('settingsSub').hidden = !viewer;
     settingsToc.replaceChildren(...SECTIONS.map(([id, label, iconName]) => h('a', {
       href: `#set-${id}`,
       class: 'toc-link',
@@ -1227,6 +1405,11 @@
     icon,
     copy,
     themeChoices,
+    dialog,
+    confirmModOn,
+    setModEnabled,
+    applyLayout,
+    resetLayout,
     pull: () => pull(false),
     loadedMods: () => loadedMods,
   });
@@ -1266,9 +1449,9 @@
       dir: next.dir || '',
       hub: next.hub || {},
       settingsError: next.settingsError || null,
-      packages: Array.isArray(next.packages) ? next.packages : [],
+      layouts: Array.isArray(next.layouts) ? next.layouts : [],
       backgrounds: Array.isArray(next.backgrounds) ? next.backgrounds : [],
-      catalog: next.catalog && typeof next.catalog === 'object' ? { mods: [], packages: [], themes: [], templates: [], ...next.catalog } : { mods: [], packages: [], themes: [], templates: [] },
+      catalog: next.catalog && typeof next.catalog === 'object' ? { mods: [], layouts: [], themes: [], templates: [], ...next.catalog } : { mods: [], layouts: [], themes: [], templates: [] },
       presets: Array.isArray(next.presets) ? next.presets : core.BACKGROUND_PRESETS,
     };
     if (!changed && !first) return;

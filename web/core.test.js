@@ -988,6 +988,80 @@ test('web settings fill every field and clamp the terminal', () => {
   assert.deepEqual(odd.disabledMods, ['a']);
 });
 
+test('the active layout is read from activeLayout or the 2.8 package key', () => {
+  assert.equal(core.normalizeWebSettings({}).activeLayout, null);
+  assert.equal(core.normalizeWebSettings({ package: 'cockpit' }).activeLayout, 'cockpit');
+  assert.equal(core.normalizeWebSettings({ activeLayout: 'retro98', package: 'old' }).activeLayout, 'retro98');
+  assert.equal(core.normalizeWebSettings({ activeLayout: '../x' }).activeLayout, null);
+  const s = core.normalizeWebSettings({ layoutMods: ['a', '../b', 3], layoutRestore: { theme: 'ember' } });
+  assert.deepEqual(s.layoutMods, ['a']);
+  assert.deepEqual(s.layoutRestore, { theme: 'ember' }, 'carried so a save keeps it');
+});
+
+test('a layout\'s terminal settings lie over the person\'s own', () => {
+  assert.equal(core.normalizeTerminalOverride({}), null);
+  assert.equal(core.normalizeTerminalOverride({ fontSize: 'big' }), null);
+  assert.deepEqual(core.normalizeTerminalOverride({ fontSize: 99, cursorStyle: 'beam', cursorBlink: false }), { fontSize: 28, cursorBlink: false });
+  const s = core.normalizeWebSettings({
+    terminal: { fontSize: 13, fontFamily: 'Menlo', cursorStyle: 'bar' },
+    layoutTerminal: { fontFamily: '"Pixel", monospace', lineHeight: 1.2 },
+  });
+  const t = core.effectiveTerminal(s);
+  assert.equal(t.fontFamily, '"Pixel", monospace');
+  assert.equal(t.lineHeight, 1.2);
+  assert.equal(t.fontSize, 13, 'what the layout leaves alone stays the person\'s');
+  assert.equal(t.cursorStyle, 'bar');
+  assert.deepEqual(core.terminalOverrides(s).sort(), ['fontFamily', 'lineHeight']);
+  // Leaving the layout: nothing over the person's settings.
+  const home = core.effectiveTerminal({ ...s, layoutTerminal: null });
+  assert.equal(home.fontFamily, 'Menlo');
+  assert.deepEqual(core.terminalOverrides({ ...s, layoutTerminal: null }), []);
+});
+
+test('the layout gallery lists each layout once, installed first', () => {
+  const installed = [{ id: 'cockpit', name: 'Mine', mods: ['clock'], official: false }, { id: 'retro98', name: 'Retro 98', mods: [] }];
+  const catalog = [{ id: 'cockpit', name: 'Cockpit' }, { id: 'workbench', name: 'Workbench' }];
+  const cards = core.layoutGallery(installed, catalog, 'retro98');
+  assert.deepEqual(cards.map((card) => card.id), ['cockpit', 'retro98', 'workbench']);
+  assert.equal(cards[0].official, false, 'a cockpit.json from a repo is not alc\'s because of its id');
+  assert.equal(core.layoutGallery([{ id: 'cockpit', official: true }], catalog, null)[0].official, true);
+  assert.equal(cards[1].official, false);
+  assert.equal(cards[2].official, true, 'not installed yet: it comes from the catalog');
+  assert.equal(cards[0].name, 'Mine', 'the installed copy wins');
+  assert.equal(cards[1].active, true);
+  assert.equal(cards[2].installed, false);
+  assert.deepEqual(cards[2].mods, []);
+});
+
+test('a mod source is shortened to fit a row', () => {
+  assert.equal(core.shortSource('treeleaves30760/alc-layouts'), 'treeleaves30760/alc-layouts');
+  assert.equal(core.shortSource('owner/repo/mods/x@v1'), 'owner/repo/mods/x@v1');
+  assert.equal(core.shortSource('/home/someone/src/alc-layouts'), '…/alc-layouts');
+  assert.equal(core.shortSource('/home/someone/src/alc-layouts/'), '…/alc-layouts');
+  assert.equal(core.shortSource('C:\\Users\\someone\\alc-layouts'), '…/alc-layouts');
+  assert.equal(core.shortSource('~/alc-layouts\n'), '…/alc-layouts');
+  assert.equal(core.shortSource(''), '');
+  assert.equal(core.shortSource(null), '');
+});
+
+test('a layout thumbnail follows its theme, rail and docks', () => {
+  const thumb = core.layoutThumb({
+    theme: 'paper',
+    layout: { railSide: 'right', slots: { 'view.left': [{ widget: 'a/b' }], bar: [{ widget: 'c/d' }] } },
+    background: { kind: 'preset', value: 'aurora' },
+  }, [], true);
+  assert.equal(thumb.mode, 'light');
+  assert.equal(thumb.railSide, 'right');
+  assert.equal(thumb.docks.left, true);
+  assert.equal(thumb.docks.right, false);
+  assert.equal(thumb.docks.bar, true);
+  assert.equal(thumb.background, 'preset');
+  assert.match(thumb.bg, /^#/);
+  const custom = core.layoutThumb({ theme: 'sea' }, [{ id: 'sea', mode: 'dark', tokens: { '--bg': '#012345', '--accent': 'color-mix(in srgb, red, blue)' } }], false);
+  assert.equal(custom.bg, '#012345');
+  assert.equal(custom.accent, '#818cf8', 'an expression falls back to the base palette');
+});
+
 test('system follows the device; light and dark force a mode', () => {
   const s = core.normalizeWebSettings({});
   assert.equal(core.resolveTheme(s, [], true).mode, 'dark');
@@ -1201,4 +1275,25 @@ test('an explicit layout draws only what it places, and a saved one reproduces t
   const hidden = core.placeWidget(explicit, 'clock/clock', null);
   assert.deepEqual(hidden.slots, {});
   assert.deepEqual(hidden.hidden, []);
+});
+
+test('every string the page uses exists, and every string is used', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const read = (name) => fs.readFileSync(path.join(__dirname, name), 'utf8');
+  const used = new Set();
+  for (const name of ['app.js', 'shell.js', 'studio.js', 'dashboard.js', 'layout.js']) {
+    for (const match of read(name).matchAll(/\bT\.([A-Za-z0-9_]+)/g)) used.add(match[1]);
+  }
+  // core.js reads its own strings through a `t` it was handed; `t` is other
+  // things there too, so those count as uses but are not checked as keys.
+  const inCore = new Set([...read('core.js').matchAll(/\bt\.([A-Za-z0-9_]+)/g)].map((match) => match[1]));
+  // Keys built at run time: T[`bg_${name}`], T[`slot_…`], T[`panel_…`], T[`range${days}`].
+  // And the connection light's word, T[state].
+  const dynamic = /^(bg_|slot_|panel_|range\d|live$|connecting$|reconnecting$|ended$)/;
+  const defined = Object.keys(core.STRINGS.en);
+  const missing = [...used].filter((key) => !defined.includes(key));
+  const unused = defined.filter((key) => !used.has(key) && !inCore.has(key) && !dynamic.test(key));
+  assert.deepEqual(missing, [], 'used but not defined');
+  assert.deepEqual(unused, [], 'defined but never used');
 });

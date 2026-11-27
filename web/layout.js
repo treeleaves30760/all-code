@@ -3,8 +3,8 @@
  * wider or move to the other side.
  *
  * A widget is registered by a mod (`mod.addWidget`) and placed by the
- * layout in settings.json - written by the studio, or by a package. The
- * layout is data and the widgets are code, so a package can rearrange the
+ * layout in settings.json - written by the studio, or by a layout. The
+ * layout is data and the widgets are code, so a layout can rearrange the
  * page without carrying any code of its own, and a mod can be written
  * without knowing where anyone will want it.
  *

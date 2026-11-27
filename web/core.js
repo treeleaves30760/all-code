@@ -84,8 +84,12 @@
       unsandboxed: 'no permission model',
       permission: 'Permission',
       permUnknown: 'not set by alc',
-      permCycle: 'Cycle (⇧Tab)',
-      permCycleNote: 'Cycle only:',
+      permCycle: 'Cycle',
+      permOrder: 'Order: {o}',
+      permOrderShow: 'Show the cycle order',
+      permCycleTip: 'Move to the next mode, as ⇧Tab does in the terminal.',
+      permFixedShort: 'fixed at launch',
+      permUnverifiedShort: 'unverified',
       permSent: 'Sent',
       permPicker: 'The agent opened its own picker — finish it in the terminal.',
       permRelaunch: 'Only selectable at launch:',
@@ -128,7 +132,6 @@
       filesReload: 'Reload',
       filesClose: 'Close file',
       filesFilter: 'Filter',
-      sessionsCount: '{n} sessions',
       noMatch: 'Nothing matches.',
     },
     'zh-TW': {
@@ -161,8 +164,12 @@
       unsandboxed: '無權限模式',
       permission: '權限',
       permUnknown: 'alc 未設定',
-      permCycle: '循環切換 (⇧Tab)',
-      permCycleNote: '只能循環切換：',
+      permCycle: '循環',
+      permOrder: '順序：{o}',
+      permOrderShow: '顯示循環順序',
+      permCycleTip: '切到下一個模式，等同在終端機按 ⇧Tab。',
+      permFixedShort: '啟動時決定',
+      permUnverifiedShort: '未確認',
       permSent: '已送出',
       permPicker: 'agent 開啟了自己的選單 —— 請在終端機裡完成。',
       permRelaunch: '這個模式只能在啟動時選擇：',
@@ -205,7 +212,6 @@
       filesReload: '重新載入',
       filesClose: '關閉檔案',
       filesFilter: '篩選',
-      sessionsCount: '{n} 個 session',
       noMatch: '沒有符合的項目。',
     },
   };
@@ -911,18 +917,16 @@
     topModels: 'Models',
     byAgentShort: 'Agents',
     byProvider: 'Providers',
-    historyEmpty: 'No token records in this range yet. alc reads its own ledger plus Claude Code and Codex histories on the hub machine.',
+    historyEmpty: 'No token records in this range yet.',
     historyFailed: 'Could not load usage history.',
     pricedWith: 'Prices from {s}. Estimates exclude taxes and discounts.',
     settingsTitle: 'Settings',
-    settingsSubtitle: 'Kept in settings.json on the hub — edit it here, by hand, or ask an agent.',
-    settingsViewer: 'This link can watch but not change settings. These are the operator’s.',
+    settingsViewer: 'View only — these are the operator’s settings.',
     settingsSaved: 'Saved',
     settingsSaving: 'Saving…',
     settingsFailed: 'Could not save settings.',
     settingsFileError: 'settings.json has an error, so the defaults are in use:',
     appearance: 'Appearance',
-    appearanceHow: 'Saved on the hub, so every device that opens this page gets the same look.',
     theme: 'Theme',
     themeSystem: 'System',
     themeLight: 'Light',
@@ -935,7 +939,6 @@
     densityComfortable: 'Comfortable',
     densityCompact: 'Compact',
     terminal: 'Terminal',
-    terminalHow: 'How sessions are drawn in this page. The agent itself is not affected.',
     fontSize: 'Font size',
     fontAuto: 'Auto',
     fontFamily: 'Font',
@@ -950,12 +953,10 @@
     scrollbackLines: '{n} lines',
     preview: 'Preview',
     mods: 'Mods',
-    modsHow: 'Mods are small scripts and stylesheets in the folder below that add tabs, commands, keys and looks to this page. They run with this page’s access — read one before you turn it on.',
     modsNone: 'No mods installed yet.',
     modsFolder: 'Folder',
     modsAsk: 'Ask your agent',
     modsPrompt: 'Read {d}/AGENTS.md, then make me an alc page mod that ',
-    modsExamples: 'Examples to copy are in examples/ next to it.',
     modOn: 'On',
     modOff: 'Off',
     modError: 'Error',
@@ -971,7 +972,7 @@
     aboutShortcuts: 'Shortcuts',
     shortcutPalette: 'Command palette',
     shortcutSend: 'Send prompt',
-    sizeFramed: 'Shown at {c}×{r}, the size of the terminal it was started in. To fill this screen, start it with --tmux:',
+    sizeFramed: 'Drawn at {c}×{r}, its own terminal’s size. To fill this screen, start it with --tmux:',
     sizeHide: 'Hide',
   });
 
@@ -1020,18 +1021,16 @@
     topModels: '模型',
     byAgentShort: 'Agent',
     byProvider: 'Provider',
-    historyEmpty: '這段期間還沒有 token 紀錄。alc 會讀取 hub 那台機器上自己的帳本，以及 Claude Code 與 Codex 的歷史紀錄。',
+    historyEmpty: '這段期間還沒有 token 紀錄。',
     historyFailed: '無法載入用量歷史。',
     pricedWith: '價格來自 {s}。估計值不含稅與折扣。',
     settingsTitle: '設定',
-    settingsSubtitle: '存放在 hub 上的 settings.json —— 可以在這裡改、手動編輯，或請 agent 幫忙。',
-    settingsViewer: '這個連結只能觀看，不能更改設定。以下是操作者的設定。',
+    settingsViewer: '唯讀：這些是操作者的設定。',
     settingsSaved: '已儲存',
     settingsSaving: '儲存中…',
     settingsFailed: '無法儲存設定。',
     settingsFileError: 'settings.json 有錯誤，目前使用預設值：',
     appearance: '外觀',
-    appearanceHow: '儲存在 hub 上，所以每台打開這個頁面的裝置看起來都一樣。',
     theme: '主題',
     themeSystem: '跟隨系統',
     themeLight: '淺色',
@@ -1044,7 +1043,6 @@
     densityComfortable: '舒適',
     densityCompact: '緊湊',
     terminal: '終端機',
-    terminalHow: '只影響這個頁面畫 session 的方式，不影響 agent 本身。',
     fontSize: '字級',
     fontAuto: '自動',
     fontFamily: '字型',
@@ -1059,12 +1057,10 @@
     scrollbackLines: '{n} 行',
     preview: '預覽',
     mods: 'Mods',
-    modsHow: 'Mods 是放在下方資料夾裡的小型腳本與樣式表，可以替這個頁面加上分頁、指令、按鍵與外觀。它們擁有與這個頁面相同的權限 —— 啟用前請先讀過。',
     modsNone: '還沒有安裝任何 mod。',
     modsFolder: '資料夾',
     modsAsk: '請 agent 幫忙',
     modsPrompt: '閱讀 {d}/AGENTS.md，然後幫我做一個 alc 頁面 mod，功能是',
-    modsExamples: '旁邊的 examples/ 有可以複製的範例。',
     modOn: '開',
     modOff: '關',
     modError: '錯誤',
@@ -1080,7 +1076,7 @@
     aboutShortcuts: '快捷鍵',
     shortcutPalette: '指令面板',
     shortcutSend: '送出提示詞',
-    sizeFramed: '以 {c}×{r} 顯示，也就是啟動它的那個終端機的大小。想填滿這個畫面，請用 --tmux 啟動：',
+    sizeFramed: '以 {c}×{r} 顯示，也就是它自己終端機的大小。要填滿畫面，請用 --tmux 啟動：',
     sizeHide: '隱藏',
   });
 
@@ -1213,56 +1209,66 @@
   /* The studio, widgets, windows, backgrounds, panels and fitting. */
   Object.assign(STRINGS.en, {
     navStudio: 'Studio',
-    studioSub: 'Packages, widgets, backgrounds and panels — how the session list and the coding view are put together.',
-    studioViewer: 'This link can look but not change anything here. This is the operator’s page.',
-    studioPitch: 'Arrange widgets, apply packages, pick a background and size the panels.',
+    modEnableTitle: 'Turn on {m}?',
+    modEnableBody: 'It was installed from {s}. Once on, it runs in this page with its access to your sessions, and it is not sandboxed.',
+    modEnableConfirm: 'Turn on',
+    modRemoveTitle: 'Remove {m}?',
+    modRemoveBody: 'Its folder and its saved state are deleted. A layout that names it will be missing it.',
+    studioLayouts: 'Layouts',
+    studioWidgets: 'Widgets',
+    layoutDefault: 'Default',
+    layoutDefaultDesc: 'alc as it ships: your own theme, no layout mods.',
+    layoutActive: 'Active',
+    layoutApply: 'Apply',
+    layoutApplied: 'Applied {l}.',
+    layoutDefaultApplied: 'Back to the default layout.',
+    layoutMissing: 'Applied, but these mods are not installed: {m}',
+    layoutModsOne: '{n} mod',
+    layoutModsMany: '{n} mods',
+    layoutCount: '{n} layouts',
+    layoutLegacy: 'Read from the packages/ folder alc 2.8 used.',
+    layoutDownload: 'Download JSON',
+    layoutCopy: 'Copy JSON',
+    layoutRemoveTitle: 'Remove {l}?',
+    layoutRemoveBody: 'Its file is deleted. Its mods stay installed.',
+    layoutRemoveActive: 'It is the active layout, so the page goes back to Default first. Its mods stay installed.',
+    layoutReviewTitle: 'Turn on mods for {l}?',
+    layoutReviewBody: 'This layout needs mods that were installed from elsewhere and are off. Once on, they run in this page with its access to your sessions, and they are not sandboxed.',
+    layoutReviewFrom: 'from {s}',
+    layoutReviewWhere: 'Read them in {d}.',
+    layoutReviewConfirm: 'Turn on and apply',
+    layoutNew: 'New layout',
+    layoutFromPage: 'This page',
+    layoutFromJson: 'JSON',
+    layoutFromGithub: 'GitHub',
+    layoutCreate: 'Create',
+    layoutId: 'Id',
+    layoutName: 'Name',
+    layoutDesc: 'Description',
+    layoutJson: 'Layout JSON',
+    layoutSaved: 'Saved layouts/{l}.json',
+    layoutChip: 'layout',
+    layoutCovers: 'The {l} layout draws the terminal with its own value. Yours is kept and comes back when you leave it.',
+    installSourceTip: 'owner/repo, owner/repo@v1 or a github.com URL.',
+    paletteGroupLayouts: 'Layouts',
+    paletteLayout: 'Layout',
+    more: 'More',
+    cancel: 'Cancel',
+    studioViewer: 'View only — this is the operator’s page.',
     studioOpen: 'Open the studio',
-    studioPackages: 'Packages',
-    studioLayout: 'Layout',
     studioMods: 'Mods',
     studioBackground: 'Background',
     studioPanels: 'Panels',
-    packagesLede: 'A package is a set of mods together with where their widgets go, a background and a theme. Applying one turns its mods on and takes its layout; mods it does not name stay as they are.',
-    packagesYours: 'Installed packages',
-    packagesNone: 'No packages yet. Install an official one below, or save this page as one.',
-    packagesOfficial: 'Official packages',
-    packageActive: 'Active',
-    packageApply: 'Apply',
-    packageReapply: 'Apply again',
-    packageApplied: 'Package applied.',
-    packageReload: 'Package applied. Reload to run its mods.',
-    packageMissing: 'This package needs mods that are not installed: {m}',
-    packageReview: 'Left off until you have read them (installed from elsewhere): {m}. Turn them on in Mods.',
-    packageExport: 'Download',
-    packageCopy: 'Copy JSON',
-    packageRemoveConfirm: 'Remove the package “{p}”? Its mods stay installed.',
-    packageSave: 'Save this page as a package',
-    packageSaveHelp: 'Takes the mods that are on, the layout, background, theme and density as they are now.',
-    packageId: 'Package id',
-    packageName: 'Name',
-    packageNameHint: 'Name',
-    packageDesc: 'Description',
-    packageDescHint: 'What it is for (optional)',
-    packageSaveButton: 'Save package',
-    packageSaved: 'Saved packages/{p}.json',
-    packageImport: 'Import a package',
-    packageImportHelp: 'Paste a package’s JSON or pick its file. Its mods must be installed (official ones are installed when it is applied).',
-    packageImportButton: 'Import',
     chooseFile: 'Choose file…',
     badId: 'An id is lowercase letters, digits, - and _, up to 48.',
     badJson: 'That is not valid JSON.',
     official: 'Official',
-    installed: 'Installed',
     install: 'Install',
-    installApply: 'Install and apply',
     reinstall: 'Reinstall',
     remove: 'Remove',
     reset: 'Reset',
-    layoutLede: 'Drag a widget from the library into a slot, or pick it and choose where it goes. A widget no slot names is drawn where its mod suggests until you move or hide it.',
-    layoutLedeExplicit: 'This layout came from a package, so only the widgets placed here are drawn. Drag one from the library to add it; Reset layout goes back to each mod’s suggested places.',
     library: 'Widget library',
-    libraryHelp: 'Every widget the mods that are on offer.',
-    libraryEmpty: 'No widgets yet. Turn on or install a mod that has some — the official ones do.',
+    libraryEmpty: 'No widgets yet — turn on a mod that has some.',
     inspector: 'Widget',
     inspectorEmpty: 'Pick a widget to place it and set its options.',
     inspectorSlot: 'Where',
@@ -1286,18 +1292,11 @@
     slot_view_left: 'Left dock',
     slot_view_right: 'Right dock',
     slot_float: 'Floating window',
-    modsLede: 'Mods are scripts and stylesheets in the hub’s web/mods folder. They run with this page’s access, so read one before turning it on.',
-    modsInstalled: 'Installed mods',
-    modsOfficial: 'Official mods',
-    modsOfficialHelp: 'Shipped with alc; installing one turns it on.',
-    modRemoveConfirm: 'Delete the mod “{m}” and its saved state?',
     installGithub: 'Install from GitHub',
-    installGithubHelp: 'A repository with mod.json at its root, or mods/, themes/ and packages/ folders.',
     installSource: 'GitHub repository',
-    installWarning: 'What arrives is off. Read it in the folder before you turn it on.',
+    installWarning: 'Mods arrive off; read them before you turn them on.',
     installedFrom: 'Installed: {w}',
     newMod: 'New mod',
-    newModHelp: 'Starts a mod from a template in web/mods, turned on, with its id and name filled in.',
     newModId: 'Mod id',
     newModName: 'Name',
     newModNameHint: 'Name (optional)',
@@ -1307,7 +1306,6 @@
     newModReload: 'Mod created. Reload to run it.',
     newModPrompt: 'Read the AGENTS.md next to {d}, then change this mod so that ',
     newModCli: 'Same from a shell: alc remote web new <id> --template widget',
-    bgLede: 'Drawn behind the whole page. Cards and panels stay solid; the dim and blur keep text readable.',
     bgPresets: 'Built in',
     bgNone: 'None',
     bgImages: 'Your images',
@@ -1317,10 +1315,8 @@
     bgRemoveConfirm: 'Delete {n}?',
     bgTooBig: 'That image is over 1 MiB; put it in web/backgrounds/ on the hub instead.',
     bgMods: 'From mods',
-    bgModsHelp: 'Backgrounds a mod draws, often animated.',
-    bgModsNone: 'No mod offers a background. The official Ambient mod has several.',
+    bgModsNone: 'No mod draws a background yet.',
     bgTuning: 'Tuning',
-    bgTuningHelp: 'How much of the page’s colour covers it, and how see-through the terminal is.',
     bgDim: 'Dim',
     bgBlur: 'Blur',
     bgTerminal: 'Terminal opacity',
@@ -1332,11 +1328,8 @@
     bg_blueprint: 'Blueprint',
     bg_sunrise: 'Sunrise',
     bg_forest: 'Forest',
-    panelsLede: 'Drag the edge of the session list, the file panel or a dock to resize it, or set it here. The terminal refits to whatever is left.',
     panelWidths: 'Widths',
-    panelWidthsHelp: 'Double-click an edge to reset it.',
     panelSides: 'Sides',
-    panelSidesHelp: 'Which side of the terminal each panel sits on.',
     panel_rail: 'Session list',
     panel_files: 'File panel',
     panel_left: 'Left dock',
@@ -1362,61 +1355,71 @@
     fitPlain: 'Fit plain sessions to this page',
     fitPlainLabel: 'Plain sessions',
     fitPlainHelp: 'A session started without --tmux is drawn at its own terminal’s size. This lets the page resize it instead, until that terminal is resized again.',
-    sizeFramedFit: 'Shown at {c}×{r}, the size of the terminal it was started in. Fit it to this page, or start it with --tmux:',
+    sizeFramedFit: 'Drawn at {c}×{r}, its own terminal’s size.',
   });
 
   Object.assign(STRINGS['zh-TW'], {
     navStudio: '工作室',
-    studioSub: '套件、小工具、背景與面板——決定 session 清單與編碼畫面的樣子。',
-    studioViewer: '這個連結只能看，不能修改。這是操作者的頁面。',
-    studioPitch: '排列小工具、套用套件、挑選背景、調整面板。',
+    modEnableTitle: '要開啟「{m}」嗎？',
+    modEnableBody: '它是從 {s} 安裝的。開啟後，它會在這個頁面裡執行，擁有這個頁面對你所有 session 的權限，而且沒有沙箱。',
+    modEnableConfirm: '開啟',
+    modRemoveTitle: '要移除「{m}」嗎？',
+    modRemoveBody: '會刪除它的資料夾與儲存的狀態。用到它的版面會少了它。',
+    studioLayouts: '版面',
+    studioWidgets: '小工具',
+    layoutDefault: '預設',
+    layoutDefaultDesc: 'alc 原本的樣子：你自己的主題，不開任何版面 mod。',
+    layoutActive: '使用中',
+    layoutApply: '套用',
+    layoutApplied: '已套用「{l}」。',
+    layoutDefaultApplied: '已回到預設版面。',
+    layoutMissing: '已套用，但這些 mod 尚未安裝：{m}',
+    layoutModsOne: '{n} 個 mod',
+    layoutModsMany: '{n} 個 mod',
+    layoutCount: '{n} 個版面',
+    layoutLegacy: '從 alc 2.8 使用的 packages/ 資料夾讀取。',
+    layoutDownload: '下載 JSON',
+    layoutCopy: '複製 JSON',
+    layoutRemoveTitle: '要移除「{l}」嗎？',
+    layoutRemoveBody: '會刪除它的檔案，它的 mod 會保留。',
+    layoutRemoveActive: '這是使用中的版面，所以會先回到預設。它的 mod 會保留。',
+    layoutReviewTitle: '要為「{l}」開啟 mod 嗎？',
+    layoutReviewBody: '這個版面需要從其他來源安裝、目前關閉的 mod。開啟後，它們會在這個頁面裡執行，擁有這個頁面對你所有 session 的權限，而且沒有沙箱。',
+    layoutReviewFrom: '來自 {s}',
+    layoutReviewWhere: '請先在 {d} 讀過。',
+    layoutReviewConfirm: '開啟並套用',
+    layoutNew: '新增版面',
+    layoutFromPage: '目前頁面',
+    layoutFromJson: 'JSON',
+    layoutFromGithub: 'GitHub',
+    layoutCreate: '建立',
+    layoutId: 'id',
+    layoutName: '名稱',
+    layoutDesc: '說明',
+    layoutJson: '版面 JSON',
+    layoutSaved: '已儲存 layouts/{l}.json',
+    layoutChip: '版面',
+    layoutCovers: '「{l}」版面用它自己的值畫終端機。你的設定會保留，離開版面後就會恢復。',
+    installSourceTip: 'owner/repo、owner/repo@v1 或 github.com 網址。',
+    paletteGroupLayouts: '版面',
+    paletteLayout: '版面',
+    more: '更多',
+    cancel: '取消',
+    studioViewer: '唯讀：這是操作者的頁面。',
     studioOpen: '開啟工作室',
-    studioPackages: '套件',
-    studioLayout: '版面',
     studioMods: 'Mods',
     studioBackground: '背景',
     studioPanels: '面板',
-    packagesLede: '套件是一組 mods，加上它們的小工具放在哪裡、背景與主題。套用時會開啟它的 mods 並採用它的版面；沒有列出的 mods 維持原狀。',
-    packagesYours: '已安裝的套件',
-    packagesNone: '還沒有套件。安裝下方的官方套件，或把目前的頁面存成套件。',
-    packagesOfficial: '官方套件',
-    packageActive: '使用中',
-    packageApply: '套用',
-    packageReapply: '再次套用',
-    packageApplied: '已套用套件。',
-    packageReload: '已套用套件。重新載入以執行它的 mods。',
-    packageMissing: '這個套件需要尚未安裝的 mods：{m}',
-    packageReview: '這些 mods 來自其他來源，在你讀過之前維持關閉：{m}。請在 Mods 中開啟。',
-    packageExport: '下載',
-    packageCopy: '複製 JSON',
-    packageRemoveConfirm: '移除套件「{p}」？它的 mods 會保留。',
-    packageSave: '把目前的頁面存成套件',
-    packageSaveHelp: '記下目前開啟的 mods、版面、背景、主題與密度。',
-    packageId: '套件 id',
-    packageName: '名稱',
-    packageNameHint: '名稱',
-    packageDesc: '說明',
-    packageDescHint: '用途（選填）',
-    packageSaveButton: '儲存套件',
-    packageSaved: '已儲存 packages/{p}.json',
-    packageImport: '匯入套件',
-    packageImportHelp: '貼上套件的 JSON 或選擇檔案。它的 mods 必須已安裝（套用時會自動安裝官方 mods）。',
-    packageImportButton: '匯入',
     chooseFile: '選擇檔案…',
     badId: 'id 只能用小寫字母、數字、- 與 _，最多 48 字元。',
     badJson: '這不是有效的 JSON。',
     official: '官方',
-    installed: '已安裝',
     install: '安裝',
-    installApply: '安裝並套用',
     reinstall: '重新安裝',
     remove: '移除',
     reset: '重設',
-    layoutLede: '把小工具從工具庫拖進某個位置，或點選後選擇要放哪裡。沒有被指定位置的小工具，會先顯示在它的 mod 建議的位置，直到你移動或隱藏它。',
-    layoutLedeExplicit: '這個版面來自套件，所以只會顯示放在這裡的小工具。從工具庫拖曳即可加入；「重設版面」會回到每個 mod 建議的位置。',
     library: '小工具庫',
-    libraryHelp: '目前開啟的 mods 提供的所有小工具。',
-    libraryEmpty: '還沒有小工具。開啟或安裝提供小工具的 mod——官方 mods 都有。',
+    libraryEmpty: '還沒有小工具，先開啟一個提供小工具的 mod。',
     inspector: '小工具',
     inspectorEmpty: '選一個小工具來放置並設定選項。',
     inspectorSlot: '位置',
@@ -1440,18 +1443,11 @@
     slot_view_left: '左側面板',
     slot_view_right: '右側面板',
     slot_float: '浮動視窗',
-    modsLede: 'Mods 是 hub 的 web/mods 資料夾裡的腳本與樣式表，以這個頁面的權限執行，開啟前請先讀過。',
-    modsInstalled: '已安裝的 mods',
-    modsOfficial: '官方 mods',
-    modsOfficialHelp: '隨 alc 提供；安裝後即開啟。',
-    modRemoveConfirm: '刪除 mod「{m}」與它儲存的狀態？',
     installGithub: '從 GitHub 安裝',
-    installGithubHelp: '根目錄有 mod.json 的 repo，或含 mods/、themes/、packages/ 資料夾的 repo。',
     installSource: 'GitHub repo',
-    installWarning: '安裝後預設關閉。開啟前請先在資料夾中讀過。',
+    installWarning: '裝好的 mod 預設關閉，開啟前先讀過。',
     installedFrom: '已安裝：{w}',
     newMod: '新 mod',
-    newModHelp: '從範本在 web/mods 建立一個 mod（已開啟），id 與名稱會自動填入。',
     newModId: 'Mod id',
     newModName: '名稱',
     newModNameHint: '名稱（選填）',
@@ -1461,7 +1457,6 @@
     newModReload: '已建立 mod。重新載入以執行。',
     newModPrompt: '讀 {d} 旁邊的 AGENTS.md，然後修改這個 mod，讓它',
     newModCli: '在 shell 中也可以：alc remote web new <id> --template widget',
-    bgLede: '畫在整個頁面後方。卡片與面板保持不透明；變暗與模糊讓文字維持易讀。',
     bgPresets: '內建',
     bgNone: '無',
     bgImages: '你的圖片',
@@ -1471,10 +1466,8 @@
     bgRemoveConfirm: '刪除 {n}？',
     bgTooBig: '這張圖片超過 1 MiB，請直接放到 hub 的 web/backgrounds/。',
     bgMods: '來自 mods',
-    bgModsHelp: 'Mod 繪製的背景，常常是動態的。',
-    bgModsNone: '沒有 mod 提供背景。官方的 Ambient mod 有好幾種。',
+    bgModsNone: '還沒有 mod 提供背景。',
     bgTuning: '微調',
-    bgTuningHelp: '頁面顏色覆蓋多少，以及終端機的透明度。',
     bgDim: '變暗',
     bgBlur: '模糊',
     bgTerminal: '終端機不透明度',
@@ -1486,11 +1479,8 @@
     bg_blueprint: '藍圖',
     bg_sunrise: '日出',
     bg_forest: '森林',
-    panelsLede: '拖曳 session 清單、檔案面板或側面板的邊緣來調整寬度，或在這裡設定。終端機會依剩下的空間重新調整。',
     panelWidths: '寬度',
-    panelWidthsHelp: '雙擊邊緣可重設。',
     panelSides: '位置',
-    panelSidesHelp: '每個面板放在終端機的哪一側。',
     panel_rail: 'Session 清單',
     panel_files: '檔案面板',
     panel_left: '左側面板',
@@ -1516,7 +1506,7 @@
     fitPlain: '讓一般 session 符合這個頁面',
     fitPlainLabel: '一般 session',
     fitPlainHelp: '沒有用 --tmux 啟動的 session 會以它自己終端機的大小顯示。開啟後由頁面決定大小，直到那個終端機再次調整大小。',
-    sizeFramedFit: '以 {c}×{r} 顯示，也就是啟動它的那個終端機的大小。讓它符合這個頁面，或用 --tmux 啟動：',
+    sizeFramedFit: '以 {c}×{r} 顯示，也就是它自己終端機的大小。',
   });
 
   /* The settings the page draws from, with every field present. Whatever the
@@ -1544,7 +1534,111 @@
       modSettings: input.modSettings && typeof input.modSettings === 'object' ? input.modSettings : {},
       layout: normalizeLayout(input.layout),
       background: normalizeBackground(input.background),
-      package: typeof input.package === 'string' && SLUG.test(input.package) ? input.package : null,
+      // `package` is what 2.8 called the active layout.
+      activeLayout: [input.activeLayout, input.package].find((id) => typeof id === 'string' && SLUG.test(id)) || null,
+      layoutMods: Array.isArray(input.layoutMods) ? input.layoutMods.filter((id) => typeof id === 'string' && SLUG.test(id)) : [],
+      layoutTerminal: normalizeTerminalOverride(input.layoutTerminal),
+      // The person's own look from before a layout; the hub's to use, the
+      // page only carries it so a settings save does not drop it.
+      layoutRestore: input.layoutRestore && typeof input.layoutRestore === 'object' ? input.layoutRestore : null,
+    };
+  }
+
+  /* A layout's terminal settings: only the fields it sets, clamped like the
+   * person's own, or null when it sets none. */
+  function normalizeTerminalOverride(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const out = {};
+    const size = Number(raw.fontSize);
+    if (raw.fontSize != null && Number.isFinite(size) && size > 0) out.fontSize = Math.min(28, Math.max(8, Math.round(size)));
+    if (typeof raw.fontFamily === 'string' && raw.fontFamily.trim()) out.fontFamily = raw.fontFamily.trim();
+    const line = Number(raw.lineHeight);
+    if (raw.lineHeight != null && Number.isFinite(line)) out.lineHeight = Math.min(2, Math.max(1, line));
+    if (['block', 'bar', 'underline'].includes(raw.cursorStyle)) out.cursorStyle = raw.cursorStyle;
+    if (typeof raw.cursorBlink === 'boolean') out.cursorBlink = raw.cursorBlink;
+    return Object.keys(out).length ? out : null;
+  }
+
+  /* What the terminal is drawn with: the person's settings with the active
+   * layout's laid over them. Leaving the layout gives theirs back. */
+  function effectiveTerminal(settings) {
+    const own = (settings && settings.terminal) || {};
+    const layer = (settings && settings.layoutTerminal) || {};
+    return { ...own, ...layer };
+  }
+
+  /* Which of the person's terminal settings a layout is covering, so the
+   * settings page can say so beside each one. */
+  function terminalOverrides(settings) {
+    return Object.keys((settings && settings.layoutTerminal) || {});
+  }
+
+  /* One gallery of layouts: the installed ones, then the official ones not
+   * installed yet, each once. `active` marks the one in use. */
+  function layoutGallery(installed, catalog, active) {
+    const seen = new Set();
+    const cards = [];
+    for (const info of installed || []) {
+      if (!info || !SLUG.test(String(info.id)) || seen.has(info.id)) continue;
+      seen.add(info.id);
+      // Official is what alc installed (the server compares the file with the
+      // one it ships), never a matching id: a repo can ship cockpit.json.
+      cards.push({ ...info, installed: true, official: info.official === true, active: info.id === active });
+    }
+    for (const entry of catalog || []) {
+      if (!entry || seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      const { layout: def, ...rest } = entry;
+      cards.push({ ...(def || {}), ...rest, mods: (def && def.mods) || [], installed: false, official: true, active: false });
+    }
+    return cards;
+  }
+
+  const BASE_TOKENS = {
+    light: { '--bg': '#f6f7f9', '--surface': '#ffffff', '--raised': '#f0f1f4', '--line': '#e4e6eb', '--text': '#15171c', '--muted': '#5a606c', '--accent': '#4f46e5' },
+    dark: { '--bg': '#0b0c0f', '--surface': '#131418', '--raised': '#1b1d22', '--line': '#24262c', '--text': '#e8e9ed', '--muted': '#9a9fab', '--accent': '#818cf8' },
+  };
+
+  /* Where a mod came from, short enough for a list row: a GitHub source
+   * as it is, a local folder by its last name only (the full path, which
+   * names the machine's user, stays for tooltips and the review dialog). */
+  function shortSource(source) {
+    const text = String(source || '').trim();
+    if (!/^(\/|~\/|[A-Za-z]:[\\/]|\\\\)/.test(text)) return text;
+    const parts = text.split(/[\\/]+/).filter(Boolean);
+    return parts.length ? `…/${parts[parts.length - 1]}` : text;
+  }
+
+  /* What a layout's thumbnail draws: its theme's colours, which side the
+   * rail is on, which docks hold widgets and what kind of background it
+   * has. Pure, so the studio's SVG is only a picture of this. */
+  function layoutThumb(info, customThemes, systemDark) {
+    const def = info || {};
+    const settings = { theme: def.theme || 'system', accent: def.accent || null };
+    const theme = resolveTheme(settings, customThemes, !!systemDark);
+    const colour = (key) => {
+      const value = theme.tokens[key] || BASE_TOKENS[theme.mode][key];
+      // Thumbnails draw plain colours; a token that is an expression falls
+      // back to the base palette.
+      return /^#[0-9a-f]{3,8}$/i.test(String(value)) ? value : BASE_TOKENS[theme.mode][key];
+    };
+    const layout = normalizeLayout(def.layout);
+    const has = (slot) => !!(layout.slots[slot] && layout.slots[slot].length);
+    const background = normalizeBackground(def.background);
+    return {
+      mode: theme.mode,
+      bg: colour('--bg'),
+      surface: colour('--surface'),
+      raised: colour('--raised'),
+      line: colour('--line'),
+      text: colour('--text'),
+      muted: colour('--muted'),
+      accent: colour('--accent'),
+      terminal: /^#[0-9a-f]{6}$/i.test(String(theme.terminal.background || '')) ? theme.terminal.background : theme.mode === 'light' ? '#1d1f24' : '#0c0d10',
+      railSide: layout.railSide,
+      docks: { bar: has('bar'), top: has('view.top'), bottom: has('view.bottom'), left: has('view.left'), right: has('view.right'), float: has('float'), list: has('list.top') || has('list.bottom') },
+      background: background.kind,
+      dense: def.density === 'compact',
     };
   }
 
@@ -1681,7 +1775,7 @@
   }
 
   /* The layout as drawn, written out: every slot's widgets including the
-   * ones drawn by default, marked explicit. What a package saves, so it
+   * ones drawn by default, marked explicit. What a layout saves, so it
    * reproduces the page exactly wherever it is applied. */
   function materializeLayout(layout, widgets) {
     const out = normalizeLayout(JSON.parse(JSON.stringify(layout)));
@@ -1951,6 +2045,12 @@
     THEMES,
     ACCENTS,
     normalizeWebSettings,
+    normalizeTerminalOverride,
+    effectiveTerminal,
+    terminalOverrides,
+    layoutGallery,
+    layoutThumb,
+    shortSource,
     resolveTheme,
     inkFor,
     shiftDate,

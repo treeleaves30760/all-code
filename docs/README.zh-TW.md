@@ -964,10 +964,12 @@ alc remote web check         # 驗證頁面的設定、主題與 mods
   一個會……的 mod」這件事，可以直接交給你正在跑的 agent。
 - **工作室**是頁面內建的 mods 編輯器。Mods 可以提供**小工具**，讓你拖進各個位置
   —— 頁首、session 清單上下方、每張 session 卡片、終端機上下方、終端機旁的側面板，
-  或浮動視窗 —— 也可以提供**背景**（內建、你的圖片，或動態背景）。**套件**把 mods
-  連同版面、背景與主題打包在一起；套用官方的五個（Cockpit、Night shift、Deep focus、
-  Retro terminal、Workbench）或存成你自己的。session 清單、檔案面板與側面板都可以
-  拖曳加寬，也能放到任一側。
+  或浮動視窗 —— 也可以提供**背景**（內建、你的圖片，或動態背景）。**版面**排出整個
+  頁面 —— 主題、小工具位置、背景、終端機字型 —— 它列出的 mods 畫出裡面的東西，常常
+  包含一個把 `body[data-layout]` 底下全部重畫的膚色。可以套用官方的五個（Cockpit、
+  Night shift、Deep focus、Retro terminal、Workbench）、[alc-layouts](https://github.com/treeleaves30760/alc-layouts)
+  裡的另外十個（90 年代桌面、磷光主機、報紙、水族箱……），或存成你自己的；**預設**
+  永遠只差一下。session 清單、檔案面板與側面板都可以拖曳加寬，也能放到任一側。
 - **符合這個頁面**讓頁面改變一般（沒有 `--tmux`）session 的大小，所以打開檔案面板或
   側面板時終端機會重新調整，而不是被縮小；啟動它的終端機一調整大小就會把大小拿回去。
 
@@ -977,9 +979,9 @@ alc remote web check         # 驗證頁面的設定、主題與 mods
 ├── settings.json      「設定」分頁儲存的內容
 ├── themes/<id>.json   頁面與終端機的顏色 token
 ├── mods/<id>/         mod.json、mod.js、mod.css
-├── packages/<id>.json mods + 版面 + 背景 + 主題
+├── layouts/<id>.json  mods + 小工具位置 + 主題 + 背景 + 終端機字型
 ├── backgrounds/       背景圖片
-└── examples/          官方 mods、套件、主題與新 mod 範本
+└── examples/          官方 mods、版面、主題與新 mod 範本
 ```
 
 ```js
@@ -993,17 +995,21 @@ alc.define('hello', (mod) => {
 ```sh
 alc remote web                                  # 印出資料夾位置
 alc remote web check                            # 驗證設定、主題與 mods
-alc remote web catalog                          # 官方 mods、套件、主題與範本
+alc remote web catalog                          # 官方 mods、版面、主題與範本
 alc remote web add cockpit                      # 安裝官方的一個
-alc remote web package apply cockpit            # 採用它的 mods、版面與外觀
+alc remote web layout apply cockpit             # 採用它的 mods、小工具位置與外觀
+alc remote web layout reset                     # 回到預設
 alc remote web new my-widget --template widget  # 從範本開始一個 mod
 alc remote web install someone/alc-mod-standup  # 從 GitHub 安裝（或 @ref、網址、資料夾）
 alc remote web enable standup                   # 剛裝好的 mod 預設是關的
 alc remote web list                             # 裝了什麼、哪些開著哪些關著
+alc remote web install treeleaves30760/alc-layouts   # 十個版面，mods 預設關閉
+alc remote web layout apply retro98 --enable-mods    # 讀過它的 mods 之後
 ```
 
 一個 repository 只要在根目錄放了 `mod.json` + `mod.js`／`mod.css`（單一 mod），或是
-`mods/<id>/…`、`themes/<id>.json` 與 `packages/<id>.json`（一個合集），就是 mod 的來源。
+`mods/<id>/…`、`themes/<id>.json` 與 `layouts/<id>.json`（一個合集；alc 2.8 的
+`packages/` 資料夾、設定與指令也還能用），就是 mod 的來源。
 [Mods 與主題指南](https://treeleaves30760.github.io/all-code/zh-TW/mods)涵蓋了怎麼寫
 mod、API、發佈與安裝。
 

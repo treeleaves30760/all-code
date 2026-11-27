@@ -222,10 +222,10 @@ impl Bundle {
         ids
     }
 
-    pub(crate) fn packages(&self) -> Vec<String> {
+    pub(crate) fn layouts(&self) -> Vec<String> {
         self.files
             .keys()
-            .filter_map(|path| path.strip_prefix("packages/"))
+            .filter_map(|path| path.strip_prefix("layouts/"))
             .filter_map(|name| name.strip_suffix(".json"))
             .map(str::to_owned)
             .collect()
@@ -246,6 +246,11 @@ impl Bundle {
 pub(crate) fn bundle(files: BTreeMap<String, Vec<u8>>, single_id: &str) -> Result<Bundle> {
     let mut bundle = Bundle::default();
     let root_mod = files.contains_key("mod.json") || files.contains_key("mod.js");
+    let in_layouts: std::collections::BTreeSet<String> = files
+        .keys()
+        .filter_map(|path| path.strip_prefix("layouts/"))
+        .map(str::to_owned)
+        .collect();
     for (path, bytes) in files {
         let parts: Vec<&str> = path.split('/').collect();
         let target = match parts.as_slice() {
@@ -259,10 +264,16 @@ pub(crate) fn bundle(files: BTreeMap<String, Vec<u8>>, single_id: &str) -> Resul
                 .strip_suffix(".json")
                 .filter(|id| is_slug(id))
                 .map(|id| format!("themes/{id}.json")),
-            ["packages", name] => name
+            ["layouts", name] => name
                 .strip_suffix(".json")
                 .filter(|id| is_slug(id))
-                .map(|id| format!("packages/{id}.json")),
+                .map(|id| format!("layouts/{id}.json")),
+            // A 2.8 repository's `packages/` holds layouts too; one in
+            // `layouts/` of the same name wins.
+            ["packages", name] if !in_layouts.contains(*name) => name
+                .strip_suffix(".json")
+                .filter(|id| is_slug(id))
+                .map(|id| format!("layouts/{id}.json")),
             _ => None,
         };
         if let Some(target) = target {
@@ -283,7 +294,7 @@ pub(crate) fn bundle(files: BTreeMap<String, Vec<u8>>, single_id: &str) -> Resul
     }
     ensure!(
         !bundle.files.is_empty(),
-        "found no mod (mod.json + mod.js/mod.css at the root, or mods/<id>/), no themes/<id>.json and no packages/<id>.json"
+        "found no mod (mod.json + mod.js/mod.css at the root, or mods/<id>/), no themes/<id>.json and no layouts/<id>.json"
     );
     Ok(bundle)
 }
@@ -382,10 +393,13 @@ pub(crate) fn files_from_folder(root: &Path) -> Result<BTreeMap<String, Vec<u8>>
             }
         }
     }
-    if let Ok(entries) = fs::read_dir(root.join("themes")) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            take(format!("themes/{name}"), &entry.path()).ok();
+    // `packages/` before `layouts/`, so a layout of the same id wins.
+    for dir in ["themes", "packages", "layouts"] {
+        if let Ok(entries) = fs::read_dir(root.join(dir)) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                take(format!("{dir}/{name}"), &entry.path()).ok();
+            }
         }
     }
     Ok(files)
@@ -396,7 +410,7 @@ fn wanted(relative: &str) -> bool {
     match parts.as_slice() {
         [file] => MOD_FILES.contains(file),
         ["mods", _, file] => MOD_FILES.contains(file),
-        ["themes", name] | ["packages", name] => name.ends_with(".json"),
+        ["themes" | "layouts" | "packages", name] => name.ends_with(".json"),
         _ => false,
     }
 }
@@ -463,7 +477,7 @@ pub(crate) fn fetch(source: &Source, name: Option<&str>) -> Result<Bundle> {
 pub(crate) struct Installed {
     pub mods: Vec<String>,
     pub themes: Vec<String>,
-    pub packages: Vec<String>,
+    pub layouts: Vec<String>,
 }
 
 /// Writes a bundle into the folder. Mods arrive off unless `enable`; an
@@ -482,15 +496,24 @@ pub(crate) fn install(
     }
     let mods = bundle.mods();
     let themes = bundle.themes();
-    let packages = bundle.packages();
+    let layouts = bundle.layouts();
     if !force {
-        for id in &packages {
+        for id in &layouts {
+            ensure!(
+                !web.root()
+                    .join("layouts")
+                    .join(format!("{id}.json"))
+                    .exists(),
+                "layouts/{id}.json already exists; pass --force to replace it"
+            );
+            // A 2.8 packages/<id>.json would be shadowed by the new file
+            // without a word, which is a replacement too.
             ensure!(
                 !web.root()
                     .join("packages")
                     .join(format!("{id}.json"))
                     .exists(),
-                "packages/{id}.json already exists; pass --force to replace it"
+                "packages/{id}.json (from alc 2.8) has the same id and would be hidden; pass --force to install over it"
             );
         }
         for id in &mods {
@@ -530,7 +553,7 @@ pub(crate) fn install(
     Ok(Installed {
         mods,
         themes,
-        packages,
+        layouts,
     })
 }
 
@@ -695,5 +718,78 @@ mod tests {
             bundle.files.keys().collect::<Vec<_>>(),
             vec!["mods/one/mod.js"]
         );
+    }
+
+    #[test]
+    fn layouts_and_2_8_packages_both_install_into_layouts() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        for dir in ["layouts", "packages", "mods/skin", "themes"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(
+            root.join("layouts/new.json"),
+            r#"{"name":"New","mods":["skin"]}"#,
+        )
+        .unwrap();
+        fs::write(root.join("packages/old.json"), r#"{"name":"Old"}"#).unwrap();
+        fs::write(root.join("packages/new.json"), r#"{"name":"Shadowed"}"#).unwrap();
+        fs::write(root.join("mods/skin/mod.css"), "body{}").unwrap();
+        fs::write(root.join("themes/sea.json"), "{}").unwrap();
+        let bundle = bundle(files_from_folder(&root).unwrap(), "x").unwrap();
+        assert_eq!(bundle.layouts(), vec!["new".to_owned(), "old".to_owned()]);
+        assert!(
+            !bundle
+                .files
+                .keys()
+                .any(|path| path.starts_with("packages/"))
+        );
+
+        let web = WebDir::new(temp.path());
+        let done = install(&web, &bundle, "me/repo", false, false).unwrap();
+        assert_eq!(done.layouts, vec!["new".to_owned(), "old".to_owned()]);
+        assert!(web.root().join("layouts/old.json").is_file());
+        assert_eq!(web.load_layout("new").unwrap().name, "New");
+        // Its mod arrives off, so the layout waits for --enable-mods.
+        assert!(!web.apply_layout("new", false).unwrap().applied);
+        assert!(web.apply_layout("new", true).unwrap().applied);
+        assert!(install(&web, &bundle, "me/repo", false, false).is_err());
+    }
+
+    #[test]
+    fn a_layout_does_not_silently_shadow_a_2_8_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let web = WebDir::new(temp.path());
+        fs::create_dir_all(web.root().join("packages")).unwrap();
+        fs::write(
+            web.root().join("packages/cockpit.json"),
+            r#"{"name":"Mine"}"#,
+        )
+        .unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "layouts/cockpit.json".to_owned(),
+            br#"{"name":"Theirs"}"#.to_vec(),
+        );
+        let bundle = bundle(files, "x").unwrap();
+        let refused = install(&web, &bundle, "me/repo", false, false).unwrap_err();
+        assert!(
+            refused.to_string().contains("packages/cockpit.json"),
+            "{refused}"
+        );
+        assert_eq!(web.load_layout("cockpit").unwrap().name, "Mine");
+        install(&web, &bundle, "me/repo", false, true).unwrap();
+        assert_eq!(web.load_layout("cockpit").unwrap().name, "Theirs");
+    }
+
+    #[test]
+    fn a_tarball_takes_layouts_too() {
+        let archive = tarball(&[
+            ("r-1/layouts/a.json", "{}"),
+            ("r-1/packages/b.json", "{}"),
+            ("r-1/layouts/notes.txt", "x"),
+        ]);
+        let bundle = bundle(files_from_tarball(&archive, None).unwrap(), "x").unwrap();
+        assert_eq!(bundle.layouts(), vec!["a".to_owned(), "b".to_owned()]);
     }
 }

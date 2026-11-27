@@ -3,7 +3,7 @@ id: mods
 title: Mods 與主題
 sidebar_label: Mods 與主題
 sidebar_position: 6
-description: 用主題、mod、小工具與套件自訂 alc 的遠端控制頁面 —— 在頁面內建的工作室排列它、從範本寫自己的 mod、把它當成 GitHub repository 發佈，並用一行指令安裝別人寫的。
+description: 用版面、主題、mod 與小工具自訂 alc 的遠端控制頁面 —— 在頁面內建的工作室一鍵換掉整個外觀、從範本寫自己的 mod、把版面與 mod 當成 GitHub repository 發佈，並用一行指令安裝別人寫的。
 keywords:
   - alc mods
   - alc themes
@@ -11,7 +11,7 @@ keywords:
   - herdr mods
   - install mod from github
   - alc studio
-  - mod packages
+  - alc layouts
   - page widgets
   - 中文
 ---
@@ -21,28 +21,30 @@ keywords:
 [遠端控制頁面](./remote-control.md)可以用跑 hub 那台機器上的純文字檔案來改：**主題**
 替它換顏色，**mod** 替它加東西 —— 一個分頁、指令面板裡的指令、按鍵列上的按鈕、
 session 卡片上的小標籤，或樣式 —— 還有可以放在 session 清單與編碼畫面任何位置的
-**小工具**、**浮動視窗**與**背景**。**套件**把 mods 連同它們的版面、背景與主題打包在
-一起。這個想法來自 herdr-app：頁面的行為是 agent 寫得出來的檔案，旁邊附一份寫給
+**小工具**、**浮動視窗**與**背景**。**版面**負責排出整個頁面 —— 主題、小工具的位置、
+背景、終端機字型 —— 它列出的 mods 則畫出裡面的東西，所以套用一個版面，可以把頁面整個
+換成另一種樣子。這個想法來自 herdr-app：頁面的行為是 agent 寫得出來的檔案，旁邊附一份寫給
 那個 agent 看的參考文件。
 
 這裡的每件事都可以在頁面的**工作室**分頁完成、直接在資料夾裡手動改，或請你的
 agent 幫忙。
 
-![工作室的套件](/img/remote/studio-packages.png)
+![工作室 → 版面](/img/remote/studio-layouts.png)
 
 ## 工作室
 
 **工作室**分頁是頁面內建的 mods 編輯器。它的五個分頁都寫進 hub 上的同一個資料夾，
 所以在筆電上做的改動，手機上也看得到：
 
-- **套件** —— 套用官方套件（Cockpit、Night shift、Deep focus、Retro terminal、
-  Workbench）或你自己的；把目前的頁面存成套件；從 JSON 或檔案匯入；下載或複製
-  一個套件來分享。
-- **版面** —— 一個列出所有已開啟 mods 提供的小工具的工具庫，以及 session 清單與
+- **版面** —— 你的版面與官方版面（Cockpit、Night shift、Deep focus、Retro terminal、
+  Workbench）放在同一個畫廊，每張卡片有依它的主題與面板畫出的縮圖。按**套用**換上；
+  第一張永遠是**預設**，回到 alc 原本的樣子。**新增版面**可以把目前的頁面存起來、
+  匯入 JSON，或從 GitHub 安裝；卡片的 **⋯** 選單可以下載、複製或移除。
+- **小工具** —— 一個列出所有已開啟 mods 提供的小工具的工具庫，以及 session 清單與
   編碼畫面的縮圖。把小工具拖進某個位置（或點選它再選擇**位置**）、調整順序、隱藏，
   並在檢視器裡設定選項。
-- **Mods** —— 開關 mods、安裝官方 mods、從 GitHub 安裝、移除，以及從範本建立
-  **新 mod**。
+- **Mods** —— 一張清單：已安裝的 mods 與它們的開關，接著是還沒裝的官方 mods；
+  也能從 GitHub 安裝，或從範本建立**新 mod**。
 - **背景** —— 內建的漸層或圖樣、你上傳的圖片，或 mod 繪製的動態背景；可調整
   變暗、模糊與終端機不透明度。
 - **面板** —— session 清單、檔案面板與兩側面板的寬度，清單與檔案面板放在哪一側，
@@ -64,7 +66,7 @@ agent 幫忙。
 | `float` | 自己的浮動視窗 |
 
 沒有人放置過的小工具，會先畫在它的 mod 建議的位置，直到你移動或隱藏它，所以開啟
-一個 mod 就會立刻看到它的小工具。套件的版面則是*明確的*：只畫它放置的東西。
+一個 mod 就會立刻看到它的小工具。版面排好的位置則是*明確的*：只畫它放置的東西。
 **重設版面**會回到各 mod 的建議。
 
 ### 面板，以及讓一般 session 符合頁面
@@ -87,7 +89,7 @@ agent 幫忙。
 視窗匣（以及指令面板）裡。在手機上，視窗一開始是關閉的，打開時會以面板形式出現在
 按鍵列上方。
 
-## 官方 mods 與套件
+## 官方 mods 與版面
 
 alc 把這些放在 `examples/`。從工作室安裝，或用 `alc remote web add <id>` —— 官方
 mods 安裝後即開啟。
@@ -106,7 +108,7 @@ mods 安裝後即開啟。
 | `scratchpad` | 筆記分頁與筆記小工具 |
 | `session-age` | 執行時數標籤，以及每張卡片上的時間條 |
 
-| 套件 | 內容 |
+| 版面 | 內容 |
 | --- | --- |
 | `cockpit` | 清單上方的方塊、右側面板的配額與 session 筆記、終端機下方的指令列、時鐘、時間條 |
 | `night-shift` | 半透明終端機後的星空、Midnight 主題、專注計時器與時鐘 |
@@ -116,12 +118,17 @@ mods 安裝後即開啟。
 
 ```sh
 alc remote web catalog                 # everything official, and what is installed
-alc remote web add cockpit             # an official package (or mod, or theme)
-alc remote web package apply cockpit   # installs the official mods it needs, too
-alc remote web package                 # list packages; * marks the applied one
+alc remote web add cockpit             # an official layout (or mod, or theme)
+alc remote web layout apply cockpit    # installs the official mods it needs, too
+alc remote web layout                  # list layouts; * marks the active one
+alc remote web layout reset            # back to Default
 ```
 
-![Cockpit 套件](/img/remote/cockpit.png)
+![Cockpit 版面](/img/remote/cockpit.png)
+
+另外十個版面 —— 90 年代桌面配除蟲小遊戲、磷光主機、報紙、水族箱等，每個都是整套外觀
+加上專屬 mods —— 放在 [treeleaves30760/alc-layouts](https://github.com/treeleaves30760/alc-layouts)
+（見[下方](#版面)）。
 
 ## 檔案放在哪裡
 
@@ -139,9 +146,9 @@ web/
 │   ├── mod.js         optional: runs once when the page loads
 │   ├── mod.css        optional: added after the page's own stylesheet
 │   └── README.md      optional: shown to people, not loaded
-├── packages/<id>.json a set of mods with a layout, background and theme
+├── layouts/<id>.json  a whole look: mods, widget places, theme, background, terminal font
 ├── backgrounds/       images for the background (png, jpg, webp, gif)
-└── examples/          the official mods, packages and themes, and new-mod templates; never loaded
+└── examples/          the official mods, layouts and themes, and new-mod templates; never loaded
 ```
 
 id 只能用 `[a-z0-9_-]`，開頭必須是字母或數字，最長 48 個字元。一個 mod 需要
@@ -239,7 +246,7 @@ alc.define('today', (mod) => {
 
 ### 小工具
 
-小工具是工作室或套件可以放置的東西。mod 說明它*可以*放在哪裡，以及在有人放置
+小工具是工作室或版面可以放置的東西。mod 說明它*可以*放在哪裡，以及在有人放置
 之前它在哪裡；選項會出現在工作室的檢視器裡。
 
 ```js
@@ -333,7 +340,7 @@ alc.define('counter', (mod) => {
 | `mod.local.get(name)`、`mod.local.set(name, value)` | 只存在這台裝置上的儲存空間 |
 | `alc.layout()`、`alc.widgets()`、`alc.openWindow(key)`、`alc.notify(title, body)` | 版面、小工具、打開視窗、通知 |
 
-資料夾裡的 `AGENTS.md` 是完整的參考，包括卡片的欄位與 CSS 掛鉤（`body[data-pane]`、
+資料夾裡的 `AGENTS.md` 是完整的參考，包括卡片的欄位與 CSS 掛鉤（`body[data-layout]`、`body[data-pane]`、
 `#nav`、`#keys`、`.panel`、`.chip` …）。
 
 ## 主題
@@ -360,15 +367,15 @@ alc.define('counter', (mod) => {
 值可以是顏色、`rgb()`、`color-mix()` 與長度 —— 不能有 `url()`、引號或分號；其他的
 alc 都會丟掉。`AGENTS.md` 列出了每一個 token。
 
-## 套件
+## 版面
 
-套件是 `packages/<id>.json`：
+版面是 `layouts/<id>.json`：
 
 ```json
 {
   "name": "My setup",
   "description": "Notes on the right, the clock up top, a quiet background.",
-  "mods": ["clock", "session-notes"],
+  "mods": ["my-setup-skin", "clock", "session-notes"],
   "theme": "fjord",
   "density": "compact",
   "background": { "kind": "preset", "value": "aurora", "dim": 50, "blur": 0, "terminal": 92 },
@@ -379,14 +386,51 @@ alc 都會丟掉。`AGENTS.md` 列出了每一個 token。
     },
     "sizes": { "right": 300 },
     "filesSide": "left"
-  }
+  },
+  "terminal": { "fontFamily": "\"Iosevka\", monospace", "lineHeight": 1.1, "cursorStyle": "bar" }
 }
 ```
 
-套用時會開啟它的 mods（缺少的官方 mods 會自動安裝），並採用它的版面、背景、主題、
-強調色與密度。它沒有列出的 mods 維持原本的開關。最簡單的做法是先把頁面排好，再在
-工作室按**把目前的頁面存成套件**；**下載**會給你可以分享的檔案，repository 裡的
-`packages/` 資料夾也會跟其他東西一起安裝。
+套用一個版面時：
+
+1. 上一個版面打開、而這個版面沒有列出的 mods 會被**關掉** —— 你自己打開的 mod
+   永遠不會被關；
+2. 打開它列出的 mods，缺少的官方 mods 會自動安裝；
+3. 採用它的主題、強調色、密度、小工具位置、背景與終端機設定（字型、字級、行高、
+   游標）。終端機設定是疊在你自己的設定上面：「設定」裡被版面蓋過的每一項旁邊
+   會有一個 `版面` 標籤，離開版面後你的設定就會回來。
+
+**預設** —— 工作室「版面」分頁的第一張卡片、指令面板的「版面: 預設」，或
+`alc remote web layout reset` —— 會關掉版面打開的 mods，還給你自己的主題、強調色
+與密度，小工具回到 alc 原本的位置，也不再有背景。不管膚色把頁面改得多誇張，那張
+卡片都是回家的路。
+
+### 版面的膚色
+
+頁面會把使用中的版面 id 寫到 `body[data-layout]`。版面透過一個膚色 mod 換掉整體
+外觀，而這個 mod 的 CSS 全部寫在這個屬性底下，所以就算它一直開著，換到別的版面時
+也不會畫出任何東西：
+
+```css
+body[data-layout="my-setup"] #bar { background: var(--surface); }
+body[data-layout="my-setup"] .btn { border-radius: 0; }
+```
+
+`AGENTS.md` 列出膚色可以依賴的掛鉤。膚色可以用 `data:` 網址內嵌網頁字型（頁面允許
+`font-src data:`），字型載入完成後終端機會重新量一次字格。
+
+### 來自其他地方的 mods
+
+如果版面列出的 mod 是從 GitHub 或資料夾安裝、而且還關著，版面不會只套用一半。
+工作室會問一次，列出每個這樣的 mod 與它的來源，按**開啟並套用**才會打開它們並
+套用版面；CLI 則要加 `--enable-mods`。alc 內建的 mod，或在這台機器上寫的 mod，
+不會被問。
+
+做版面最簡單的方法是先把頁面排好，再在工作室按**新增版面 → 目前頁面**；卡片 ⋯ 選單
+裡的**下載 JSON** 會給你可以分享的檔案，repository 裡的 `layouts/` 資料夾也會跟
+其他東西一起安裝。alc 2.8 把版面叫做*套件*，放在 `packages/<id>.json`：這個資料夾
+照樣會讀（同 id 時以 `layouts/` 為準），2.8 的 `package` 設定會被當成使用中的版面，
+`alc remote web package` 也還能用。
 
 ## 在 GitHub 上分享你的 mod
 
@@ -405,14 +449,14 @@ my-alc-mods/                  a collection: each folder keeps its id
 │   └── focus-timer/mod.json, mod.js, mod.css
 ├── themes/
 │   └── harbour.json
-└── packages/
+└── layouts/
     └── standup-desk.json
 ```
 
 - 單一 mod 的 repository 會以它的名字安裝，並去掉 `alc-mod-`、`alc-page-mod-` 或
   `alc-` 前綴；用 `--name` 可以改成別的名字。
 - 從一個 mod 只會取 `mod.json`、`mod.js`、`mod.css` 與 `README.md`，另外只取
-  `themes/*.json` 與 `packages/*.json`；repository 裡其他的東西一律忽略，所以可以放測試、截圖或建置流程。
+  `themes/*.json` 與 `layouts/*.json`（或 2.8 的 `packages/*.json`）；repository 裡其他的東西一律忽略，所以可以放測試、截圖或建置流程。
 - 在 README 裡放一張截圖和一句說明 mod 做什麼的話，並替 repository 加上 `alc-mod`
   這個 topic，讓別人找得到。
 - mod 裡不能有任何機密：唯讀連結也會下載 mod 的檔案。
@@ -435,11 +479,17 @@ installed themes/harbour.json
 
 mods run with the page's link and are not sandboxed; read them first:
   /home/you/.config/alc/web/mods
-then turn one on with `alc remote web enable <id>` or the switch in Settings
+then turn one on with `alc remote web enable <id>` or the switch in Studio
 ```
 
 **裝好的 mod 預設是關的。** 先讀過 `mod.js`，再用 `alc remote web enable <id>` 或
-「設定」→「Mods」裡的開關，把你信得過的打開。主題只是顏色，裝好就能挑。
+「工作室」→「Mods」裡的開關（會問一次，並註明它從哪裡來），把你信得過的打開。
+主題只是顏色，裝好就能挑。版面要等它的 mods：讀過之後用 `--enable-mods` 套用。
+
+```sh
+alc remote web install treeleaves30760/alc-layouts    # ten layouts; mods arrive off
+alc remote web layout apply retro98 --enable-mods     # read them, then switch the look
+```
 
 | 指令 | 作用 |
 | --- | --- |
@@ -448,11 +498,16 @@ then turn one on with `alc remote web enable <id>` or the switch in Settings
 | `alc remote web install <source> --force` | 更新：取代已安裝的版本；除非加 `--enable`，mod 會再次變成關閉 |
 | `alc remote web install <source> --enable` | 安裝並一次打開，適合你自己的 repository |
 | `alc remote web remove <id>` | 刪除這個 mod 與它存下來的狀態 |
+| `alc remote web layout apply <id> [--enable-mods]` | 套用版面；`--enable-mods` 也會打開它列出、來自其他地方的 mods |
+| `alc remote web layout reset` | 回到預設 |
 | `alc remote web check` | 回報資料夾裡的每一個問題 |
 
 每個裝好的 mod 會把來源記在 `mods/<id>/SOURCE`，`list` 會把它印出來。下載一律透過
 HTTPS 從 `codeload.github.com` 取得，每個 repository 上限 8 MB、每個檔案上限
-256 KB；除了 `web/mods/<id>/` 與 `web/themes/`，其他地方一律不寫入。
+256 KB；除了 `web/mods/<id>/`、`web/themes/` 與 `web/layouts/`，安裝只會寫入
+`settings.json`，用來記錄新 mod 是開還是關。
+會取代既有的 mod、主題或版面 —— 或讓同 id 的版面蓋住 2.8 的 `packages/<id>.json` ——
+的安裝，除非加 `--force`，否則一律拒絕。
 
 ## 安全性
 

@@ -255,6 +255,27 @@ body {
   color: var(--line-strong);
 }
 
+/* The session's name is what the header is for; the agent, provider, model
+ * and effort sit beside it small and mono, and give way first. */
+#subtitle .sub-name {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+#subtitle .sub-facts {
+  margin-left: var(--s2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+@media (max-width: 1100px) {
+  #subtitle .sub-facts {
+    display: none;
+  }
+}
+
 .pill {
   flex: 0 0 auto;
   font-size: 11px;
@@ -1353,7 +1374,7 @@ body.viewer .keys {
 }
 
 body.viewer .perm select,
-body.viewer .perm button {
+body.viewer .perm button:not(.perm-chip) {
   display: none;
 }
 
@@ -1475,6 +1496,62 @@ body.viewer .perm button {
   min-height: 34px;
   padding: 5px 12px;
   font-size: 13px;
+}
+
+/* The mode now, small and mono. For a cycle-only agent it is a button that
+ * opens the order the cycle goes in; it is never a sentence on the page. */
+.perm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--text);
+  font: 500 12px/1.2 var(--mono);
+}
+
+.perm-controls .perm-chip {
+  min-height: 28px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.perm-chip:not(:disabled)::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg) translateY(-2px);
+}
+
+.perm-chip[aria-expanded="true"]::after {
+  transform: rotate(-135deg) translateY(-1px);
+}
+
+.perm-chip:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.perm-cycle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.perm-cycle .glyph {
+  width: 14px;
+  height: 14px;
+}
+
+.perm-order {
+  margin: 0;
+  font: 12px/1.5 var(--mono);
+  color: var(--muted);
 }
 
 /* What the agent is, rather than what can be done to it. A chip stays on
@@ -2419,34 +2496,17 @@ button.palette-toggle {
   margin-top: var(--s6);
 }
 
-/* While the first history is on its way, the panels shimmer rather than
- * showing a confident row of zeros. */
+/* While the first history is on its way, the panels are a still fill rather
+ * than a confident row of zeros. Still, not shimmering: six panels animating
+ * while a request is out said nothing a static fill does not. */
 body.history-loading .stat,
 body.history-loading .dash-grid .panel {
-  background: linear-gradient(100deg, var(--surface) 30%, var(--raised) 50%, var(--surface) 70%);
-  background-size: 300% 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
+  background: var(--raised);
 }
 
 body.history-loading .stat > *,
 body.history-loading .dash-grid .panel > * {
   visibility: hidden;
-}
-
-@keyframes shimmer {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: 0 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  body.history-loading .stat,
-  body.history-loading .dash-grid .panel {
-    animation: none;
-  }
 }
 
 /* ---- settings ---- */
@@ -2731,7 +2791,16 @@ select,
   font-weight: 600;
 }
 
+.theme-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .theme-tag {
+  flex: none;
+  white-space: nowrap;
   font-size: 11px;
   font-weight: 500;
   color: var(--muted);
@@ -4260,8 +4329,14 @@ body.dragging-x .splitter::after {
   }
 }
 
+/* `#list > *` centres the list's children at full width; the splitter is
+ * the one child that must stay a 9px handle on the edge, or it lies over
+ * every card in the rail and eats their clicks. */
 #list > .splitter {
   right: -5px;
+  width: 9px;
+  max-width: none;
+  margin: 0;
 }
 
 body[data-rail-side="right"] #list > .splitter {
@@ -4577,8 +4652,465 @@ body.dragging .win-body {
 }
 
 /* Beside a terminal the list is a narrow rail for getting around; the
- * strips a package put above and below the sessions belong to the full
+ * strips a layout put above and below the sessions belong to the full
  * list. */
 body[data-pane="view"] #list > .slot-list {
   display: none;
+}
+
+
+/* ---- layouts: one gallery ---- */
+
+.studio-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
+.layout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--s4);
+}
+
+.layout-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: visible;
+}
+
+.layout-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.layout-preview {
+  aspect-ratio: 16 / 10;
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  overflow: hidden;
+  background: var(--raised);
+}
+
+.layout-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.layout-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--s3) var(--s3) 0;
+  min-width: 0;
+}
+
+.layout-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.layout-title {
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.layout-mods {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.layout-desc {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-card .mod-error {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: var(--s3);
+  margin-top: auto;
+}
+
+.layout-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.layout-active .glyph {
+  width: 12px;
+  height: 12px;
+}
+
+.layout-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  vertical-align: 1px;
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* An overflow menu on a <details>: opens by tap, click or keyboard. */
+.menu {
+  position: relative;
+  margin-left: auto;
+}
+
+.menu > summary {
+  list-style: none;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu > summary:hover,
+.menu[open] > summary {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.menu > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.menu-list {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 12;
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+
+.menu-item {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text);
+  border-radius: 6px;
+}
+
+.menu-item:hover:not(:disabled),
+.menu-item:focus-visible {
+  background: var(--raised);
+}
+
+.menu-item.danger {
+  color: var(--danger);
+}
+
+/* A modal question: a native <dialog>, so focus stays inside and Esc
+ * closes it. Full screen on a phone. */
+.dialog {
+  width: min(460px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  padding: var(--s5);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 35%);
+}
+
+.dialog.wide {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.dialog::backdrop {
+  background: rgb(8 9 12 / 45%);
+}
+
+.dialog-title {
+  margin: 0 0 var(--s3);
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  font-size: 14px;
+}
+
+.dialog-body p {
+  margin: 0;
+}
+
+.dialog-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dialog-list code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.dialog-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.dialog-fields .text-input {
+  flex: 0 0 auto;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  margin-top: var(--s5);
+}
+
+.small {
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .dialog,
+  .dialog.wide {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+    border: 0;
+    padding: max(var(--s5), env(safe-area-inset-top)) var(--s4) max(var(--s5), env(safe-area-inset-bottom));
+    flex-direction: column;
+  }
+
+  .dialog[open] {
+    display: flex;
+  }
+
+  .dialog-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+  }
+
+  .layout-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (pointer: coarse) {
+  .menu > summary {
+    width: 40px;
+    height: 40px;
+  }
+
+  .menu-item {
+    padding: 12px;
+    font-size: 15px;
+  }
+
+  .dialog .text-input {
+    font-size: 16px;
+  }
+}
+
+
+/* ---- touch: one rule for every control ---- */
+
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .btn,
+  .btn.small,
+  .icon,
+  .perm-chip,
+  .studio-tab,
+  .segmented button {
+    min-height: 40px;
+  }
+
+  .icon {
+    min-width: 40px;
+  }
+}
+
+/* A quiet tag: lowercase, small, no fill. */
+.badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 0 6px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  color: var(--accent);
+}
+
+.badge.ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+/* A phone gets rows, not posters: the picture beside the words. */
+@media (max-width: 640px) {
+  .layout-card {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+  }
+
+  .layout-preview {
+    grid-row: 1 / 3;
+    aspect-ratio: auto;
+    min-height: 100%;
+    border-bottom: 0;
+    border-right: 1px solid var(--line);
+    border-radius: var(--r-md) 0 0 var(--r-md);
+  }
+
+  .layout-body {
+    padding: var(--s2) var(--s3) 0;
+  }
+
+  .layout-actions {
+    grid-column: 2;
+    padding: var(--s2) var(--s3) var(--s3);
+  }
+}
+
+/* ---- studio mods: one list ---- */
+
+.mod-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.mod-line {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.mod-line:last-child {
+  border-bottom: 0;
+}
+
+.mod-line-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mod-line-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mod-line .mod-name {
+  flex: 0 1 auto;
+  min-width: 4ch;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Gives way before the name does. */
+.mod-source {
+  flex: 0 100 auto;
+  font: 11px/1.4 var(--mono);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.mod-line-desc,
+.mod-line .mod-error {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mod-line .mod-error {
+  color: var(--danger);
+}
+
+.mod-line-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mod-line-actions .menu {
+  margin-left: 0;
+}
+
+.mod-line-actions .menu-list {
+  bottom: auto;
+  top: calc(100% + 4px);
 }
