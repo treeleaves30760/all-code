@@ -1,5 +1,5 @@
 //! Running a shared session's agent inside tmux, so the browser and the
-//! terminal can each watch it at their own size.
+//! terminal can each watch it as a client of its own.
 //!
 //! # The problem this exists for
 //!
@@ -18,12 +18,19 @@
 //!
 //! The two clients are not equals, and `mirror_argv`/`terminal_argv` are
 //! where that is decided: the mirror sizes the window and the terminal abstains
-//! (`ignore-size`). The browser is what somebody asking for `--tmux` is
-//! about to go and use, so the browser owns the size - a resize frame
-//! reaches tmux as a SIGWINCH on the mirror's own pty, and with the mirror
-//! the only client voting, the window is exactly what the page asked for.
+//! (`ignore-size`). Whose size the mirror then carries is alc's decision, not
+//! tmux's, and it is the same one a plain session makes: the last side to act
+//! on the size holds it (`Session::resize_from_viewer`/`resize_from_terminal`).
+//! A page acts by taking it, which a `--tmux` page does as it opens - the
+//! browser is what somebody asking for `--tmux` is about to go and use - and
+//! the user's terminal acts by being resized or by `alc attach`, which the
+//! hub hears over its control socket. Either way the hub resizes the
+//! mirror's own pty, the change reaches tmux as a SIGWINCH there, and with
+//! the mirror the only client voting, the window is exactly that size.
 //!
-//! Which client abstains is a safety decision as much as a usability one.
+//! Which client abstains from tmux's vote is a safety decision as much as a
+//! usability one, and it does not change when the terminal holds the size:
+//! the terminal still gets there through the mirror, never by voting.
 //! tmux serves a client that is not the window's size by re-emitting the
 //! pane into it row by row, with a field of padding beside it - and that
 //! breaks two things when the client in question is the mirror: the secret
@@ -32,9 +39,12 @@
 //! reads the last rows of a grid whose last rows would be padding. Between
 //! alc's own two clients the mirror is always the window's size, so the
 //! padded, row-split client is the user's own terminal - the one client alc
-//! neither scrubs nor probes. It renders whatever of the window fits,
-//! clipped to its top-left corner when it is smaller, and `alc share` and
-//! `alc attach` both say so.
+//! neither scrubs nor probes. While a page holds the size it renders
+//! whatever of the window fits, clipped to its top-left corner when it is
+//! smaller, and `alc share` and `alc attach` both say so; once it takes the
+//! size back the window is its size and it fits exactly. The window is the
+//! mirror's pty size to the row, with no status line taking one (`create`
+//! turns `status` off), so a terminal of the same size shows all of it.
 //!
 //! # Why a private server per session
 //!
@@ -121,8 +131,9 @@ use crate::remote::wire::ExitInfo;
 ///
 /// Set by `attach-session -f ignore-size`, which arrived in 3.2 and is what
 /// keeps the user's own terminal out of the window-sizing vote (see
-/// `Tmux::terminal_argv`). Still required after the vote changed hands: a
-/// terminal smaller than the page would shrink the window under the mirror,
+/// `Tmux::terminal_argv`). Required even though that terminal can now hold
+/// the size: it holds it through the mirror, and a terminal voting directly
+/// while a page held the size would shrink the window under the mirror,
 /// which is the re-emit case, on the one stream alc scrubs.
 /// `window-size` itself only needs 2.9.
 ///
@@ -208,7 +219,7 @@ pub(crate) struct Snapshot {
     /// The size tmux settled on for the window, which under
     /// `window-size smallest` is the smallest of the clients that get a
     /// vote - and the mirror is the only one, so this is the mirror's pty
-    /// size and therefore the browser's.
+    /// size, and therefore whichever page or terminal holds the size.
     ///
     /// Read anyway, and not only because the same call carries the exit
     /// status and the pane's pid: the two agree except while tmux catches up
@@ -953,12 +964,11 @@ impl Tmux {
     ///
     /// This is the client that votes on the window size, and with it the
     /// only voter, `window-size smallest` makes the window exactly this
-    /// pty's size - which is exactly what the browser asked for, because a
-    /// resize frame reaches tmux as a SIGWINCH here
-    /// (`Session::resize_from_viewer`). The browser drives; the terminal
-    /// watches. That is the trade `--tmux` makes, and it is the way round it
-    /// makes sense: `--tmux` is asked for by somebody who is about to go and
-    /// use the page.
+    /// pty's size. Every change of size reaches tmux as a SIGWINCH here,
+    /// whoever asked for it: a page holding the size
+    /// (`Session::resize_from_viewer`) or the user's terminal taking it back
+    /// (`Session::resize_from_terminal`). That is what lets the size change
+    /// hands without the mirror ever being anything but the window's size.
     ///
     /// Named for the role rather than taking a `Sizing`, so a call site
     /// cannot say the wrong one. The two behaviours changed hands in 1.8.0
@@ -985,9 +995,12 @@ impl Tmux {
     ///
     /// So this client abstains, and the padded, row-split one is the user's
     /// own terminal - which is the one client alc neither scrubs nor probes.
-    /// It renders whatever of the window fits, clipped to its top-left
-    /// corner when it is smaller, and `alc share` and `alc attach` both say
-    /// so.
+    /// It is not left without a say: `attach_tmux` reports its size to the
+    /// hub, which resizes the mirror to it, so the window becomes this
+    /// client's size by way of the one client that votes. Until it does - while
+    /// a page holds the size - it renders whatever of the window fits,
+    /// clipped to its top-left corner when it is smaller, and `alc share` and
+    /// `alc attach` both say so.
     ///
     /// Between them, alc's own two clients keep the mirror at the window's
     /// size at all times. A third client attached to the socket by hand
@@ -1177,6 +1190,130 @@ mod live {
             Some((88, 24)),
             "the page's size reaches tmux through the mirror's pty"
         );
+    }
+
+    /// What the local terminal taking the size back rests on: the hub
+    /// resizes the mirror to the terminal's cols x rows, and that alone must
+    /// make the window exactly that - every row of it, with no status line
+    /// taking one - so the terminal, still abstaining, shows the whole pane
+    /// and not a corner of it.
+    #[test]
+    fn a_terminal_the_mirror_is_sized_to_shows_the_whole_window() {
+        let Some(found) = tmux() else { return };
+        // Numbered lines, more than any size below holds, so the bottom
+        // row of the pane is a line that can be told apart from the rest.
+        let live = start(
+            &found,
+            "claude-LIVEFITS01",
+            &[
+                "-c",
+                "i=1; while [ $i -le 60 ]; do echo line$i; i=$((i+1)); done; sleep 30",
+            ],
+            100,
+            30,
+        );
+        let mirror = attach(&found, live.tmux.mirror_argv(), 100, 30);
+        let (terminal, screen) = watch(&found, live.tmux.terminal_argv(), 70, 20);
+        assert_eq!(window(&found, &live, (100, 30)), Some((100, 30)));
+
+        // What the pane holds, row by row, as tmux itself reports it.
+        let pane = || {
+            let output = live
+                .tmux
+                .run(
+                    &found.binary,
+                    &["capture-pane", "-p", "-t", &live.tmux.pane],
+                )
+                .unwrap();
+            normalise(&String::from_utf8_lossy(&output.stdout))
+        };
+
+        // The page holds the size, so the smaller terminal shows a corner:
+        // the window's first twenty rows, and not its bottom ones.
+        let whole = pane();
+        assert_eq!(whole.len(), 30, "{whole:?}");
+        assert!(
+            !settled(&screen, |text| normalise(text) == whole),
+            "a 20-row terminal cannot show a 30-row window"
+        );
+
+        // The terminal takes the size: the hub resizes the mirror to it.
+        mirror.resize(70, 20).unwrap();
+        assert_eq!(
+            window(&found, &live, (70, 20)),
+            Some((70, 20)),
+            "the window is the mirror's size to the row: no status line takes one"
+        );
+        terminal.resize(70, 20).unwrap();
+        let whole = pane();
+        assert_eq!(whole.len(), 20, "{whole:?}");
+        assert!(
+            settled(&screen, |text| normalise(text) == whole),
+            "the terminal shows every row of the window: {whole:?}"
+        );
+    }
+
+    /// A screen's rows without trailing blanks, so tmux's own capture and an
+    /// emulator's view of the same rows compare equal.
+    fn normalise(text: &str) -> Vec<String> {
+        text.lines()
+            .map(|line| line.trim_end().to_owned())
+            .collect()
+    }
+
+    /// A live tmux client whose screen is kept in an emulator, so a test
+    /// can read what that terminal actually shows.
+    fn watch(
+        found: &Found,
+        argv: Vec<OsString>,
+        cols: u16,
+        rows: u16,
+    ) -> (PtyHost, std::sync::Arc<std::sync::Mutex<avt::Vt>>) {
+        let mut command = PtyCommand::agent(&found.binary, &LaunchSpec::for_test());
+        command.args = argv;
+        command.env_remove = vec![OsString::from("TMUX"), OsString::from("TMUX_PANE")];
+        let (pty, reader) = PtyHost::spawn(&command, Path::new("/"), cols, rows).unwrap();
+        let vt = std::sync::Arc::new(std::sync::Mutex::new(
+            avt::Vt::builder()
+                .size(usize::from(cols), usize::from(rows))
+                .build(),
+        ));
+        let fed = std::sync::Arc::clone(&vt);
+        thread::spawn(move || {
+            let mut reader = reader;
+            let mut chunk = [0_u8; 4096];
+            while let Ok(read) = reader.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                if let Ok(mut vt) = fed.lock() {
+                    vt.feed_str(&String::from_utf8_lossy(&chunk[..read]));
+                }
+            }
+        });
+        (pty, vt)
+    }
+
+    /// Whether `screen`'s visible rows come to satisfy `test` within a few
+    /// seconds; a redraw is a server round trip away.
+    fn settled(screen: &std::sync::Mutex<avt::Vt>, test: impl Fn(&str) -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            let text = screen
+                .lock()
+                .map(|vt| {
+                    vt.view()
+                        .map(|line| line.text())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            if test(&text) {
+                return true;
+            }
+            sleep(Duration::from_millis(50));
+        }
+        false
     }
 
     /// A live tmux client on `live`'s session, held open by its pty.

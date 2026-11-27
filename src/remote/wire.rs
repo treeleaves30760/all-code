@@ -36,7 +36,7 @@ pub(crate) enum ClientFrame {
         /// The last sequence this client saw, when reconnecting.
         #[serde(default)]
         since: Option<u64>,
-        /// Take a plain session's size for this page (see `Resize`).
+        /// Take the session's size for this page (see `Resize`).
         #[serde(default)]
         take: bool,
     },
@@ -53,12 +53,13 @@ pub(crate) enum ClientFrame {
     Resize {
         cols: u16,
         rows: u16,
-        /// Take a plain session's size for this page ("fit to this page").
-        /// Ignored for a tmux session, whose size an operator page owns.
+        /// Take the session's size for this page ("fit to this page"), from
+        /// a terminal or another page. Without it a resize moves the grid
+        /// only if this page already holds the size.
         #[serde(default)]
         take: bool,
     },
-    /// Hand a plain session's size back to the terminal that launched it.
+    /// Hand the session's size back to the terminal that last stated one.
     Release,
     Pong,
 }
@@ -86,8 +87,8 @@ pub(crate) enum ServerFrame {
     Size {
         cols: u16,
         rows: u16,
-        /// Whether a page holds a plain session's size, so a page that had
-        /// fitted it learns when the terminal took it back.
+        /// Whether a page holds the session's size, so a page that had
+        /// fitted it learns when a terminal took it back.
         fitted: bool,
         /// Which page holds it (the `viewer` its hello carried), so a page
         /// learns when another page took it.
@@ -169,8 +170,8 @@ pub(crate) struct SessionCard {
     /// browser it is also sent to can do nothing with it.
     #[serde(default)]
     pub tmux: Option<crate::remote::tmux::Tmux>,
-    /// A page has fitted this plain session to itself; its terminal gets
-    /// the size back when it is resized.
+    /// A page holds this session's size rather than a terminal; a terminal
+    /// takes it back when it is resized or attached.
     #[serde(default)]
     pub fitted: bool,
 }

@@ -580,9 +580,9 @@ impl Hub {
                 let command = PtyCommand {
                     program: found.binary.clone(),
                     // The mirror votes on the window size, and it is the
-                    // only client that does: the page owns a `--tmux`
-                    // session's geometry, and this pty is how a resize frame
-                    // reaches tmux.
+                    // only client that does: this pty is how whoever holds
+                    // the size - a page's resize frame, or the user's
+                    // terminal taking it back - reaches tmux.
                     args: session.mirror_argv(),
                     // Deliberately not the launch's environment. The attach
                     // client only needs to talk to a socket, and giving it

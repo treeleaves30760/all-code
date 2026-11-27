@@ -413,7 +413,7 @@ pub(crate) struct TerminalSettings {
     pub cursor_blink: bool,
     pub scrollback: u32,
     /// Plain sessions are fitted to the page that opens them, the way a
-    /// `--tmux` one always is, until their own terminal is resized.
+    /// `--tmux` one is by default, until a terminal on them is resized.
     pub fit_plain: bool,
 }
 
