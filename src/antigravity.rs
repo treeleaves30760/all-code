@@ -106,11 +106,6 @@ pub fn split_wire_id(model: &str) -> Option<(AgyFamily, String)> {
         .then(|| (family, effort.to_owned()))
 }
 
-/// The family a family id or a wire id belongs to.
-pub fn family_of_model(model: &str) -> Option<AgyFamily> {
-    family(model.trim()).or_else(|| split_wire_id(model).map(|(family, _)| family))
-}
-
 /// alc's effort ladder on Antigravity's three rungs. Absent is `medium`,
 /// agy's own default.
 pub fn effort_word(effort: Option<ReasoningEffort>) -> &'static str {
@@ -520,15 +515,6 @@ mod tests {
         );
         assert_eq!(split("claude-opus-5-5"), None, "a family is not a wire id");
         assert_eq!(split("gemini-9-ultra-low"), None);
-        assert_eq!(
-            family_of_model("claude-opus-5-5").unwrap().id,
-            "claude-opus-5-5"
-        );
-        assert_eq!(
-            family_of_model("claude-opus-5-5-high").unwrap().id,
-            "claude-opus-5-5"
-        );
-        assert!(family_of_model("gpt-6-sol").is_none());
     }
 
     #[test]
