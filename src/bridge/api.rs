@@ -17,8 +17,8 @@
 //! * Anthropic Messages: content blocks going up, the block events coming
 //!   back.
 //!
-//! Tool calls are held until they are complete and then told whole, as the
-//! Antigravity upstream tells them: the Messages surface cannot interleave two
+//! Tool calls are held until they are complete and then told whole: the
+//! Messages surface cannot interleave two
 //! open `tool_use` blocks, and a Chat stream may interleave its calls' argument
 //! deltas. Reasoning a provider streams is told as a reasoning summary and
 //! never replayed: no provider here can read another's.
@@ -613,7 +613,7 @@ impl Emitter {
     fn new(model: &str) -> Self {
         Self {
             model: model.to_owned(),
-            response_id: format!("resp_{}", super::agy_upstream::random_hex(12)),
+            response_id: format!("resp_{}", super::random_hex(12)),
             created_at: crate::usage::ledger::now_unix(),
             started: false,
             next_index: 0,
@@ -799,7 +799,7 @@ impl Emitter {
 }
 
 fn minted_call_id() -> String {
-    format!("call_{}", super::agy_upstream::random_hex(12))
+    format!("call_{}", super::random_hex(12))
 }
 
 /// A Chat Completions stream, chunk by chunk.

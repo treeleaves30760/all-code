@@ -70,8 +70,8 @@ pub struct BridgePlan {
     pub options: Vec<ModelInfo>,
     pub api: BridgeApi,
     /// The provider's own API, when the bridge translates for an agent that
-    /// cannot speak it ([`api_bridge_plan`]); `None` on the Codex and
-    /// Antigravity logins, which the launch's provider kind names.
+    /// cannot speak it ([`api_bridge_plan`]); `None` on the Codex login,
+    /// which the launch's provider kind names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<crate::config::ApiEndpoint>,
 }
@@ -139,11 +139,6 @@ pub struct LaunchSpec {
     /// `Bridge::start` then falls back to resolving it itself and reports the
     /// same error it always did.
     pub codex_auth_file: Option<PathBuf>,
-    /// agy's fallback login file, resolved here for the reason
-    /// `codex_auth_file` is; set only for an in-process bridge on the
-    /// Antigravity kind (Claude Code's route carries its own). The keyring
-    /// entry beside it is fixed, so the file is all a locator needs.
-    pub agy_credential_file: Option<PathBuf>,
     /// Where Claude Code's own user-level `settings.json` is, resolved here
     /// for the same reason `codex_auth_file` is: both inputs to that path
     /// (`CLAUDE_CONFIG_DIR` and `HOME`) come out of the environment, and the
@@ -262,9 +257,6 @@ impl LaunchSpec {
                 offered: vec!["gpt-6-astra".to_owned()],
             }),
             codex_auth_file: Some(PathBuf::from("/work/codex/auth.json")),
-            agy_credential_file: Some(PathBuf::from(
-                "/work/.gemini/antigravity-cli/antigravity-oauth-token",
-            )),
             claude_settings_file: Some(PathBuf::from("/work/claude/settings.json")),
             file_setup: vec![
                 FileSetup::UpsertJson {
@@ -305,7 +297,6 @@ impl LaunchSpec {
             forward: None,
             settings_plan: None,
             codex_auth_file: None,
-            agy_credential_file: None,
             claude_settings_file: None,
             file_setup: Vec::new(),
             model: None,
@@ -383,7 +374,6 @@ pub fn build(
         forward: None,
         settings_plan: None,
         codex_auth_file: None,
-        agy_credential_file: None,
         claude_settings_file: None,
         file_setup: Vec::new(),
         model: None,
@@ -414,11 +404,7 @@ pub fn build(
         .as_ref()
         .is_some_and(|plan| plan.upstream.is_none())
     {
-        if provider.kind == ProviderKind::Antigravity {
-            spec.agy_credential_file = Some(crate::bridge::agy_auth::AgyLocator::resolve()?.file);
-        } else {
-            spec.codex_auth_file = Some(codex_auth_file(provider)?);
-        }
+        spec.codex_auth_file = Some(codex_auth_file(provider)?);
     }
 
     // Claude Code's settings file, resolved in the same shell and for the
@@ -455,21 +441,6 @@ pub fn build(
     // agy has no `ultra`; its builder sent `max`, so that is what ran.
     if agent == Agent::Agy {
         spec.effort = spec.effort.map(agents::agy::clamp_for_agy);
-    }
-    // Claude Code on agy's login starts on the family's own rung, which a
-    // wire-id suffix or the family's ladder may have decided; the builder
-    // already resolved it (and refused an unknown model).
-    if agent == Agent::Claude
-        && provider.kind == ProviderKind::Antigravity
-        && let Ok(start) = agents::claude::antigravity_start(profile_name, provider, overrides)
-    {
-        spec.effort = Some(start.effort);
-    }
-    // Every other agent on that login pinned its rung in the plan.
-    if provider.kind == ProviderKind::Antigravity
-        && let Some(plan) = &spec.bridge
-    {
-        spec.effort = plan.effort;
     }
     Ok(spec)
 }
@@ -553,14 +524,9 @@ impl Prepared {
 /// because the plan was dropped between the client and the hub - and the
 /// invariant is checked here, at the point of harm, so the next route that
 /// loses it stops rather than mis-launches.
-///
-/// The same holds for every agent but agy on an Antigravity profile, and it
-/// is worse there: Claude Code launched with `--model claude-opus-5-5` and
-/// no plan would run on the user's own Claude login without a word.
 fn needs_an_adapter_and_has_one(spec: &LaunchSpec) -> Result<()> {
     let upstream = match spec.provider_kind {
         ProviderKind::Codex if spec.agent != Agent::Codex => "Codex",
-        ProviderKind::Antigravity if spec.agent != Agent::Agy => "Antigravity",
         _ => return Ok(()),
     };
     if !spec.is_bridged() {
@@ -718,7 +684,7 @@ pub fn execute(spec: LaunchSpec, config_dir: &Path) -> Result<u8> {
     Ok(exit_code(status))
 }
 
-/// Records a Codex or Antigravity route and makes sure a bridge is up to
+/// Records a Codex route and makes sure a bridge is up to
 /// serve it, answering the origin the settings document points Claude Code
 /// at. A missing login is refused here, in the user's terminal, as it always
 /// was - before the route is written or a bridge started.
@@ -726,22 +692,11 @@ fn start_route(
     route: &crate::bridge_host::files::RouteRecord,
     config_dir: &Path,
 ) -> Result<String> {
-    match route.kind {
-        crate::bridge_host::files::RouteKind::Codex => {
-            if !route.auth_file.is_file() {
-                bail!(
-                    "Codex credentials were not found at {}; run `codex login` and retry",
-                    route.auth_file.display()
-                );
-            }
-        }
-        crate::bridge_host::files::RouteKind::Antigravity => {
-            let credential = route
-                .credential
-                .as_ref()
-                .context("this Antigravity route names no login; start `alc --agy claude` again")?;
-            crate::bridge::agy_auth::require_login(&credential.store())?;
-        }
+    if !route.auth_file.is_file() {
+        bail!(
+            "Codex credentials were not found at {}; run `codex login` and retry",
+            route.auth_file.display()
+        );
     }
     crate::bridge_host::files::write_route(config_dir, route)?;
     Ok(crate::bridge_host::ensure(config_dir)?.origin())
@@ -877,14 +832,7 @@ pub(crate) fn run_session_command(
 }
 
 /// The in-process bridge plan for a kind reached through alc's bridge - the
-/// Codex login and agy's - or `None` for a kind an agent reaches directly.
-///
-/// On Antigravity the pinned effort is folded into the wire id here, at
-/// launch: these agents pick one effort per session, and the wire id is how
-/// Antigravity is told. The rung is the one Claude Code would start on
-/// ([`agents::claude::antigravity_rung`]), said once on stderr when it is not
-/// the effort asked for; a model outside the families passes through for
-/// upstream to judge, as [`crate::antigravity::wire_model_for`] lets it.
+/// Codex login - or `None` for a kind an agent reaches directly.
 pub(crate) fn bridge_plan(
     provider: &Provider,
     overrides: &LaunchOverrides,
@@ -905,82 +853,6 @@ pub(crate) fn bridge_plan(
             api,
             upstream: None,
         })),
-        ProviderKind::Antigravity => {
-            let (model, effort, window) =
-                match agents::claude::antigravity_rung(provider, overrides) {
-                    Some(start) => {
-                        if let Some(note) = &start.note {
-                            eprintln!("{note}");
-                        }
-                        (
-                            crate::antigravity::wire_model_for(
-                                &start.family.id,
-                                Some(start.effort),
-                            ),
-                            Some(start.effort),
-                            Some(crate::antigravity::context_window(
-                                &start.family,
-                                provider.context,
-                            )),
-                        )
-                    }
-                    None => {
-                        let effort = overrides.reasoning_effort.or(provider.reasoning_effort);
-                        let model = overrides
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| provider.model.clone());
-                        eprintln!(
-                            "note: '{}' is not one of the Antigravity families alc ships; it is \
-                             sent as it is, for Antigravity to accept or refuse.",
-                            model.trim()
-                        );
-                        (
-                            crate::antigravity::wire_model_for(&model, effort),
-                            effort,
-                            None,
-                        )
-                    }
-                };
-            // The pickers list families; the pinned wire id goes first, so
-            // an agent that checks its model against its own list (OpenCode,
-            // Pi) finds the one it was told to start on.
-            let mut options = overrides.model_options.clone();
-            if !options.is_empty() && !options.iter().any(|option| option.id == model) {
-                let entry = crate::antigravity::family_of_model(&model)
-                    .and_then(|family| options.iter().find(|option| option.id == family.id))
-                    .map(|family| ModelInfo {
-                        id: model.clone(),
-                        name: format!(
-                            "{} ({})",
-                            family.name,
-                            crate::antigravity::effort_word(effort)
-                        ),
-                        ..family.clone()
-                    });
-                options.insert(
-                    0,
-                    entry.unwrap_or_else(|| ModelInfo {
-                        id: model.clone(),
-                        name: model.clone(),
-                        description: format!("{model} through your Antigravity login"),
-                        context_window: window.unwrap_or_default(),
-                        max_context_window: 0,
-                        default_effort: ReasoningEffort::Medium,
-                        supported_efforts: Vec::new(),
-                        priority: None,
-                    }),
-                );
-            }
-            Ok(Some(BridgePlan {
-                model,
-                effort,
-                context_window: overrides.context_window.or(window),
-                options,
-                api,
-                upstream: None,
-            }))
-        }
         _ => Ok(None),
     }
 }
@@ -1387,7 +1259,7 @@ pub(crate) struct Bridge {
 
 impl Bridge {
     /// The login path is the one the launch resolved in the user's own shell
-    /// (`codex_auth_file`, `agy_credential_file`). Resolving it here instead
+    /// (`codex_auth_file`). Resolving it here instead
     /// would read the environment of whichever process is starting the
     /// bridge, which on the shared path is the hub.
     fn start(plan: &BridgePlan, spec: &LaunchSpec, config_dir: &Path) -> Result<Self> {
@@ -1405,29 +1277,6 @@ impl Bridge {
                 crate::bridge::UpstreamKind::Api(endpoint.clone()),
             );
             (config, "API adapter", "api-bridge")
-        } else if spec.provider_kind == ProviderKind::Antigravity {
-            let file = spec.agy_credential_file.clone().context(
-                "this launch reached the Antigravity adapter without agy's login path; it was \
-                 resolved when the launch was built and has been lost since. This is an alc bug \
-                 - please report it",
-            )?;
-            let credential = crate::bridge::agy_auth::AgyLocator { file };
-            // Before a port is taken: no login, two, or one alc cannot read.
-            // An expired one is agy's to renew. On a shared session this runs
-            // in the hub, which hands the refusal back to the client.
-            crate::bridge::agy_auth::require_login(&credential.store())?;
-            let config = bridge_config(
-                PathBuf::new(),
-                plan,
-                spec.agent,
-                spec.provider_name.clone(),
-                ledger,
-                crate::bridge::UpstreamKind::Antigravity {
-                    credential,
-                    config_dir: config_dir.to_owned(),
-                },
-            );
-            (config, "Antigravity adapter", "agy-bridge")
         } else {
             // No fallback to resolving it here. `build` resolves it in the
             // user's shell, and a launch that arrives without one has lost it
@@ -1457,10 +1306,9 @@ impl Bridge {
         };
 
         // Built here, on the calling thread and before any runtime exists,
-        // rather than inside `block_on`: on agy's login it reads the store
-        // (the system keyring, which can wait up to seconds on macOS and
-        // Linux), and blocking I/O does not belong on an async worker. A
-        // failure is reported as itself, before a port is even reserved.
+        // rather than inside `block_on`: blocking I/O does not belong on an
+        // async worker. A failure is reported as itself, before a port is
+        // even reserved.
         let state = crate::bridge::BridgeState::new(native)
             .map(std::sync::Arc::new)
             .map_err(|error| anyhow::anyhow!("the {adapter} could not start: {error:#}"))?;
@@ -3443,65 +3291,6 @@ mod tests {
         assert!(needs_an_adapter_and_has_one(&plain).is_ok());
     }
 
-    /// The same check on agy's login: a Claude Code launch whose plan went
-    /// missing would carry `--model claude-opus-5-5` to the user's own Claude
-    /// login.
-    #[test]
-    fn an_antigravity_launch_without_an_adapter_is_refused_at_the_point_of_spawning() {
-        let mut spec = empty_spec();
-        spec.provider_kind = ProviderKind::Antigravity;
-        spec.agent = Agent::Claude;
-        let error = needs_an_adapter_and_has_one(&spec).unwrap_err().to_string();
-        assert!(error.contains("Antigravity adapter"), "{error}");
-
-        let mut routed = empty_spec();
-        routed.provider_kind = ProviderKind::Antigravity;
-        routed.agent = Agent::Claude;
-        routed.settings_plan = LaunchSpec::saturated().settings_plan;
-        assert!(needs_an_adapter_and_has_one(&routed).is_ok());
-        if let Some(plan) = routed.settings_plan.as_mut() {
-            plan.route = None;
-        }
-        assert!(needs_an_adapter_and_has_one(&routed).is_err());
-
-        // agy itself runs on that login natively.
-        let mut native = empty_spec();
-        native.provider_kind = ProviderKind::Antigravity;
-        native.agent = Agent::Agy;
-        assert!(needs_an_adapter_and_has_one(&native).is_ok());
-    }
-
-    /// The session card says what the session really runs at: the family's
-    /// rung, after a wire-id suffix and the ladder's top are applied.
-    #[test]
-    fn an_antigravity_claude_spec_records_the_effort_the_bridge_runs() {
-        let store = store(Config::default(), Credentials::default());
-        let run = |model: Option<&str>, effort: Option<ReasoningEffort>| {
-            let overrides = LaunchOverrides {
-                model: model.map(str::to_owned),
-                reasoning_effort: effort,
-                ..LaunchOverrides::default()
-            };
-            build(&store, Agent::Claude, Some("antigravity"), &[], &overrides)
-                .unwrap()
-                .effort
-        };
-        // The profile's own model is `claude-opus-5-5-high`.
-        assert_eq!(run(None, None), Some(ReasoningEffort::High));
-        assert_eq!(
-            run(Some("gemini-3.8-flash-low"), None),
-            Some(ReasoningEffort::Low)
-        );
-        assert_eq!(
-            run(None, Some(ReasoningEffort::Ultra)),
-            Some(ReasoningEffort::High)
-        );
-        assert_eq!(
-            run(Some("gpt-oss-120b"), Some(ReasoningEffort::Low)),
-            Some(ReasoningEffort::Medium)
-        );
-    }
-
     #[test]
     fn process_file_setup_applies_both_variants_and_only_flags_write_temp_for_cleanup() {
         let temp = tempfile::tempdir().unwrap();
@@ -3673,202 +3462,52 @@ mod tests {
         assert_eq!(codex_context_window(&provider, &entry), 500_000);
     }
 
+    /// agy's Google login is agy's alone: every other agent is refused
+    /// before anything is resolved, with the way to reach agy instead, and
+    /// no bridge is planned for it.
     #[test]
-    fn a_bridge_plan_pins_the_antigravity_wire_id_and_skips_direct_kinds() {
-        let mut provider = Provider::for_kind(ProviderKind::Antigravity);
-        let plan = bridge_plan(&provider, &LaunchOverrides::default(), BridgeApi::Chat)
-            .unwrap()
-            .unwrap();
-        assert_eq!(plan.model, "claude-opus-5-5-high");
-        assert_eq!(plan.api, BridgeApi::Chat);
-        provider.reasoning_effort = Some(ReasoningEffort::Low);
-        let plan = bridge_plan(&provider, &LaunchOverrides::default(), BridgeApi::Responses)
-            .unwrap()
-            .unwrap();
-        assert_eq!(plan.model, "claude-opus-5-5-low");
-        assert_eq!(plan.effort, Some(ReasoningEffort::Low));
-        let overrides = LaunchOverrides {
-            model: Some("gemini-3.8-flash".to_owned()),
-            ..LaunchOverrides::default()
-        };
-        assert_eq!(
-            bridge_plan(&provider, &overrides, BridgeApi::Chat)
-                .unwrap()
-                .unwrap()
-                .model,
-            "gemini-3.8-flash-low"
-        );
+    fn no_agent_but_agy_launches_on_the_antigravity_login() {
+        let store = store(Config::default(), Credentials::default());
+        for agent in Agent::ALL.into_iter().filter(|agent| *agent != Agent::Agy) {
+            let error = match build(
+                &store,
+                agent,
+                Some("antigravity"),
+                &[],
+                &LaunchOverrides::default(),
+            ) {
+                Ok(_) => panic!("{agent} launched on agy's login"),
+                Err(error) => format!("{error:#}"),
+            };
+            assert!(
+                error.contains("only the Antigravity CLI may use"),
+                "{agent}: {error}"
+            );
+            assert!(error.contains("alc agy"), "{agent}: {error}");
+        }
+        let claude = build(
+            &store,
+            Agent::Claude,
+            Some("antigravity"),
+            &[],
+            &LaunchOverrides::default(),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(claude.contains("alc claude --with-agy"), "{claude}");
         assert!(
             bridge_plan(
-                &Provider::for_kind(ProviderKind::Openrouter),
+                &Provider::for_kind(ProviderKind::Antigravity),
                 &LaunchOverrides::default(),
                 BridgeApi::Chat
             )
             .unwrap()
             .is_none()
         );
-    }
-
-    /// The same rung Claude Code starts on: the ladder's top is the wire's
-    /// `high`, and a family that serves fewer rungs runs on its own.
-    #[test]
-    fn a_bridge_plan_on_antigravity_starts_on_a_rung_the_family_serves() {
-        let mut provider = Provider::for_kind(ProviderKind::Antigravity);
-        provider.reasoning_effort = Some(ReasoningEffort::Max);
-        let plan = bridge_plan(&provider, &LaunchOverrides::default(), BridgeApi::Responses)
-            .unwrap()
-            .unwrap();
-        assert_eq!(plan.model, "claude-opus-5-5-high");
-        assert_eq!(plan.effort, Some(ReasoningEffort::High));
-        let overrides = LaunchOverrides {
-            model: Some("gpt-oss-120b".to_owned()),
-            reasoning_effort: Some(ReasoningEffort::Low),
-            ..LaunchOverrides::default()
-        };
-        let plan = bridge_plan(&provider, &overrides, BridgeApi::Chat)
-            .unwrap()
-            .unwrap();
-        assert_eq!(plan.model, "gpt-oss-120b-medium");
-        assert_eq!(plan.effort, Some(ReasoningEffort::Medium));
-        // An id alc does not ship passes through for upstream to judge.
-        let overrides = LaunchOverrides {
-            model: Some("gemini-9-preview".to_owned()),
-            ..LaunchOverrides::default()
-        };
-        let plan = bridge_plan(&provider, &overrides, BridgeApi::Chat)
-            .unwrap()
-            .unwrap();
-        assert_eq!(plan.model, "gemini-9-preview");
-    }
-
-    /// The window is the family's, and the pinned wire id is in the picker
-    /// the agent is handed - an agent that checks its model against its own
-    /// list (OpenCode, Pi) would otherwise refuse the one it was told to use.
-    #[test]
-    fn a_bridge_plan_on_antigravity_carries_the_family_window_and_offers_its_wire_id() {
-        let mut provider = Provider::for_kind(ProviderKind::Antigravity);
-        let family = crate::antigravity::family("claude-opus-5-5").unwrap();
-        let overrides = LaunchOverrides {
-            model_options: crate::antigravity::model_infos(provider.context),
-            ..LaunchOverrides::default()
-        };
-        let plan = bridge_plan(&provider, &overrides, BridgeApi::Responses)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            plan.context_window,
-            Some(crate::antigravity::context_window(
-                &family,
-                ContextChoice::Standard
-            ))
-        );
-        assert_eq!(plan.options[0].id, "claude-opus-5-5-high");
-        assert_eq!(
-            plan.options
-                .iter()
-                .filter(|option| option.id == "claude-opus-5-5-high")
-                .count(),
-            1
-        );
-        assert!(
-            plan.options
-                .iter()
-                .any(|option| option.id == "gemini-3.8-flash")
-        );
-        provider.context = ContextChoice::Max;
-        let plan = bridge_plan(&provider, &LaunchOverrides::default(), BridgeApi::Chat)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            plan.context_window,
-            Some(crate::antigravity::context_window(
-                &family,
-                ContextChoice::Max
-            ))
-        );
-    }
-
-    #[test]
-    fn an_antigravity_launch_without_its_bridge_is_refused_but_agy_needs_none() {
-        let mut spec = LaunchSpec::for_test();
-        spec.provider_kind = ProviderKind::Antigravity;
-        spec.agent = Agent::Opencode;
-        assert!(needs_an_adapter_and_has_one(&spec).is_err());
-        spec.agent = Agent::Agy;
-        assert!(needs_an_adapter_and_has_one(&spec).is_ok());
-    }
-
-    /// A bridged agent on agy's login carries the login's path from the
-    /// user's shell, and its session card names the rung the bridge sends.
-    #[test]
-    fn a_bridged_antigravity_spec_carries_the_login_path_and_the_rung() {
-        let store = store(Config::default(), Credentials::default());
-        for agent in [
-            Agent::Opencode,
-            Agent::Pi,
-            Agent::Kimi,
-            Agent::Codex,
-            Agent::Copilot,
-            Agent::Goose,
-            Agent::Qwen,
-        ] {
-            let overrides = LaunchOverrides {
-                reasoning_effort: Some(ReasoningEffort::Ultra),
-                ..LaunchOverrides::default()
-            };
-            let spec = build(&store, agent, Some("antigravity"), &[], &overrides).unwrap();
-            let plan = spec.bridge.as_ref().expect("bridged");
-            assert_eq!(plan.model, "claude-opus-5-5-high", "{agent}");
-            assert_eq!(spec.effort, Some(ReasoningEffort::High), "{agent}");
-            assert_eq!(spec.model.as_deref(), Some("claude-opus-5-5-high"));
-            assert!(spec.agy_credential_file.is_some(), "{agent}");
-            assert!(spec.codex_auth_file.is_none(), "{agent}");
-        }
-    }
-
-    fn antigravity_bridged_spec(login: Option<PathBuf>) -> LaunchSpec {
-        let mut spec = LaunchSpec::for_test();
-        spec.provider_kind = ProviderKind::Antigravity;
-        spec.provider_name = "antigravity".to_owned();
-        spec.agent = Agent::Opencode;
-        spec.bridge = Some(BridgePlan {
-            model: "claude-opus-5-5-high".to_owned(),
-            effort: Some(ReasoningEffort::High),
-            context_window: Some(256_000),
-            options: Vec::new(),
-            api: BridgeApi::Responses,
-            upstream: None,
-        });
-        spec.agy_credential_file = login;
-        spec
-    }
-
-    /// A plan that lost its login path is alc's fault, and says so rather
-    /// than going looking for a login in whatever process this is.
-    #[test]
-    fn an_antigravity_bridge_without_its_login_path_is_an_alc_bug() {
-        let temp = tempfile::tempdir().unwrap();
-        let spec = antigravity_bridged_spec(None);
-        let plan = spec.bridge.clone().unwrap();
-        let error = format!(
-            "{:#}",
-            Bridge::start(&plan, &spec, temp.path()).err().unwrap()
-        );
-        assert!(error.contains("without agy's login path"), "{error}");
-        assert!(error.contains("alc bug"), "{error}");
-    }
-
-    #[test]
-    fn an_antigravity_bridge_with_no_login_tells_the_user_to_sign_in() {
-        crate::bridge::agy_auth::test_support::without_system_keyring();
-        let temp = tempfile::tempdir().unwrap();
-        let spec = antigravity_bridged_spec(Some(temp.path().join("absent-login")));
-        let plan = spec.bridge.clone().unwrap();
-        let error = format!(
-            "{:#}",
-            Bridge::start(&plan, &spec, temp.path()).err().unwrap()
-        );
-        assert!(error.contains("not signed in to Antigravity"), "{error}");
-        assert!(error.contains("run `agy` and sign in"), "{error}");
+        let mut native = LaunchSpec::for_test();
+        native.provider_kind = ProviderKind::Antigravity;
+        native.agent = Agent::Agy;
+        assert!(needs_an_adapter_and_has_one(&native).is_ok());
     }
 }

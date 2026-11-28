@@ -17,9 +17,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use futures_util::StreamExt;
 
-use crate::bridge::agy_upstream::AgyState;
 use crate::bridge::auth::AuthManager;
-use crate::bridge::{BridgeConfig, BridgeError, BridgeState, Upstream, UpstreamKind};
+use crate::bridge::{BridgeConfig, BridgeError, BridgeState, UpstreamKind};
 use crate::config::Agent;
 
 use super::files;
@@ -47,9 +46,6 @@ pub(crate) struct Host {
     observer_key: super::observer_auth::ObserverKey,
     routes: Mutex<HashMap<String, Arc<BridgeState>>>,
     logins: Mutex<HashMap<PathBuf, Arc<AuthManager>>>,
-    /// One per agy login file, so every route over one login shares its
-    /// renewal and its signatures.
-    agy_logins: Mutex<HashMap<PathBuf, Arc<AgyState>>>,
     forward: Mutex<HashMap<String, ForwardEntry>>,
     activity: Activity,
     stop: Arc<tokio::sync::Notify>,
@@ -98,7 +94,6 @@ impl Host {
             observer_key: super::observer_auth::ObserverKey::load(config_dir)?,
             routes: Mutex::default(),
             logins: Mutex::default(),
-            agy_logins: Mutex::default(),
             forward: Mutex::default(),
             activity: Activity::new(crate::usage::ledger::now_unix()),
             stop: Arc::new(tokio::sync::Notify::new()),
@@ -108,8 +103,7 @@ impl Host {
     /// The bridge state for route `id`, built from its record the first time.
     ///
     /// The build runs on tokio's blocking pool, never on a request's worker:
-    /// it reads the route file, and an Antigravity state reads agy's login
-    /// from the system keyring, which can wait seconds on macOS and Linux.
+    /// it reads the route file.
     async fn route(self: &Arc<Self>, id: &str) -> Result<Arc<BridgeState>, BridgeError> {
         if let Some(state) = self
             .routes
@@ -170,33 +164,6 @@ impl Host {
                 };
                 BridgeState::with_auth(config, login)
             }
-            RouteKind::Antigravity => {
-                let credential = record.credential.clone().ok_or_else(|| {
-                    BridgeError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "api_error",
-                        format!(
-                            "route {id} names no Antigravity login; start `alc --agy claude` again"
-                        ),
-                    )
-                })?;
-                let agy = self.agy_login(&credential)?;
-                let config = BridgeConfig {
-                    auth_file: PathBuf::new(),
-                    effort: None,
-                    responses_api: false,
-                    agent: Agent::Claude,
-                    provider: record.profile.clone(),
-                    ledger,
-                    code_assist: None,
-                    claude_tiers: Some(record.tiers),
-                    upstream: UpstreamKind::Antigravity {
-                        credential,
-                        config_dir: self.config_dir.clone(),
-                    },
-                };
-                BridgeState::with_upstream(config, Upstream::Antigravity(agy))
-            }
         };
         let state = Arc::new(built.map_err(|error| {
             BridgeError::new(
@@ -214,32 +181,6 @@ impl Host {
                 .entry(id.to_owned())
                 .or_insert(state),
         ))
-    }
-
-    /// The one `AgyState` for agy's login at `credential`, made the first
-    /// time a route over it is served.
-    fn agy_login(
-        &self,
-        credential: &crate::bridge::agy_auth::AgyLocator,
-    ) -> Result<Arc<AgyState>, BridgeError> {
-        let mut logins = self
-            .agy_logins
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(agy) = logins.get(&credential.file) {
-            return Ok(Arc::clone(agy));
-        }
-        let agy = Arc::new(
-            AgyState::new(credential, &self.config_dir).map_err(|error| {
-                BridgeError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "api_error",
-                    format!("{error:#}"),
-                )
-            })?,
-        );
-        logins.insert(credential.file.clone(), Arc::clone(&agy));
-        Ok(agy)
     }
 }
 
@@ -1265,101 +1206,6 @@ mod tests {
             )
             .await,
             StatusCode::NOT_FOUND
-        );
-    }
-
-    /// An Antigravity route is served on agy's login, and every route over one
-    /// login file shares one `AgyState` - its renewal and its signatures.
-    /// The login is seeded in memory: a test must never read this machine's.
-    #[tokio::test]
-    async fn antigravity_routes_over_one_login_share_its_state() {
-        use crate::bridge::agy_auth::test_support::MemoryStore;
-        use crate::bridge::agy_auth::{AgyCredentials, AgyLocator};
-        use crate::bridge::agy_upstream::AgyUpstream;
-
-        let temp = tempfile::tempdir().unwrap();
-        let host = host(temp.path());
-        let credential = AgyLocator {
-            file: temp.path().join("agy-login"),
-        };
-        let seeded = Arc::new(AgyState::from_upstream(
-            AgyUpstream::with_base(
-                AgyCredentials::with_parts(
-                    Arc::new(MemoryStore::empty()),
-                    temp.path().join("agy-refresh.lock"),
-                    None,
-                ),
-                "http://127.0.0.1:9".to_owned(),
-            )
-            .unwrap(),
-        ));
-        host.agy_logins
-            .lock()
-            .unwrap()
-            .insert(credential.file.clone(), Arc::clone(&seeded));
-        let opus = files::RouteRecord::antigravity(
-            "antigravity",
-            credential.clone(),
-            crate::antigravity::tiers("claude-opus-5-5"),
-        );
-        let flash = files::RouteRecord::antigravity(
-            "antigravity",
-            credential.clone(),
-            crate::antigravity::tiers("gemini-3.8-flash"),
-        );
-        files::write_route(temp.path(), &opus).unwrap();
-        files::write_route(temp.path(), &flash).unwrap();
-
-        let mut served = Vec::new();
-        for route in [&opus, &flash] {
-            let Ok(state) = host.route(&route.id).await else {
-                panic!("route {} was not served", route.id);
-            };
-            let Upstream::Antigravity(agy) = &state.upstream else {
-                panic!("route {} is not on Antigravity", route.id);
-            };
-            assert!(Arc::ptr_eq(agy, &seeded), "{}", route.id);
-            assert!(matches!(
-                &state.config.upstream,
-                UpstreamKind::Antigravity { credential: used, .. } if *used == credential
-            ));
-            assert_eq!(state.config.claude_tiers.as_ref(), Some(&route.tiers));
-            served.push(state);
-        }
-        let Ok(again) = host.route(&opus.id).await else {
-            panic!("route {} was not served twice", opus.id);
-        };
-        assert!(Arc::ptr_eq(&again, &served[0]), "built once, then cached");
-    }
-
-    #[tokio::test]
-    async fn an_antigravity_route_that_names_no_login_is_refused() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut record = files::RouteRecord::antigravity(
-            "antigravity",
-            crate::bridge::agy_auth::AgyLocator {
-                file: temp.path().join("agy-login"),
-            },
-            crate::antigravity::tiers("claude-opus-5-5"),
-        );
-        record.credential = None;
-        // Written by hand: `write_route` checks a record's own id, and this
-        // one's no longer matches the login it named.
-        let dir = files::routes_dir(temp.path());
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join(format!("{}.json", record.id)),
-            serde_json::to_vec(&record).unwrap(),
-        )
-        .unwrap();
-        let Err(error) = host(temp.path()).route(&record.id).await else {
-            panic!("a route with no login was served");
-        };
-        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(
-            error.message.contains("names no Antigravity login"),
-            "{}",
-            error.message
         );
     }
 

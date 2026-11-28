@@ -223,6 +223,33 @@ impl std::str::FromStr for Agent {
     }
 }
 
+/// Why `agent` cannot run on the antigravity profile `name`, and what to do
+/// instead.
+///
+/// alc 2.10 and earlier did run every agent there, by borrowing the OAuth
+/// token agy stores and presenting itself to Google as agy. Antigravity's
+/// terms name exactly that as a breach ("using third party software, tools,
+/// or services to access the Service ... with Antigravity OAuth") and Google
+/// suspends accounts for it, so the route is gone. What remains is running
+/// the unmodified `agy` binary, which alc can still do on another agent's
+/// behalf: as an MCP tool that runs `agy --print`.
+pub fn agy_login_is_agy_only(name: &str, agent: Agent) -> String {
+    let instead = if agent == Agent::Claude {
+        "`alc claude --with-agy` (Claude Code on its own provider, with agy as a tool it can hand \
+         tasks to)"
+            .to_owned()
+    } else {
+        format!(
+            "{agent} on another provider, with agy added as an MCP server: `alc mcp agy` (stdio)"
+        )
+    };
+    format!(
+        "provider '{name}' is agy's own Google login, which only the Antigravity CLI may use: \
+         Antigravity's terms forbid other tools from signing in with it, and alc no longer routes \
+         {agent} through it. Run agy itself with `alc agy`, or use {instead}"
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderKind {
@@ -752,9 +779,10 @@ impl Provider {
             return false;
         }
         if self.kind == ProviderKind::Antigravity {
-            // agy runs natively on its own login; every other agent reaches
-            // the same login through alc's bridge (`bridge::agy_upstream`).
-            return true;
+            // agy's Google login is agy's alone: Antigravity's terms forbid
+            // other tools from using it, so no other agent is routed through
+            // it. They can still hand work to agy itself (`alc mcp agy`).
+            return agent == Agent::Agy;
         }
         if agent == Agent::Agy {
             // agy reaches the Codex login through the bridge's Code Assist
@@ -925,6 +953,10 @@ impl Config {
             let default_name = self.defaults.get(agent);
             match self.providers.get(default_name) {
                 Some(provider) if provider.supports(agent) => {}
+                // Saved by an alc that still routed other agents through agy's
+                // login. Not a reason to refuse the whole file: the launch
+                // that would use it says why it no longer can.
+                Some(provider) if provider.kind == ProviderKind::Antigravity => {}
                 Some(provider) if self.defaults.is_explicit(agent) => bail!(
                     "provider '{default_name}' ({}) cannot be used with {agent}; {}",
                     provider.kind,
@@ -960,6 +992,9 @@ impl Config {
                 bail!(
                     "provider '{name}' is turned off; turn it on with `alc config upsert {name} --enable{model}`"
                 );
+            }
+            if provider.kind == ProviderKind::Antigravity && agent != Agent::Agy {
+                bail!("{}", agy_login_is_agy_only(name, agent));
             }
             if !provider.supports(agent) {
                 bail!(
@@ -1423,8 +1458,8 @@ enabled = true
                 by_kind(ProviderKind::Openrouter),
                 every_agent_but_agy.as_slice(),
             ),
-            // antigravity: agy natively, every other agent through the bridge
-            (by_kind(ProviderKind::Antigravity), &Agent::ALL),
+            // antigravity: agy's own login, for agy alone
+            (by_kind(ProviderKind::Antigravity), &[Agent::Agy]),
         ];
         for (provider, expected) in cases {
             for agent in Agent::ALL {
@@ -1443,12 +1478,14 @@ enabled = true
         for kind in ProviderKind::ALL {
             let provider = Provider::for_kind(kind);
             for agent in Agent::ALL {
-                // A custom profile has no URL until the user gives it one.
-                assert_eq!(
-                    provider.supports(agent),
-                    kind != ProviderKind::Custom || provider.supports_natively(agent),
-                    "{kind} × {agent}"
-                );
+                // A custom profile has no URL until the user gives it one,
+                // and agy's login is agy's alone.
+                let expected = match kind {
+                    ProviderKind::Custom => provider.supports_natively(agent),
+                    ProviderKind::Antigravity => agent == Agent::Agy,
+                    _ => true,
+                };
+                assert_eq!(provider.supports(agent), expected, "{kind} × {agent}");
             }
         }
         let wire = |kind, agent| Provider::for_kind(kind).bridge_wire(agent);
@@ -1742,10 +1779,10 @@ enabled = true
     }
 
     #[test]
-    fn the_antigravity_kind_runs_every_agent_and_agy_runs_natively_only_on_it_and_codex() {
+    fn the_antigravity_kind_runs_agy_alone_and_agy_runs_only_on_it_and_codex() {
         let antigravity = Provider::for_kind(ProviderKind::Antigravity);
         for agent in Agent::ALL {
-            assert!(antigravity.supports(agent), "{agent}");
+            assert_eq!(antigravity.supports(agent), agent == Agent::Agy, "{agent}");
         }
         assert!(Provider::for_kind(ProviderKind::Codex).supports(Agent::Agy));
         for kind in ProviderKind::ALL
@@ -1766,15 +1803,28 @@ enabled = true
     }
 
     #[test]
-    fn another_agent_resolves_on_the_antigravity_profile() {
+    fn another_agent_is_refused_on_the_antigravity_profile_with_the_way_to_agy() {
         let config = Config::default();
-        let (name, provider) = config.resolve(Agent::Claude, Some("antigravity")).unwrap();
-        assert_eq!(name, "antigravity");
-        assert_eq!(provider.kind, ProviderKind::Antigravity);
+        let error = config
+            .resolve(Agent::Claude, Some("antigravity"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("only the Antigravity CLI may use"),
+            "{error}"
+        );
+        assert!(error.contains("alc claude --with-agy"), "{error}");
+        let error = config
+            .resolve(Agent::Opencode, Some("antigravity"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("alc mcp agy"), "{error}");
         assert_eq!(
-            config.resolve(Agent::Opencode, Some("agy")).unwrap().0,
+            config.resolve(Agent::Agy, Some("antigravity")).unwrap().0,
             "antigravity"
         );
+        // A default saved by an older alc does not refuse the whole file;
+        // the launch that would use it says why.
         let mut config = Config::default();
         config.defaults.set(Agent::Codex, "antigravity");
         config.validate().unwrap();

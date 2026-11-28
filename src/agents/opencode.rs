@@ -48,11 +48,10 @@ pub(crate) fn build(
         | ProviderKind::Google
         | ProviderKind::Custom => (format!("alc-{profile_name}"), true),
         ProviderKind::Codex => unreachable!(),
-        // Taken by `bridge_plan` above; said here too so a path that skips
-        // it gets an error rather than a broken config.
+        // agy's login is agy's alone; `Config::resolve` refuses it first.
         ProviderKind::Antigravity => bail!(
-            "provider '{profile_name}' is an Antigravity login, which alc reaches only through its \
-             bridge; this is an alc bug - please report it"
+            "{}",
+            crate::config::agy_login_is_agy_only(profile_name, crate::config::Agent::Opencode)
         ),
     };
 
@@ -149,11 +148,7 @@ pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgeP
     inline["provider"] = json!({
         "alc-codex": {
             "npm": "@ai-sdk/openai",
-            "name": if spec.provider_kind == ProviderKind::Antigravity {
-                "alc: Antigravity login"
-            } else {
-                "alc: Codex subscription"
-            },
+            "name": "alc: Codex subscription",
             "options": {
                 // The loopback bridge ignores auth entirely; the SDK still
                 // requires some non-empty apiKey value to be configured.

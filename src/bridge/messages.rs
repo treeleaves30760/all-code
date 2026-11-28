@@ -403,19 +403,6 @@ pub(crate) fn to_upstream(
     request: &MessagesRequest,
     affinity: Option<&RequestAffinity>,
 ) -> Result<UpstreamRequest, BridgeError> {
-    to_upstream_for(request, affinity, false)
-}
-
-/// [`to_upstream`], optionally carrying `thinking` blocks' signatures back as
-/// reasoning items. Only the Antigravity upstream asks for them: its tool
-/// rounds are refused without the signature the model minted, while Codex
-/// carries its reasoning through `reasoning.context` and has no place for a
-/// Messages thinking block.
-pub(crate) fn to_upstream_for(
-    request: &MessagesRequest,
-    affinity: Option<&RequestAffinity>,
-    carry_signatures: bool,
-) -> Result<UpstreamRequest, BridgeError> {
     if request.model.trim().is_empty() {
         return Err(BridgeError::invalid(
             "`model` is required: this bridge has no pinned model to fall back to",
@@ -446,7 +433,7 @@ pub(crate) fn to_upstream_for(
         });
     }
     for message in &request.messages {
-        append_message(message, &mut input, carry_signatures);
+        append_message(message, &mut input);
     }
 
     Ok(UpstreamRequest {
@@ -485,7 +472,7 @@ pub(crate) fn to_upstream_for(
 /// relative to the text is meaningful. Hence the flush: text accumulates until
 /// something that is not text forces it out, keeping the sequence the client
 /// wrote.
-fn append_message(message: &Message, input: &mut Vec<InputItem>, carry_signatures: bool) {
+fn append_message(message: &Message, input: &mut Vec<InputItem>) {
     let assistant = message.role == "assistant";
     let mut parts: Vec<ContentPart> = Vec::new();
     let role = if assistant { "assistant" } else { "user" };
@@ -531,26 +518,6 @@ fn append_message(message: &Message, input: &mut Vec<InputItem>, carry_signature
                 input.push(InputItem::FunctionCallOutput {
                     call_id: tool_use_id,
                     output: tool_result(content.as_ref(), is_error.unwrap_or(false)),
-                });
-            }
-            // On Antigravity a thinking block is the model's signed reasoning,
-            // and its signature must go back for the next tool round to be
-            // accepted. Only signatures alc sealed are carried; the reasoning
-            // item lands where the block was, which is immediately before the
-            // `tool_use` it signed.
-            ContentBlock::Thinking {
-                thinking,
-                signature: Some(signature),
-            } if carry_signatures && signature.starts_with(super::gemini::SIGNATURE_PREFIX) => {
-                flush(role, &mut parts, input);
-                input.push(InputItem::Reasoning {
-                    id: "rs_replay".to_owned(),
-                    summary: if thinking.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![json!({"type": "summary_text", "text": thinking})]
-                    },
-                    encrypted_content: signature,
                 });
             }
             // Thinking has no upstream container on this path: Codex carries
@@ -816,14 +783,6 @@ impl Turn {
             thinking: false,
             vendor: "chatgpt.com",
         }
-    }
-
-    /// A turn served by Antigravity: reasoning becomes `thinking` blocks
-    /// carrying their signatures, and refusals name Antigravity.
-    pub(crate) fn for_antigravity(mut self) -> Self {
-        self.thinking = true;
-        self.vendor = "Antigravity";
-        self
     }
 
     pub(crate) fn is_finished(&self) -> bool {
@@ -1353,27 +1312,10 @@ async fn messages(
 ) -> Result<Response, BridgeError> {
     let affinity = RequestAffinity::from_headers(headers);
     let mut request = parse(body)?;
-    let antigravity = matches!(state.upstream, super::Upstream::Antigravity(_));
     let api = matches!(state.upstream, super::Upstream::Api(_));
-    if !antigravity {
-        serve_codex_model(&state.config, &mut request);
-    }
-    let mut upstream_request = to_upstream_for(&request, affinity.as_ref(), antigravity)?;
+    serve_codex_model(&state.config, &mut request);
+    let mut upstream_request = to_upstream(&request, affinity.as_ref())?;
     if api {
-        upstream_request.max_output_tokens = request.max_tokens;
-        upstream_request.temperature = request.temperature;
-    }
-    if antigravity {
-        // Resolved here rather than on the send path so the ledger row names
-        // the wire model that actually served the turn.
-        upstream_request.model = super::gemini::wire_model(
-            &request.model,
-            upstream_request
-                .reasoning
-                .as_ref()
-                .and_then(|reasoning| reasoning.effort),
-            state.config.claude_tiers.as_ref(),
-        )?;
         upstream_request.max_output_tokens = request.max_tokens;
         upstream_request.temperature = request.temperature;
     }
@@ -1390,11 +1332,6 @@ async fn messages(
         request.model.clone(),
         estimate_input_tokens(&upstream_request),
     );
-    let turn = if antigravity {
-        turn.for_antigravity()
-    } else {
-        turn
-    };
     let response =
         upstream::send_with_affinity(state, upstream_request, affinity.as_ref(), observed).await?;
 
@@ -2285,266 +2222,5 @@ mod tests {
         let mut untouched = request("claude-opus-5");
         serve_codex_model(&pinned, &mut untouched);
         assert_eq!(untouched.model, "claude-opus-5");
-    }
-
-    use crate::bridge::agy_fake::{FakeCodeAssist, Reply, agy_bridge, post_json};
-    use crate::bridge::gemini::SKIP_SIGNATURE;
-
-    const TURN_ONE: &str = concat!(
-        "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Need weather.\",\"thought\":true,\"thoughtSignature\":\"S1\"}]}}]}}\n\n",
-        "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"Paris\"},\"id\":\"call-1\"},\"thoughtSignature\":\"S2\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":5,\"thoughtsTokenCount\":3,\"totalTokenCount\":28}}}\n\n",
-    );
-    const SUNNY: &str = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Sunny.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":30,\"candidatesTokenCount\":2,\"totalTokenCount\":32}}}\n\n";
-
-    fn project() -> Reply {
-        Reply::json(200, json!({"cloudaicompanionProject": "test-project"}))
-    }
-
-    fn weather_tool() -> Value {
-        json!({"name": "get_weather", "description": "Current weather for a city",
-               "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}})
-    }
-
-    fn first_turn(model: &str, stream: bool) -> Value {
-        json!({"model": model, "stream": stream, "max_tokens": 4096, "output_config": {"effort": "low"},
-               "tools": [weather_tool()], "messages": [{"role": "user", "content": "Weather in Paris?"}]})
-    }
-
-    fn second_turn(model: &str, thinking: Option<&str>) -> Value {
-        let mut assistant = Vec::new();
-        if let Some(signature) = thinking {
-            assistant.push(
-                json!({"type": "thinking", "thinking": "Need weather.", "signature": signature}),
-            );
-        }
-        assistant.push(json!({"type": "tool_use", "id": "call-1", "name": "get_weather", "input": {"city": "Paris"}}));
-        json!({"model": model, "stream": false, "max_tokens": 4096, "output_config": {"effort": "low"},
-               "tools": [weather_tool()],
-               "messages": [
-                   {"role": "user", "content": "Weather in Paris?"},
-                   {"role": "assistant", "content": assistant},
-                   {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call-1", "content": "Sunny, 21 C"}]}]})
-    }
-
-    #[tokio::test]
-    async fn a_messages_tool_round_trips_its_signatures_through_antigravity() {
-        let fake = FakeCodeAssist::start(
-            vec![project()],
-            vec![Reply::sse(TURN_ONE), Reply::sse(SUNNY)],
-        );
-        let state = agy_bridge(&fake, None, None);
-        let (status, body) = post_json(
-            Arc::clone(&state),
-            "/v1/messages",
-            first_turn("claude-sonnet-5-5", true),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body.contains("\"type\":\"thinking\""), "{body}");
-        assert!(body.contains("\"thinking_delta\""), "{body}");
-        assert!(
-            body.contains("\"signature\":\"agy1:claude-sonnet-5-5-low:S1\""),
-            "{body}"
-        );
-        assert!(body.contains("\"id\":\"call-1\""), "{body}");
-        assert!(body.contains("\"stop_reason\":\"tool_use\""), "{body}");
-
-        let (status, body) = post_json(
-            Arc::clone(&state),
-            "/v1/messages",
-            second_turn("claude-sonnet-5-5", Some("agy1:claude-sonnet-5-5-low:S1")),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let sent = fake
-            .requests()
-            .into_iter()
-            .filter(|r| r.path.contains("streamGenerate"))
-            .nth(1)
-            .unwrap()
-            .body;
-        assert_eq!(sent["model"], "claude-sonnet-5-5-low");
-        assert_eq!(
-            sent["request"]["contents"],
-            json!([
-                {"role": "user", "parts": [{"text": "Weather in Paris?"}]},
-                {"role": "model", "parts": [
-                    {"text": "Need weather.", "thought": true, "thoughtSignature": "S1"},
-                    {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}, "id": "call-1"}, "thoughtSignature": "S2"}]},
-                {"role": "user", "parts": [{"functionResponse": {"name": "get_weather", "response": {"output": "Sunny, 21 C"}, "id": "call-1"}}]}
-            ])
-        );
-        assert_eq!(sent["request"]["generationConfig"]["maxOutputTokens"], 4096);
-    }
-
-    #[tokio::test]
-    async fn a_fresh_bridge_sends_an_unsigned_tool_round_with_the_placeholder() {
-        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(SUNNY)]);
-        let (status, body) = post_json(
-            agy_bridge(&fake, None, None),
-            "/v1/messages",
-            second_turn("gemini-3.8-flash", None),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let sent = fake.requests().last().cloned().unwrap().body;
-        assert!(sent.to_string().contains(SKIP_SIGNATURE), "{sent}");
-        assert!(!sent.to_string().contains("[called tool"), "{sent}");
-    }
-
-    #[tokio::test]
-    async fn a_401_after_the_first_part_is_not_retried() {
-        let broken = concat!(
-            "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hel\"}]}}]}}\n\n",
-            "data: {\"error\":{\"code\":401,\"message\":\"Request had invalid authentication credentials.\",\"status\":\"UNAUTHENTICATED\"}}\n\n",
-        );
-        let fake =
-            FakeCodeAssist::start(vec![project()], vec![Reply::sse(broken), Reply::sse(SUNNY)]);
-        let (status, body) = post_json(
-            agy_bridge(&fake, None, None),
-            "/v1/messages",
-            first_turn("gemini-3.8-flash", true),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "the stream had begun");
-        assert!(body.contains("\"text\":\"Hel\""), "{body}");
-        assert!(body.contains("event: error"), "{body}");
-        assert!(body.contains("UNAUTHENTICATED"), "{body}");
-        assert!(!body.contains("tok-a"), "{body}");
-        assert_eq!(
-            fake.count("streamGenerateContent"),
-            1,
-            "no renewal, no retry"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_safety_stop_is_an_error_the_client_sees() {
-        let blocked = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"SAFETY\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"totalTokenCount\":5}}}\n\n";
-        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(blocked)]);
-        let state = agy_bridge(&fake, None, None);
-        let (status, body) = post_json(
-            Arc::clone(&state),
-            "/v1/messages",
-            first_turn("gemini-3.8-flash", true),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("event: error"), "{body}");
-        assert!(body.contains("SAFETY"), "{body}");
-        assert!(!body.contains("end_turn"), "{body}");
-        let (status, body) =
-            post_json(state, "/v1/messages", first_turn("gemini-3.8-flash", false)).await;
-        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
-        assert!(body.contains("safety filter"), "{body}");
-    }
-
-    #[tokio::test]
-    async fn the_ledger_row_names_antigravity_the_wire_model_and_its_tokens() {
-        let dir = tempfile::tempdir().unwrap();
-        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(TURN_ONE)]);
-        let ledger = dir.path().join(crate::usage::ledger::LEDGER_FILE);
-        let (status, _) = post_json(
-            agy_bridge(&fake, Some(ledger), None),
-            "/v1/messages",
-            first_turn("claude-sonnet-5-5", false),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let records = crate::usage::ledger::read_records(dir.path()).records;
-        let record = records
-            .iter()
-            .find(|r| r.provider.as_deref() == Some("antigravity"))
-            .expect("a row");
-        assert_eq!(record.model.as_deref(), Some("claude-sonnet-5-5-low"));
-        assert_eq!(record.tokens.input_tokens, Some(20));
-        assert_eq!(record.tokens.output_tokens, Some(8));
-        // One login per machine: a stable marker, not the token's fingerprint,
-        // which changes with every hourly renewal.
-        assert_eq!(record.account_id.as_deref(), Some("agy"));
-    }
-
-    #[test]
-    fn a_codex_bound_request_still_drops_thinking_blocks() {
-        let request: MessagesRequest =
-            serde_json::from_value(second_turn("gpt-6-sol", Some("agy1:x:y"))).unwrap();
-        let built = to_upstream(&request, None).unwrap();
-        assert!(
-            !built
-                .input
-                .iter()
-                .any(|item| matches!(item, InputItem::Reasoning { .. }))
-        );
-        let carried = to_upstream_for(&request, None, true).unwrap();
-        assert!(carried.input.iter().any(|item| matches!(item, InputItem::Reasoning { encrypted_content, .. } if encrypted_content == "agy1:x:y")));
-    }
-    #[tokio::test]
-    async fn a_non_streaming_answer_carries_the_thinking_block_and_its_signature() {
-        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(TURN_ONE)]);
-        let (status, body) = post_json(
-            agy_bridge(&fake, None, None),
-            "/v1/messages",
-            first_turn("claude-sonnet-5-5", false),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let message: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(
-            message["content"],
-            json!([
-                {"type": "thinking", "thinking": "Need weather.", "signature": "agy1:claude-sonnet-5-5-low:S1"},
-                {"type": "tool_use", "id": "call-1", "name": "get_weather", "input": {"city": "Paris"}}
-            ])
-        );
-        assert_eq!(message["stop_reason"], "tool_use");
-        assert_eq!(
-            message["model"], "claude-sonnet-5-5",
-            "the client's own name for the model"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_claude_round_without_a_signature_is_replayed_as_received() {
-        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(SUNNY)]);
-        let (status, body) = post_json(
-            agy_bridge(&fake, None, None),
-            "/v1/messages",
-            second_turn("claude-sonnet-5-5", None),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let sent = fake
-            .requests()
-            .into_iter()
-            .find(|r| r.path.contains("streamGenerate"))
-            .unwrap()
-            .body;
-        assert_eq!(
-            sent["request"]["contents"][1],
-            json!({"role": "model", "parts": [{"functionCall": {"name": "get_weather", "args": {"city": "Paris"}, "id": "call-1"}}]})
-        );
-    }
-
-    #[tokio::test]
-    async fn a_thinking_block_alc_did_not_seal_is_not_replayed() {
-        let fake = FakeCodeAssist::start(vec![project()], vec![Reply::sse(SUNNY)]);
-        let (status, body) = post_json(
-            agy_bridge(&fake, None, None),
-            "/v1/messages",
-            second_turn(
-                "claude-sonnet-5-5",
-                Some("EqQBCkYIBxgCKkA-an-anthropic-signature"),
-            ),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let sent = fake
-            .requests()
-            .into_iter()
-            .find(|r| r.path.contains("streamGenerate"))
-            .unwrap()
-            .body;
-        assert!(!sent.to_string().contains("Need weather."), "{sent}");
-        assert!(!sent.to_string().contains("anthropic-signature"), "{sent}");
     }
 }

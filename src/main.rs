@@ -1,4 +1,5 @@
 mod agents;
+mod agy_mcp;
 mod antigravity;
 mod bridge;
 mod bridge_host;

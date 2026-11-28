@@ -1536,12 +1536,10 @@ mod live_tests {
 
     /// Points every login the usage report would read at an empty
     /// directory of the test's own, so the report never reads the machine's
-    /// Codex, Claude or agy login, nor asks a vendor about one. The hub reads
+    /// Codex or Claude login, nor asks a vendor about one. The hub reads
     /// no `CODEX_HOME` (`Env::hub_safe`), so the profiles pin their account
-    /// directories instead; agy's login has no per-profile pin, so its profile
-    /// is off, and the keyring is off for the process in any case.
+    /// directories instead; agy's profile is off, as alc never reads its login.
     fn isolate_usage(harness: &Harness) -> tempfile::TempDir {
-        crate::bridge::agy_auth::test_support::without_system_keyring();
         let accounts = tempfile::tempdir().unwrap();
         let codex_home = accounts.path().join("codex");
         let claude_dir = accounts.path().join("claude");

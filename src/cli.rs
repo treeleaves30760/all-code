@@ -224,10 +224,26 @@ enum Command {
     Kimi(Passthrough),
     /// Launch the Antigravity CLI (agy).
     Agy(Passthrough),
+    /// Serve an agent as an MCP tool other agents can call, over stdio.
+    Mcp(McpArgs),
     /// Starts a `--tmux` session's agent from inside its tmux pane, on
     /// Windows. Not for people: the hub puts this on the pane's command line.
     #[command(name = remote::PANE_SUBCOMMAND, hide = true)]
     TmuxPane(TmuxPaneArgs),
+}
+
+#[derive(Debug, Args)]
+struct McpArgs {
+    #[command(subcommand)]
+    server: McpServer,
+}
+
+#[derive(Debug, Subcommand)]
+enum McpServer {
+    /// The Antigravity CLI: one tool, `agy`, that runs `agy --print` on agy's
+    /// own sign-in in the working directory and returns its answer. Add it to
+    /// any MCP client as a stdio server: `alc mcp agy`.
+    Agy,
 }
 
 #[derive(Debug, Args)]
@@ -272,6 +288,11 @@ struct ClaudeArgs {
     /// Save this run's model, effort and context as the provider's defaults.
     #[arg(long)]
     save: bool,
+
+    /// Give Claude Code the Antigravity CLI as a tool (`alc mcp agy`): it can
+    /// hand agy a task, which runs on agy's own sign-in in this project.
+    #[arg(long)]
+    with_agy: bool,
 
     /// Arguments passed unchanged to Claude Code.
     #[arg(
@@ -716,6 +737,12 @@ pub fn run() -> Result<u8> {
     if let Command::TmuxPane(args) = &cli.command {
         remote::run_pane(args.port, &args.token);
     }
+    if let Command::Mcp(args) = &cli.command {
+        let store = Store::load_without_credentials(cli.config_dir.clone())?;
+        return match args.server {
+            McpServer::Agy => crate::agy_mcp::serve(&store),
+        };
+    }
     match &cli.command {
         Command::Tps(args) => {
             let store = Store::load_without_credentials(cli.config_dir.clone())?;
@@ -768,6 +795,7 @@ pub fn run() -> Result<u8> {
         Command::Update(_) => unreachable!("update is handled before config loading"),
         Command::Install(_) => unreachable!("installation is handled before config loading"),
         Command::TmuxPane(_) => unreachable!("the pane launcher is handled before config loading"),
+        Command::Mcp(_) => unreachable!("MCP servers are handled before credentials are loaded"),
         Command::Remote(args) => run_remote(&store, args),
         Command::Confirm(args) => remote::confirm(&store, &args.ticket),
         Command::Hub(args) => {
@@ -821,6 +849,7 @@ pub fn run() -> Result<u8> {
                         context: None,
                         no_picker: false,
                         save: false,
+                        with_agy: false,
                         args: args.args,
                     },
                     cli.dry_run,
@@ -1065,8 +1094,6 @@ fn run_agent(
     let provider = store.config.resolve(agent, requested_provider)?.1.clone();
     let overrides = if provider.kind == ProviderKind::Codex && agent != Agent::Codex {
         codex_launch_overrides(store, &provider, dry_run)?
-    } else if provider.kind == ProviderKind::Antigravity && agent != Agent::Agy {
-        antigravity_launch_overrides(&provider, None, None)
     } else {
         launch::LaunchOverrides::default()
     };
@@ -1077,16 +1104,21 @@ fn run_agent(
 fn run_claude(
     store: &mut Store,
     requested_provider: Option<&str>,
-    args: ClaudeArgs,
+    mut args: ClaudeArgs,
     dry_run: bool,
     sharing: Sharing,
 ) -> Result<u8> {
     reject_swallowed_flags(&args.args, Agent::Claude, saw_escape())?;
     if let Some(why) = crate::agents::claude::runs_directly(&args.args) {
         let command = args.args[0].to_string_lossy().into_owned();
-        if args.model.is_some() || args.effort.is_some() || args.context.is_some() || args.save {
+        if args.model.is_some()
+            || args.effort.is_some()
+            || args.context.is_some()
+            || args.save
+            || args.with_agy
+        {
             bail!(
-                "--model, --effort, --context and --save do not apply to `claude {command}`, which {why}"
+                "--model, --effort, --context, --save and --with-agy do not apply to `claude {command}`, which {why}"
             );
         }
         if sharing.enabled {
@@ -1098,46 +1130,15 @@ fn run_claude(
         let (name, provider) = store.config.resolve(Agent::Claude, requested_provider)?;
         (name.to_owned(), provider.clone())
     };
-
-    if provider.kind == ProviderKind::Antigravity {
-        // This run's choice goes through the provider, so the one place that
-        // turns a choice into a window decides it for this run too; the
-        // windows reach the plan through the overrides.
-        let mut provider = provider;
-        if let Some(choice) = args.context {
-            provider.context = choice;
-        }
-        let overrides = antigravity_launch_overrides(&provider, args.model.as_deref(), args.effort);
-        if args.save {
-            // The command that saves exactly what this run resolved to. The
-            // model is the wire id of the rung it runs, which `alc agy` takes
-            // as well as the bridge: agy lists wire ids only.
-            let start =
-                crate::agents::claude::antigravity_start(&profile_name, &provider, &overrides)?;
-            bail!(
-                "--save is available with a Codex provider; save these as the antigravity \
-                 profile's defaults with `alc config upsert {profile_name} --model {} --effort {} \
-                 --context {}`",
-                crate::antigravity::wire_model_for(&start.family.id, Some(start.effort)),
-                start.effort,
-                provider.context
-            );
-        }
-        let spec = launch::build(
-            store,
-            Agent::Claude,
-            requested_provider,
-            &args.args,
-            &overrides,
-        )?;
-        return run_spec(store, spec, dry_run, sharing);
+    if args.with_agy {
+        args.args.extend(with_agy_args(&store.dir)?);
     }
 
     if provider.kind != ProviderKind::Codex {
         if args.effort.is_some() || args.context.is_some() || args.save {
             bail!(
-                "--effort, --context and --save are available with a Codex or Antigravity provider; \
-                 use `alc --codex claude` or `alc --agy claude`"
+                "--effort, --context and --save are available with a Codex provider; \
+                 use `alc --codex claude`"
             );
         }
         // A local server can say how much context it really gives the model,
@@ -1346,25 +1347,28 @@ fn codex_session_overrides(
     }
 }
 
-/// What an Antigravity-bridged session is launched with: the model and
-/// effort this run names (the plan falls back to the profile's), the window
-/// the profile's context choice gives that family, and every family for the
-/// agent's own picker.
-fn antigravity_launch_overrides(
-    provider: &Provider,
-    model: Option<&str>,
-    effort: Option<ReasoningEffort>,
-) -> launch::LaunchOverrides {
-    let context_window = antigravity::family_of_model(model.unwrap_or(&provider.model))
-        .map(|family| antigravity::context_window(&family, provider.context));
-    launch::LaunchOverrides {
-        // Only this run's: the plan reads a profile's wire-id effort after
-        // the profile's own `effort`, and a run's before it.
-        model: model.map(str::to_owned),
-        reasoning_effort: effort,
-        context_window,
-        model_options: antigravity::model_infos(provider.context),
+/// Claude Code's `--mcp-config` for `--with-agy`: this alc, serving
+/// `alc mcp agy` over stdio from the same config directory. Appended after
+/// everything else, because the option takes any number of values and would
+/// swallow a prompt that came after it.
+fn with_agy_args(config_dir: &std::path::Path) -> Result<Vec<OsString>> {
+    if crate::doctor::resolve(&crate::doctor::binary_for(Agent::Agy)).is_none() {
+        bail!(
+            "--with-agy hands tasks to the Antigravity CLI, but 'agy' is not installed or not on \
+             PATH; install it and sign in with `agy` first"
+        );
     }
+    let alc = std::env::current_exe().context("could not find this alc's own path")?;
+    let config = serde_json::json!({
+        "mcpServers": {
+            "agy": {
+                "type": "stdio",
+                "command": alc,
+                "args": ["--config-dir", config_dir, "mcp", "agy"],
+            }
+        }
+    });
+    Ok(vec!["--mcp-config".into(), config.to_string().into()])
 }
 
 /// The catalog entries the bundled bridge can actually route.
@@ -1486,10 +1490,7 @@ fn run_spec(
                 "metrics: would observe native API requests through an authenticated loopback forwarding route; TTFT/TPS start with new requests"
             );
         }
-        if spec.is_bridged() && spec.provider_kind == ProviderKind::Antigravity {
-            // The picker is the families alc ships, never a synced list.
-            println!("catalog: the Antigravity families alc ships");
-        } else if spec.is_bridged() {
+        if spec.is_bridged() {
             // A dry run used to be the one path that said nothing at all
             // about where its model list came from, which is why a machine
             // quietly hiding a model looked healthy here.
@@ -1627,10 +1628,8 @@ fn run_bridge(store: &Store, args: BridgeArgs) -> Result<u8> {
     }
 }
 
-/// One row of `alc models --agy`: the id, its label, and its windows. A live
-/// `agy models` can list ids no family serves (`gemini-4-argon-disabled` on
-/// a plan without Argon, `gemini-3.8-flash-tiered`); those are marked, so
-/// nobody pins a profile to a model the bridge cannot run.
+/// One row of `alc models --agy`: the id, its label, and, for an id of a
+/// family alc knows, its windows.
 fn agy_model_line(model: &antigravity::AgyModel) -> String {
     let suffix = match antigravity::split_wire_id(&model.id) {
         Some((family, _)) => {
@@ -1642,7 +1641,6 @@ fn agy_model_line(model: &antigravity::AgyModel) -> String {
                 format!(" (context {standard}K)")
             }
         }
-        None if antigravity::family_of_model(&model.id).is_none() => " (not bridgeable)".to_owned(),
         None => String::new(),
     };
     format!("{}: {}{suffix}", model.id, model.label)
@@ -1988,11 +1986,11 @@ mod tests {
         );
         assert_eq!(
             line("gemini-4-argon-disabled", "Gemini 4 Argon"),
-            "gemini-4-argon-disabled: Gemini 4 Argon (not bridgeable)"
+            "gemini-4-argon-disabled: Gemini 4 Argon"
         );
         assert_eq!(
             line("gemini-3.8-flash-tiered", "Gemini 3.8 Flash"),
-            "gemini-3.8-flash-tiered: Gemini 3.8 Flash (not bridgeable)"
+            "gemini-3.8-flash-tiered: Gemini 3.8 Flash"
         );
     }
 
