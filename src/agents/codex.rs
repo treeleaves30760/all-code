@@ -4,8 +4,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::{AuthStyle, Provider, ProviderKind, Store};
 use crate::launch::{
-    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, bridge_plan, has_effort_override,
-    has_model_override, has_option, key_or_error, openai_style_base_url, toml_string,
+    BridgeApi, BridgePlan, LaunchOverrides, LaunchSpec, has_effort_override, has_model_override,
+    has_option, key_or_error, openai_style_base_url, toml_string,
 };
 
 pub(crate) fn build(
@@ -16,20 +16,13 @@ pub(crate) fn build(
     passthrough: &[OsString],
     overrides: &LaunchOverrides,
 ) -> Result<()> {
-    // Codex cannot sign with agy's login itself, so on that kind it runs on
-    // alc's in-process bridge over the Responses surface, pinned like every
-    // other agent there; `apply_bridge` points it at the bridge once the
-    // port is known.
+    // agy's login is agy's alone; `Config::resolve` refuses it first, and
+    // this keeps a path that skips it from launching anyway.
     if provider.kind == ProviderKind::Antigravity {
-        let plan = bridge_plan(provider, overrides, BridgeApi::Responses)?
-            .context("the Antigravity kind always runs on alc's bridge")?;
-        if !has_model_override(passthrough) {
-            spec.args
-                .extend([OsString::from("--model"), OsString::from(&plan.model)]);
-        }
-        spec.bridge = Some(plan);
-        spec.args.extend_from_slice(passthrough);
-        return Ok(());
+        bail!(
+            "{}",
+            crate::config::agy_login_is_agy_only(profile_name, crate::config::Agent::Codex)
+        );
     }
 
     if provider.kind == ProviderKind::Codex {
@@ -178,22 +171,20 @@ fn push_codex_config(args: &mut Vec<OsString>, key: &str, value: String) {
     args.push(OsString::from(format!("{key}={value}")));
 }
 
-/// Points Codex at alc's in-process bridge for a login Codex cannot sign with
-/// itself (agy's). Prepended, so the flags precede any subcommand Codex was
+/// Points Codex at alc's in-process bridge for a provider API Codex cannot
+/// speak itself. Prepended, so the flags precede any subcommand Codex was
 /// given and a `-c` of the user's own still wins. Codex on its own login runs
 /// natively and never gets a plan.
 ///
-/// The window travels too: Codex has no metadata for an Antigravity slug,
-/// and without one it neither compacts a long session nor shows how much
-/// context is left - the session would end on Antigravity's limit instead.
+/// The window travels too: Codex has no metadata for a slug it does not
+/// ship, and without one it neither compacts a long session nor shows how
+/// much context is left - the session would end on the provider's limit.
 pub(crate) fn apply_bridge(spec: &mut LaunchSpec, base_url: &str, plan: &BridgePlan) -> Result<()> {
     let (id, name) = if plan.upstream.is_some() {
         (
             "alc_bridge",
             format!("alc: {} via alc's bridge", spec.provider_name),
         )
-    } else if spec.provider_kind == ProviderKind::Antigravity {
-        ("alc_antigravity", "alc: Antigravity login".to_owned())
     } else {
         return Ok(());
     };
@@ -242,20 +233,27 @@ mod tests {
     use crate::launch::{BridgeApi, BridgePlan};
 
     #[test]
-    fn codex_on_antigravity_is_pointed_at_the_bridge_ahead_of_its_subcommand() {
+    fn codex_on_a_bridged_api_is_pointed_at_the_bridge_ahead_of_its_subcommand() {
         let mut spec = LaunchSpec::for_test();
-        spec.provider_kind = ProviderKind::Antigravity;
+        spec.provider_kind = ProviderKind::Deepseek;
+        spec.provider_name = "deepseek".to_owned();
         spec.agent = Agent::Codex;
-        spec.args = ["--model", "gemini-3.8-flash-low", "exec"]
+        spec.args = ["--model", "deepseek-chat", "exec"]
             .map(OsString::from)
             .to_vec();
         let plan = BridgePlan {
-            model: "gemini-3.8-flash-low".to_owned(),
+            model: "deepseek-chat".to_owned(),
             effort: None,
             context_window: Some(1_048_576),
             options: Vec::new(),
             api: BridgeApi::Responses,
-            upstream: None,
+            upstream: Some(crate::config::ApiEndpoint {
+                kind: ProviderKind::Deepseek,
+                wire: crate::config::ApiWire::Chat,
+                url: "https://api.deepseek.com/v1/chat/completions".to_owned(),
+                auth: crate::config::AuthStyle::Bearer,
+                key: None,
+            }),
         };
         let unwindowed = spec.clone();
         apply_bridge(&mut spec, "http://127.0.0.1:9", &plan).unwrap();
@@ -264,25 +262,22 @@ mod tests {
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            &args[..2],
-            ["--config", "model_provider=\"alc_antigravity\""]
-        );
+        assert_eq!(&args[..2], ["--config", "model_provider=\"alc_bridge\""]);
         assert!(
             args.contains(
-                &"model_providers.alc_antigravity.base_url=\"http://127.0.0.1:9/v1\"".to_owned()
+                &"model_providers.alc_bridge.base_url=\"http://127.0.0.1:9/v1\"".to_owned()
             ),
             "{args:?}"
         );
         assert!(
-            args.contains(&"model_providers.alc_antigravity.wire_api=\"responses\"".to_owned()),
+            args.contains(&"model_providers.alc_bridge.wire_api=\"responses\"".to_owned()),
             "{args:?}"
         );
         assert_eq!(
             &args[args.len() - 3..],
-            ["--model", "gemini-3.8-flash-low", "exec"]
+            ["--model", "deepseek-chat", "exec"]
         );
-        // Codex has no metadata for an Antigravity slug, so without the
+        // Codex has no metadata for a slug it does not ship, so without the
         // window it neither compacts nor shows how much context is left.
         assert!(
             args.contains(&"model_context_window=1048576".to_owned()),
@@ -304,6 +299,10 @@ mod tests {
         );
 
         let mut native = LaunchSpec::for_test();
+        let plan = BridgePlan {
+            upstream: None,
+            ..plan
+        };
         apply_bridge(&mut native, "http://127.0.0.1:9", &plan).unwrap();
         assert!(
             native.args.is_empty(),

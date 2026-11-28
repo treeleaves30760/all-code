@@ -135,11 +135,11 @@ pub(crate) struct UpstreamRequest {
     /// Must be a list, and carries the tools, the system prompt and the
     /// conversation in that order.
     pub input: Vec<InputItem>,
-    /// The client's output cap, Antigravity only. chatgpt.com refuses
+    /// The client's output cap, provider APIs only. chatgpt.com refuses
     /// `max_output_tokens` outright, so it is never serialised.
     #[serde(skip)]
     pub max_output_tokens: Option<u64>,
-    /// Antigravity only, for the same reason.
+    /// Provider APIs only, for the same reason.
     #[serde(skip)]
     pub temperature: Option<f64>,
 }
@@ -399,7 +399,7 @@ pub(crate) enum UpstreamEvent {
         item_id: String,
         arguments: String,
     },
-    /// Reasoning text, on the Antigravity upstream only: the Messages surface
+    /// Reasoning text, from a provider API only: the Messages surface
     /// renders it as a `thinking` block. chatgpt.com sends none, because the
     /// Codex bodies alc builds ask for no reasoning summary.
     #[serde(rename = "response.reasoning_summary_text.delta")]
@@ -800,7 +800,6 @@ pub(crate) struct UpstreamStream(Source);
 /// otherwise be as large as the larger of them on every surface's stack.
 enum Source {
     Codex(Box<CodexStream>),
-    Antigravity(Box<super::gemini_stream::AgyStream>),
     Api(Box<super::api::ApiStream>),
 }
 
@@ -812,10 +811,6 @@ impl UpstreamStream {
         ))))
     }
 
-    pub(crate) fn antigravity(stream: super::gemini_stream::AgyStream) -> Self {
-        Self(Source::Antigravity(Box::new(stream)))
-    }
-
     pub(crate) fn api(stream: super::api::ApiStream) -> Self {
         Self(Source::Api(Box::new(stream)))
     }
@@ -825,7 +820,6 @@ impl UpstreamStream {
     pub(crate) async fn next(&mut self) -> Option<Result<UpstreamFrame, BridgeError>> {
         match &mut self.0 {
             Source::Codex(stream) => stream.next().await,
-            Source::Antigravity(stream) => stream.next().await,
             Source::Api(stream) => stream.next().await,
         }
     }
@@ -1072,9 +1066,6 @@ pub(crate) async fn send_with_affinity(
     affinity: Option<&RequestAffinity>,
     observed: Option<RequestObservation>,
 ) -> Result<UpstreamStream, BridgeError> {
-    if let super::Upstream::Antigravity(agy) = &state.upstream {
-        return super::gemini_stream::send(state, agy, request, observed).await;
-    }
     if let super::Upstream::Api(api) = &state.upstream {
         return super::api::send(state, api, request, observed).await;
     }

@@ -109,8 +109,8 @@ fn fixtures() -> &'static StampedFixtures {
     FIXTURES.get_or_init(|| {
         let directory = tempfile::tempdir().unwrap();
         let old = compile_fixture(directory.path(), "old", "1.0.0");
-        let next = compile_fixture(directory.path(), "next", "3.0.0");
-        let newer = compile_fixture(directory.path(), "newer", "4.0.0");
+        let next = compile_fixture(directory.path(), "next", "90.0.0");
+        let newer = compile_fixture(directory.path(), "newer", "91.0.0");
         StampedFixtures {
             _directory: directory,
             old,
@@ -399,14 +399,14 @@ fn a_freshly_copied_executable_runs_while_other_threads_spawn() {
 fn full_front_dispatches_future_cli_and_pinned_generation_bypasses_active() {
     let install = Install::new();
     let original_front = fs::read(&install.front).unwrap();
-    let bundle = install.bundle("next-bundle", &fixtures().next, "3.0.0");
+    let bundle = install.bundle("next-bundle", &fixtures().next, "90.0.0");
     success(&install.apply(&bundle, false));
     assert_eq!(
         fs::read(&install.front).unwrap(),
         original_front,
         "stable front was rewritten"
     );
-    assert_eq!(version(&install.front, &install.config), "alc 3.0.0");
+    assert_eq!(version(&install.front, &install.config), "alc 90.0.0");
     assert_eq!(
         version(&install.pinned, &install.config),
         format!("alc {VERSION}")
@@ -440,11 +440,11 @@ fn full_front_dispatches_future_cli_and_pinned_generation_bypasses_active() {
 #[test]
 fn rollback_retains_generations_and_rechecks_installed_not_running_version() {
     let install = Install::new();
-    let next = install.bundle("next", &fixtures().next, "3.0.0");
-    let newer = install.bundle("newer", &fixtures().newer, "4.0.0");
+    let next = install.bundle("next", &fixtures().next, "90.0.0");
+    let newer = install.bundle("newer", &fixtures().newer, "91.0.0");
     success(&install.apply(&newer, false));
     success(&install.apply(&next, true)); // --force is not an implicit downgrade.
-    assert_eq!(install.active()["current"]["version"], "4.0.0");
+    assert_eq!(install.active()["current"]["version"], "91.0.0");
     let rollback = command(&install.pinned, &install.config)
         .args(["update", "--rollback", "previous", "--offline"])
         .exec_output()
@@ -461,7 +461,7 @@ fn rollback_retains_generations_and_rechecks_installed_not_running_version() {
         .exec_output()
         .unwrap();
     success(&rollback);
-    assert_eq!(version(&install.front, &install.config), "alc 4.0.0");
+    assert_eq!(version(&install.front, &install.config), "alc 91.0.0");
     assert!(install.pinned.is_file());
     assert!(
         install
@@ -478,8 +478,8 @@ fn rollback_retains_generations_and_rechecks_installed_not_running_version() {
 #[test]
 fn concurrent_offline_apply_serializes_and_cannot_downgrade_newer_activation() {
     let install = Install::new();
-    let next = install.bundle("next", &fixtures().next, "3.0.0");
-    let newer = install.bundle("newer", &fixtures().newer, "4.0.0");
+    let next = install.bundle("next", &fixtures().next, "90.0.0");
+    let newer = install.bundle("newer", &fixtures().newer, "91.0.0");
     let mut first = command(&install.pinned, &install.config);
     let mut second = command(&install.pinned, &install.config);
     first
@@ -498,8 +498,8 @@ fn concurrent_offline_apply_serializes_and_cannot_downgrade_newer_activation() {
     let second = second.exec_spawn().unwrap();
     success(&first.wait_with_output().unwrap());
     success(&second.wait_with_output().unwrap());
-    assert_eq!(install.active()["current"]["version"], "4.0.0");
-    assert_eq!(version(&install.front, &install.config), "alc 4.0.0");
+    assert_eq!(install.active()["current"]["version"], "91.0.0");
+    assert_eq!(version(&install.front, &install.config), "alc 91.0.0");
 }
 
 struct TestServer {
@@ -600,7 +600,7 @@ fn offline_rejects_unknown_corrupt_wrong_target_and_oversized_metadata_without_e
         "oversized",
     ];
     for scenario in scenarios {
-        let bundle = install.bundle(scenario, &fixtures().next, "3.0.0");
+        let bundle = install.bundle(scenario, &fixtures().next, "90.0.0");
         match scenario {
             "unknown-schema" => edit_json(&bundle.join("bundle.json"), |json| {
                 json["schema"] = json!(999)
@@ -614,10 +614,10 @@ fn offline_rejects_unknown_corrupt_wrong_target_and_oversized_metadata_without_e
             "archive-corrupt" => fs::write(bundle.join(asset_name()), b"corrupt").unwrap(),
             "wrong-version" => {
                 edit_json(&bundle.join("bundle.json"), |json| {
-                    json["version"] = json!("5.0.0")
+                    json["version"] = json!("92.0.0")
                 });
                 edit_json(&bundle.join("release.json"), |json| {
-                    json["tag_name"] = json!("v5.0.0")
+                    json["tag_name"] = json!("v92.0.0")
                 });
             }
             "bad-digest" => edit_json(&bundle.join("bundle.json"), |json| {
@@ -668,7 +668,7 @@ fn download_only_persists_verified_bundle_and_offline_reuses_it_without_network(
     let checksum = digest(&bytes);
     let server = TestServer::new(move |path, base| {
         match path {
-        "/latest" => serde_json::to_vec(&json!({ "tag_name": "v3.0.0", "html_url": "https://example.invalid/release", "assets": [
+        "/latest" => serde_json::to_vec(&json!({ "tag_name": "v90.0.0", "html_url": "https://example.invalid/release", "assets": [
             { "name": asset, "browser_download_url": format!("{base}/archive") },
             { "name": "checksums.txt", "browser_download_url": format!("{base}/checksums") }
         ] })).unwrap(),
@@ -693,7 +693,7 @@ fn download_only_persists_verified_bundle_and_offline_reuses_it_without_network(
     assert!(bundle.join(asset_name()).is_file());
     assert_eq!(server.count.load(Ordering::SeqCst), 3);
     success(&install.apply(&bundle, false));
-    assert_eq!(version(&install.front, &install.config), "alc 3.0.0");
+    assert_eq!(version(&install.front, &install.config), "alc 90.0.0");
     assert_eq!(server.count.load(Ordering::SeqCst), 3);
     // Persistent bundles are retained after activation for transfer/retry.
     assert!(bundle.join(asset_name()).is_file());
@@ -768,8 +768,8 @@ fn online_same_version_retry_finishes_initial_activation_without_downloading() {
 #[test]
 fn rollback_cancels_interrupted_activation_before_changing_active() {
     let install = Install::new();
-    let next = install.bundle("next", &fixtures().next, "3.0.0");
-    let newer = install.bundle("newer", &fixtures().newer, "4.0.0");
+    let next = install.bundle("next", &fixtures().next, "90.0.0");
+    let newer = install.bundle("newer", &fixtures().newer, "91.0.0");
     success(&install.apply(&next, false));
     let previous = install.active();
     success(&install.apply(&newer, false));
@@ -792,7 +792,7 @@ fn rollback_cancels_interrupted_activation_before_changing_active() {
     assert!(!root.join("activation.json").exists());
     assert!(!root.join("pending.json").exists());
     success(&install.apply(&newer, false));
-    assert_eq!(install.active()["current"]["version"], "4.0.0");
+    assert_eq!(install.active()["current"]["version"], "91.0.0");
 }
 
 #[test]
@@ -870,8 +870,8 @@ fn await_ready(path: &Path, child: &mut OwnedChild) {
 #[test]
 fn activation_does_not_stop_loaded_front_or_previous_payload() {
     let install = Install::new();
-    let next = install.bundle("next", &fixtures().next, "3.0.0");
-    let newer = install.bundle("newer", &fixtures().newer, "4.0.0");
+    let next = install.bundle("next", &fixtures().next, "90.0.0");
+    let newer = install.bundle("newer", &fixtures().newer, "91.0.0");
     success(&install.apply(&next, false));
     let ready = install.directory.path().join("holding-ready");
     let mut holding = OwnedChild(
@@ -889,7 +889,7 @@ fn activation_does_not_stop_loaded_front_or_previous_payload() {
         "update stopped a loaded executable"
     );
     assert_eq!(file_digest(&install.front), original_front);
-    assert_eq!(version(&install.front, &install.config), "alc 4.0.0");
+    assert_eq!(version(&install.front, &install.config), "alc 91.0.0");
     assert!(
         install
             .front

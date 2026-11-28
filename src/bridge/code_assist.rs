@@ -779,7 +779,7 @@ impl GeminiAnswer {
     fn new(model: &str) -> Self {
         Self {
             model: model.to_owned(),
-            response_id: format!("codex-{}", super::agy_upstream::random_hex(8)),
+            response_id: format!("codex-{}", super::random_hex(8)),
             calls: HashMap::new(),
             usage: None,
             finished: false,

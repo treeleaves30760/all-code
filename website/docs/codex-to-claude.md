@@ -21,9 +21,9 @@ keywords:
 `alc --codex <agent>` starts a loopback adapter and points one agent's session
 at it. One `codex login` serves every agent alc launches. The Antigravity CLI
 keeps its own Google login for its own models and gains the Codex models next to
-them ([On the Codex login](./agents.md#on-the-codex-login)). The same bridge
-also puts every other agent, Claude Code included, on that Google login:
-`alc --agy <agent>` ([Antigravity](./providers.md#antigravity)).
+them ([On the Codex login](./agents.md#on-the-codex-login)). That Google login
+stays agy's alone; no other agent runs on it
+([Antigravity](./providers.md#antigravity)).
 
 ```sh
 codex login
@@ -42,7 +42,9 @@ alc --codex agy           # the Codex models in agy's own /model picker
 Claude Code and the Antigravity CLI can switch mid-session, because they name
 the model and effort in every request, so alc pins neither on the adapter.
 agy is pointed at the adapter with `CLOUD_CODE_URL` and lists one Codex entry
-per effort; whatever is not a Codex model goes on to Google. The others are
+per effort; whatever is not a Codex model goes on to Google. Pointing the
+official client at another endpoint is not something Antigravity sanctions, so
+`alc --codex agy` is at your own risk. The others are
 wired through the same mechanism each already uses for the `openai`
 kind, pointed at the adapter with a placeholder key — see
 [Agents](./agents.md) for what each one receives.
@@ -116,7 +118,7 @@ the [configuration TUI](./configuration.md#the-configuration-tui) has a
 `alc doctor` adds `/ max context` to the bridge row of a profile set to it. The
 profile's choice reaches every agent on the bridge, not only Claude Code. The
 per-run `--context`, like `--effort`, belongs to `alc claude` and is refused
-off a Codex or Antigravity provider.
+off a Codex provider.
 
 ## Starting somewhere else
 

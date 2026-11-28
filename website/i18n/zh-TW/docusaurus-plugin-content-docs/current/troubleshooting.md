@@ -17,7 +17,7 @@ keywords:
 
 先跑 `alc doctor`。它會回報每個 agent 的執行檔、憑證狀態、每個 provider profile
 以及它各自的 agent 相容性欄位、解析後的預設值、Codex 的登入狀態，還有
-Antigravity 登入的狀態。
+Antigravity CLI 的執行檔與 profile。
 
 在終端機上它會開啟互動式檢視：側欄列出各個區塊，每個區塊依它找到的最差狀況
 標上 `✓`、`!` 或 `✗`，最前面是 Summary —— 所有問題，以及各自的修正指令。每項
@@ -80,32 +80,40 @@ alc config upsert google-agy --kind antigravity
 alc config set-default agy google-agy
 ```
 
-## ``not signed in to Antigravity`` 或 ``refresh required; run `agy` and sign in``
+## `provider 'antigravity' is agy's own Google login, which only the Antigravity CLI may use`
 
-alc 借用 agy 的登入，並交給 agy 自己更新。在終端機執行一次 `agy` 並登入，下一個
-請求就會用新的 token。如果訊息說 PATH 上沒有 agy 能更新過期的登入，請安裝 agy
-（或用 `ALC_AGY_BIN` 指向它），再登入。`alc doctor` 會顯示登入狀態：agy 能更新
-的過期 token 算是正常，顯示 `expired; agy renews it on the next launch`。
+你在 `antigravity` profile 上啟動了 agy 以外的 agent —— `alc --agy claude`、
+`alc --agy opencode`、`alc -p antigravity pi`，或是舊版 alc 存下的 `[defaults]`
+設定。Antigravity 的[服務條款](https://antigravity.google/terms)禁止其他工具用
+agy 的 Google 登入，所以 alc 不再讓其他 agent 經由它連線（見
+[Antigravity](./providers.md#antigravity)）。請用 `alc agy` 執行 agy 本身，或讓那個
+agent 留在其他 provider 上，再把工作交給 agy：
 
-## `ambiguous sources`
+```sh
+alc claude --with-agy                  # Claude Code，把 agy 當成 MCP 工具
+claude mcp add agy -- alc mcp agy      # 或把這個伺服器加進任何 MCP 用戶端
+```
 
-agy 的登入同時存在系統 keyring 與
-`~/.gemini/antigravity-cli/antigravity-oauth-token` 兩個地方，alc 不會去猜 agy
-接下來更新的是哪一個。請在 agy 裡登出再登入，讓只剩一份。
+要讓已存的預設值不再指向那裡，請替那個 agent 換一個 provider，例如
+`alc config set-default claude codex`。
 
-## Antigravity 上的 Gemini 把工具呼叫寫成文字
+## `agy was denied: Bash`
 
-舊版 alc 遇到遺失簽章的 Gemini 工具歷史（session 是在別處開始的、任務進行中改了
-模型或強度，或 alc 的橋接重新啟動過）時，會把它改寫成 `[called tool Read with {…}]`
-這種文字送回去，Gemini
-學著用這種文字回答，工具呼叫就不再執行。請升級 alc：歷史現在會以真正的工具呼叫送回，
-進行中那一輪的呼叫會帶上 Google 文件記載的佔位簽章。已經寫進 session 紀錄的那些行
-不會消失，模型可能繼續模仿；用 `/clear`（或開新 session）把它們清掉。
+`alc mcp agy` 的工具結果最後附上「agy was denied: Bash. Headless agy cannot ask
+for permission; the user can allow it under permissions.allow in agy's
+settings.json」。agy 在那裡以無頭模式執行（`agy --print`），沒辦法在執行 shell
+指令前詢問，所以會拒絕。請在 agy 自己的 `settings.json` 的 `permissions.allow`
+底下，允許你要讓 agy 執行的指令；alc 從不傳入 `--dangerously-skip-permissions`。
 
-## `Google refused this Antigravity account (403 …)`
+## `--with-agy hands tasks to the Antigravity CLI, but 'agy' is not installed`
 
-alc 不會重試 403：這個帳號可能受到限制。請開啟 agy 檢查帳號；訊息裡附有 Google
-自己的一行原因。
+`alc claude --with-agy` 需要 `agy` 在 `PATH` 上。請安裝 Antigravity CLI，並執行
+一次 `agy` 登入。缺少 agy 時，`alc mcp agy` 的 `agy` 工具也會以錯誤回傳同樣的建議。
+
+## Antigravity 上的背景 session 被拒絕
+
+舊版 alc 替 Antigravity 登入寫下的背景橋接路由已經無法解析，所以停在這種路由上的
+session 會被拒絕。請在其他 provider 上重新開始那個 session。
 
 ## Auto 模式說伺服器端檢查無法使用
 

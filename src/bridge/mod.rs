@@ -31,14 +31,10 @@ use tokio::net::TcpListener;
 use crate::config::ReasoningEffort;
 
 pub(crate) mod affinity;
-pub(crate) mod agy_auth;
-pub(crate) mod agy_upstream;
 pub(crate) mod api;
 pub(crate) mod auth;
 pub(crate) mod chat;
 pub(crate) mod code_assist;
-pub(crate) mod gemini;
-pub(crate) mod gemini_stream;
 pub(crate) mod messages;
 pub(crate) mod models;
 pub(crate) mod responses;
@@ -48,9 +44,6 @@ pub(crate) mod upstream;
 
 #[cfg(test)]
 pub(crate) mod fixtures;
-
-#[cfg(test)]
-pub(crate) mod agy_fake;
 
 /// What a bridge session needs to serve one agent.
 ///
@@ -87,7 +80,7 @@ pub(crate) struct BridgeConfig {
     /// request naming a Claude model is answered by Codex rather than refused
     /// upstream. `None` for every other agent, which pins its model at launch.
     pub claude_tiers: Option<tiers::ModelTiers>,
-    /// Codex or Antigravity. `auth_file` is unused on the Antigravity upstream.
+    /// Codex or a provider's own API.
     pub upstream: UpstreamKind,
     /// agy only: the Code Assist surface it reaches the Codex login through
     /// ([`code_assist`]). `None` for every other agent, and the routes are
@@ -100,12 +93,6 @@ pub(crate) struct BridgeConfig {
 pub(crate) enum UpstreamKind {
     /// chatgpt.com, signed with [`BridgeConfig::auth_file`].
     Codex,
-    /// Google's Code Assist endpoint on agy's login. `config_dir` places the
-    /// cross-process renewal lock.
-    Antigravity {
-        credential: agy_auth::AgyLocator,
-        config_dir: PathBuf,
-    },
     /// A provider's own API, for an agent that cannot speak its wire
     /// ([`api`]).
     Api(crate::config::ApiEndpoint),
@@ -114,7 +101,6 @@ pub(crate) enum UpstreamKind {
 /// The live half of [`UpstreamKind`]: what a handler signs requests with.
 pub(crate) enum Upstream {
     Codex(Arc<auth::AuthManager>),
-    Antigravity(Arc<agy_upstream::AgyState>),
     Api(Arc<api::ApiUpstream>),
 }
 
@@ -126,8 +112,7 @@ pub(crate) enum Upstream {
 pub(crate) struct BridgeState {
     pub config: BridgeConfig,
     /// Shared by every route over the same login in the background bridge: a
-    /// Codex refresh token is single-use, and agy's renewal is single-flighted
-    /// per login.
+    /// Codex refresh token is single-use.
     pub upstream: Upstream,
     pub http: reqwest::Client,
     /// Set once at startup, so recording a turn costs no lookup and no lock.
@@ -140,12 +125,6 @@ impl BridgeState {
             UpstreamKind::Codex => {
                 Upstream::Codex(Arc::new(auth::AuthManager::new(config.auth_file.clone())))
             }
-            UpstreamKind::Antigravity {
-                credential,
-                config_dir,
-            } => Upstream::Antigravity(Arc::new(agy_upstream::AgyState::new(
-                credential, config_dir,
-            )?)),
             UpstreamKind::Api(endpoint) => {
                 Upstream::Api(Arc::new(api::ApiUpstream::new(endpoint.clone())?))
             }
@@ -171,15 +150,9 @@ impl BridgeState {
         // Read once here rather than per turn: it is the id the requests
         // already carry as a header, and reading the file on every frame
         // would be a syscall per turn for a number that cannot change while
-        // the session runs. agy's login has no account id of its own, and
-        // its token changes with every hourly renewal, so its rows carry a
-        // fixed marker: alc supports one agy login per machine.
+        // the session runs.
         let (kind, account) = match &upstream {
             Upstream::Codex(auth) => (crate::config::ProviderKind::Codex, auth.stored_account_id()),
-            Upstream::Antigravity(_) => (
-                crate::config::ProviderKind::Antigravity,
-                Some(agy_auth::ACCOUNT_ID.to_owned()),
-            ),
             Upstream::Api(api) => (api.endpoint.kind, None),
         };
         let ledger = config.ledger.clone().map(|path| {
@@ -302,4 +275,11 @@ impl std::error::Error for BridgeError {}
 pub(crate) fn sse_frame(event: &str, value: &impl Serialize) -> String {
     let data = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_owned());
     format!("event: {event}\ndata: {data}\n\n")
+}
+
+/// `bytes` random bytes as lowercase hex, for the ids the bridge mints.
+pub(crate) fn random_hex(bytes: usize) -> String {
+    let mut buffer = vec![0_u8; bytes];
+    let _ = getrandom::fill(&mut buffer);
+    buffer.iter().map(|byte| format!("{byte:02x}")).collect()
 }

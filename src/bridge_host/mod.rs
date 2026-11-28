@@ -668,13 +668,6 @@ fn resolve_credential(store: &Store, route: &str) -> Result<Resolved> {
                 );
             }
         }
-        files::RouteKind::Antigravity => {
-            let credential = record
-                .credential
-                .as_ref()
-                .context("this Antigravity route names no login; start `alc --agy claude` again")?;
-            crate::bridge::agy_auth::require_login(&credential.store())?;
-        }
     }
     Ok(Resolved {
         value: ensure(&store.dir)?.token,

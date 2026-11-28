@@ -162,18 +162,10 @@ key bills per token and has no remaining balance to report.
 
 ## Antigravity login
 
-The `antigravity` row asks Google's quota endpoint what is left, with the token
-agy stored. It shows the Gemini pool and the Claude/GPT pool, each by its
-`5h`, `day` and `week` windows: `Gemini: 5h 72% left, resets in 3h 0m — week
-40% left; Claude/GPT: week 91% left`.
-
-Read-only, never renewed: an expired token reads `expired; agy renews it on the
-next launch`, and the next launch on that login has agy renew it. Not signed in
-reads `` not logged in; run `agy` ``. Requests that other agents send through alc's
-bridge on this login are recorded with the kind `antigravity`, the model id
-Google received and the token counts it reported. Only `gpt-oss-120b` is priced
-(at 0): the Claude and Gemini families run on a Google plan with no verified
-API-equivalent rate, so their cost stays unknown.
+alc does not read agy's login. The `antigravity` row shows no quota windows,
+only the note `agy's own login; see its quota inside agy`. Runs that other
+agents hand to agy through `alc mcp agy` are not recorded in the usage ledger
+either ([Antigravity](./providers.md#antigravity)).
 
 ## Several logins of one kind
 
@@ -224,8 +216,7 @@ did not issue it.
 
 This compatibility table reads only `usage.jsonl` in the [config
 directory](./configuration.md). Launches append launch entries; requests carried
-by the [translation bridge](./codex-to-claude.md) (on the Codex login or the
-Antigravity one) or the opt-in direct API observer append metadata entries. Ordinary direct launches still count as
+by the [translation bridge](./codex-to-claude.md) or the opt-in direct API observer append metadata entries. Ordinary direct launches still count as
 launches alone. Native histories are separate statistics sources, not imports
 into this ledger.
 
@@ -306,8 +297,7 @@ forwarding route at an alc-managed endpoint seam, keeping the agent's SDK,
 protocol, models, arguments, and **upstream authentication**. Durable Claude
 observation replaces the local helper credential with a sealed surrogate as
 explained below. It is not protocol translation. Without it, ordinary direct
-launch behavior is unchanged; the translation bridge, on the Codex login or the
-Antigravity one, is already observed and needs no opt-in.
+launch behavior is unchanged; the translation bridge is already observed and needs no opt-in.
 
 | Direct launch | Observation boundary |
 | --- | --- |
@@ -317,7 +307,7 @@ Antigravity one, is already observed and needs no opt-in.
 | Qwen Code / Goose | Supported alc-managed Anthropic or OpenAI branches. Qwen's Google/Gemini branch and Goose's native OpenRouter/Ollama integrations are not observed. Goose's OpenAI split endpoint with a query or fragment is refused for metrics; ordinary launches are unchanged. |
 | Kimi Code CLI | The provider endpoint in alc's generated temporary config, not a user-supplied config. |
 | Pi | Direct observation is unavailable: alc will not put an ephemeral listener into its persistent shared `models.json`. |
-| Antigravity CLI | Direct observation is unavailable: agy runs on its own login. Other agents on that login, and agy's Codex turns under `alc --codex agy`, are observed by alc's bridge automatically. |
+| Antigravity CLI | Direct observation is unavailable: agy runs on its own login. agy's Codex turns under `alc --codex agy` are observed by alc's bridge automatically; runs through `alc mcp agy` are not recorded. |
 
 Codex's generated provider ID is `alc_` plus the alc profile name with hyphens
 changed to underscores: profile `openai-work` needs

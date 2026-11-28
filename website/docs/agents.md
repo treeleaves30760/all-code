@@ -27,8 +27,8 @@ bridge](./codex-to-claude.md); `alc --codex <agent>` is the same command
 throughout, so it is not repeated below. The [Antigravity
 CLI](#antigravity-cli-agy) is the one that works differently there: it keeps
 its own Google login and gains the Codex models next to its own ([On the Codex
-login](#on-the-codex-login)). That Google login serves every other agent in
-turn (`alc --agy <agent>`).
+login](#on-the-codex-login)). That Google login is agy's alone; other agents
+hand tasks to agy through `alc mcp agy` instead.
 
 ## Claude Code
 
@@ -48,6 +48,10 @@ An Ollama profile gets more — see [Local models](./local-models.md).
 alc claude
 alc --openrouter claude
 ```
+
+`--with-agy` adds the Antigravity CLI as an MCP tool Claude Code can hand tasks
+to, on whatever provider the launch uses (`alc --codex claude --with-agy`). See
+[Antigravity CLI](#antigravity-cli-agy).
 
 ## Codex CLI
 
@@ -177,9 +181,8 @@ alc --moonshot kimi
 
 ## Antigravity CLI (agy)
 
-`agy` — Google's Antigravity CLI · runs on its own Google login, which also
-serves every other agent, and on the Codex login or any API provider through
-alc's bridge.
+`agy` — Google's Antigravity CLI · runs on its own Google login, and on the
+Codex login or any API provider through alc's bridge.
 
 agy signs in to Google itself, so alc has no endpoint, key or config file to
 hand it and touches none of agy's credentials. It runs on the `antigravity`
@@ -188,8 +191,8 @@ profile and, when the profile names one, `--effort`. agy's efforts are `low`,
 `medium`, `high`, `xhigh` and `max`; a profile set to `ultra` launches on `max`,
 with a note saying so. A `--model` or `--effort` of your own after `alc agy` is
 forwarded as is, and alc then sends none of its own. agy lists wire ids only,
-so a bare family id on the profile (`claude-opus-5-5`, which the other agents'
-bridge reads too) reaches agy as the wire id for the profile's effort.
+so a bare family id on the profile (`claude-opus-5-5`) reaches agy as the wire
+id for the profile's effort.
 
 ```sh
 alc agy
@@ -199,17 +202,18 @@ alc models --agy
 
 The starting model is `claude-opus-5-5-high`, with no effort set, so agy uses
 its own default. `alc models --agy` lists what `agy models` reports, kept for a
-day (`--refresh` asks again), with a bundled list when agy cannot be asked,
-and marks an id no model family serves ` (not bridgeable)`: agy may run it, the
-other agents cannot. The Model row of an antigravity profile in `alc config`
+day (`--refresh` asks again), with a bundled list when agy cannot be asked.
+The Model row of an antigravity profile in `alc config`
 steps through the same list.
 A `config.toml` from an older alc has no `antigravity` profile; `alc agy` then
 names the fix, `alc config upsert antigravity --kind antigravity`.
 
-The same login serves every other agent through alc's bridge:
-`alc --agy claude`, `alc --agy opencode`, and so on. See
-[Providers](./providers.md#antigravity) for what alc borrows and what agy still
-owns.
+No other agent runs on this login: Antigravity's terms forbid other tools from
+signing in with it, so `alc --agy claude` and the like are refused. Other
+agents can hand tasks to agy instead, through the `alc mcp agy` MCP server, and
+`alc claude --with-agy` wires that server into Claude Code. See
+[Providers](./providers.md#antigravity) for the tool and how headless agy
+handles permissions.
 
 ### On the Codex login
 
@@ -223,6 +227,13 @@ checks, quota, and helper turns such as titles and checkpoints — is relayed to
 Google unchanged, with the token agy itself sent; alc reads and keeps no agy
 credential. agy therefore still needs its own Google sign-in, and `/model`
 switches between Codex and Google models mid-session.
+
+:::caution
+
+This points the official client at a different endpoint, which Antigravity
+does not sanction. Use it at your own risk.
+
+:::
 
 ```sh
 alc --codex agy                                   # starts on the codex profile's model and effort
@@ -256,7 +267,7 @@ automatically. Native Codex CLI login traffic is not bridge traffic.
 | Goose | alc's Anthropic/OpenAI branches, not native OpenRouter/Ollama integrations. OpenAI split endpoints containing query/fragment are refused for metrics; ordinary launches are unchanged. |
 | Kimi Code CLI | The endpoint in alc's generated temporary provider config, not a user config/model/provider override. |
 | Pi | Unavailable for direct launches: its endpoint is in a persistent shared `models.json`, which alc will not point at an ephemeral observer. |
-| Antigravity CLI | Unavailable: agy runs on its own login. Other agents on that login, and agy's Codex turns under `alc --codex agy`, are observed by alc's bridge automatically. |
+| Antigravity CLI | Unavailable: agy runs on its own login. agy's Codex turns under `alc --codex agy` are observed by alc's bridge automatically; runs through `alc mcp agy` are not recorded. |
 
 Native OAuth/login and explicit endpoint/helper/config/provider overrides
 outside these seams are not silently intercepted; explicit `--metrics` fails

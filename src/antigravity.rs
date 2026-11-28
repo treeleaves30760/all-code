@@ -18,8 +18,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Agent, ContextChoice, ReasoningEffort};
-use crate::model_catalog::ModelInfo;
+use crate::config::{Agent, ReasoningEffort};
 
 const CACHE_FILE: &str = "antigravity-models.json";
 const SCHEMA_VERSION: u32 = 1;
@@ -85,11 +84,6 @@ pub struct AgyFamily {
     pub thinking: BTreeMap<String, serde_json::Value>,
 }
 
-/// Where Claude Code's `opus` tier lands on this login.
-pub const STRONGEST_FAMILY: &str = "claude-opus-5-5";
-/// Where `haiku` and Claude Code's background work land.
-pub const CHEAPEST_FAMILY: &str = "gemini-3.8-flash";
-
 /// The families alc ships, most capable first.
 pub fn families() -> Vec<AgyFamily> {
     let bundle: Bundle = serde_json::from_str(include_str!("../models/antigravity.json"))
@@ -110,11 +104,6 @@ pub fn split_wire_id(model: &str) -> Option<(AgyFamily, String)> {
         .thinking
         .contains_key(effort)
         .then(|| (family, effort.to_owned()))
-}
-
-/// The family a family id or a wire id belongs to.
-pub fn family_of_model(model: &str) -> Option<AgyFamily> {
-    family(model.trim()).or_else(|| split_wire_id(model).map(|(family, _)| family))
 }
 
 /// alc's effort ladder on Antigravity's three rungs. Absent is `medium`,
@@ -162,57 +151,6 @@ pub fn wire_model_for(model: &str, effort: Option<ReasoningEffort>) -> String {
     match family(model.trim()) {
         Some(family) => wire_model(&family, effort_word(effort)),
         None => model.trim().to_owned(),
-    }
-}
-
-/// The window a session on `family` is handed: standard, or the family's
-/// maximum when the profile opted in.
-pub fn context_window(family: &AgyFamily, choice: ContextChoice) -> u64 {
-    match choice {
-        ContextChoice::Standard => family.context_window,
-        ContextChoice::Max => family.max_context_window.max(family.context_window),
-    }
-}
-
-/// The families as pickers show them: one row per family, effort chosen
-/// separately, windows per the profile's context choice.
-pub fn model_infos(choice: ContextChoice) -> Vec<ModelInfo> {
-    families()
-        .into_iter()
-        .map(|family| {
-            let supported_efforts = family
-                .thinking
-                .keys()
-                .filter_map(|effort| effort.parse::<ReasoningEffort>().ok())
-                .collect::<Vec<_>>();
-            ModelInfo {
-                id: family.id.clone(),
-                name: family.label.clone(),
-                description: format!("{} through your Antigravity login", family.label),
-                context_window: context_window(&family, choice),
-                max_context_window: family.max_context_window,
-                default_effort: ReasoningEffort::Medium,
-                supported_efforts: [
-                    ReasoningEffort::Low,
-                    ReasoningEffort::Medium,
-                    ReasoningEffort::High,
-                ]
-                .into_iter()
-                .filter(|effort| supported_efforts.contains(effort))
-                .collect(),
-                priority: None,
-            }
-        })
-        .collect()
-}
-
-/// Where Claude's tiers land: Opus for the strongest, the session's family
-/// for the default, Flash for the cheapest.
-pub fn tiers(default_family: &str) -> crate::bridge::tiers::ModelTiers {
-    crate::bridge::tiers::ModelTiers {
-        strongest: STRONGEST_FAMILY.to_owned(),
-        default: default_family.to_owned(),
-        cheapest: CHEAPEST_FAMILY.to_owned(),
     }
 }
 
@@ -577,15 +515,6 @@ mod tests {
         );
         assert_eq!(split("claude-opus-5-5"), None, "a family is not a wire id");
         assert_eq!(split("gemini-9-ultra-low"), None);
-        assert_eq!(
-            family_of_model("claude-opus-5-5").unwrap().id,
-            "claude-opus-5-5"
-        );
-        assert_eq!(
-            family_of_model("claude-opus-5-5-high").unwrap().id,
-            "claude-opus-5-5"
-        );
-        assert!(family_of_model("gpt-6-sol").is_none());
     }
 
     #[test]
@@ -632,29 +561,6 @@ mod tests {
             wire_model_for("gemini-9-preview", Some(E::Low)),
             "gemini-9-preview"
         );
-    }
-
-    #[test]
-    fn model_infos_follow_the_context_choice() {
-        use crate::config::ContextChoice;
-        let standard = model_infos(ContextChoice::Standard);
-        assert_eq!(standard.len(), 5);
-        assert_eq!(standard[0].id, "claude-opus-5-5");
-        assert_eq!(standard[0].name, "Claude Opus 5.5");
-        assert_eq!(standard[0].context_window, 256_000);
-        assert_eq!(standard[0].max_context_window, 840_000);
-        assert_eq!(
-            standard[4].supported_efforts,
-            [crate::config::ReasoningEffort::Medium]
-        );
-        let max = model_infos(ContextChoice::Max);
-        assert_eq!(max[3].id, "gemini-3.8-flash");
-        assert_eq!(max[3].context_window, 1_048_576);
-        assert_eq!(max[4].context_window, 131_072);
-        let tiers = tiers("claude-sonnet-5-5");
-        assert_eq!(tiers.strongest, "claude-opus-5-5");
-        assert_eq!(tiers.default, "claude-sonnet-5-5");
-        assert_eq!(tiers.cheapest, "gemini-3.8-flash");
     }
 
     #[test]
