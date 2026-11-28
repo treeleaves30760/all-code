@@ -137,9 +137,9 @@ with every GPT model in its `/model` picker.
 [Codex bridge](./codex-to-claude.md) has the models, the effort tiers, and the
 other agents on that login. The Antigravity CLI also runs on a login of its
 own: `alc agy` ([Antigravity CLI](./agents.md#antigravity-cli-agy)), and
-`alc --codex agy` adds the Codex models to it. That Google login serves every
-other agent too, through the same bridge: `alc --agy claude`
-([Antigravity](./providers.md#antigravity)).
+`alc --codex agy` adds the Codex models to it, at your own risk. That Google
+login is agy's alone; `alc claude --with-agy` lets Claude Code hand tasks to agy
+instead ([Antigravity](./providers.md#antigravity)).
 
 ## Other providers
 
@@ -156,7 +156,8 @@ alc -p local-vllm opencode
 `--provider` (`-p`) takes a profile name, or a kind when only one profile of
 that kind exists; `--anthropic`, `--openai`, `--openrouter`, `--codex`,
 `--ollama`, `--vllm`, `--llamacpp`, `--deepseek`, `--moonshot`, `--zai`,
-`--minimax`, `--groq`, `--xai`, `--google`, and `--agy` are shortcuts. Keys are saved locally or read
+`--minimax`, `--groq`, `--xai`, `--google`, and `--agy` (for `alc agy` only)
+are shortcuts. Keys are saved locally or read
 from environment variables; the environment wins. See
 [Providers](./providers.md) for what each kind speaks and
 [Configuration](./configuration.md) for the files.

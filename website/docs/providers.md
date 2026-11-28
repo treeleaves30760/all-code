@@ -31,8 +31,8 @@ pair before launch instead of sending a request that cannot work.
 Whatever an agent accepts natively, it also runs on one `codex login` through
 the [Codex bridge](./codex-to-claude.md). The Antigravity CLI runs there too,
 still signed in to Google for its own models ([On the Codex
-login](./agents.md#on-the-codex-login)). agy's own Google login serves every
-other agent too ([Antigravity](#antigravity)).
+login](./agents.md#on-the-codex-login)). agy's own Google login is for agy
+alone; other agents can hand tasks to agy instead ([Antigravity](#antigravity)).
 
 ## Any provider, any agent
 
@@ -86,8 +86,8 @@ overrides.
 New `openai` profiles also start with `low` reasoning effort. Existing profiles
 keep their saved model and effort.
 
-`antigravity` launches the Antigravity CLI on its own login and serves every
-other agent, Claude Code included, through alc's bridge
+`antigravity` launches the Antigravity CLI on its own login, and only the
+Antigravity CLI: every other agent is refused on it
 ([Antigravity](#antigravity)). A `config.toml` written before it existed lacks
 the profile; `alc config upsert antigravity --kind antigravity` adds it.
 
@@ -117,79 +117,96 @@ what alc sets for each and how to keep the first turn short.
 ## Antigravity
 
 `alc agy` launches Google's Antigravity CLI on its own Google login
-([Antigravity CLI](./agents.md#antigravity-cli-agy)). The same login also serves
-every other agent, through alc's bridge:
+([Antigravity CLI](./agents.md#antigravity-cli-agy)). That login is agy's
+alone. Antigravity's [terms](https://antigravity.google/terms) (clause 6) say
+that "using third party software, tools, or services to access the Service
+(e.g. using OpenClaw with Antigravity OAuth) is a breach of this Agreement",
+and Google has suspended accounts for it. Older alc releases ran every other
+agent on that login by reading the token agy stores and presenting themselves
+to Google as agy; that route is gone. alc no longer reads agy's login at all.
 
-```sh
-alc --agy claude                          # Claude Code, on claude-opus-5-5 at high effort
-alc --agy claude --model gemini-3.8-flash --effort low
-alc --agy opencode                        # or pi, kimi, codex, copilot, goose, qwen
-alc --agy claude --context max            # 840K for Claude, 900K Argon, 1,048K Flash
-alc --agy usage                           # what is left of the plan's windows
+Any other agent on the `antigravity` profile — `alc --agy claude`,
+`alc --agy opencode`, `alc -p antigravity pi` — is refused before launch:
+
+```text
+error: provider 'antigravity' is agy's own Google login, which only the Antigravity CLI may use: Antigravity's terms forbid other tools from signing in with it, and alc no longer routes claude through it. Run agy itself with `alc agy`, or use `alc claude --with-agy` (Claude Code on its own provider, with agy as a tool it can hand tasks to)
 ```
 
-alc borrows the access token agy already stored — the Windows Credential
-Manager entry `gemini:antigravity`, or the file
-`~/.gemini/antigravity-cli/antigravity-oauth-token` — and keeps nothing else: it
-never stores a refresh token, never writes agy's login, and never runs a Google
-sign-in of its own. agy still owns the login: when the token is about to
-expire, alc runs `agy --output-format json models` (which has agy renew it) and
-reads the store again. A login found in both places is refused rather than
-guessed at; sign out of agy and in again. To Google, alc presents itself as the
-agy client — agy's User-Agent and client header — because the endpoint chooses
-what an account may run by that identity.
+For an agent other than Claude Code the last part reads "or use <agent> on
+another provider, with agy added as an MCP server: `alc mcp agy` (stdio)". A
+`[defaults]` entry that points another agent at the antigravity profile no
+longer fails config validation; the launch that would use it reports the error
+above. A background bridge route an older alc wrote for Antigravity no longer
+parses and is refused; start the session again on another provider.
 
-Use of this optional integration remains subject to the account provider's
-terms and restrictions. There is no compatibility or account-availability
-guarantee.
+`alc usage` lists the antigravity profile with the note "agy's own login; see
+its quota inside agy", and `alc doctor` checks agy's binary, the profile and its
+models.
 
-### Models, effort and context
+### Handing tasks to agy
 
-Five model families run on this login: `claude-opus-5-5`, `claude-sonnet-5-5`,
-`gemini-4-argon` (Google AI Ultra accounts), `gemini-3.8-flash` and
-`gpt-oss-120b`, each at `low`, `medium` or `high` effort (GPT-OSS at `medium`
-only). The id Google receives is the two joined, such as
-`gemini-3.8-flash-low`. `alc models --agy` lists them with their windows, and
-marks an id agy reports that no family serves ` (not bridgeable)`: agy may run
-it, the other agents cannot.
+`alc mcp agy` is a stdio MCP server with one tool, `agy` (`mcp__agy__agy` in
+Claude Code). Each call runs your own, unmodified
+`agy --print <prompt> --output-format stream-json` in the server's working
+directory — the calling agent's project — on agy's own sign-in, and returns
+agy's final answer with a `conversation_id`. alc handles no Google credential
+on this path.
 
-Claude Code switches model and effort per request as usual: its `/model`
-picker lists the five families, its effort picks the variant, `opus` lands on
-Claude Opus 5.5, `sonnet` on the session's model and `haiku` on Gemini 3.8
-Flash. An effort above `high` runs as `high`, and one a family lacks as one it
-serves, each with a one-line note. `--model`, `--effort` and `--context` change
-one run of `alc --agy claude`; `--save` is refused with the `alc config upsert`
-command that saves the same choice. The other agents run one model for the
-whole session — the profile's model at the profile's effort — so choose it on
-the profile:
+`alc claude --with-agy` wires it into Claude Code for one session. Claude Code
+runs on the provider `alc claude` would use, and alc appends an
+`--mcp-config` naming this alc and its config directory:
 
 ```sh
-alc config upsert antigravity --model gemini-3.8-flash-low --effort low --context max
+alc claude --with-agy
+alc --codex claude --with-agy
 ```
 
-Each family starts on a 256K window (GPT-OSS on 131K). `context = "max"` on the
-profile, or `--context max` for one run of Claude Code, gives 840K for Claude,
-900K for Argon and 1,048K for Flash. Codex CLI is handed the window as
-`model_context_window` (older Codex versions also needed
-`model_auto_compact_token_limit` set by hand in their own config), and the
-effort as `model_reasoning_effort`, so its footer shows the effort the session
-runs at. Codex's in-session `/model` picker still offers OpenAI's slugs, which
-alc's bridge refuses on this login: change the model on the profile, or pass
-one of this login's ids with `--model`.
+It is refused when `agy` is not on `PATH`, and together with Claude
+subcommands that run directly, such as `alc claude mcp ...`. Any other MCP
+client adds the server itself:
 
-### Signed reasoning, quota and platforms
+```sh
+claude mcp add agy -- alc mcp agy
+```
 
-Gemini signs its reasoning, and the signature travels with the conversation. A
-Gemini tool round that lost its signature — a session started elsewhere, an
-effort changed mid-task, or a bridge restarted — still goes up as the tool
-calls and results it was: closed rounds unsigned, which Google serves, and the
-round in progress with Google's documented placeholder signature
-([Troubleshooting](./troubleshooting.md#gemini-on-antigravity-writes-tool-calls-as-text)).
+```json
+{"mcpServers": {"agy": {"command": "alc", "args": ["mcp", "agy"]}}}
+```
 
-`alc usage` shows what is left of the plan ([Antigravity
-login](./usage.md#antigravity-login)), and `alc doctor` checks agy, the login,
-its Google project and the profile. Reading the login is verified on Windows;
-on macOS and Linux it is best effort, and the token file works on every OS.
+| Argument | Meaning |
+| --- | --- |
+| `prompt` | Required. The task, complete on its own: agy sees nothing of the calling conversation. |
+| `mode` | `plan`, `accept-edits` or `auto`. `plan` reads and plans without editing. Omitted, agy uses its own default, which edits files. |
+| `model` | An agy model id, as `agy models` lists them, such as `gemini-3.8-flash-low`. Omitted, the antigravity profile's model; a bare family id becomes its wire id for the effort. |
+| `effort` | `low`, `medium`, `high`, `xhigh` or `max`. Omitted, the antigravity profile's; `ultra` runs as `max`. |
+| `conversation_id` | Continue an earlier agy conversation (passed as `agy --conversation`). |
+
+Calls run concurrently. Progress notifications report agy's steps
+(`agy: write_file`), and a `notifications/cancelled` stops that agy run. If agy
+is not installed, the call returns an error saying to install it and sign in
+with `agy`. Usage of these agy runs is not recorded in alc's usage ledger.
+
+Headless agy behaves differently from an interactive session (verified on agy
+1.5.18). In print mode it writes files in the workspace without asking. It
+cannot ask before a shell command, so it denies the command, and the tool
+result then ends with "agy was denied: Bash. Headless agy cannot ask for
+permission; the user can allow it under permissions.allow in agy's
+settings.json". alc never passes `--dangerously-skip-permissions`.
+
+### agy on the Codex login
+
+`alc --codex agy` points agy's `CLOUD_CODE_URL` at alc's bridge, which adds the
+Codex models to agy's picker and relays agy's own traffic to Google untouched,
+with the token agy itself sent ([On the Codex
+login](./agents.md#on-the-codex-login)).
+
+:::caution
+
+This changes the official client's endpoint, which Antigravity does not
+sanction, and so does agy on any provider other than its own login, which
+reaches alc's bridge the same way. Use it at your own risk.
+
+:::
 
 ## Auto mode on every provider
 

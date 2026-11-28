@@ -134,8 +134,8 @@ context window，而 `/model` 選單裡會列出每一個 GPT 模型。模型、
 分級，以及同一個登入上的其他 agent，都在 [Codex 橋接](./codex-to-claude.md)。
 Antigravity CLI 也能跑在它自己的登入上：`alc agy`（見 [Antigravity
 CLI](./agents.md#antigravity-cli-agy)），而 `alc --codex agy` 會替它加上 Codex 的
-模型。那個 Google 登入也能透過同一個橋接給其他每個 agent 使用：`alc --agy claude`
-（見 [Antigravity](./providers.md#antigravity)）。
+模型（請自行承擔風險）。那個 Google 登入只屬於 agy；`alc claude --with-agy` 則讓
+Claude Code 改把工作交給 agy（見 [Antigravity](./providers.md#antigravity)）。
 
 ## 其他 provider
 
@@ -152,7 +152,7 @@ alc -p local-vllm opencode
 `--provider`（`-p`）接受 profile 名稱；當某個 kind 只有一個 profile
 時，也可以直接寫 kind。`--anthropic`、`--openai`、`--openrouter`、`--codex`、
 `--ollama`、`--vllm`、`--llamacpp`、`--deepseek`、`--moonshot`、`--zai`、
-`--minimax`、`--groq`、`--xai`、`--google`、`--agy` 則是捷徑。金鑰可以存在本機，也可以從環境變數
+`--minimax`、`--groq`、`--xai`、`--google`、`--agy`（只用於 `alc agy`）則是捷徑。金鑰可以存在本機，也可以從環境變數
 讀取；環境變數優先。各個 kind 講的是什麼協定見 [Provider
 相容性](./providers.md)，檔案放在哪裡見[設定](./configuration.md)。
 

@@ -118,8 +118,9 @@ alc config remove work
 `--protocol`, `--auth`, `--api-key-env`, `--codex-profile`, `--codex-home`,
 `--claude-config-dir`, `--disable`, and `--enable`.
 
-`--context standard|max` belongs to a `codex` or `antigravity` profile and is
-refused on any other kind. `max` is saved as `context = "max"`; `standard` is the default and
+`--context standard|max` belongs to a `codex` profile. An `antigravity` profile
+still accepts it, so older configs keep loading, but agy does not use it; any
+other kind refuses it. `max` is saved as `context = "max"`; `standard` is the default and
 is never written. Past the standard window a turn uses plan limits faster —
 [Context window](./codex-to-claude.md#context-window) has the numbers.
 

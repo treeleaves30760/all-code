@@ -16,7 +16,7 @@ keywords:
 
 Start with `alc doctor`. It reports every agent binary, credential status,
 provider profiles with a per-agent compatibility column, the resolved defaults,
-the Codex login state, and the Antigravity login's state.
+the Codex login state, and the Antigravity CLI's binary and profile.
 
 On a terminal it opens an interactive view: a sidebar of sections, each marked
 `✓`, `!` or `✗` by the worst thing it found, with the Summary — every issue and
@@ -85,35 +85,44 @@ alc config upsert google-agy --kind antigravity
 alc config set-default agy google-agy
 ```
 
-## ``not signed in to Antigravity`` or ``refresh required; run `agy` and sign in``
+## `provider 'antigravity' is agy's own Google login, which only the Antigravity CLI may use`
 
-alc borrows agy's login and lets agy renew it. Run `agy` once in a terminal and
-sign in; the next request picks the new token up. If the message says agy is
-not on PATH to renew an expired login, install agy (or point `ALC_AGY_BIN` at
-it), then sign in. `alc doctor` shows the login's state: an expired token that
-agy can renew is healthy, `expired; agy renews it on the next launch`.
+You launched an agent other than agy on the `antigravity` profile —
+`alc --agy claude`, `alc --agy opencode`, `alc -p antigravity pi`, or a
+`[defaults]` entry an older alc saved. Antigravity's
+[terms](https://antigravity.google/terms) forbid other tools from signing in
+with agy's Google login, so alc no longer routes any other agent through it
+([Antigravity](./providers.md#antigravity)). Run agy itself with `alc agy`, or
+keep the agent on another provider and hand tasks to agy:
 
-## `ambiguous sources`
+```sh
+alc claude --with-agy                  # Claude Code, with agy as an MCP tool
+claude mcp add agy -- alc mcp agy      # or add the server to any MCP client
+```
 
-agy's login is stored twice — in the system keyring and in
-`~/.gemini/antigravity-cli/antigravity-oauth-token` — and alc will not guess
-which one agy updates. Sign out of agy and sign in again so only one remains.
+To stop a saved default from pointing there, pick another provider for that
+agent, for example `alc config set-default claude codex`.
 
-## Gemini on Antigravity writes tool calls as text
+## `agy was denied: Bash`
 
-Older alc replayed Gemini tool history whose signature was lost (the session
-began elsewhere, the model or effort changed mid-task, or alc's bridge
-restarted) as text — `[called tool Read with {…}]` — and Gemini learned to
-answer in it, so its
-tool calls stopped running. Upgrade alc: the history now goes back as real tool
-calls, and a call in the round in progress carries Google's documented
-placeholder signature. Lines already in a session's transcript stay there, and
-the model may keep copying them; `/clear` (or a new session) drops them.
+A tool result from `alc mcp agy` ended with "agy was denied: Bash. Headless agy
+cannot ask for permission; the user can allow it under permissions.allow in
+agy's settings.json". agy runs headless there (`agy --print`), so it cannot ask
+before a shell command and denies it. Allow the commands you want agy to run
+under `permissions.allow` in agy's own `settings.json`; alc never passes
+`--dangerously-skip-permissions`.
 
-## `Google refused this Antigravity account (403 …)`
+## `--with-agy hands tasks to the Antigravity CLI, but 'agy' is not installed`
 
-alc does not retry a 403: the account may be restricted. Open agy to check the
-account; the message carries Google's own one-line reason.
+`alc claude --with-agy` needs `agy` on `PATH`. Install the Antigravity CLI and
+sign in by running `agy` once. The `agy` tool of `alc mcp agy` returns the same
+advice as an error when agy is missing.
+
+## A background session on Antigravity is refused
+
+Background bridge routes an older alc wrote for the Antigravity login no longer
+parse, so a session left on one is refused. Start the session again on another
+provider.
 
 ## Auto mode says server-side checks are unavailable
 

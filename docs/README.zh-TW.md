@@ -2,7 +2,7 @@
 
 **用你已經在付錢的 Codex／ChatGPT 訂閱跑 Claude Code** —— 另外七個 coding
 agent 也一樣，用同一個登入，或是你指給它們的任何一家 provider；再加上 Google 的
-Antigravity CLI，而它的 Google 登入其他每個 agent 也都能用。任何 session 都能鏡像
+Antigravity CLI，跑在它自己的 Google 登入上，其他 agent 也能把任務交給它。任何 session 都能鏡像
 到一個網頁，從另一台裝置操作。
 
 [![CI](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml/badge.svg)](https://github.com/treeleaves30760/all-code/actions/workflows/ci.yml)
@@ -83,9 +83,9 @@ alc 啟動時什麼都不印 —— 只有一種例外：你的 Codex 設定要�
 
 同一次 `codex login` 就能驅動 alc 啟動的每個 agent。不用第二把金鑰，也不用逐個
 agent 設定。Google 的 Antigravity CLI（`agy`）也一樣：它保留自己的 Google 登入，
-並在自己的模型旁多出 Codex 的模型（見 [agy 也能用 Codex 登入](#agy-也能用-codex-登入)）
-—— 而那個 Google 登入反過來也能給其他每個 agent 使用，見
-[Antigravity](#antigravity)。
+並在自己的模型旁多出 Codex 的模型（見 [agy 也能用 Codex 登入](#agy-也能用-codex-登入)）。
+那個 Google 登入只屬於 agy；其他 agent 則可以把任務交給 agy（見
+[Antigravity](#antigravity)）。
 
 ```sh
 alc --codex claude       # session 內的 /model 選單
@@ -230,7 +230,7 @@ host 重啟後舊替代憑證收到 HTTP 401；請重新執行 helper。只在 s
 可以指向 Anthropic、OpenAI API、OpenRouter、本機的 Ollama、llama.cpp 或 vLLM
 伺服器、DeepSeek、Moonshot、Z.ai、MiniMax、Groq、xAI、Google，或任何自訂端點
 —— 也可以只替這一次執行換掉，什麼都不用改。agy（Antigravity CLI）則是跑在它
-自己的 Google 登入（以及 Codex 登入）上，而 `--agy` 也能讓其他任何 agent 跑在那個登入上（見下方的
+自己的 Google 登入（以及 Codex 登入）上，而那個登入只給 agy 用（見下方的
 [Antigravity](#antigravity)）。
 
 ```sh
@@ -273,8 +273,7 @@ Claude 模型 id（例如 `claude-opus-5`，代表這是架在 Anthropic 前面�
 `alc agy` 會啟動 Google 的 Antigravity CLI，也就是 `agy`。agy 自己登入 Google，
 alc 就在那個登入上啟動它，完全不經手任何憑證；它唯一能跑的另一個地方是 Codex
 登入（見[下方](#agy-也能用-codex-登入)），從不跑在你指定的 provider 上。初始設定內含一個已啟用的
-`antigravity` profile 給它用，所以只要 agy 登入好了，就沒有別的要設定 ——
-agy 是這樣，跑在那個登入上的其他 agent 也是（見[下方](#其他-agent-也能用-antigravity-登入)）。
+`antigravity` profile 給它用，所以只要 agy 登入好了，就沒有別的要設定。
 
 ```sh
 alc agy                                   # claude-opus-5-5-high，用 agy 自己的預設強度
@@ -286,15 +285,30 @@ alc models --agy                          # agy 提供的模型
 alc 會把 profile 的模型當成 agy 的 `--model` 傳入；profile 有設定推理強度時，
 也會以 `--effort` 傳入。你在 `alc agy` 後面自己寫的 `--model` 或 `--effort` 會
 原封不動轉送，alc 這時就不再送自己的那一個。agy 只列出 wire id，所以 profile 上
-的家族 id（例如 `claude-opus-5-5`，其他 agent 的橋接也讀得懂）會依 profile 的
-強度換成對應的 wire id 再交給 agy。agy 的強度最高到 `max`，所以設成
-`ultra` 的 profile 會以 `max` 啟動，並印出一行說明。`alc models --agy` 會列出
-`agy models` 回報的模型，保留一天；問不到 agy 時就用內建的清單；`--refresh`
-會立刻重新問一次。它會印出每個模型的 context window，並把不屬於下面五個模型家族
-的 id 標上 ` (not bridgeable)`：agy 也許能跑，其他 agent 不行。在 `alc config`
-裡，antigravity profile 的 Model 那一列可以
-用 ←/→ 在同一份清單裡切換。`--agy`（或 `--antigravity`）是
-`--provider antigravity` 的捷徑。
+的家族 id（例如 `claude-opus-5-5`）會依 profile 的強度換成對應的 wire id 再交給
+agy。agy 的強度最高到 `max`，所以設成 `ultra` 的 profile 會以 `max` 啟動，並印出
+一行說明。`alc models --agy` 會列出 `agy models` 回報的模型，保留一天；問不到 agy
+時就用內建的清單；`--refresh` 會立刻重新問一次。在 `alc config` 裡，antigravity
+profile 的 Model 那一列可以用 ←/→ 在同一份清單裡切換。`--agy`（或
+`--antigravity`）是 `--provider antigravity` 的捷徑。
+
+**`antigravity` profile 只給 agy 用。** Antigravity 的
+[服務條款](https://antigravity.google/terms)（第 6 條）明定，用第三方軟體以
+Antigravity OAuth 存取服務屬於違約，Google 也已經因此停權過帳號。alc 不會讀取
+agy 的登入或 token，其他任何 agent 放在這個 profile 上 —— `alc --agy claude`、
+`alc -p antigravity pi`，或是把某個 agent 指過去的 `[defaults]` 項目 —— 都會在
+啟動時被拒絕：
+
+```text
+error: provider 'antigravity' is agy's own Google login, which only the Antigravity CLI may use: Antigravity's terms forbid other tools from signing in with it, and alc no longer routes claude through it. Run agy itself with `alc agy`, or use `alc claude --with-agy` (Claude Code on its own provider, with agy as a tool it can hand tasks to)
+```
+
+Claude Code 以外的 agent，結尾會改成「or use <agent> on another provider, with
+agy added as an MCP server: `alc mcp agy` (stdio)」。這樣的 `[defaults]` 項目不會
+再讓設定驗證失敗，只會在啟動時回報。舊版 alc 確實讓每個 agent 都跑在這個登入上；
+給 Claude Code 的 Antigravity 模型選單，以及其上的 `--context max` window，都隨
+那條路一起拿掉了。舊版 alc 替 Antigravity 寫下的背景橋接路由會被拒絕，請改在別的
+provider 上重新開始那個 session。
 
 舊版 alc 寫出的 `config.toml` 沒有 `antigravity` profile。這時 `alc agy` 會
 直接說明並給出修法，`alc doctor` 也會用同一行指令提出警告：
@@ -310,6 +324,11 @@ alc --codex agy                                  # 從 codex profile 的模型�
 alc --codex agy --model gemini-3.8-flash-low     # 或從 agy 自己的模型開始
 ```
 
+> **風險自負。** 這會改動 Google 官方用戶端的端點：alc 把 agy 的
+> `CLOUD_CODE_URL` 指向自己的本機橋接，而 Antigravity 並不認可這種做法。
+> 在 agy 自己登入以外的任何 provider 上跑 agy（`alc --openrouter agy` 等）也一樣，
+> 因為它同樣是經由 alc 的橋接連線。`alc doctor` 也會再提醒一次。
+
 agy 從 `CLOUD_CODE_URL` 讀取端點，alc 在這個 session 裡把它指向自己的橋接。橋接
 會把 Codex 的模型加進 agy 的模型清單 —— 每種推理強度一個項目，例如
 `gpt-6.1-sol-high`，在 `/model` 裡顯示為 **GPT-6.1-Sol · Codex**，用 agy 自己的
@@ -320,57 +339,47 @@ agy 從 `CLOUD_CODE_URL` 讀取端點，alc 在這個 session 裡把它指向自
 一個 session 可以用 `/model` 在 Codex 模型和 Google 的模型之間切換。Codex 的回合
 會以 `codex` profile 上的 `agy` 記進用量帳本。
 
-#### 其他 agent 也能用 Antigravity 登入
+#### 從其他 agent 把任務交給 agy
 
-同一個登入也能透過 alc 的橋接，給其他每個 agent 使用：
-
-```sh
-alc --agy claude                          # Claude Code，用 claude-opus-5-5，強度 high
-alc --agy claude --model gemini-3.8-flash --effort low
-alc --agy opencode                        # 或 pi、kimi、codex、copilot、goose、qwen
-alc --agy claude --context max            # Claude 840K、Argon 900K、Flash 1,048K
-alc --agy usage                           # 方案各時間窗還剩多少
-```
-
-alc 借用 agy 已經存好的 access token —— Windows 認證管理員裡的
-`gemini:antigravity` 項目，或檔案
-`~/.gemini/antigravity-cli/antigravity-oauth-token` —— 其他什麼都不留：它從不
-儲存 refresh token、不改寫 agy 的登入，也從不自己跑 Google 登入流程。登入仍歸
-agy 管：token 快過期時，alc 會執行 `agy --output-format json models`（這會讓 agy
-自己更新 token），再重新讀一次。兩個地方都有登入時，alc 會拒絕而不去猜；請在
-agy 裡登出再登入。對 Google 來說，alc 會以 agy 用戶端的身分出現（agy 的
-User-Agent 與用戶端標頭），因為那個端點是依這個身分決定帳號能用哪些模型。
-
-使用這項選用整合仍受帳號提供者的條款與限制約束，不保證相容性，也不保證帳號可用。
-
-這個登入上有五個模型家族：`claude-opus-5-5`、`claude-sonnet-5-5`、
-`gemini-4-argon`（Google AI Ultra 帳號）、`gemini-3.8-flash` 與
-`gpt-oss-120b`，每個都有 `low`、`medium`、`high` 三種強度（GPT-OSS 只有
-`medium`）。Google 收到的 id 是兩者相連，例如 `gemini-3.8-flash-low`。Claude
-Code 照常逐次切換模型與強度：它的 `/model` 選單列出這五個家族，它的強度決定用
-哪個變體，`opus` 對應 Claude Opus 5.5、`sonnet` 對應這個 session 的模型、`haiku`
-對應 Gemini 3.8 Flash。高於 `high` 的強度會以 `high` 執行，家族沒有的強度則換成
-它有的，兩者都會印出一行說明。`--model`、`--effort` 與 `--context` 只改這一次的
-`alc --agy claude`；`--save` 會被拒絕，並附上能存下同樣選擇的
-`alc config upsert` 指令。其他 agent 整個 session 都用同一個模型 —— profile 的
-模型配上 profile 的強度 —— 所以請在 profile 上選：
+其他 agent 不能以 agy 的身分登入，但可以請 agy 做事。`alc mcp agy` 是一個 stdio
+MCP 伺服器，只有一個工具 `agy`；每次呼叫都會在伺服器的工作目錄（也就是呼叫端
+agent 的專案）裡，用 agy 自己的登入執行你自己那份未經修改的
+`agy --print <prompt> --output-format stream-json`，再回傳 agy 的最終回答與一個
+`conversation_id`。
 
 ```sh
-alc config upsert antigravity --model gemini-3.8-flash-low --effort low --context max
+alc claude --with-agy              # Claude Code 跑在平常的 provider 上，並多一個 agy 工具
+alc --codex claude --with-agy      # 同上，跑在 Codex 登入上
+claude mcp add agy -- alc mcp agy  # 或自己把這個伺服器加進任何 MCP 用戶端
 ```
 
-每個家族一開始用 256K 的 window（GPT-OSS 是 131K）。在 profile 上設
-`context = "max"`，或只限 Claude Code 這一次的 `--context max`，Claude 會變成
-840K、Argon 900K、Flash 1,048K。Codex CLI 會以 `model_context_window` 拿到這個
-window（較舊的 Codex 版本還得在它自己的設定裡手動設
-`model_auto_compact_token_limit`）。Codex session 內的 `/model` 選單仍會列出
-OpenAI 的模型名稱，這些在這個登入上會被 alc 的橋接拒絕：請改在 profile 上換模型。
+`--with-agy` 會完全照 `alc claude`（或 `alc --codex claude` 等）的方式啟動
+Claude Code，再附上一個 `--mcp-config`，以這個 alc 和它的設定目錄執行 `mcp agy`；
+工具在 Claude Code 裡顯示為 `mcp__agy__agy`。`agy` 不在 `PATH` 上時會被拒絕，
+跟會直接執行的 Claude 子指令（例如 `alc claude mcp ...`）一起用也會被拒絕。在其他
+用戶端的 JSON 設定裡，這個伺服器寫成：
 
-Gemini 會替推理內容簽章，簽章會跟著對話走。Gemini 的工具呼叫若遺失了簽章 ——
-例如在別處開始的 session、任務進行中改了強度，或橋接重新啟動過 —— 仍會以原本的
-工具呼叫與結果送出：已結束的回合不帶簽章（Google 接受），進行中的回合則帶上
-Google 文件記載的佔位簽章。讀取登入的方式在 Windows 上驗證過；在 macOS
-與 Linux 上屬於盡力而為，token 檔案則在每個作業系統上都能用。
+```json
+{"mcpServers": {"agy": {"command": "alc", "args": ["mcp", "agy"]}}}
+```
+
+工具接受的參數：
+
+| 參數 | 意義 |
+| --- | --- |
+| `prompt` | 必填。任務本身要完整：agy 看不到呼叫端的對話。 |
+| `mode` | `plan`（只讀取與規劃，不改檔案）、`accept-edits` 或 `auto`。不填時用 agy 自己的預設，會改檔案。 |
+| `model` | `agy models` 列出的 agy 模型 id，例如 `gemini-3.8-flash-low`。不填時用 `antigravity` profile 的模型（家族 id 會依強度換成 wire id）。 |
+| `effort` | `low`、`medium`、`high`、`xhigh` 或 `max`。不填時用 profile 的；`ultra` 以 `max` 執行。 |
+| `conversation_id` | 接續先前的 agy 對話（以 `agy --conversation` 傳入）。 |
+
+多個呼叫可以同時進行。進度通知會回報 agy 的步驟（`agy: write_file`），取消一個
+呼叫就會停掉它的那次 agy 執行。無頭模式的 agy 跟互動 session 不一樣（在 agy
+1.5.18 上驗證過）：它會直接寫入工作區裡的檔案、不先詢問；而 shell 指令因為沒辦法
+詢問，就一律拒絕。這時結果會說明：「agy was denied: Bash. Headless agy cannot ask
+for permission; the user can allow it under permissions.allow in agy's
+settings.json」。alc 從不傳 `--dangerously-skip-permissions`。沒有安裝 agy 時，
+呼叫會回傳錯誤，請你安裝它並用 `agy` 登入。這些 agy 執行不會記進 alc 的用量帳本。
 
 ## 指令一覽
 
@@ -380,6 +389,7 @@ Google 文件記載的佔位簽章。讀取登入的方式在 Windows 上驗證�
 | `alc config` | 設定用的 TUI；另有 `init`、`show`、`path`、`upsert`、`key`、`set-default`、`remove` |
 | `alc doctor` | 執行檔、憑證、相容性、預設值，以及橋接與遠端狀態；在終端機上是互動畫面，`--plain` |
 | `alc models` | Codex 橋接提供的 GPT 模型，加上 `--agy` 則是 Antigravity CLI 的模型；`--refresh`、`--json` |
+| `alc mcp agy` | stdio MCP 伺服器，唯一的工具會把任務交給 `agy --print`（見[從其他 agent 把任務交給 agy](#從其他-agent-把任務交給-agy)）；`alc claude --with-agy` 會把它接進 Claude Code |
 | `alc usage [weekly\|monthly\|yearly]` | 帳號／額度、相容帳本與每日 token／成本統計；在終端機上是分頁儀表板；`--timezone`、`--chart[=PATH]`、`--wrapped[=PATH]`、`--daily`、`--monthly`、`--details`、`--offline`、`--pricing-file`、`--no-tui`（`-nt`）、`--json` |
 | `alc tps` | 用戶端觀測的 TTFT 與估算／E2E 每秒 token 數；在終端機上是儀表板；預設最新 20 筆有 timing 的請求（儀表板為 200 筆），`--include-unmeasured`、`--limit`、`--no-tui`（`-nt`）、`--json` |
 | `alc update` | 驗證並啟用不可變的 alc 世代；`--check`、`--force`、`--download-only`、`--from ... --offline`、`--rollback` |
@@ -397,8 +407,8 @@ Google 文件記載的佔位簽章。讀取登入的方式在 Windows 上驗證�
 
 ## 執行 agent
 
-**參數轉送。** 除了 Claude 專用的 `--model`、`--effort`、`--context`、`--save`
-之外，agent 名稱後的參數會原封不動傳入：
+**參數轉送。** 除了 Claude 專用的 `--model`、`--effort`、`--context`、`--save`、
+`--with-agy` 之外，agent 名稱後的參數會原封不動傳入：
 
 ```sh
 alc --codex codex exec "review this repository"
@@ -440,10 +450,10 @@ alc doctor
 `alc doctor` 會回報環境與憑證路徑、全部九個 agent 的執行檔、每個 provider
 profile 對照全部九個 agent 的結果、解析後的各 agent 預設值、殘留在
 `~/.claude/settings.json` 裡被釘住的 GPT 模型、Codex 橋接的模型、推理強度、
-context window 選擇與 `codex login` 狀態、Antigravity 登入（agy 執行檔、登入
-狀態 —— agy 能更新的過期 token 算是正常，顯示 `expired; agy renews it on the next
-launch` —— 它的 Google 專案、profile、模型清單來源，以及橋接能否服務其他
-agent）、已啟用的 Ollama、llama.cpp 或 vLLM profile 對照其執行中伺服器的檢查，
+context window 選擇與 `codex login` 狀態、Antigravity CLI（agy 執行檔、profile、
+模型清單來源、一行說明其他 agent 透過 `alc mcp agy` 把任務交給 agy，以及一行暗色
+警告：`alc --codex agy` 會改動官方用戶端的端點，Antigravity 並不認可 —— alc 從不
+讀取 agy 的登入，所以沒有登入那一列）、已啟用的 Ollama、llama.cpp 或 vLLM profile 對照其執行中伺服器的檢查，
 以及遠端控制的現況 —— 最後是一份問題摘要，每一項都附上修法。只要找到
 其中一個問題，它就會以非零狀態結束。
 
@@ -501,10 +511,8 @@ Token usage
 
 alc 會向每個登入所屬的服務商查詢剩餘額度：Codex 登入問 chatgpt.com、Claude
 Code 的登入問 api.anthropic.com，OpenRouter、DeepSeek、Moonshot、MiniMax 與
-Z.ai 的 key 則走各自公開的餘額端點；`antigravity` 那一列則問 Google 自己的額度
-端點，依時間窗列出 Gemini 與 Claude/GPT 兩個額度池（`Gemini: 5h 72% left,
-resets in 3h 0m — week 40% left; Claude/GPT: week 91% left`）；agy 的 token
-過期時，這一列會顯示無法取得，直到下次啟動時 agy 把它更新。過程中不會寫回任何
+Z.ai 的 key 則走各自公開的餘額端點。`antigravity` 那一列沒有額度時間窗，只有一句
+「agy's own login; see its quota inside agy」：alc 不讀取那個登入。過程中不會寫回任何
 東西，也不會更新
 token —— 一個查詢狀態的指令不該讓執行中的 session 手上的憑證失效。
 
@@ -518,8 +526,7 @@ alc config upsert codex-work --kind codex --codex-home ~/.codex-work
 alc --provider codex-work claude
 ```
 
-相容表讀取 `usage.jsonl`：啟動紀錄，加上協定轉譯橋接（Codex 登入或 Antigravity
-登入上的都算）與選擇啟用的直接 API 觀測產生的純中繼資料請求紀錄。`CACHED` 是
+相容表讀取 `usage.jsonl`：啟動紀錄，加上協定轉譯橋接（Codex 登入上）與選擇啟用的直接 API 觀測產生的純中繼資料請求紀錄。`CACHED` 是
 `INPUT` 中從提示快取讀取的部分；`CACHE %` 是這部分 token 的整數比例。未觀測的流量顯示 `—`，不是零。遠端控制
 頁面的「用量」分頁會顯示 Accounts、這份帳本，以及原生歷史統計的圖表（token、成本、
 時段、模型）；TPS 報告只在 CLI 提供。
@@ -606,8 +613,7 @@ checkpoint 日期，不代表還原了每天實際發生的流量。涵蓋診斷
 跳過或有歧義的紀錄，不把它們當成零。新統計把舊 v1/v2 turn 每個為零的輸入／
 輸出計數分別保留為未知；正值與相容帳本總數維持不變。
 
-**新直接請求要選擇啟用。** 協定轉譯橋接會自動觀測，Codex 登入與 Antigravity
-登入上都一樣。支援的直接 API 啟動
+**新直接請求要選擇啟用。** 協定轉譯橋接在 Codex 登入上會自動觀測。支援的直接 API 啟動
 使用 `alc --metrics <agent>`；不加時，行為維持不變：
 
 ```sh
@@ -658,8 +664,7 @@ session 才能取得後續量測，不必停止舊 session。
 `cost_components`，分開未快取輸入、快取讀取、快取寫入與輸出。金額用精確的
 pico-dollar 運算與十進位 USD 字串，不用浮點總數。推理是輸出子集，不重複計費；
 快取讀寫與 TTL 保留各自語意。
-Antigravity 登入上只有 `gpt-oss-120b` 有定價（為 0）；Claude 與 Gemini 家族跑在
-Google 的方案上，沒有經過驗證的 API-equivalent 費率，所以成本維持未知。價格先取日期為 2026-10-08 的離線精選 LiteLLM 子集，固定在 commit
+價格先取日期為 2026-10-08 的離線精選 LiteLLM 子集，固定在 commit
 `33d908e0ae2c0a257eeb5d546df08527d348a670` 並附 SHA-256／MIT 來源。子集沒有的模型，
 改用 LiteLLM 公開的價格表定價，也就是 `npx ccusage` 讀的同一個檔案：alc 每天最多下載
 一次到設定目錄的 `litellm-prices.json`，只採用 Anthropic 與 OpenAI 官方列，且絕不取代
@@ -683,7 +688,7 @@ Google 的方案上，沒有經過驗證的 API-equivalent 費率，所以成本
 | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | responses, chat | 是（橋接） |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | anthropic, responses, chat | 可 |
 | `codex` | —（原生 `codex login`） | — | native | 可（橋接） |
-| `antigravity` | —（原生 `agy` 登入） | — | native（`agy`）、橋接（其他 agent） | 可（橋接） |
+| `antigravity` | —（原生 `agy` 登入） | — | native（只有 `agy`） | 否（只給 agy；見 [Antigravity](#antigravity)） |
 | `ollama` | `http://localhost:11434` | — | anthropic, responses, chat | 可 |
 | `vllm` | `http://localhost:8000/v1` | — | responses, chat (+ anthropic) | 可 |
 | `llamacpp` | `http://localhost:8080/v1` | `LLAMA_API_KEY` | anthropic, responses, chat | 可 |
@@ -723,9 +728,9 @@ ID，等上游改名或棄用某個模型時，再用 `alc config upsert` 修改
 （Pi 是 `npm install -g @earendil-works/pi-coding-agent`；agy 則照 Google 自己的
 Antigravity 說明安裝並登入）。不論原生支援
 什麼，每個 agent 都只要一次 `codex login` 就能接上 Codex 橋接（agy 經由一個把
-它自己的模型轉送給 Google 的 Code Assist 介面）；同一個橋接也讓 agy 以外的 agent
-都能跑在 agy 的 Google 登入上（`alc --agy <agent>`），agy 自己則原生跑在那個登入
-上。`ALC_CLAUDE_BIN` 與它的同類環境變數（包含
+它自己的模型轉送給 Google 的 Code Assist 介面）。agy 的 Google 登入只給 agy 用；
+其他 agent 則以 MCP 工具的方式接上 agy（`alc mcp agy`，或
+`alc claude --with-agy`）。`ALC_CLAUDE_BIN` 與它的同類環境變數（包含
 `ALC_AGY_BIN`）可以覆寫執行檔路徑。
 
 **任何 provider 接任何 agent。** 當 agent 講不了 profile 的 API —— Claude Code 接
@@ -773,7 +778,7 @@ alc 也照同樣的方式處理：`standard` 是預設值，永遠不會寫進�
 `Codex context: 500K (max 872K)` —— 而 profile 設成 max 時，`alc doctor` 會在
 那個 profile 的橋接那一列加上 `/ max context`。profile 的選擇會套用到橋接上的
 每一個 agent，不只 Claude Code。單次執行用的 `--context` 跟 `--effort` 一樣只
-屬於 `alc claude`，provider 不是 Codex 或 Antigravity 時會被拒絕。
+屬於 `alc claude`，provider 不是 Codex 時會被拒絕。
 
 **挑選預設值。** 只有在沒有選定模型與強度時，才會以 GPT-6.1 Sol、`low` 作為
 起點；你已儲存的選擇維持原樣。
