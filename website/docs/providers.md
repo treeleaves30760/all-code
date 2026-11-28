@@ -132,7 +132,7 @@ Any other agent on the `antigravity` profile — `alc --agy claude`,
 error: provider 'antigravity' is agy's own Google login, which only the Antigravity CLI may use: Antigravity's terms forbid other tools from signing in with it, and alc no longer routes claude through it. Run agy itself with `alc agy`, or use `alc claude --with-agy` (Claude Code on its own provider, with agy as a tool it can hand tasks to)
 ```
 
-For an agent other than Claude Code the last part reads "or use <agent> on
+For an agent other than Claude Code the last part reads "or use \<agent\> on
 another provider, with agy added as an MCP server: `alc mcp agy` (stdio)". A
 `[defaults]` entry that points another agent at the antigravity profile no
 longer fails config validation; the launch that would use it reports the error

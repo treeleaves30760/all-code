@@ -129,7 +129,7 @@ agy 存好的 token、以 agy 的身分向 Google 連線，讓其他每個 agent
 error: provider 'antigravity' is agy's own Google login, which only the Antigravity CLI may use: Antigravity's terms forbid other tools from signing in with it, and alc no longer routes claude through it. Run agy itself with `alc agy`, or use `alc claude --with-agy` (Claude Code on its own provider, with agy as a tool it can hand tasks to)
 ```
 
-Claude Code 以外的 agent，最後一段會是「or use <agent> on another provider, with
+Claude Code 以外的 agent，最後一段會是「or use \<agent\> on another provider, with
 agy added as an MCP server: `alc mcp agy` (stdio)」。`[defaults]` 裡把其他 agent
 指向 antigravity profile 的設定，不會再讓設定檢查失敗；改由真正用到它的那次啟動
 回報上面的錯誤。舊版 alc 替 Antigravity 寫下的背景橋接路由已經無法解析，會被
